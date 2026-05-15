@@ -89,6 +89,11 @@ export class Governor {
     return bias;
   }
 
+  async clearMacroBias(now = new Date()): Promise<MacroBias> {
+    await this.configStore.delete(MACRO_BIAS_KEY);
+    return neutralMacroBias(now);
+  }
+
   async readTemporaryOverride(now = new Date()): Promise<TemporaryGovernanceOverride | null> {
     try {
       const stored = await this.configStore.get<Partial<TemporaryGovernanceOverride>>(
@@ -141,6 +146,12 @@ export class Governor {
       expirationTtl: Math.max(60, Math.ceil((Date.parse(expiresAt) - now.getTime()) / 1000))
     });
     return override;
+  }
+
+  async clearTemporaryOverride(): Promise<TemporaryGovernanceOverride | null> {
+    const existing = await this.readTemporaryOverride();
+    await this.configStore.delete(TEMPORARY_OVERRIDE_KEY);
+    return existing;
   }
 }
 

@@ -17,6 +17,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   DEFAULT_API_BASE,
+  clearOverride,
   injectMoltworkerIntent,
   login,
   readAttribution,
@@ -81,6 +82,9 @@ export default function CommandCenterPage() {
   const [logicFeed, setLogicFeed] = useState<JsonRecord[]>([]);
   const [pendingFields, setPendingFields] = useState<string[]>([]);
   const [confirmText, setConfirmText] = useState("");
+  const [commandStatus, setCommandStatus] = useState<string | null>(null);
+  const [isApplyingMatrix, setIsApplyingMatrix] = useState(false);
+  const [isClearingOverride, setIsClearingOverride] = useState(false);
   const [transport, setTransport] = useState<DraftTransportSettings>(DEFAULT_TRANSPORT_SETTINGS);
   const [moltworker, setMoltworker] = useState<MoltworkerDraft>({
     direction: "RISK_OFF" as MacroBiasDirection,
@@ -94,6 +98,7 @@ export default function CommandCenterPage() {
   });
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectRef = useRef<number>(0);
+  const draftDirtyRef = useRef(false);
 
   const refresh = useCallback(async () => {
     if (!token) {
@@ -109,7 +114,9 @@ export default function CommandCenterPage() {
 
     setEngineState(stateResult.state);
     setConfig(configResult.config);
-    setDraftConfig(configResult.config);
+    if (!draftDirtyRef.current) {
+      setDraftConfig(configResult.config);
+    }
     setTrace(traceResult);
     setAttribution(attributionResult);
   }, [apiBase, token]);
@@ -217,6 +224,7 @@ export default function CommandCenterPage() {
   }
 
   function updateDraft(key: keyof GlobalRiskConfig, value: string | number | boolean) {
+    draftDirtyRef.current = true;
     setDraftConfig((draft) => ({
       ...draft,
       [key]: value
@@ -235,14 +243,57 @@ export default function CommandCenterPage() {
       return;
     }
 
-    await updateConfig(apiBase, token, draftConfig);
-    setPendingFields([]);
-    await refresh();
+    setError(null);
+    setCommandStatus("Applying matrix...");
+    setIsApplyingMatrix(true);
+
+    try {
+      await updateConfig(apiBase, token, draftConfig);
+      draftDirtyRef.current = false;
+      setPendingFields([]);
+      await refresh();
+      setCommandStatus(
+        temporaryOverride
+          ? "Baseline matrix saved. Effective governance is still controlled by the active Moltworker override."
+          : "Matrix applied."
+      );
+    } catch (caught: unknown) {
+      setError(errorMessage(caught));
+      setCommandStatus("Matrix update failed.");
+    } finally {
+      setIsApplyingMatrix(false);
+    }
   }
 
   async function submitMoltworker() {
-    await injectMoltworkerIntent(apiBase, token, moltworker);
-    await refresh();
+    setError(null);
+    setCommandStatus("Injecting Moltworker intent...");
+
+    try {
+      await injectMoltworkerIntent(apiBase, token, moltworker);
+      await refresh();
+      setCommandStatus("Moltworker override active.");
+    } catch (caught: unknown) {
+      setError(errorMessage(caught));
+      setCommandStatus("Moltworker update failed.");
+    }
+  }
+
+  async function submitClearOverride() {
+    setError(null);
+    setCommandStatus("Clearing Moltworker override...");
+    setIsClearingOverride(true);
+
+    try {
+      await clearOverride(apiBase, token, temporaryOverride);
+      await refresh();
+      setCommandStatus("Moltworker override cleared. Matrix governance is now effective.");
+    } catch (caught: unknown) {
+      setError(errorMessage(caught));
+      setCommandStatus("Override clear failed.");
+    } finally {
+      setIsClearingOverride(false);
+    }
   }
 
   const macroBias = pulse?.macroBias ?? engineState?.macroBias ?? null;
@@ -302,6 +353,13 @@ export default function CommandCenterPage() {
             <span>{error}</span>
           </div>
         ) : null}
+
+        {commandStatus ? (
+          <div className="system-state">
+            <ChevronRight size={14} />
+            <span>{commandStatus}</span>
+          </div>
+        ) : null}
       </section>
 
       <section className="grand-grid">
@@ -309,17 +367,31 @@ export default function CommandCenterPage() {
           <div className="panel-title">
             <Shield size={17} />
             <span>Moltworker System 2</span>
+            {temporaryOverride ? (
+              <button
+                className="danger-action compact-action"
+                disabled={isClearingOverride}
+                onClick={() => void submitClearOverride()}
+              >
+                Clear Override
+              </button>
+            ) : null}
           </div>
           <div className="intent-hero">
             <span>{macroBias?.direction ?? "NEUTRAL"}</span>
             <strong>{temporaryOverride ? "DEFENSIVE OVERRIDE" : "AUTONOMOUS WATCH"}</strong>
-            <p>{temporaryOverride?.reason ?? macroBias?.reason ?? "No active supervisor intervention"}</p>
+            <p>
+              {temporaryOverride
+                ? `${temporaryOverride.reason} · expires ${new Date(temporaryOverride.expiresAt).toLocaleTimeString()}`
+                : macroBias?.reason ?? "No active supervisor intervention"}
+            </p>
           </div>
           <div className="bridge-metrics">
             <Metric label="Realized Alpha" value={currency.format(realizedAlpha)} />
             <Metric label="κ Regime" value={compact.format(pulse?.regimeCoefficient ?? engineState?.oracle.skepticismMultiplier ?? 0)} />
             <Metric label="Bias Power" value={compact.format((macroBias?.intensity ?? 0) * (macroBias?.confidence ?? 0))} />
-            <Metric label="Governance" value={engineState?.cachedConfig.ORACLE_GOVERNANCE_MODE ?? "HYBRID"} />
+            <Metric label="Effective Gov" value={engineState?.cachedConfig.ORACLE_GOVERNANCE_MODE ?? "HYBRID"} />
+            <Metric label="Baseline Gov" value={config?.ORACLE_GOVERNANCE_MODE ?? "HYBRID"} />
           </div>
         </section>
 
@@ -338,7 +410,9 @@ export default function CommandCenterPage() {
           <div className="panel-title">
             <SlidersHorizontal size={17} />
             <span>Full Parameter Matrix</span>
-            <button onClick={() => void submitDraftConfig()}>Apply Matrix</button>
+            <button disabled={isApplyingMatrix} onClick={() => void submitDraftConfig()}>
+              {isApplyingMatrix ? "Applying" : "Apply Matrix"}
+            </button>
           </div>
           <div className="param-grid">
             {PARAMETER_MATRIX.map((param) => (

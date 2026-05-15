@@ -1204,6 +1204,8 @@ export interface AdminConfigUpdate {
   actor?: string;
   macroBias?: MacroBiasUpdate;
   temporaryOverride?: TemporaryGovernanceOverrideUpdate;
+  clearMacroBias?: boolean;
+  clearTemporaryOverride?: boolean;
 }
 
 export interface HealthReport {

@@ -661,12 +661,19 @@ async function handleAdminConfig(
     });
   }
 
-  const macroBias = update.macroBias
-    ? await governor.writeMacroBias(update.macroBias, actor)
-    : await governor.readMacroBias();
-  const temporaryOverride = update.temporaryOverride
-    ? await governor.writeTemporaryOverride(update.temporaryOverride, actor)
-    : await governor.readTemporaryOverride();
+  const macroBias = update.clearMacroBias
+    ? await governor.clearMacroBias()
+    : update.macroBias
+      ? await governor.writeMacroBias(update.macroBias, actor)
+      : await governor.readMacroBias();
+  const clearedTemporaryOverride = update.clearTemporaryOverride
+    ? await governor.clearTemporaryOverride()
+    : null;
+  const temporaryOverride = update.clearTemporaryOverride
+    ? null
+    : update.temporaryOverride
+      ? await governor.writeTemporaryOverride(update.temporaryOverride, actor)
+      : await governor.readTemporaryOverride();
 
   if (update.macroBias) {
     logSupervisorAction(logger, {
@@ -679,6 +686,17 @@ async function handleAdminConfig(
     });
   }
 
+  if (update.clearMacroBias) {
+    logSupervisorAction(logger, {
+      actor,
+      kind: "MACRO_BIAS",
+      reason: "External macro bias cleared",
+      confidence: 1,
+      payload: macroBias,
+      topology
+    });
+  }
+
   if (update.temporaryOverride && temporaryOverride) {
     logSupervisorAction(logger, {
       actor,
@@ -686,6 +704,20 @@ async function handleAdminConfig(
       reason: temporaryOverride.reason,
       confidence: 1,
       payload: temporaryOverride,
+      topology
+    });
+  }
+
+  if (update.clearTemporaryOverride) {
+    logSupervisorAction(logger, {
+      actor,
+      kind: "TEMPORARY_OVERRIDE",
+      reason: "Temporary governance override cleared",
+      confidence: 1,
+      payload: {
+        clearedOverrideId: clearedTemporaryOverride?.overrideId ?? null,
+        clearedOverride: clearedTemporaryOverride
+      },
       topology
     });
   }
@@ -705,6 +737,7 @@ async function handleAdminConfig(
     config: nextConfig,
     macroBias,
     temporaryOverride,
+    clearedTemporaryOverride,
     engineRefreshStatus: refreshResponse.status
   });
 }

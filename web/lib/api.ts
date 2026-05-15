@@ -120,15 +120,12 @@ export async function clearOverride(
     return null;
   }
 
-  return injectMoltworkerIntent(apiBase, token, {
-    direction: "NEUTRAL",
-    intensity: 0,
-    confidence: 0,
-    reason: "Return to neutral supervisory posture",
-    durationMinutes: 1,
-    governanceMode: "HYBRID",
-    manualSkepticism: 1.4,
-    maxSkepticism: 4
+  return apiFetch(apiBase, "/admin/config", token, {
+    method: "POST",
+    body: JSON.stringify({
+      actor: "command-center",
+      clearTemporaryOverride: true
+    })
   });
 }
 
