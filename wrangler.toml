@@ -2,6 +2,10 @@ name = "sovereign-sigma-core"
 main = "src/index.ts"
 compatibility_date = "2025-04-01"
 
+routes = [
+  { pattern = "api.yevow.co", custom_domain = true }
+]
+
 [[durable_objects.bindings]]
 name = "TRADING_ENGINE"
 class_name = "TradingEngine"
