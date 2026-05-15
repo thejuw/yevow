@@ -10,18 +10,18 @@ script_name = "sovereign-sigma-core"
 [[d1_databases]]
 binding = "TRADING_DB"
 database_name = "TRADING_DB"
-database_id = "00000000-0000-0000-0000-000000000000"
-preview_database_id = "11111111-1111-1111-1111-111111111111"
+database_id = "64fc2511-fd03-4c76-afd8-2fa671049c10"
+preview_database_id = "4c6c2cf3-e6e3-410a-afe1-b4e611a0e34f"
 
 [[kv_namespaces]]
 binding = "CONFIG_STORE"
-id = "00000000000000000000000000000000"
-preview_id = "11111111111111111111111111111111"
+id = "49fe0b24ba1d40209e5d4fa849144dd2"
+preview_id = "01652227040f4c59ab9256d0e251ba23"
 
 [[kv_namespaces]]
 binding = "RISK_VAULT"
-id = "22222222222222222222222222222222"
-preview_id = "33333333333333333333333333333333"
+id = "275a00fff7e94e4b9e30e71b24ffb9c5"
+preview_id = "3d69fe3608404e049791ce81142dab8e"
 
 [triggers]
 crons = ["*/1 * * * *"]
