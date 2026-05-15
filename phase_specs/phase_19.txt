@@ -1,0 +1,13 @@
+### Phase 19: The "Oracle" Agent & Market Regime Detection **Objective:** Implement the 'Oracle' Agent to forecast short-term volatility and identify the current Market
+Regime
+
+(Trending,
+
+Ranging,
+
+or
+
+Volatile).
+
+--- PAGE 2 ---
+ **Technical Specifications:** 1. **Volatility Modeling:** Use a simplified GARCH(1,1) or ATR-based volatility model. 2. **Regime Classifier:** Use the ADX (Average Directional Index) to determine trend strength. 3. **Output:** "REGIME_TREND", "REGIME_RANGE", or "REGIME_CRISIS". **Requirements:** - The Oracle must update its "Regime" every 5 minutes and store it in the DO's metadata. - Adjust "Profit Targets" based on the regime: tighter in ranges, wider in trends.

@@ -1,0 +1,42 @@
+name = "sovereign-sigma-executioner"
+main = "src/ExecutionerWorker.ts"
+compatibility_date = "2025-04-01"
+
+[[durable_objects.bindings]]
+name = "TRADING_ENGINE"
+class_name = "TradingEngine"
+script_name = "sovereign-sigma-core"
+
+[[d1_databases]]
+binding = "TRADING_DB"
+database_name = "TRADING_DB"
+database_id = "00000000-0000-0000-0000-000000000000"
+preview_database_id = "11111111-1111-1111-1111-111111111111"
+
+[[kv_namespaces]]
+binding = "CONFIG_STORE"
+id = "00000000000000000000000000000000"
+preview_id = "11111111111111111111111111111111"
+
+[[kv_namespaces]]
+binding = "RISK_VAULT"
+id = "22222222222222222222222222222222"
+preview_id = "33333333333333333333333333333333"
+
+[placement]
+mode = "smart"
+
+[vars]
+EXCHANGE_BASE_URL = "https://replace-with-exchange-api"
+EXCHANGE_ORDER_ENDPOINT = "https://replace-with-exchange-order-endpoint"
+EXCHANGE_CANCEL_ENDPOINT = "https://replace-with-exchange-cancel-endpoint"
+EXCHANGE_OPEN_ORDERS_ENDPOINT = "https://replace-with-exchange-open-orders-endpoint"
+EXCHANGE_ACCOUNT_BALANCE_ENDPOINT = "https://replace-with-exchange-balance-endpoint"
+EXCHANGE_ADAPTER = "generic-json"
+SIGNATURE_ALGORITHM = "HMAC-SHA256"
+SLIPPAGE_GUARD_TICKS = "2"
+
+# Secrets are intentionally excluded from source control/config values.
+# Provision them with:
+#   wrangler secret put EXCHANGE_HMAC_SECRET -c wrangler.executioner.toml
+#   wrangler secret put EXCHANGE_ED25519_PRIVATE_KEY -c wrangler.executioner.toml

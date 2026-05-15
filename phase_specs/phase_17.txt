@@ -1,0 +1,11 @@
+### Phase 17: Historical Replay & "Shadow" Backtesting **Objective:** Create a system to "Replay" historical D1 logs through the `TradingEngine` to validate agent
+strategies
+
+without
+
+risking
+
+capital.
+ **Technical Specifications:** 1. **Input:** Fetch historical `logs` and `trades` from the D1 database. 2. **Replay Loop:** Inject these ticks into the `handleTick` method at the original recorded
+intervals.
+ 3. **Virtual Bankroll:** Use a "Shadow Bankroll" that does not trigger real exchange API calls. **Requirements:** - Implement a `/admin/replay` endpoint. - Compare "Shadow Trades" against actual historical price action to calculate theoretical PnL. **Guardrails:** - Ensure the "Kill-Switch" is forced to `ON` (real trading OFF) during a replay session.

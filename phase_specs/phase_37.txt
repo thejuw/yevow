@@ -1,0 +1,30 @@
+### Phase 37: Multi-Exchange Rate Limit Controller **Objective:** Implement a "Token Bucket" algorithm to strictly manage API rate limits for each exchange,
+preventing
+
+429
+
+errors
+
+and
+
+IP
+
+bans.
+ **Technical Specifications:** 1. **Buckets:** One bucket per API Key/Exchange pair. 2. **Refill Rate:** Based on exchange documentation (e.g., 10 orders per second). 3. **Priority Queue:** The Executioner must prioritize "Cancel" and "Hedge" orders over "New"
+orders
+
+when
+
+tokens
+
+are
+
+low.
+ **Requirements:** - Create `src/utils/RateLimiter.ts` inside the `TradingEngine` DO. - **Logic:** Use `DurableObjectState.waitUntil` to schedule the next available execution slot if
+the
+
+bucket
+
+is
+
+empty.

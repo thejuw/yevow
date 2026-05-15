@@ -1,0 +1,45 @@
+### Phase 40: Slippage Analytics & Execution Quality Metrics **Objective:** Build an analytics module that quantifies "Execution Decay"—the difference between the price
+the
+
+Croupier
+
+expected
+
+and
+
+the
+
+price
+
+the
+
+Executioner
+
+actually
+
+achieved.
+ **Technical Specifications:**
+--- PAGE 13 ---
+1. **Metric: Implementation Shortfall:** The total cost of the trade (fees + slippage + market
+movement).
+ 2. **Latency Correlation:** Determine if $X$ ms of extra latency leads to $Y\%$ more slippage. 3. **Feedback Loop:** If slippage is consistently higher than expected, the Croupier must
+automatically
+
+widen
+
+its
+
+"Execution
+
+Cost"
+
+buffer
+
+in
+
+the
+
+$EV$
+
+formula.
+ **Requirements:** - Update `src/Logger.ts` to record `Achieved_Price` vs. `Expected_Price`. - **UI:** Prepare data for a "Slippage Over Time" chart in the Admin Panel.

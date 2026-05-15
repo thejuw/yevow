@@ -1,0 +1,46 @@
+### Phase 35: The "Hedge" Agent & Automated Risk Offsetting **Objective:** Build the 'Hedge' Agent to maintain delta neutrality. If the bot takes a long position on a
+Prediction
+
+Market
+
+binary,
+
+the
+
+Hedge
+
+Agent
+
+should
+
+evaluate
+
+offsetting
+
+that
+
+risk
+
+via
+
+BTC
+
+Perpetuals
+
+or
+
+Spot.
+ **Technical Specifications:** 1. **Delta Tracking:** Calculate the "Net Delta" of the entire portfolio. 2. **Auto-Hedge:** Trigger a market order on a secondary exchange if the Net Delta exceeds a
+pre-defined
+
+threshold.
+ 3. **Correlation Logic:** Use the Lead-Lag coefficients from Phase 20 to determine the optimal
+hedging
+
+ratio.
+ **Requirements:** - Create `src/agents/HedgeAgent.ts`. - **Logic:** The Hedge Agent must prioritize "cheap" liquidity for offsets to preserve the original
+trade's
+
+$EV$.
+
+--- PAGE 11 ---

@@ -1,0 +1,210 @@
+﻿### Phase 42: Real-time Telemetry Stream & Dashboard WebSocket
+
+
+**Objective:**
+Implement a persistent WebSocket connection between the Admin Panel and the `TradingEngine` Durable Object to stream live performance data.
+
+
+**Technical Specifications:**
+1. **Payload:** Stream a "Pulse" packet every 500ms containing:
+   - `total_equity`
+   - `unrealized_pnl`
+   - `active_drawdown`
+   - `current_imbalance`
+2. **Buffering:** Ensure the Durable Object doesn't get bogged down by many UI connections; use a "Broadcaster" pattern.
+
+
+**Requirements:**
+- Update `src/index.ts` to handle the `/admin/stream` WebSocket upgrade.
+- **Visual Spec:** The data should be formatted to support high-density Sparklines and "Fintech" neon accents in the frontend.
+
+
+
+
+
+
+### Phase 43: Agent "CCTV" - Visualizing The Logical Trace
+
+
+**Objective:**
+Develop a UI-facing "Logic Feed" that displays the internal dialogue of the Oracle, Profiler, and Croupier agents as it happens.
+
+
+**Technical Specifications:**
+1. **Trace Capture:** Pull from the `agent_decisions` table and the live Telemetry Hub (Phase 10).
+2. **Format:** Present the decision as a "Terminal Style" feed: `[Oracle] Probability shift: 0.54 -> 0.61. Reason: Whale buy detected.`
+3. **Correlation:** Link the logic feed to the price chart so you can see *why* the bot entered a trade at a specific candle.
+
+
+**Requirements:**
+- Create an endpoint `/admin/trace` that returns the last 50 logical steps for each agent.
+
+
+
+
+
+
+### Phase 44: The Risk Command Center UI
+
+
+**Objective:**
+Build the interactive control panel that allows for real-time adjustments to the engine's risk profile without code changes.
+
+
+**Technical Specifications:**
+1. **Controls:**
+   - **Master Kill-Switch:** Large, high-contrast toggle for `TRADING_ENABLED`.
+   - **Leverage/Size Sliders:** Adjust `MAX_POSITION_SIZE` and `KELLY_FRACTION`.
+   - **Threshold Inputs:** Edit `MIN_EV_THRESHOLD` and `MAX_LATENCY`.
+2. **Action:** On "Save," the UI hits the `/admin/config` endpoint, which updates KV and signals the Durable Object.
+
+
+**Requirements:**
+- **Verification:** Implement a "Confirm Action" modal for high-impact changes (like the Kill-Switch).
+- **Log Change:** Ensure the `Logger` records exactly which user changed which parameter.
+
+
+
+
+
+
+
+
+### Phase 45: Performance Attribution & Alpha Analytics
+
+
+**Objective:**
+Implement an analytics module that breaks down PnL by agent contribution. Was the profit driven by the Oracle's price prediction or the Profiler's toxicity avoidance?
+
+
+**Technical Specifications:**
+1. **Attribution Logic:** Tag every trade with the "Primary Driver" (e.g., Sentiment, Volatility, or Correlation).
+2. **Metrics:** Calculate the Sharpe Ratio and Profit Factor specifically for each agent's signals.
+
+
+**Requirements:**
+- Create a `/admin/attribution` endpoint.
+- **UI Spec:** Provide data for a "Stacked Area Chart" showing cumulative PnL attributed to different agents.
+
+
+
+
+
+
+### Phase 46: Secure API & Credential Management UI
+
+
+**Objective:**
+Build a secure interface for updating Exchange API keys, Secret keys, and Kaiko credentials.
+
+
+**Technical Specifications:**
+1. **Security:** Fields must be masked (`••••••••`).
+2. **Encryption:** When a key is submitted, it is sent via a secure POST and stored directly in a protected KV namespace or signaled to the Worker's environment.
+3. **Status Check:** Include a "Test Connection" button that triggers a simple `getAccountBalance` call to verify the keys are valid.
+
+
+**Requirements:**
+- Design a "Parisian Chic" minimalist form layout.
+- Use Bodoni-style headers for the "Vault" section.
+
+
+
+
+
+
+### Phase 47: The "Time Machine" - Backtest Runner UI
+
+
+**Objective:**
+Create an interface to trigger historical replays (Phase 17) and view the results in the main dashboard as "Shadow Trades."
+
+
+**Technical Specifications:**
+1. **Input:** Select a date range from the calendar.
+2. **Mode:** Toggle between "Live" and "Replay" mode in the UI.
+3. **Comparison:** Overlay the backtest results against actual historical data to see "Model Drift."
+
+
+**Requirements:**
+- Implement a progress bar for the replay status.
+
+
+
+
+
+
+### Phase 48: External Alerting & Notification Engine
+
+
+**Objective:**
+Integrate an external notification system to alert the team of critical events (Drawdown limits reached, API disconnects, or massive $EV$ trades).
+
+
+**Technical Specifications:**
+1. **Integrations:** Telegram Bot API or Discord Webhooks.
+2. **Priority Levels:**
+   - **Low:** Daily PnL summary.
+   - **High:** Execution errors or Kill-Switch triggers.
+3. **Logic:** Use `ctx.waitUntil` to send notifications asynchronously without delaying the trade loop.
+
+
+**Requirements:**
+- Create `src/utils/Notifier.ts`.
+- **Logic:** Implement "Alert Debouncing" to prevent spamming notifications during high-frequency volatility.
+
+
+
+
+
+
+### Phase XXX
+
+
+1. Objective: The "Sovereign-Sigma" Intelligence Upgrade
+Refine and optimize the existing Cloudflare-based trading engine to transition from a static HFT bot to a 'Regime-Aware' autonomous agentic swarm. The system must prioritize Expected Value ($EV$) over directional prediction, utilizing Susquehanna-style game theory to handle market noise.
+
+
+### 2. Core Logic Upgrades: The "Self-Tuning" Brain
+
+
+#### A. The Regime-Aware Bayesian Engine
+- **Task:** Implement a dynamic 'Skepticism Multiplier' ($\kappa$) within the `OracleAgent`.
+- **Mechanism:** Integrate ADX (Trend Strength) and ATR-to-Volume (Volatility Efficiency) sensors.
+- **Dynamic Response:**
+    - **Ranging Regime (ADX < 25):** Automatically increase Evidence Variance ($Var_{adjusted} = Var_{base} \times \kappa$). The engine must become 'stubborn,' discounting incoming order flow as noise to avoid whip-saws.
+    - **Trending Regime (ADX > 25):** Loosen constraints. Reduce $\kappa$ toward 1.0 to increase sensitivity to price breakouts and momentum signals.
+
+
+#### B. The "Sovereign Governance" Model
+- **Task:** Update the `ConfigManager` and `TradingEngine` to support three operational modes:
+    1. **MANUAL:** Fixed skepticism settings defined via Admin UI.
+    2. **AUTONOMOUS:** Full agentic control over tightening parameters.
+    3. **HYBRID (Default):** Autonomous self-tuning with a manual 'Hard Ceiling' on skepticism to prevent the bot from becoming too passive during high-volatility events.
+
+
+#### C. Informed Flow & Adverse Selection
+- **Task:** Tighten the link between the `Profiler` (VPIN) and the `Croupier` ($EV$).
+- **Requirement:** If VPIN exceeds 0.7, the Croupier must apply an 'Information Premium' to the spread. This 'Adverse Selection' cost must be subtracted from the $EV$ calculation before trade authorization.
+
+
+### 3. Technical Refinements: Edge Performance
+
+
+#### A. Microstructure Efficiency
+- **Order Book:** Implement in-place state updates for the L2 book within the Durable Object to minimize garbage collection (GC) pauses.
+- **Latency Guard:** Implement a 'Stale-Data Kill Switch.' If `total_latency` (Kaiko-to-Brain) exceeds 250ms, all $EV$ calculations must be invalidated and current quotes pulled.
+
+
+#### B. The "Parisian Chic" Telemetry Hub
+- **UI Data:** Ensure the telemetry stream (Phase 42) includes the current `RegimeCoefficient` ($\kappa$) and the `AgentLogicTrace`.
+- **Aesthetic:** All data outputs for the UI must be optimized for high-density rendering (Glassmorphism/Bodoni typography).
+
+
+### 4. Mathematical Guardrails
+- Use **Welford’s Online Algorithm** for all rolling mean/variance calculations to maintain $O(1)$ space complexity.
+- Ensure **Cromwell’s Rule** is applied: Probabilities ($P_{win}/P_{loss}$) must never reach 0.0 or 1.0 to keep the Bayesian engines operational.
+
+
+### 5. Deployment Directive
+Validate all changes against the 'Sovereign-Sigma' type definitions. Perform a shadow execution in the Replay Engine (Phase 17) before enabling live Mainnet execution.

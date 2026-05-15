@@ -1,0 +1,72 @@
+### Phase 28: Avellaneda-Stoikov Market Making Engine **Objective:** Implement an institutional-grade Market Making quoting engine based on the
+Avellaneda-Stoikov
+
+model,
+
+adapted
+
+for
+
+crypto
+
+microstructure.
+ **Technical Specifications:**
+--- PAGE 7 ---
+1. **Reservation Price Calculation:** $$r(s, t) = s - q \cdot \gamma \cdot \sigma^2 \cdot (T - t)$$ Where $s$ is mid-price, $q$ is inventory, $\gamma$ is risk aversion, and $\sigma$ is volatility. 2. **Optimal Spread Calculation:** Calculate the optimal half-spread based on the order arrival
+rate
+
+and
+
+volatility.
+ **Requirements for the AI Agent:** - Create an `AMMEngine` module within the `CroupierAgent`. - **Logic:** Continuously recalculate the Reservation Price and Optimal Spread based on tick
+updates.
+ - **Output:** Generate `POST_QUOTE` signals containing an array of limit orders (Bids and
+Asks)
+
+to
+
+maintain
+
+on
+
+the
+
+exchange.
+ **Professional Guardrails:** - **Update Frequency Throttling:** Do not send new quote updates to the exchange on every
+single
+
+tick
+
+if
+
+the
+
+price
+
+change
+
+is
+
+negligible.
+
+Implement
+
+a
+
+`MIN_TICK_CHANGE`
+
+threshold
+
+to
+
+prevent
+
+hitting
+
+exchange
+
+API
+
+rate
+
+limits.

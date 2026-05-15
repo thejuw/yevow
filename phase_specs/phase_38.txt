@@ -1,0 +1,42 @@
+### Phase 38: Cluster Failover & Redundant Data Ingest **Objective:**
+--- PAGE 12 ---
+Enhance the `IngestWorker` to support redundant data clusters. If the primary stream exhibits
+high
+
+latency
+
+or
+
+packet
+
+loss,
+
+the
+
+system
+
+must
+
+"Hot-Swap"
+
+to
+
+a
+
+secondary
+
+cluster.
+ **Technical Specifications:** 1. **Dual-Streaming:** (Optional/Premium) Maintain two concurrent connections and use the
+first
+
+one
+
+to
+
+arrive
+
+(Race-to-the-Edge).
+ 2. **Health Score:** Calculate a rolling "Health Score" for each cluster based on heartbeat
+latency.
+ **Requirements:** - Update `IngestWorker.ts` to manage a `ClusterPool`. - **Logic:** Only swap clusters if the secondary's health is significantly better to avoid
+"Flapping."

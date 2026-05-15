@@ -1,0 +1,30 @@
+### Phase 18: The Sentiment Agent & Real-Time News Processing **Objective:** Integrate Cloudflare Workers AI (Llama 3 or Mistral) to perform sentiment analysis on real-time
+news
+
+headlines
+
+and
+
+social
+
+feeds.
+ **Technical Specifications:** 1. **Model:** Use `@cf/meta/llama-3-8b-instruct` on Workers AI. 2. **Input:** Headlines from Kaiko or external RSS/Twitter feeds. 3. **Sentiment Score:** Convert text into a score from -1.0 (Very Bearish) to +1.0 (Very Bullish). **Requirements:** - Implement `src/agents/SentimentAgent.ts`. - **Logic:** This agent provides a "Bias" to the Croupier. If Sentiment is -0.9, the Croupier
+requires
+
+a
+
+much
+
+higher
+
+$EV$
+
+to
+
+take
+
+a
+
+"Long"
+
+position.

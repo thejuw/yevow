@@ -1,0 +1,54 @@
+### Phase 33: Fill-Or-Kill (FOK) and Post-Only Execution Logic **Objective:** Implement execution constraints that prevent the bot from being "slipped" during volatile periods
+or
+
+paying
+
+unnecessary
+
+taker
+
+fees.
+ **Technical Specifications:** 1. **Post-Only:** Ensure orders are only added to the book as liquidity providers (making, not
+taking).
+ 2. **FOK/IOC:** Implement Fill-Or-Kill (the whole order fills now or none) and
+Immediate-Or-Cancel
+
+logic.
+ 3. **Slippage Protection:** Reject execution if the current best bid/ask has drifted more than
+$N$
+
+ticks
+
+from
+
+the
+
+Croupier's
+
+intended
+
+price.
+ **Requirements:**
+--- PAGE 10 ---
+- Update `ExecutionerWorker.ts` to include these flags in the payload. - **Logic:** If a `POST_ONLY` order is rejected because it would have crossed the book, signal
+the
+
+Croupier
+
+to
+
+recalculate
+
+the
+
+$EV$
+
+based
+
+on
+
+the
+
+new
+
+mid-price.

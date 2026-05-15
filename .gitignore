@@ -1,0 +1,11 @@
+node_modules/
+.wrangler/
+.codex_tools/
+__pycache__/
+*.pyc
+dist/
+*.log
+*.tsbuildinfo
+web/.next/
+web/out/
+web/.env*.local

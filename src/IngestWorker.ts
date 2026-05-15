@@ -1,0 +1,2167 @@
+import { Logger } from "./Logger";
+import { Notifier } from "./utils/Notifier";
+import type {
+  Env,
+  ExchangeStreamConfig,
+  ExchangeStreamHealth,
+  IngestHealth,
+  JsonRecord,
+  KaikoMarketUpdate,
+  KaikoStreamEnvelope,
+  MarketDataSource,
+  MarketTick,
+  OrderBookSnapshot,
+  OrderBookSnapshotLevel,
+  OrderBookResetRequest
+} from "./types";
+
+const SINGLETON_ENGINE_NAME = "sovereign-sigma:singleton:trading-engine:v1";
+const DEFAULT_AUTH_HEADER = "X-Api-Key";
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000;
+const DEFAULT_WATCHDOG_TIMEOUT_MS = 5_000;
+const DEFAULT_BACKOFF_BASE_MS = 1_000;
+const DEFAULT_MAX_BACKOFF_MS = 30_000;
+const SNAPSHOT_SEQUENCE_FALLBACK_SEED = "snapshot";
+const DEFAULT_SOURCE_WEIGHT = 1;
+const DEFAULT_CLOCK_SYNC_ALPHA = 0.1;
+const DEFAULT_CLOCK_SYNC_MAX_OFFSET_MS = 10_000;
+
+type ResolvedExchangeStreamConfig = Required<
+  Pick<
+    ExchangeStreamConfig,
+    "id" | "source" | "source_exchange" | "streamUrl" | "authHeader" | "weight"
+  >
+> &
+  Pick<
+    ExchangeStreamConfig,
+    | "clusterUrls"
+    | "snapshotUrl"
+    | "subscription"
+    | "apiKeyEnv"
+    | "instrumentCode"
+    | "exchangeCode"
+  > & {
+    heartbeatIntervalMs: number;
+    watchdogTimeoutMs: number;
+    maxBackoffMs: number;
+  };
+
+interface EngineTickResponse {
+  accepted?: boolean;
+  status?: string;
+  reason?: string;
+}
+
+interface NewsFeedConfig {
+  url: string;
+  source?: string;
+}
+
+interface NewsItem {
+  id: string;
+  headline: string;
+  source: string;
+  url: string | null;
+  publishedAt: string | null;
+}
+
+let activeStreams = new Map<string, ExchangeStreamController>();
+const seenNewsItems = new Map<string, number>();
+
+export default {
+  async fetch(
+    request: Request,
+    env: Env,
+    ctx: ExecutionContext
+  ): Promise<Response> {
+    const url = new URL(request.url);
+    const logger = new Logger(
+      env.TRADING_DB,
+      (promise) => ctx.waitUntil(promise),
+      "IngestWorker"
+    );
+
+    if (request.method === "GET" && url.pathname === "/health") {
+      return json(getHealth());
+    }
+
+    if (request.method === "POST" && url.pathname === "/stream/start") {
+      if (!isAuthorizedControlRequest(request, env)) {
+        logger.warn("INGEST_CONTROL_REJECTED", "Rejected stream start request");
+        return json({ ok: false, error: "Unauthorized" }, 401);
+      }
+
+      ensureStreams(env, ctx, logger);
+      return json({ ok: true, health: getHealth() });
+    }
+
+    if (request.method === "POST" && url.pathname === "/stream/stop") {
+      if (!isAuthorizedControlRequest(request, env)) {
+        logger.warn("INGEST_CONTROL_REJECTED", "Rejected stream stop request");
+        return json({ ok: false, error: "Unauthorized" }, 401);
+      }
+
+      stopAllStreams("CONTROL_STOP");
+      return json({ ok: true, health: getHealth() });
+    }
+
+    return json({
+      ok: true,
+      service: "sovereign-sigma-ingest",
+      routes: ["GET /health", "POST /stream/start", "POST /stream/stop"]
+    });
+  },
+
+  async scheduled(
+    _controller: ScheduledController,
+    env: Env,
+    ctx: ExecutionContext
+  ): Promise<void> {
+    const logger = new Logger(
+      env.TRADING_DB,
+      (promise) => ctx.waitUntil(promise),
+      "IngestWorker"
+    );
+
+    ensureStreams(env, ctx, logger);
+    ctx.waitUntil(ingestNewsFeeds(env, logger));
+  }
+} satisfies ExportedHandler<Env>;
+
+export function normalizeKaikoData(
+  raw: unknown,
+  config: Partial<ResolvedExchangeStreamConfig> = {},
+  clockSync = new ClockSyncTracker()
+): MarketTick {
+  const update = unwrapKaikoMarketUpdate(raw);
+  const instrumentCode = requireString(update.code, "code").toLowerCase();
+  const exchangeCode = (
+    update.exchange ??
+    config.exchangeCode ??
+    config.source_exchange
+  )?.toLowerCase();
+
+  if (!exchangeCode) {
+    throw new Error("MISSING_EXCHANGE");
+  }
+
+  const { baseAsset, quoteAsset } = splitInstrumentCode(instrumentCode);
+  const price = requireFiniteNumber(update.price, "price");
+  const size = requireFiniteNumber(update.amount, "amount");
+  const receivedAt = new Date().toISOString();
+  const providerTimestamp = coerceTimestamp(update.tsEvent);
+  const rawExchangeTimestamp =
+    coerceTimestamp(update.tsExchange) ??
+    coerceTimestamp(update.tsCollection) ??
+    providerTimestamp ??
+    receivedAt;
+  const synchronized = clockSync.observe(rawExchangeTimestamp, receivedAt);
+  const updateType = normalizeString(update.updateType);
+  const side = normalizeSide(update.side, updateType);
+
+  return {
+    schemaVersion: "universal-tick.v1",
+    source: config.source ?? "KAIKO",
+    source_exchange: normalizeSourceExchange(
+      config.source_exchange ?? exchangeCode,
+      exchangeCode
+    ),
+    transport: "websocket",
+    exchangeCode,
+    instrumentCode,
+    baseAsset,
+    quoteAsset,
+    price,
+    size,
+    side,
+    sequence: coerceSequence(update.sequenceId, update.additionalProperties),
+    providerTimestamp: providerTimestamp ?? rawExchangeTimestamp,
+    kaikoTimestamp: providerTimestamp ?? rawExchangeTimestamp,
+    exchangeTimestamp: rawExchangeTimestamp,
+    synchronizedExchangeTimestamp: synchronized.timestamp,
+    clockOffsetMs: synchronized.offsetMs,
+    receivedAt,
+    sourceWeight: normalizeWeight(config.weight),
+    bestBid: updateType === "BEST_BID" ? price : undefined,
+    bestAsk: updateType === "BEST_ASK" ? price : undefined,
+    raw: sanitizeKaikoMetadata(update)
+  };
+}
+
+export function normalizeKaikoSnapshot(
+  raw: unknown,
+  env: Env,
+  receivedAt: string = new Date().toISOString(),
+  config?: Partial<ResolvedExchangeStreamConfig>
+): OrderBookSnapshot {
+  const snapshot = unwrapKaikoSnapshot(raw);
+  const subscription =
+    typeof config?.subscription === "string"
+      ? config.subscription
+      : config?.subscription
+        ? JSON.stringify(config.subscription)
+        : env.KAIKO_STREAM_SUBSCRIPTION;
+  const instrumentCode = (
+    readStringField(snapshot, ["code", "instrumentCode", "instrument_code", "instrument"]) ??
+    config?.instrumentCode ??
+    env.KAIKO_SNAPSHOT_INSTRUMENT ??
+    inferSubscriptionField(subscription, "code")
+  )?.toLowerCase();
+  const exchangeCode = (
+    readStringField(snapshot, ["exchange", "exchangeCode", "exchange_code"]) ??
+    config?.exchangeCode ??
+    config?.source_exchange ??
+    env.KAIKO_SNAPSHOT_EXCHANGE ??
+    inferSubscriptionField(subscription, "exchange")
+  )?.toLowerCase();
+
+  if (!instrumentCode) {
+    throw new Error("MISSING_SNAPSHOT_INSTRUMENT");
+  }
+
+  if (!exchangeCode) {
+    throw new Error("MISSING_SNAPSHOT_EXCHANGE");
+  }
+
+  const exchangeTimestamp =
+    coerceTimestamp(readField(snapshot, ["tsExchange", "ts_exchange", "timestamp"])) ??
+    coerceTimestamp(readField(snapshot, ["tsEvent", "ts_event", "tsCollection"])) ??
+    receivedAt;
+
+  return {
+    schemaVersion: "order-book.snapshot.v1",
+    source: config?.source ?? "KAIKO",
+    source_exchange: normalizeSourceExchange(config?.source_exchange ?? exchangeCode, exchangeCode),
+    exchangeCode,
+    instrumentCode,
+    marketKey: buildMarketKey(config?.source_exchange ?? exchangeCode, instrumentCode),
+    sourceWeight: normalizeWeight(config?.weight),
+    sequence: coerceSnapshotSequence(snapshot),
+    exchangeTimestamp,
+    receivedAt,
+    bids: normalizeSnapshotLevels(readSnapshotLevels(snapshot, "bid"), receivedAt),
+    asks: normalizeSnapshotLevels(readSnapshotLevels(snapshot, "ask"), receivedAt)
+  };
+}
+
+function ensureStreams(
+  env: Env,
+  ctx: ExecutionContext,
+  logger: Logger
+): void {
+  const configs = loadStreamConfigs(env);
+  const configuredIds = new Set(configs.map((config) => config.id));
+
+  for (const [streamId, stream] of activeStreams) {
+    if (!configuredIds.has(streamId)) {
+      stream.stop("STREAM_CONFIG_REMOVED");
+      activeStreams.delete(streamId);
+    }
+  }
+
+  for (const config of configs) {
+    const active = activeStreams.get(config.id);
+
+    if (active?.isRunning()) {
+      continue;
+    }
+
+    const controller = new ExchangeStreamController(env, logger, config);
+    activeStreams.set(config.id, controller);
+    ctx.waitUntil(controller.run());
+  }
+}
+
+function stopAllStreams(reason: string): void {
+  for (const stream of activeStreams.values()) {
+    stream.stop(reason);
+  }
+
+  activeStreams = new Map<string, ExchangeStreamController>();
+}
+
+async function ingestNewsFeeds(env: Env, logger: Logger): Promise<void> {
+  const feeds = loadNewsFeedConfigs(env);
+
+  if (feeds.length === 0) {
+    return;
+  }
+
+  pruneSeenNewsItems();
+
+  for (const feed of feeds) {
+    try {
+      const response = await fetch(feed.url, { headers: { accept: "application/rss+xml, application/xml, text/xml" } });
+
+      if (!response.ok) {
+        logger.warn("NEWS_FEED_FETCH_FAILED", "News feed returned non-2xx status", {
+          source: feed.source ?? feed.url,
+          url: feed.url,
+          status: response.status
+        });
+        continue;
+      }
+
+      const items = parseRssItems(await response.text(), feed);
+
+      for (const item of items) {
+        if (seenNewsItems.has(item.id)) {
+          continue;
+        }
+
+        seenNewsItems.set(item.id, Date.now());
+        await forwardNewsItem(env, item);
+        logger.info("NEWS_ITEM_FORWARDED", "Forwarded attributed news item to sentiment agent", {
+          source: item.source,
+          headline: item.headline,
+          url: item.url,
+          publishedAt: item.publishedAt
+        });
+      }
+    } catch (error) {
+      logger.warn("NEWS_FEED_INGEST_FAILED", "Failed to ingest configured news feed", {
+        source: feed.source ?? feed.url,
+        url: feed.url,
+        error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
+      });
+    }
+  }
+}
+
+async function forwardNewsItem(env: Env, item: NewsItem): Promise<void> {
+  const id = env.TRADING_ENGINE.idFromName(SINGLETON_ENGINE_NAME);
+  const engine = env.TRADING_ENGINE.get(id);
+
+  await engine.fetch(
+    new Request("https://trading-engine.internal/news/sentiment", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-source": "sovereign-sigma-ingest-news"
+      },
+      body: JSON.stringify(item)
+    })
+  );
+}
+
+function loadNewsFeedConfigs(env: Env): NewsFeedConfig[] {
+  const parsed = env.NEWS_FEEDS ? parseJson<Array<string | NewsFeedConfig>>(env.NEWS_FEEDS) : null;
+
+  if (!Array.isArray(parsed)) {
+    return [];
+  }
+
+  return parsed.flatMap((entry) => {
+    if (typeof entry === "string" && entry.startsWith("http")) {
+      return [{ url: entry }];
+    }
+
+    if (isRecord(entry) && typeof entry.url === "string" && entry.url.startsWith("http")) {
+      return [{ url: entry.url, source: typeof entry.source === "string" ? entry.source : undefined }];
+    }
+
+    return [];
+  });
+}
+
+function parseRssItems(xml: string, feed: NewsFeedConfig): NewsItem[] {
+  return [...xml.matchAll(/<item\b[\s\S]*?<\/item>/gi)].slice(0, 25).flatMap((match) => {
+    const itemXml = match[0];
+    const headline = decodeXml(readXmlTag(itemXml, "title") ?? "");
+
+    if (!headline) {
+      return [];
+    }
+
+    const url = decodeXml(readXmlTag(itemXml, "link") ?? "") || null;
+    const guid = decodeXml(readXmlTag(itemXml, "guid") ?? "") || url || headline;
+    const publishedAt = coerceTimestamp(readXmlTag(itemXml, "pubDate")) ?? null;
+
+    return [{
+      id: hashNewsId(`${feed.url}:${guid}`),
+      headline,
+      source: feed.source ?? hostnameOf(feed.url),
+      url,
+      publishedAt
+    }];
+  });
+}
+
+function readXmlTag(xml: string, tag: string): string | null {
+  const match = xml.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "i"));
+  return match?.[1]?.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1").trim() ?? null;
+}
+
+function decodeXml(value: string): string {
+  return value
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .trim();
+}
+
+function hashNewsId(value: string): string {
+  return `news:${hashSequenceId(value)}`;
+}
+
+function pruneSeenNewsItems(): void {
+  const cutoff = Date.now() - 24 * 60 * 60 * 1_000;
+
+  for (const [id, observedAtMs] of seenNewsItems.entries()) {
+    if (observedAtMs < cutoff) {
+      seenNewsItems.delete(id);
+    }
+  }
+}
+
+class ExchangeStreamController {
+  private socket: WebSocket | null = null;
+  private snapshotSync: Promise<void> | null = null;
+  private readonly clockSync: ClockSyncTracker;
+  private readonly clusterPool: ClusterPool;
+  private readonly notifier: Notifier;
+  private syntheticSequence = 0;
+  private status: IngestHealth["status"] = "IDLE";
+  private stopped = false;
+  private connectionId: string | null = null;
+  private attempts = 0;
+  private backoffCounter = 0;
+  private messagesReceived = 0;
+  private ticksForwarded = 0;
+  private ticksDropped = 0;
+  private lastMessageAt: string | null = null;
+  private lastForwardAt: string | null = null;
+  private lastDisconnectAt: string | null = null;
+  private blackoutStartedAt: string | null = null;
+  private lastRecoveredAt: string | null = null;
+  private lastRecoveryDurationMs: number | null = null;
+  private lastError: string | null = null;
+
+  constructor(
+    private readonly env: Env,
+    private readonly logger: Logger,
+    private readonly config: ResolvedExchangeStreamConfig
+  ) {
+    this.clockSync = new ClockSyncTracker(
+      readNumber(env.CLOCK_SYNC_ALPHA, DEFAULT_CLOCK_SYNC_ALPHA),
+      readNumber(env.CLOCK_SYNC_MAX_OFFSET_MS, DEFAULT_CLOCK_SYNC_MAX_OFFSET_MS)
+    );
+    this.clusterPool = new ClusterPool([config.streamUrl, ...(config.clusterUrls ?? [])]);
+    this.notifier = new Notifier(env, (promise) => {
+      void promise;
+    });
+  }
+
+  isRunning(): boolean {
+    return !this.stopped && this.status !== "IDLE" && this.status !== "STOPPED";
+  }
+
+  snapshot(): ExchangeStreamHealth {
+    return {
+      ok: this.status === "CONNECTED",
+      streamId: this.config.id,
+      source: this.config.source,
+      source_exchange: this.config.source_exchange,
+      streamHost: hostnameOf(this.clusterPool.activeUrl()),
+      activeClusterUrl: this.clusterPool.activeUrl(),
+      heartbeatLatencyMs: this.clusterPool.activeHeartbeatLatencyMs(),
+      packetLossPct: this.packetLossPct(),
+      sourceWeight: this.config.weight,
+      clockOffsetMs: this.clockSync.currentOffsetMs(),
+      status: this.status,
+      connectionId: this.connectionId,
+      attempts: this.attempts,
+      backoffCounter: this.backoffCounter,
+      messagesReceived: this.messagesReceived,
+      ticksForwarded: this.ticksForwarded,
+      ticksDropped: this.ticksDropped,
+      lastMessageAt: this.lastMessageAt,
+      lastForwardAt: this.lastForwardAt,
+      lastDisconnectAt: this.lastDisconnectAt,
+      blackoutStartedAt: this.blackoutStartedAt,
+      lastRecoveredAt: this.lastRecoveredAt,
+      lastRecoveryDurationMs: this.lastRecoveryDurationMs,
+      lastError: this.lastError
+    };
+  }
+
+  private packetLossPct(): number {
+    const totalPackets = this.messagesReceived + this.ticksDropped;
+    return totalPackets > 0 ? Math.round((this.ticksDropped / totalPackets) * 10_000) / 100 : 0;
+  }
+
+  stop(reason: string): void {
+    this.stopped = true;
+    this.status = "STOPPED";
+    closeSocket(this.socket, 1000, reason);
+    this.socket = null;
+  }
+
+  async run(): Promise<void> {
+    assertIngestEnv(this.env, this.config);
+    await this.connectWithRetry();
+  }
+
+  private async connectWithRetry(): Promise<void> {
+    while (!this.stopped) {
+      this.attempts += 1;
+      this.status = "CONNECTING";
+      this.connectionId = crypto.randomUUID();
+
+      try {
+        await this.connectOnce();
+      } catch (error) {
+        this.lastError = error instanceof Error ? error.message : "UNKNOWN_ERROR";
+        this.startBlackout();
+        this.logger.error("STREAM_ERROR", "Kaiko stream connection failed", {
+          streamId: this.config.id,
+          source: this.config.source,
+          source_exchange: this.config.source_exchange,
+          connectionId: this.connectionId,
+          attempts: this.attempts,
+          backoffCounter: this.backoffCounter,
+          error: this.lastError
+        });
+      }
+
+      if (this.stopped) {
+        return;
+      }
+
+      this.status = "BACKING_OFF";
+      this.backoffCounter += 1;
+      const maxBackoffMs = Math.min(
+        this.config.maxBackoffMs,
+        DEFAULT_MAX_BACKOFF_MS
+      );
+      const backoffMs = calculateBackoffMs(
+        this.backoffCounter,
+        DEFAULT_BACKOFF_BASE_MS,
+        maxBackoffMs
+      );
+
+      this.logger.warn(
+        "STREAM_RECONNECT_ATTEMPT",
+        "Scheduling Kaiko stream reconnect",
+        {
+          streamId: this.config.id,
+          source: this.config.source,
+          source_exchange: this.config.source_exchange,
+          connectionId: this.connectionId,
+          attempts: this.attempts,
+          backoffCounter: this.backoffCounter,
+          backoffMs,
+          blackoutDurationMs: this.currentBlackoutDurationMs(),
+          maxBackoffMs
+        }
+      );
+      this.notifier.notify({
+        priority: "HIGH",
+        title: "Sovereign-Sigma stream reconnect",
+        message: `${this.config.source_exchange} reconnect attempt ${this.attempts}; blackout ${this.currentBlackoutDurationMs()}ms, retrying in ${backoffMs}ms.`,
+        dedupeKey: `stream-reconnect:${this.config.id}`,
+        metadata: {
+          streamId: this.config.id,
+          source: this.config.source,
+          source_exchange: this.config.source_exchange,
+          attempts: this.attempts,
+          backoffMs,
+          blackoutDurationMs: this.currentBlackoutDurationMs()
+        }
+      });
+
+      await sleep(backoffMs);
+    }
+  }
+
+  private async connectOnce(): Promise<void> {
+    const streamUrl = this.clusterPool.activeUrl();
+    const authHeader = this.config.authHeader;
+    const apiKey = this.config.apiKeyEnv
+      ? readEnvSecret(this.env, this.config.apiKeyEnv)
+      : null;
+    const heartbeatIntervalMs = this.config.heartbeatIntervalMs;
+    const watchdogTimeoutMs = this.config.watchdogTimeoutMs;
+    const pingIntervalMs = Math.min(
+      heartbeatIntervalMs,
+      Math.max(1_000, Math.floor(watchdogTimeoutMs / 2))
+    );
+
+    const headers: Record<string, string> = { Upgrade: "websocket" };
+
+    if (apiKey) {
+      headers[authHeader] = apiKey;
+    }
+
+    const response = await fetch(streamUrl, { headers });
+
+    if (!response.webSocket) {
+      this.clusterPool.recordFailure(streamUrl);
+      throw new Error(`${this.config.source}_WS_UPGRADE_FAILED_${response.status}`);
+    }
+
+    const socket = response.webSocket;
+    socket.accept();
+
+    this.socket = socket;
+    this.status = "CONNECTED";
+    this.backoffCounter = 0;
+    const recoveredAt = new Date().toISOString();
+    const blackoutDurationMs = this.currentBlackoutDurationMs(recoveredAt);
+    this.lastMessageAt = recoveredAt;
+    this.lastRecoveredAt = recoveredAt;
+    this.lastRecoveryDurationMs = blackoutDurationMs;
+    this.lastError = null;
+
+    this.logger.info("STREAM_CONNECT", "Market stream connected", {
+      streamId: this.config.id,
+      source: this.config.source,
+      source_exchange: this.config.source_exchange,
+      sourceWeight: this.config.weight,
+      connectionId: this.connectionId,
+      streamHost: new URL(streamUrl).host,
+      watchdogTimeoutMs,
+      pingIntervalMs
+    });
+    this.clusterPool.recordHeartbeat(streamUrl, 0);
+
+    try {
+      await this.resetEngineBook(blackoutDurationMs, recoveredAt);
+      if (this.config.snapshotUrl) {
+        await this.syncEngineSnapshot("STREAM_CONNECTED", recoveredAt);
+      }
+    } catch (error) {
+      closeSocket(socket, 1011, "SNAPSHOT_SYNC_FAILED");
+      this.markDisconnected("SNAPSHOT_SYNC_FAILED");
+      throw error;
+    }
+
+    this.blackoutStartedAt = null;
+    this.sendSubscription(socket);
+
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      let watchdog: ReturnType<typeof setTimeout> | null = null;
+      const heartbeat = setInterval(() => {
+        try {
+          socket.send(JSON.stringify({ type: "ping", ts: new Date().toISOString() }));
+        } catch {
+          fail("PING_SEND_FAILED");
+        }
+      }, pingIntervalMs);
+
+      const cleanup = () => {
+        clearInterval(heartbeat);
+        if (watchdog !== null) {
+          clearTimeout(watchdog);
+          watchdog = null;
+        }
+      };
+
+      const resetWatchdog = () => {
+        if (watchdog !== null) {
+          clearTimeout(watchdog);
+        }
+
+        watchdog = setTimeout(() => {
+          const staleForMs = this.lastMessageAt
+            ? Date.now() - Date.parse(this.lastMessageAt)
+            : Number.POSITIVE_INFINITY;
+
+          this.logger.warn("STREAM_DISCONNECT", "Market stream watchdog timeout", {
+            streamId: this.config.id,
+            source: this.config.source,
+            source_exchange: this.config.source_exchange,
+            connectionId: this.connectionId,
+            staleForMs,
+            watchdogTimeoutMs
+          });
+
+          fail("WATCHDOG_TIMEOUT");
+        }, watchdogTimeoutMs);
+      };
+
+      const finish = (error?: Error) => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        cleanup();
+
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve();
+      };
+
+      const fail = (reason: string) => {
+        const previousClusterUrl = this.clusterPool.activeUrl();
+        this.clusterPool.recordFailure(streamUrl);
+        const nextClusterUrl = this.clusterPool.activeUrl();
+        if (nextClusterUrl !== previousClusterUrl) {
+          this.logger.warn("STREAM_CLUSTER_HOT_SWAP", "Market stream cluster hot-swapped after health degradation", {
+            streamId: this.config.id,
+            source: this.config.source,
+            source_exchange: this.config.source_exchange,
+            previousClusterUrl,
+            nextClusterUrl,
+            reason
+          });
+        }
+        this.markDisconnected(reason);
+        closeSocket(socket, 1011, reason);
+        finish(new Error(reason));
+      };
+
+      socket.addEventListener("message", (event) => {
+        resetWatchdog();
+        void this.handleMessage(event.data);
+      });
+
+      socket.addEventListener("close", (event) => {
+        if (settled) {
+          return;
+        }
+
+        this.markDisconnected(`CLOSE_${event.code}`);
+        finish();
+      });
+
+      socket.addEventListener("error", () => {
+        if (settled) {
+          return;
+        }
+
+        this.markDisconnected("SOCKET_ERROR");
+        finish(new Error("SOCKET_ERROR"));
+      });
+
+      resetWatchdog();
+    });
+  }
+
+  private sendSubscription(socket: WebSocket): void {
+    if (!this.config.subscription) {
+      return;
+    }
+
+    socket.send(
+      typeof this.config.subscription === "string"
+        ? this.config.subscription
+        : JSON.stringify(this.config.subscription)
+    );
+  }
+
+  private async handleMessage(data: string | ArrayBuffer): Promise<void> {
+    this.messagesReceived += 1;
+    this.lastMessageAt = new Date().toISOString();
+
+    const text = typeof data === "string" ? data : new TextDecoder().decode(data);
+    const raw = parseJson<unknown>(text);
+
+    if (!raw) {
+      this.ticksDropped += 1;
+      this.logger.warn("STREAM_PACKET_DROPPED", "Dropped malformed market packet", {
+        streamId: this.config.id,
+        source: this.config.source,
+        source_exchange: this.config.source_exchange,
+        connectionId: this.connectionId,
+        reason: "INVALID_JSON"
+      });
+      return;
+    }
+
+    if (isPong(raw)) {
+      this.clusterPool.recordHeartbeat(
+        this.clusterPool.activeUrl(),
+        extractHeartbeatLatencyMs(raw)
+      );
+      return;
+    }
+
+    const events = extractMarketEvents(raw, this.config.source);
+
+    for (const event of events) {
+      try {
+        const ticks = normalizeMarketData(event, this.config, this.clockSync);
+
+        for (const tick of ticks) {
+          await this.forwardTick(this.sequenceTick(tick));
+        }
+      } catch (error) {
+        this.ticksDropped += 1;
+        this.logger.warn("STREAM_PACKET_DROPPED", "Dropped unnormalizable market packet", {
+          streamId: this.config.id,
+          source: this.config.source,
+          source_exchange: this.config.source_exchange,
+          connectionId: this.connectionId,
+          reason: error instanceof Error ? error.message : "UNKNOWN_ERROR"
+        });
+      }
+    }
+  }
+
+  private async syncEngineSnapshot(reason: string, observedAt: string): Promise<void> {
+    if (this.snapshotSync) {
+      await this.snapshotSync;
+      return;
+    }
+
+    this.snapshotSync = (async () => {
+      const snapshot = await this.fetchSnapshot(observedAt);
+      await this.forwardSnapshot(snapshot);
+      this.logger.info("ORDER_BOOK_SNAPSHOT_SYNCED", "Market REST snapshot applied", {
+        streamId: this.config.id,
+        source: this.config.source,
+        source_exchange: this.config.source_exchange,
+        connectionId: this.connectionId,
+        reason,
+        exchangeCode: snapshot.exchangeCode,
+        instrumentCode: snapshot.instrumentCode,
+        sequence: snapshot.sequence,
+        bidLevels: snapshot.bids.length,
+        askLevels: snapshot.asks.length
+      });
+    })();
+
+    try {
+      await this.snapshotSync;
+    } finally {
+      this.snapshotSync = null;
+    }
+  }
+
+  private sequenceTick(tick: MarketTick): MarketTick {
+    if (tick.source === "KAIKO") {
+      return tick;
+    }
+
+    this.syntheticSequence += 1;
+
+    return {
+      ...tick,
+      sequence: this.syntheticSequence,
+      raw: {
+        ...(tick.raw ?? {}),
+        providerSequence: String(tick.sequence),
+        sequenceMode: "ingest-local"
+      }
+    };
+  }
+
+  private async fetchSnapshot(receivedAt: string): Promise<OrderBookSnapshot> {
+    const snapshotUrl = requireString(this.config.snapshotUrl, "SNAPSHOT_URL");
+    const authHeader =
+      this.env.KAIKO_SNAPSHOT_AUTH_HEADER ?? this.config.authHeader ?? DEFAULT_AUTH_HEADER;
+    const apiKey = this.config.apiKeyEnv
+      ? readEnvSecret(this.env, this.config.apiKeyEnv)
+      : null;
+    const headers: Record<string, string> = { accept: "application/json" };
+
+    if (apiKey) {
+      headers[authHeader] = apiKey;
+    }
+
+    const response = await fetch(snapshotUrl, { headers });
+
+    if (!response.ok) {
+      throw new Error(`${this.config.source}_SNAPSHOT_FETCH_FAILED_${response.status}`);
+    }
+
+    return normalizeKaikoSnapshot(
+      await response.json<unknown>(),
+      this.env,
+      receivedAt,
+      this.config
+    );
+  }
+
+  private async forwardSnapshot(snapshot: OrderBookSnapshot): Promise<void> {
+    const id = this.env.TRADING_ENGINE.idFromName(SINGLETON_ENGINE_NAME);
+    const engine = this.env.TRADING_ENGINE.get(id);
+    const response = await engine.fetch(
+      new Request("https://trading-engine.internal/book/snapshot", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-source": "sovereign-sigma-ingest"
+        },
+        body: JSON.stringify(snapshot)
+      })
+    );
+
+    if (!response.ok) {
+      throw new Error(`ENGINE_SNAPSHOT_APPLY_FAILED_${response.status}`);
+    }
+  }
+
+  private async forwardTick(tick: MarketTick): Promise<void> {
+    const id = this.env.TRADING_ENGINE.idFromName(SINGLETON_ENGINE_NAME);
+    const engine = this.env.TRADING_ENGINE.get(id);
+    const response = await engine.fetch(
+      new Request("https://trading-engine.internal/tick", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-source": "sovereign-sigma-ingest"
+        },
+        body: JSON.stringify(tick)
+      })
+    );
+    const payload = await readResponseJson<EngineTickResponse>(response);
+
+    if (!response.ok) {
+      throw new Error(`ENGINE_FORWARD_FAILED_${response.status}`);
+    }
+
+    if (payload?.status === "DESYNC") {
+      await this.recoverFromEngineDesync(payload.reason ?? "DESYNC");
+    }
+
+    this.ticksForwarded += 1;
+    this.lastForwardAt = new Date().toISOString();
+  }
+
+  private async recoverFromEngineDesync(reason: string): Promise<void> {
+    const observedAt = new Date().toISOString();
+
+    this.logger.warn("ENGINE_DESYNC_RESYNC", "Engine requested snapshot resync", {
+      streamId: this.config.id,
+      source: this.config.source,
+      source_exchange: this.config.source_exchange,
+      connectionId: this.connectionId,
+      reason,
+      observedAt
+    });
+
+    try {
+      if (!this.config.snapshotUrl) {
+        await this.resetEngineBook(0, observedAt);
+        return;
+      }
+
+      await this.syncEngineSnapshot("ENGINE_DESYNC", observedAt);
+    } catch (error) {
+      closeSocket(this.socket, 1011, "SNAPSHOT_RESYNC_FAILED");
+      this.markDisconnected("SNAPSHOT_RESYNC_FAILED");
+      throw error;
+    }
+  }
+
+  private async resetEngineBook(
+    blackoutDurationMs: number,
+    recoveredAt: string
+  ): Promise<void> {
+    const id = this.env.TRADING_ENGINE.idFromName(SINGLETON_ENGINE_NAME);
+    const engine = this.env.TRADING_ENGINE.get(id);
+    const payload: OrderBookResetRequest = {
+      source: "INGEST_WORKER",
+      reason: this.blackoutStartedAt ? "STREAM_RECONNECTED" : "STREAM_CONNECTED",
+      instrumentCode: this.config.instrumentCode ?? null,
+      source_exchange: this.config.source_exchange,
+      connectionId: this.connectionId,
+      blackoutDurationMs,
+      recoveredAt
+    };
+    const response = await engine.fetch(
+      new Request("https://trading-engine.internal/reset-book", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-source": "sovereign-sigma-ingest"
+        },
+        body: JSON.stringify(payload)
+      })
+    );
+
+    if (!response.ok) {
+      throw new Error(`ENGINE_RESET_BOOK_FAILED_${response.status}`);
+    }
+
+    this.logger.info("STREAM_RECOVERED", "Market stream recovered and book reset", {
+      streamId: this.config.id,
+      source: this.config.source,
+      source_exchange: this.config.source_exchange,
+      connectionId: this.connectionId,
+      attempts: this.attempts,
+      blackoutDurationMs,
+      recoveredAt,
+      recoveryReason: payload.reason
+    });
+    this.notifier.notify({
+      priority: blackoutDurationMs > 0 ? "MEDIUM" : "LOW",
+      title: "Sovereign-Sigma stream recovered",
+      message: `${this.config.source_exchange} stream recovered; order book reset complete after ${blackoutDurationMs}ms blackout.`,
+      dedupeKey: `stream-recovered:${this.config.id}`,
+      metadata: {
+        streamId: this.config.id,
+        source: this.config.source,
+        source_exchange: this.config.source_exchange,
+        blackoutDurationMs,
+        recoveredAt,
+        recoveryReason: payload.reason
+      }
+    });
+  }
+
+  private markDisconnected(reason: string): void {
+    this.status = this.stopped ? "STOPPED" : "ERROR";
+    this.lastDisconnectAt = new Date().toISOString();
+    this.lastError = reason;
+    this.socket = null;
+    this.startBlackout(this.lastDisconnectAt);
+
+    this.logger.warn("STREAM_DISCONNECT", "Market stream disconnected", {
+      streamId: this.config.id,
+      source: this.config.source,
+      source_exchange: this.config.source_exchange,
+      connectionId: this.connectionId,
+      reason,
+      messagesReceived: this.messagesReceived,
+      ticksForwarded: this.ticksForwarded,
+      ticksDropped: this.ticksDropped
+    });
+    this.notifier.notify({
+      priority: "HIGH",
+      title: "Sovereign-Sigma stream disconnected",
+      message: `${this.config.source_exchange} stream disconnected: ${reason}. Recovery state machine is active.`,
+      dedupeKey: `stream-disconnect:${this.config.id}`,
+      metadata: {
+        streamId: this.config.id,
+        source: this.config.source,
+        source_exchange: this.config.source_exchange,
+        reason,
+        messagesReceived: this.messagesReceived,
+        ticksForwarded: this.ticksForwarded,
+        ticksDropped: this.ticksDropped
+      }
+    });
+  }
+
+  private startBlackout(startedAt: string = new Date().toISOString()): void {
+    if (!this.blackoutStartedAt) {
+      this.blackoutStartedAt = startedAt;
+    }
+
+    this.lastDisconnectAt = startedAt;
+  }
+
+  private currentBlackoutDurationMs(at: string = new Date().toISOString()): number {
+    if (!this.blackoutStartedAt) {
+      return 0;
+    }
+
+    return Math.max(0, Date.parse(at) - Date.parse(this.blackoutStartedAt));
+  }
+}
+
+function getHealth(): IngestHealth {
+  const streams = Array.from(activeStreams.values()).map((stream) => stream.snapshot());
+
+  if (streams.length === 0) {
+    return {
+      ok: false,
+      status: "IDLE",
+      connectionId: null,
+      attempts: 0,
+      backoffCounter: 0,
+      messagesReceived: 0,
+      ticksForwarded: 0,
+      ticksDropped: 0,
+      lastMessageAt: null,
+      lastForwardAt: null,
+      lastDisconnectAt: null,
+      blackoutStartedAt: null,
+      lastRecoveredAt: null,
+      lastRecoveryDurationMs: null,
+      lastError: null,
+      streams: []
+    };
+  }
+
+  const primary = streams.find((stream) => stream.ok) ?? streams[0];
+
+  return {
+    ...primary,
+    ok: streams.every((stream) => stream.ok),
+    status: streams.every((stream) => stream.ok) ? "CONNECTED" : primary.status,
+    streams
+  };
+}
+
+function normalizeMarketData(
+  raw: unknown,
+  config: ResolvedExchangeStreamConfig,
+  clockSync: ClockSyncTracker
+): MarketTick[] {
+  switch (config.source) {
+    case "KAIKO":
+      return [normalizeKaikoData(raw, config, clockSync)];
+    case "BINANCE":
+      return normalizeBinanceData(raw, config, clockSync);
+    case "COINBASE":
+      return normalizeCoinbaseData(raw, config, clockSync);
+    default:
+      return [normalizeGenericExchangeData(raw, config, clockSync)];
+  }
+}
+
+function normalizeBinanceData(
+  raw: unknown,
+  config: ResolvedExchangeStreamConfig,
+  clockSync: ClockSyncTracker
+): MarketTick[] {
+  if (!isRecord(raw)) {
+    throw new Error("INVALID_BINANCE_PAYLOAD");
+  }
+
+  const receivedAt = new Date().toISOString();
+  const eventType = normalizeString(readField(raw, ["e", "eventType", "type"]));
+  const symbol = String(
+    readField(raw, ["s", "symbol", "instrument", "instrumentCode"]) ??
+      config.instrumentCode ??
+      ""
+  ).toLowerCase();
+  const instrumentCode = normalizeInstrumentCode(symbol);
+  const eventTime = readField(raw, ["E", "eventTime", "time", "timestamp"]);
+  const exchangeTimestamp = coerceExchangeTime(eventTime) ?? receivedAt;
+  const synchronized = clockSync.observe(exchangeTimestamp, receivedAt);
+  const sequence = coerceGenericSequence(readField(raw, ["u", "U", "t", "sequence", "seq"]));
+
+  const bidUpdates = readField(raw, ["b", "bids"]);
+  const askUpdates = readField(raw, ["a", "asks"]);
+
+  if (
+    eventType === "DEPTHUPDATE" ||
+    Array.isArray(bidUpdates) ||
+    Array.isArray(askUpdates)
+  ) {
+    const ticks: MarketTick[] = [];
+
+    for (const [price, size] of normalizeDepthLevels(bidUpdates)) {
+      ticks.push(
+        createUniversalTick({
+          config,
+          instrumentCode,
+          price,
+          size,
+          side: "buy",
+          sequence: sequence + ticks.length,
+          exchangeTimestamp,
+          synchronized,
+          receivedAt,
+          rawMetadata: { eventType: eventType ?? "DEPTHUPDATE", depthSide: "bid" }
+        })
+      );
+    }
+
+    for (const [price, size] of normalizeDepthLevels(askUpdates)) {
+      ticks.push(
+        createUniversalTick({
+          config,
+          instrumentCode,
+          price,
+          size,
+          side: "sell",
+          sequence: sequence + ticks.length,
+          exchangeTimestamp,
+          synchronized,
+          receivedAt,
+          rawMetadata: { eventType: eventType ?? "DEPTHUPDATE", depthSide: "ask" }
+        })
+      );
+    }
+
+    if (ticks.length === 0) {
+      throw new Error("EMPTY_BINANCE_DEPTH_UPDATE");
+    }
+
+    return ticks;
+  }
+
+  const price = requireFiniteNumber(readField(raw, ["p", "price"]), "price");
+  const size = requireFiniteNumber(readField(raw, ["q", "quantity", "size"]), "size");
+  const isBuyerMaker = Boolean(readField(raw, ["m", "buyerMaker"]));
+
+  return [
+    createUniversalTick({
+      config,
+      instrumentCode,
+      price,
+      size,
+      side: isBuyerMaker ? "sell" : "buy",
+      sequence,
+      exchangeTimestamp,
+      synchronized,
+      receivedAt,
+      rawMetadata: { eventType: eventType ?? "TRADE" }
+    })
+  ];
+}
+
+function normalizeCoinbaseData(
+  raw: unknown,
+  config: ResolvedExchangeStreamConfig,
+  clockSync: ClockSyncTracker
+): MarketTick[] {
+  if (!isRecord(raw)) {
+    throw new Error("INVALID_COINBASE_PAYLOAD");
+  }
+
+  const receivedAt = new Date().toISOString();
+  const instrumentCode = normalizeInstrumentCode(
+    String(
+      readField(raw, ["product_id", "productId", "instrument", "instrumentCode"]) ??
+        config.instrumentCode ??
+        ""
+    )
+  );
+  const exchangeTimestamp = coerceTimestamp(readField(raw, ["time", "timestamp"])) ?? receivedAt;
+  const synchronized = clockSync.observe(exchangeTimestamp, receivedAt);
+  const changes = readField(raw, ["changes", "updates"]);
+
+  if (Array.isArray(changes)) {
+    const ticks: MarketTick[] = [];
+
+    for (const change of changes) {
+      const normalized = normalizeCoinbaseChange(change);
+
+      if (!normalized) {
+        continue;
+      }
+
+      ticks.push(
+        createUniversalTick({
+          config,
+          instrumentCode,
+          price: normalized.price,
+          size: normalized.size,
+          side: normalized.side,
+          sequence: coerceGenericSequence(readField(raw, ["sequence", "sequence_num"])) + ticks.length,
+          exchangeTimestamp,
+          synchronized,
+          receivedAt,
+          rawMetadata: { eventType: stringifyOrNull(readField(raw, ["type"])) ?? "l2update" }
+        })
+      );
+    }
+
+    if (ticks.length > 0) {
+      return ticks;
+    }
+  }
+
+  return [normalizeGenericExchangeData(raw, config, clockSync)];
+}
+
+function normalizeGenericExchangeData(
+  raw: unknown,
+  config: ResolvedExchangeStreamConfig,
+  clockSync: ClockSyncTracker
+): MarketTick {
+  if (!isRecord(raw)) {
+    throw new Error("INVALID_MARKET_PAYLOAD");
+  }
+
+  const receivedAt = new Date().toISOString();
+  const instrumentCode = normalizeInstrumentCode(
+    String(
+      readField(raw, ["instrumentCode", "instrument", "symbol", "product_id", "code"]) ??
+        config.instrumentCode ??
+        ""
+    )
+  );
+  const price = requireFiniteNumber(readField(raw, ["price", "p", "px"]), "price");
+  const size = requireFiniteNumber(
+    readField(raw, ["size", "amount", "quantity", "qty", "q"]),
+    "size"
+  );
+  const exchangeTimestamp =
+    coerceTimestamp(readField(raw, ["exchangeTimestamp", "timestamp", "time", "ts"])) ??
+    receivedAt;
+  const synchronized = clockSync.observe(exchangeTimestamp, receivedAt);
+  const side = normalizeUniversalSide(
+    readField(raw, ["side", "orderSide", "liquiditySide", "updateType"])
+  );
+
+  return createUniversalTick({
+    config,
+    instrumentCode,
+    price,
+    size,
+    side,
+    sequence: coerceGenericSequence(readField(raw, ["sequence", "seq", "sequenceId", "id"])),
+    exchangeTimestamp,
+    synchronized,
+    receivedAt,
+    rawMetadata: sanitizeGenericMetadata(raw)
+  });
+}
+
+function unwrapKaikoMarketUpdate(raw: unknown): KaikoMarketUpdate {
+  if (!isRecord(raw)) {
+    throw new Error("INVALID_KAIKO_PAYLOAD");
+  }
+
+  if (isRecord(raw.result)) {
+    return raw.result as KaikoMarketUpdate;
+  }
+
+  return raw as KaikoMarketUpdate;
+}
+
+function extractKaikoEvents(envelope: KaikoStreamEnvelope): KaikoMarketUpdate[] {
+  if (Array.isArray(envelope.data)) {
+    return envelope.data;
+  }
+
+  if (envelope.data) {
+    return [envelope.data];
+  }
+
+  if (envelope.result) {
+    return [envelope.result];
+  }
+
+  return [envelope as KaikoMarketUpdate];
+}
+
+function extractMarketEvents(raw: unknown, source: MarketDataSource): unknown[] {
+  if (Array.isArray(raw)) {
+    return raw;
+  }
+
+  if (!isRecord(raw)) {
+    return [raw];
+  }
+
+  if (source === "KAIKO") {
+    return extractKaikoEvents(raw as KaikoStreamEnvelope);
+  }
+
+  if (Array.isArray(raw.data)) {
+    return raw.data;
+  }
+
+  if (Array.isArray(raw.events)) {
+    return raw.events;
+  }
+
+  if (Array.isArray(raw.result)) {
+    return raw.result;
+  }
+
+  if (isRecord(raw.data)) {
+    return [raw.data];
+  }
+
+  if (isRecord(raw.result)) {
+    return [raw.result];
+  }
+
+  return [raw];
+}
+
+function unwrapKaikoSnapshot(raw: unknown): Record<string, unknown> {
+  if (!isRecord(raw)) {
+    throw new Error("INVALID_KAIKO_SNAPSHOT");
+  }
+
+  for (const key of ["result", "data", "snapshot", "book"]) {
+    const value = raw[key];
+
+    if (isRecord(value)) {
+      return value;
+    }
+
+    if (Array.isArray(value) && isRecord(value[0])) {
+      return value[0];
+    }
+  }
+
+  return raw;
+}
+
+function readSnapshotLevels(
+  snapshot: Record<string, unknown>,
+  side: "bid" | "ask"
+): unknown {
+  const plural = side === "bid" ? "bids" : "asks";
+  const singular = side;
+  const direct = readField(snapshot, [
+    plural,
+    `${singular}Levels`,
+    `${plural}Levels`,
+    `${singular}_levels`,
+    `${plural}_levels`
+  ]);
+
+  if (direct !== undefined) {
+    return unwrapLevelsContainer(direct);
+  }
+
+  const levels = unwrapLevelsContainer(readField(snapshot, ["levels", "book", "orderBook"]));
+
+  if (isRecord(levels)) {
+    return unwrapLevelsContainer(levels[plural] ?? levels[singular]);
+  }
+
+  return [];
+}
+
+function unwrapLevelsContainer(value: unknown): unknown {
+  if (isRecord(value) && Array.isArray(value.levels)) {
+    return value.levels;
+  }
+
+  return value;
+}
+
+function normalizeSnapshotLevels(
+  value: unknown,
+  observedAt: string
+): OrderBookSnapshotLevel[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const levels: OrderBookSnapshotLevel[] = [];
+
+  for (const level of value) {
+    const normalized = normalizeSnapshotLevel(level, observedAt);
+
+    if (normalized) {
+      levels.push(normalized);
+    }
+  }
+
+  return levels;
+}
+
+function normalizeSnapshotLevel(
+  level: unknown,
+  observedAt: string
+): OrderBookSnapshotLevel | null {
+  let price: unknown;
+  let size: unknown;
+  let updatedAt: string | null = null;
+
+  if (Array.isArray(level)) {
+    [price, size] = level;
+    updatedAt = coerceTimestamp(level[2]);
+  } else if (isRecord(level)) {
+    price = readField(level, ["price", "px", "p"]);
+    size = readField(level, ["size", "amount", "quantity", "qty", "volume"]);
+    updatedAt = coerceTimestamp(readField(level, ["updatedAt", "updated_at", "ts"]));
+  } else {
+    return null;
+  }
+
+  const parsedPrice = Number(price);
+  const parsedSize = Number(size);
+
+  if (
+    !Number.isFinite(parsedPrice) ||
+    !Number.isFinite(parsedSize) ||
+    parsedPrice < 0 ||
+    parsedSize < 0
+  ) {
+    return null;
+  }
+
+  return {
+    price: parsedPrice,
+    size: parsedSize,
+    updatedAt: updatedAt ?? observedAt
+  };
+}
+
+function coerceSnapshotSequence(snapshot: Record<string, unknown>): number {
+  const sequence = readField(snapshot, [
+    "sequence",
+    "sequenceId",
+    "sequence_id",
+    "seq",
+    "lastSequence",
+    "last_sequence"
+  ]);
+  const parsed = Number(sequence);
+
+  if (Number.isSafeInteger(parsed) && parsed >= 0) {
+    return parsed;
+  }
+
+  return hashSequenceId(
+    `${SNAPSHOT_SEQUENCE_FALLBACK_SEED}:${JSON.stringify({
+      bids: readSnapshotLevels(snapshot, "bid"),
+      asks: readSnapshotLevels(snapshot, "ask")
+    })}`
+  );
+}
+
+function readField(
+  record: Record<string, unknown>,
+  keys: readonly string[]
+): unknown {
+  for (const key of keys) {
+    if (record[key] !== undefined) {
+      return record[key];
+    }
+  }
+
+  return undefined;
+}
+
+function readStringField(
+  record: Record<string, unknown>,
+  keys: readonly string[]
+): string | null {
+  const value = readField(record, keys);
+  return typeof value === "string" && value.trim() !== "" ? value : null;
+}
+
+function inferSubscriptionField(
+  subscription: string | undefined,
+  field: "code" | "exchange"
+): string | null {
+  if (!subscription) {
+    return null;
+  }
+
+  const parsed = parseJson<{ instrumentCriteria?: Record<string, unknown> }>(subscription);
+  const value = parsed?.instrumentCriteria?.[field];
+  return typeof value === "string" && value.trim() !== "" ? value : null;
+}
+
+function sanitizeKaikoMetadata(update: KaikoMarketUpdate): JsonRecord {
+  return {
+    commodity: stringifyOrNull(update.commodity),
+    kaikoTradeId: stringifyOrNull(update.id),
+    sequenceId: stringifyOrNull(update.sequenceId),
+    updateType: stringifyOrNull(update.updateType),
+    tsCollection: stringifyOrNull(coerceTimestamp(update.tsCollection)),
+    tsEvent: stringifyOrNull(coerceTimestamp(update.tsEvent))
+  };
+}
+
+function normalizeSide(
+  side: string | undefined,
+  updateType: string | null
+): MarketTick["side"] {
+  const normalizedSide = normalizeString(side);
+
+  if (normalizedSide === "BUY") {
+    return "buy";
+  }
+
+  if (normalizedSide === "SELL") {
+    return "sell";
+  }
+
+  if (updateType === "BEST_BID") {
+    return "buy";
+  }
+
+  if (updateType === "BEST_ASK") {
+    return "sell";
+  }
+
+  return "unknown";
+}
+
+function splitInstrumentCode(instrumentCode: string): {
+  baseAsset: string;
+  quoteAsset: string;
+} {
+  const [baseAsset, ...quoteParts] = instrumentCode.split("-");
+
+  return {
+    baseAsset: baseAsset || "unknown",
+    quoteAsset: quoteParts.join("-") || "unknown"
+  };
+}
+
+function coerceSequence(
+  sequenceId: string | undefined,
+  additionalProperties: Record<string, unknown> | null | undefined
+): number {
+  const additionalSequence = additionalProperties?.sequence;
+  const numericSequence = Number(additionalSequence ?? sequenceId);
+
+  if (Number.isSafeInteger(numericSequence) && numericSequence >= 0) {
+    return numericSequence;
+  }
+
+  return hashSequenceId(sequenceId ?? JSON.stringify(additionalProperties ?? {}));
+}
+
+function hashSequenceId(value: string): number {
+  let hash = 2_166_136_261;
+
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16_777_619);
+  }
+
+  return hash >>> 0;
+}
+
+function coerceTimestamp(value: unknown): string | null {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (isRecord(value) && typeof value.value === "string") {
+    return value.value;
+  }
+
+  return null;
+}
+
+function isPong(raw: unknown): boolean {
+  if (Array.isArray(raw)) {
+    return false;
+  }
+
+  if (!isRecord(raw)) {
+    return false;
+  }
+
+  const eventType = normalizeString(raw.type ?? raw.event);
+  return eventType === "PONG" || eventType === "HEARTBEAT";
+}
+
+function extractHeartbeatLatencyMs(raw: unknown): number {
+  if (!isRecord(raw)) {
+    return 0;
+  }
+
+  const sentAt = coerceTimestamp(raw.ts ?? raw.sentAt ?? raw.pingTs);
+  if (!sentAt) {
+    return 0;
+  }
+
+  const parsed = Date.parse(sentAt);
+  return Number.isFinite(parsed) ? Math.max(0, Date.now() - parsed) : 0;
+}
+
+function loadStreamConfigs(env: Env): ResolvedExchangeStreamConfig[] {
+  const configured = env.MARKET_STREAMS
+    ? parseJson<ExchangeStreamConfig[]>(env.MARKET_STREAMS)
+    : null;
+  const weights = parseWeightMap(env.EXCHANGE_WEIGHTS);
+  const rawConfigs =
+    configured && Array.isArray(configured) && configured.length > 0
+      ? configured
+      : defaultKaikoStreamConfig(env);
+
+  return rawConfigs
+    .filter((config) => config.enabled !== false)
+    .map((config, index) => resolveStreamConfig(env, config, weights, index));
+}
+
+function defaultKaikoStreamConfig(env: Env): ExchangeStreamConfig[] {
+  if (!env.KAIKO_STREAM_URL) {
+    return [];
+  }
+
+  return [
+    {
+      id: "kaiko-primary",
+      source: "KAIKO",
+      source_exchange:
+        env.KAIKO_SNAPSHOT_EXCHANGE ??
+        inferSubscriptionField(env.KAIKO_STREAM_SUBSCRIPTION, "exchange") ??
+        "kaiko",
+      streamUrl: env.KAIKO_STREAM_URL,
+      snapshotUrl: env.KAIKO_SNAPSHOT_URL,
+      subscription: env.KAIKO_STREAM_SUBSCRIPTION,
+      authHeader: env.KAIKO_AUTH_HEADER ?? DEFAULT_AUTH_HEADER,
+      apiKeyEnv: "KAIKO_API_KEY",
+      instrumentCode:
+        env.KAIKO_SNAPSHOT_INSTRUMENT ??
+        inferSubscriptionField(env.KAIKO_STREAM_SUBSCRIPTION, "code") ??
+        undefined
+    }
+  ];
+}
+
+function resolveStreamConfig(
+  env: Env,
+  config: ExchangeStreamConfig,
+  weights: Record<string, number>,
+  index: number
+): ResolvedExchangeStreamConfig {
+  const source = normalizeSource(config.source);
+  const sourceExchange = normalizeSourceExchange(config.source_exchange, config.exchangeCode);
+  const configuredWeight = Number(config.weight);
+  const weight =
+    Number.isFinite(configuredWeight) && configuredWeight > 0
+      ? configuredWeight
+      : weights[sourceExchange] ??
+        weights[`${source.toLowerCase()}:${sourceExchange}`] ??
+        DEFAULT_SOURCE_WEIGHT;
+
+  return {
+    id: config.id || `${source.toLowerCase()}-${sourceExchange}-${index}`,
+    source,
+    source_exchange: sourceExchange,
+    streamUrl: requireString(config.streamUrl, "STREAM_URL"),
+    snapshotUrl: config.snapshotUrl,
+    clusterUrls: config.clusterUrls,
+    subscription: config.subscription,
+    authHeader: config.authHeader ?? DEFAULT_AUTH_HEADER,
+    apiKeyEnv: config.apiKeyEnv,
+    weight,
+    instrumentCode: config.instrumentCode?.toLowerCase(),
+    exchangeCode: (config.exchangeCode ?? sourceExchange).toLowerCase(),
+    heartbeatIntervalMs: readNumber(
+      env.KAIKO_HEARTBEAT_INTERVAL_MS,
+      DEFAULT_HEARTBEAT_INTERVAL_MS
+    ),
+    watchdogTimeoutMs: readNumber(
+      env.KAIKO_WATCHDOG_TIMEOUT_MS ?? env.KAIKO_STALE_AFTER_MS,
+      DEFAULT_WATCHDOG_TIMEOUT_MS
+    ),
+    maxBackoffMs: readNumber(env.KAIKO_MAX_BACKOFF_MS, DEFAULT_MAX_BACKOFF_MS)
+  };
+}
+
+function assertIngestEnv(env: Env, config: ResolvedExchangeStreamConfig): void {
+  requireString(config.streamUrl, "STREAM_URL");
+
+  if (config.apiKeyEnv) {
+    requireString(readEnvSecret(env, config.apiKeyEnv), config.apiKeyEnv);
+  }
+}
+
+class ClockSyncTracker {
+  private offsetMs: number | null = null;
+
+  constructor(
+    private readonly alpha = DEFAULT_CLOCK_SYNC_ALPHA,
+    private readonly maxOffsetMs = DEFAULT_CLOCK_SYNC_MAX_OFFSET_MS
+  ) {}
+
+  observe(
+    exchangeTimestamp: string,
+    receivedAt: string
+  ): { timestamp: string; offsetMs: number } {
+    const exchangeMs = Date.parse(exchangeTimestamp);
+    const receivedMs = Date.parse(receivedAt);
+
+    if (!Number.isFinite(exchangeMs) || !Number.isFinite(receivedMs)) {
+      return { timestamp: receivedAt, offsetMs: this.currentOffsetMs() ?? 0 };
+    }
+
+    const observedOffset = clampNumber(
+      receivedMs - exchangeMs,
+      -this.maxOffsetMs,
+      this.maxOffsetMs
+    );
+    this.offsetMs =
+      this.offsetMs === null
+        ? observedOffset
+        : this.offsetMs + this.alpha * (observedOffset - this.offsetMs);
+
+    return {
+      timestamp: new Date(exchangeMs + this.offsetMs).toISOString(),
+      offsetMs: Math.round(this.offsetMs)
+    };
+  }
+
+  currentOffsetMs(): number | null {
+    return this.offsetMs === null ? null : Math.round(this.offsetMs);
+  }
+}
+
+class ClusterPool {
+  private activeIndex = 0;
+  private readonly health = new Map<
+    string,
+    { score: number; failures: number; heartbeatLatencyMs: number | null; cooldownUntilMs: number }
+  >();
+
+  constructor(private readonly urls: string[]) {
+    for (const url of urls) {
+      this.health.set(url, {
+        score: 1,
+        failures: 0,
+        heartbeatLatencyMs: null,
+        cooldownUntilMs: 0
+      });
+    }
+  }
+
+  activeUrl(): string {
+    return this.urls[this.activeIndex] ?? this.urls[0];
+  }
+
+  recordHeartbeat(url: string, latencyMs: number): void {
+    const entry = this.health.get(url) ?? {
+      score: 1,
+      failures: 0,
+      heartbeatLatencyMs: null,
+      cooldownUntilMs: 0
+    };
+    const latencyPenalty = Math.min(0.5, latencyMs / 10_000);
+    entry.score = Math.min(1, entry.score * 0.9 + (1 - latencyPenalty) * 0.1);
+    entry.failures = 0;
+    entry.heartbeatLatencyMs = latencyMs;
+    entry.cooldownUntilMs = 0;
+    this.health.set(url, entry);
+  }
+
+  recordFailure(url: string): void {
+    const entry = this.health.get(url) ?? {
+      score: 1,
+      failures: 0,
+      heartbeatLatencyMs: null,
+      cooldownUntilMs: 0
+    };
+    entry.failures += 1;
+    entry.score = Math.max(0, entry.score - 0.25);
+    if (entry.failures >= 2) {
+      entry.cooldownUntilMs = Date.now() + Math.min(60_000, entry.failures * 5_000);
+    }
+    this.health.set(url, entry);
+    this.maybePromote();
+  }
+
+  activeHeartbeatLatencyMs(): number | null {
+    return this.health.get(this.activeUrl())?.heartbeatLatencyMs ?? null;
+  }
+
+  private maybePromote(): void {
+    const activeUrl = this.activeUrl();
+    const activeScore = this.health.get(activeUrl)?.score ?? 0;
+    const best = this.urls
+      .map((url, index) => {
+        const health = this.health.get(url);
+        const coolingDown = (health?.cooldownUntilMs ?? 0) > Date.now();
+        return {
+          url,
+          index,
+          score: coolingDown ? -1 : health?.score ?? 0
+        };
+      })
+      .sort((left, right) => right.score - left.score)[0];
+
+    if (best && best.index !== this.activeIndex && best.score > activeScore + 0.2) {
+      this.activeIndex = best.index;
+    }
+  }
+}
+
+function createUniversalTick(input: {
+  config: ResolvedExchangeStreamConfig;
+  instrumentCode: string;
+  price: number;
+  size: number;
+  side: MarketTick["side"];
+  sequence: number;
+  exchangeTimestamp: string;
+  synchronized: { timestamp: string; offsetMs: number };
+  receivedAt: string;
+  rawMetadata: JsonRecord;
+}): MarketTick {
+  const instrumentCode = normalizeInstrumentCode(input.instrumentCode);
+  const { baseAsset, quoteAsset } = splitInstrumentCode(instrumentCode);
+
+  return {
+    schemaVersion: "universal-tick.v1",
+    source: input.config.source,
+    source_exchange: input.config.source_exchange,
+    transport: "websocket",
+    exchangeCode: (input.config.exchangeCode ?? input.config.source_exchange).toLowerCase(),
+    instrumentCode,
+    baseAsset,
+    quoteAsset,
+    price: input.price,
+    size: input.size,
+    side: input.side,
+    sequence: input.sequence,
+    providerTimestamp: input.exchangeTimestamp,
+    exchangeTimestamp: input.exchangeTimestamp,
+    synchronizedExchangeTimestamp: input.synchronized.timestamp,
+    clockOffsetMs: input.synchronized.offsetMs,
+    receivedAt: input.receivedAt,
+    sourceWeight: input.config.weight,
+    bestBid: input.side === "buy" ? input.price : undefined,
+    bestAsk: input.side === "sell" ? input.price : undefined,
+    raw: input.rawMetadata
+  };
+}
+
+function parseWeightMap(value: string | undefined): Record<string, number> {
+  const parsed = value ? parseJson<Record<string, unknown>>(value) : null;
+
+  if (!parsed) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(parsed)
+      .map(([key, weight]) => [key.toLowerCase(), Number(weight)] as const)
+      .filter(([, weight]) => Number.isFinite(weight) && weight > 0)
+  );
+}
+
+function readEnvSecret(env: Env, key: string): string | undefined {
+  return (env as unknown as Record<string, string | undefined>)[key];
+}
+
+function normalizeSource(value: unknown): MarketDataSource {
+  const source = normalizeString(value);
+
+  switch (source) {
+    case "KAIKO":
+    case "BINANCE":
+    case "COINBASE":
+    case "KRAKEN":
+    case "OKX":
+    case "BYBIT":
+    case "SYSTEM":
+      return source;
+    default:
+      return "SYSTEM";
+  }
+}
+
+function normalizeSourceExchange(value: unknown, fallback: unknown): string {
+  const sourceExchange =
+    typeof value === "string" && value.trim() !== ""
+      ? value
+      : typeof fallback === "string" && fallback.trim() !== ""
+        ? fallback
+        : "unknown";
+
+  return sourceExchange.toLowerCase();
+}
+
+function normalizeWeight(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_SOURCE_WEIGHT;
+}
+
+function buildMarketKey(sourceExchange: string, instrumentCode: string): string {
+  return `${sourceExchange.toLowerCase()}:${instrumentCode.toLowerCase()}`;
+}
+
+function normalizeInstrumentCode(value: string): string {
+  const trimmed = value.trim().toLowerCase();
+
+  if (trimmed.includes("-")) {
+    return trimmed;
+  }
+
+  const compact = trimmed.replace("/", "");
+  const quote = ["usdt", "usdc", "usd", "btc", "eth"].find((candidate) =>
+    compact.endsWith(candidate)
+  );
+
+  if (!quote || compact.length <= quote.length) {
+    return compact || "unknown";
+  }
+
+  return `${compact.slice(0, -quote.length)}-${quote}`;
+}
+
+function coerceExchangeTime(value: unknown): string | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const millis = value > 10_000_000_000 ? value : value * 1_000;
+    return new Date(millis).toISOString();
+  }
+
+  if (typeof value === "string") {
+    const numeric = Number(value);
+
+    if (Number.isFinite(numeric)) {
+      return coerceExchangeTime(numeric);
+    }
+  }
+
+  return coerceTimestamp(value);
+}
+
+function coerceGenericSequence(value: unknown): number {
+  const parsed = Number(value);
+
+  if (Number.isSafeInteger(parsed) && parsed >= 0) {
+    return parsed;
+  }
+
+  return hashSequenceId(JSON.stringify(value ?? crypto.randomUUID()));
+}
+
+function normalizeDepthLevels(value: unknown): Array<[number, number]> {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((level) => {
+      if (!Array.isArray(level)) {
+        return null;
+      }
+
+      const price = Number(level[0]);
+      const size = Number(level[1]);
+      return Number.isFinite(price) && Number.isFinite(size) && price >= 0 && size >= 0
+        ? ([price, size] as [number, number])
+        : null;
+    })
+    .filter((level): level is [number, number] => level !== null);
+}
+
+function normalizeCoinbaseChange(
+  change: unknown
+): { side: MarketTick["side"]; price: number; size: number } | null {
+  if (!Array.isArray(change) || change.length < 3) {
+    return null;
+  }
+
+  const side = normalizeUniversalSide(change[0]);
+  const price = Number(change[1]);
+  const size = Number(change[2]);
+
+  if (!Number.isFinite(price) || !Number.isFinite(size) || price < 0 || size < 0) {
+    return null;
+  }
+
+  return { side, price, size };
+}
+
+function normalizeUniversalSide(value: unknown): MarketTick["side"] {
+  const side = normalizeString(value);
+
+  if (side === "BUY" || side === "BID" || side === "BEST_BID") {
+    return "buy";
+  }
+
+  if (side === "SELL" || side === "ASK" || side === "BEST_ASK") {
+    return "sell";
+  }
+
+  return "unknown";
+}
+
+function sanitizeGenericMetadata(raw: Record<string, unknown>): JsonRecord {
+  return {
+    eventType: stringifyOrNull(readField(raw, ["e", "type", "event"])),
+    rawSequence: stringifyOrNull(readField(raw, ["sequence", "seq", "u", "id"]))
+  };
+}
+
+function hostnameOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "unknown";
+  }
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function isAuthorizedControlRequest(request: Request, env: Env): boolean {
+  if (!env.INGESTOR_CONTROL_TOKEN) {
+    return false;
+  }
+
+  const header = request.headers.get("authorization");
+  return header === `Bearer ${env.INGESTOR_CONTROL_TOKEN}`;
+}
+
+function calculateBackoffMs(
+  backoffCounter: number,
+  baseBackoffMs: number,
+  maxBackoffMs: number
+): number {
+  const exponential = Math.min(
+    maxBackoffMs,
+    baseBackoffMs * 2 ** Math.max(0, backoffCounter)
+  );
+  const jitter = Math.floor(Math.random() * Math.min(baseBackoffMs, exponential));
+  return Math.min(maxBackoffMs, exponential + jitter);
+}
+
+function closeSocket(socket: WebSocket | null, code: number, reason: string): void {
+  try {
+    socket?.close(code, reason);
+  } catch {
+    // Closing is best-effort in Workers; stale sockets are discarded by the runtime.
+  }
+}
+
+function readNumber(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function requireString(value: unknown, field: string): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(`MISSING_${field}`);
+  }
+
+  return value;
+}
+
+function requireFiniteNumber(value: unknown, field: string): number {
+  const parsed = Number(value);
+
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`INVALID_${field.toUpperCase()}`);
+  }
+
+  return parsed;
+}
+
+function normalizeString(value: unknown): string | null {
+  return typeof value === "string" ? value.trim().toUpperCase() : null;
+}
+
+function stringifyOrNull(value: unknown): string | null {
+  return typeof value === "string" && value !== "" ? value : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function parseJson<T>(value: string): T | null {
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return null;
+  }
+}
+
+async function readResponseJson<T>(response: Response): Promise<T | null> {
+  try {
+    return (await response.json<T>()) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "content-type": "application/json;charset=UTF-8"
+    }
+  });
+}

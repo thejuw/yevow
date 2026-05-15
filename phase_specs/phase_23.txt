@@ -1,0 +1,92 @@
+### Phase 23: Real-Time Bayesian Updating Logic
+--- PAGE 4 ---
+**Objective:** Implement a Bayesian inference engine that adjusts the Oracle's probabilities tick-by-tick based
+on
+
+incoming
+
+order
+
+flow
+
+evidence.
+ **Technical Specifications:** 1. **Bayes' Theorem Application:** $$P(A|B) = \frac{P(B|A) \times P(A)}{P(B)}$$ Where $P(A)$ is the baseline probability of a price move, and $B$ is the new evidence (e.g., a
+massive
+
+institutional
+
+buy
+
+order).
+ 2. **Prior vs. Posterior:** The Oracle generates the "Prior" PDF (Phase 22). The Bayesian
+Updater
+
+modifies
+
+it
+
+into
+
+the
+
+"Posterior"
+
+PDF
+
+as
+
+ticks
+
+stream
+
+in.
+ **Requirements for the AI Agent:** - Create a `BayesianUpdater` utility within the `OracleAgent`. - **Trigger:** Every time the Order Book Imbalance (Phase 4) shifts by more than a set standard
+deviation,
+
+recalculate
+
+the
+
+Posterior
+
+probability.
+ - **Telemetry:** Log the "Delta" between the Prior and Posterior probabilities to D1 to track how
+often
+
+the
+
+bot
+
+changes
+
+its
+
+stance.
+ **Professional Guardrails:** - **Probability Collapse:** Implement bounding logic to ensure probabilities never hit exactly 0.0
+or
+
+1.0,
+
+which
+
+would
+
+break
+
+the
+
+EV
+
+calculations
+
+(a
+
+concept
+
+known
+
+as
+
+Cromwell's
+
+Rule).

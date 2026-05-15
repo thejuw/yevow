@@ -1,0 +1,33 @@
+### Phase 20: Cross-Asset Correlation & Lead-Lag Engine **Objective:** Build a Lead-Lag engine that calculates the correlation between two assets (e.g., BTC/USD and
+a
+
+BTC-Binary
+
+outcome)
+
+in
+
+real-time.
+ **Technical Specifications:** 1. **Correlation Coefficient ($r$):** Calculate the Pearson correlation over a 100-tick window. 2. **Lag Detection:** Identify if Price A moves $X$ milliseconds before Price B. 3. **Arbitrage Trigger:** If Asset A (Lead) moves and Asset B (Lag) hasn't yet, the Croupier
+triggers
+
+a
+
+trade
+
+to
+
+"Front-Run"
+
+the
+
+expected
+
+correction
+
+in
+
+Asset
+
+B.
+ **Requirements:** - Update `TradingEngine` to manage two parallel order books. - Calculate the Lead-Lag delta in the telemetry hub. **Guardrails:** - Only execute if the $EV$ of the lag-correction exceeds the combined spread and slippage.

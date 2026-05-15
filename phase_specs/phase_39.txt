@@ -1,0 +1,17 @@
+### Phase 39: The "Janitor" Agent & System Hygiene **Objective:** Implement the 'Janitor' Agent, a background task that ensures the engine's state and the
+exchange's
+
+state
+
+stay
+
+synchronized.
+ **Technical Specifications:** 1. **Orphan Hunt:** Compare the DO's `orderMap` with the exchange's open order list every 60
+seconds.
+ 2. **Dust Sweeper:** Identify and close "dust" positions (tiny balances that are too small to
+trade).
+ 3. **State Pruning:** Clear old D1 logs or telemetry data that has already been backed up to
+external
+
+storage.
+ **Requirements:** - Create `src/agents/JanitorAgent.ts`. - **Trigger:** Use Durable Object Alarms to wake up the Janitor during low-volatility periods.

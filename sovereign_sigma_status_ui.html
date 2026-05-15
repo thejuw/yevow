@@ -1,0 +1,552 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sovereign-Sigma Implementation Console</title>
+  <style>
+    :root {
+      --bg: #0f1216;
+      --panel: #161b22;
+      --panel-2: #1e242d;
+      --line: #303844;
+      --text: #f5f0e7;
+      --muted: #aab2bf;
+      --gold: #d9bf75;
+      --green: #5fd68a;
+      --blue: #78b7ff;
+      --red: #ff6b6b;
+      --ink: #090b0e;
+      --radius: 8px;
+      color-scheme: dark;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    .shell {
+      min-height: 100vh;
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+    }
+
+    aside {
+      border-right: 1px solid var(--line);
+      background: #11161d;
+      padding: 22px;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+    }
+
+    .brand {
+      font-family: "Bodoni 72", Didot, Georgia, serif;
+      font-size: 34px;
+      line-height: 1;
+      margin: 0 0 10px;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      margin: 0 0 22px;
+      font-size: 13px;
+    }
+
+    .nav {
+      display: grid;
+      gap: 8px;
+      margin: 24px 0;
+    }
+
+    .nav button {
+      height: 40px;
+      width: 100%;
+      border: 1px solid var(--line);
+      background: transparent;
+      color: var(--text);
+      text-align: left;
+      padding: 0 12px;
+      border-radius: var(--radius);
+      cursor: pointer;
+    }
+
+    .nav button.active {
+      background: var(--gold);
+      color: var(--ink);
+      border-color: var(--gold);
+    }
+
+    .deploy-gate {
+      border: 1px solid #7c3434;
+      background: #211518;
+      border-radius: var(--radius);
+      padding: 14px;
+      margin-top: 22px;
+    }
+
+    .deploy-gate strong {
+      display: block;
+      color: #ffb1b1;
+      margin-bottom: 8px;
+    }
+
+    .deploy-gate span {
+      color: #d7b8b8;
+      font-size: 13px;
+    }
+
+    main {
+      padding: 24px;
+      display: grid;
+      gap: 18px;
+      align-content: start;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 18px;
+    }
+
+    h1, h2, h3, p { margin: 0; }
+    h1 {
+      font-size: 24px;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      font-size: 15px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      color: var(--gold);
+      margin-bottom: 12px;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border-radius: 999px;
+      padding: 8px 12px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      white-space: nowrap;
+      font-size: 13px;
+    }
+
+    .dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--green);
+      display: inline-block;
+    }
+
+    .dot.red { background: var(--red); }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .card, .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 16px;
+    }
+
+    .metric {
+      display: grid;
+      gap: 8px;
+      min-height: 112px;
+    }
+
+    .metric .value {
+      font-size: 34px;
+      font-weight: 760;
+      line-height: 1;
+    }
+
+    .metric .label {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .metric .mini {
+      color: var(--green);
+      font-size: 12px;
+    }
+
+    .phase-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 12px;
+    }
+
+    .phase {
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      border-radius: var(--radius);
+      padding: 14px;
+      display: grid;
+      gap: 10px;
+      min-height: 132px;
+    }
+
+    .phase header {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: start;
+    }
+
+    .phase h3 {
+      font-size: 15px;
+      line-height: 1.25;
+    }
+
+    .tag {
+      font-size: 11px;
+      border: 1px solid var(--line);
+      color: var(--muted);
+      border-radius: 999px;
+      padding: 4px 8px;
+      white-space: nowrap;
+    }
+
+    .tag.done {
+      color: #0b1710;
+      background: var(--green);
+      border-color: var(--green);
+      font-weight: 700;
+    }
+
+    .phase p {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .bars {
+      display: grid;
+      gap: 8px;
+    }
+
+    .bar-row {
+      display: grid;
+      grid-template-columns: 170px 1fr 46px;
+      align-items: center;
+      gap: 12px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .bar {
+      height: 10px;
+      border-radius: 999px;
+      background: #0c0f13;
+      overflow: hidden;
+      border: 1px solid var(--line);
+    }
+
+    .fill {
+      height: 100%;
+      background: var(--green);
+    }
+
+    .architecture {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .node {
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 14px;
+      min-height: 118px;
+      display: grid;
+      gap: 8px;
+    }
+
+    .node strong {
+      color: var(--text);
+    }
+
+    .node span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .endpoint-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    .endpoint-table th, .endpoint-table td {
+      padding: 11px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .endpoint-table th {
+      color: var(--gold);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .07em;
+    }
+
+    code {
+      color: #c7e1ff;
+      background: #0a0d11;
+      padding: 2px 5px;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+
+    .gate-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 12px;
+    }
+
+    .gate {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 14px;
+      background: var(--panel-2);
+    }
+
+    .gate.pass strong { color: var(--green); }
+    .gate.pending strong { color: #ffb1b1; }
+    .gate span {
+      display: block;
+      color: var(--muted);
+      margin-top: 6px;
+      font-size: 13px;
+    }
+
+    .section { display: none; }
+    .section.active { display: grid; gap: 18px; }
+
+    @media (max-width: 980px) {
+      .shell { grid-template-columns: 1fr; }
+      aside { height: auto; position: static; border-right: 0; border-bottom: 1px solid var(--line); }
+      .grid, .architecture { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .topbar { align-items: start; flex-direction: column; }
+    }
+
+    @media (max-width: 620px) {
+      main { padding: 16px; }
+      .grid, .architecture { grid-template-columns: 1fr; }
+      .bar-row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside>
+      <h1 class="brand">Sovereign-Sigma</h1>
+      <p class="subtitle">Implementation console</p>
+      <div class="nav">
+        <button class="active" data-tab="overview">Overview</button>
+        <button data-tab="phases">Phases</button>
+        <button data-tab="architecture">Architecture</button>
+        <button data-tab="endpoints">Admin API</button>
+        <button data-tab="gates">Production Gates</button>
+      </div>
+      <div class="deploy-gate">
+        <strong><span class="dot red"></span> Not deployed</strong>
+        <span>Code is implemented and locally verified. Production deployment still requires real Cloudflare IDs, secrets, endpoints, migrations, and live smoke tests.</span>
+      </div>
+    </aside>
+
+    <main>
+      <div class="topbar">
+        <div>
+          <h1>Build Status Dashboard</h1>
+          <p class="subtitle">Visual snapshot of the implemented Sovereign-Sigma phases and verification state.</p>
+        </div>
+        <div class="status-pill"><span class="dot"></span> Local verification passed</div>
+      </div>
+
+      <section id="overview" class="section active">
+        <div class="grid">
+          <div class="card metric">
+            <div class="value">32</div>
+            <div class="label">Phase blocks implemented</div>
+            <div class="mini">17-40, 41, 42-48, intelligence upgrade</div>
+          </div>
+          <div class="card metric">
+            <div class="value">3</div>
+            <div class="label">Worker bundles verified</div>
+            <div class="mini">Core, Ingest, Executioner</div>
+          </div>
+          <div class="card metric">
+            <div class="value">18</div>
+            <div class="label">Admin/API surfaces</div>
+            <div class="mini">JWT-protected management plane</div>
+          </div>
+          <div class="card metric">
+            <div class="value">0</div>
+            <div class="label">Production deploys completed</div>
+            <div class="mini" style="color:#ffb1b1">Deployment gated</div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Completion By System Area</h2>
+          <div class="bars">
+            <div class="bar-row"><span>Trading intelligence</span><div class="bar"><div class="fill" style="width:100%"></div></div><strong>100%</strong></div>
+            <div class="bar-row"><span>Execution/risk controls</span><div class="bar"><div class="fill" style="width:100%"></div></div><strong>100%</strong></div>
+            <div class="bar-row"><span>Admin backend</span><div class="bar"><div class="fill" style="width:100%"></div></div><strong>100%</strong></div>
+            <div class="bar-row"><span>Verification</span><div class="bar"><div class="fill" style="width:100%"></div></div><strong>100%</strong></div>
+            <div class="bar-row"><span>Production deployment</span><div class="bar"><div class="fill" style="width:0%;background:var(--red)"></div></div><strong>0%</strong></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>What You Can See In The Real Admin UI</h2>
+          <div class="phase-grid">
+            <div class="phase"><header><h3>Live Pulse</h3><span class="tag done">built</span></header><p>500ms WebSocket stream with equity, PnL, drawdown, imbalance, latency, jitter, toxicity, regime coefficient, and agent traces.</p></div>
+            <div class="phase"><header><h3>Agent CCTV</h3><span class="tag done">built</span></header><p>Trace feed with rationale, confidence, expected value, feature vector, risk snapshot, signal ID, and trace ID.</p></div>
+            <div class="phase"><header><h3>Risk Command Center</h3><span class="tag done">built</span></header><p>Kill-switch, Kelly fraction, max position, EV threshold, and latency threshold updates with high-impact confirmation.</p></div>
+            <div class="phase"><header><h3>Time Machine</h3><span class="tag done">built</span></header><p>Date-ranged replay controls, shadow execution, generated intent count, replay progress, and theoretical PnL outputs.</p></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="phases" class="section">
+        <div class="panel">
+          <h2>Phase Timeline</h2>
+          <div class="phase-grid" id="phaseGrid"></div>
+        </div>
+      </section>
+
+      <section id="architecture" class="section">
+        <div class="panel">
+          <h2>Runtime Architecture</h2>
+          <div class="architecture">
+            <div class="node"><strong>Gateway Worker</strong><span>JWT auth, admin routes, config updates, telemetry aggregation, vault workflow.</span><code>src/index.ts</code></div>
+            <div class="node"><strong>Ingest Worker</strong><span>Multi-exchange streams, backoff, snapshots, desync recovery, external stream alerts.</span><code>src/IngestWorker.ts</code></div>
+            <div class="node"><strong>TradingEngine DO</strong><span>Singleton state, order book, agents, replay, bus, stale-data quote pulls.</span><code>src/TradingEngine.ts</code></div>
+            <div class="node"><strong>Executioner Worker</strong><span>Pre-trade checks, signing, order/cancel routes, balance connection test.</span><code>src/ExecutionerWorker.ts</code></div>
+            <div class="node"><strong>D1</strong><span>Logs, trades, decisions, ticks, execution quality, attribution-ready indexes.</span><code>schema.sql</code></div>
+            <div class="node"><strong>KV + Vault</strong><span>Atomic config cache, encrypted credential rotation metadata, notifier debounce.</span><code>CONFIG_STORE / RISK_VAULT</code></div>
+            <div class="node"><strong>Agents</strong><span>Oracle, Profiler, Croupier, Pit Boss, Hedge, Janitor, Sentiment.</span><code>src/agents/*</code></div>
+            <div class="node"><strong>Notifier</strong><span>Discord and Telegram alerts with priority, debouncing, and sanitized metadata.</span><code>src/utils/Notifier.ts</code></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="endpoints" class="section">
+        <div class="panel">
+          <h2>Management Surface</h2>
+          <table class="endpoint-table">
+            <thead><tr><th>Endpoint</th><th>Scope</th><th>Purpose</th></tr></thead>
+            <tbody>
+              <tr><td><code>GET /admin/ui</code></td><td>READ</td><td>Lightweight command center surface.</td></tr>
+              <tr><td><code>GET /admin/stream</code></td><td>READ</td><td>Live WebSocket telemetry and dashboard pulses.</td></tr>
+              <tr><td><code>GET /admin/trace</code></td><td>READ</td><td>Agent CCTV feed and decision traces.</td></tr>
+              <tr><td><code>GET /admin/attribution</code></td><td>READ</td><td>Sharpe, profit factor, PnL timeline by primary driver.</td></tr>
+              <tr><td><code>GET|POST /admin/config</code></td><td>READ/WRITE</td><td>Atomic risk config and kill-switch updates.</td></tr>
+              <tr><td><code>GET|POST /admin/vault</code></td><td>READ/WRITE</td><td>Masked credential status and encrypted rotation workflow.</td></tr>
+              <tr><td><code>POST /admin/vault/test</code></td><td>WRITE</td><td>Exchange balance-path credential test.</td></tr>
+              <tr><td><code>POST /admin/replay</code></td><td>WRITE</td><td>Date-ranged shadow replay trigger.</td></tr>
+              <tr><td><code>GET /admin/replay/status</code></td><td>READ</td><td>Replay progress and failure state.</td></tr>
+              <tr><td><code>GET /admin/logs</code></td><td>READ</td><td>Paginated telemetry and audit logs.</td></tr>
+              <tr><td><code>GET /admin/history</code></td><td>READ</td><td>Trade history with agent linkage.</td></tr>
+              <tr><td><code>GET /admin/state</code></td><td>READ</td><td>Current Durable Object engine state.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="gates" class="section">
+        <div class="panel">
+          <h2>Verification And Deployment Gates</h2>
+          <div class="gate-list">
+            <div class="gate pass"><strong>Passed: TypeScript strict check</strong><span><code>npm run typecheck</code></span></div>
+            <div class="gate pass"><strong>Passed: Core Worker dry-run</strong><span><code>wrangler deploy --dry-run</code></span></div>
+            <div class="gate pass"><strong>Passed: Ingest Worker dry-run</strong><span><code>wrangler deploy --dry-run -c wrangler.ingest.toml</code></span></div>
+            <div class="gate pass"><strong>Passed: Executioner Worker dry-run</strong><span><code>wrangler deploy --dry-run -c wrangler.executioner.toml</code></span></div>
+            <div class="gate pass"><strong>Passed: D1 schema parse</strong><span><code>sqlite3 :memory: &lt; schema.sql</code></span></div>
+            <div class="gate pending"><strong>Pending: Real production IDs</strong><span>Replace placeholder D1, KV, endpoint, and exchange values.</span></div>
+            <div class="gate pending"><strong>Pending: Worker secrets</strong><span>Provision JWT, admin, Kaiko, exchange, vault, Telegram, and Discord secrets.</span></div>
+            <div class="gate pending"><strong>Pending: Live Cloudflare deploy</strong><span>Run actual deploys and live smoke tests before enabling trading.</span></div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const phases = [
+      ["17", "Historical Replay & Shadow Backtesting", "Shadow replay, journaled ticks, theoretical PnL."],
+      ["18", "Sentiment Agent & News Processing", "News ingest and sentiment state routing."],
+      ["19", "Oracle Regime Detection", "Regime and volatility-aware market state."],
+      ["20", "Lead-Lag Engine", "Cross-asset lead/lag signal surface."],
+      ["21", "Croupier EV Engine", "Expected value and execution intent logic."],
+      ["22", "Oracle PDF Generator", "Forward price probability distribution."],
+      ["23", "Bayesian Updating", "Evidence-weighted posterior updates."],
+      ["24", "Adverse Selection Defense", "Toxic-flow aware quote pull logic."],
+      ["25", "Pit Boss Kelly Sizing", "Fractional Kelly and position caps."],
+      ["26", "Drawdown & VaR", "Fail-closed portfolio risk controls."],
+      ["27", "Inventory Skew", "Delta and inventory-aware market making."],
+      ["28", "Avellaneda-Stoikov", "Reservation price and optimal spread quotes."],
+      ["29", "Toxic Flow Filter", "VPIN alerts and temporary quote suspension."],
+      ["30", "Execution Randomization", "Camouflage, sizing, and timing jitter."],
+      ["31", "Executioner Worker", "Exchange handshake and pre-trade guard."],
+      ["32", "Signature Engine", "HMAC/Ed25519 signing path."],
+      ["33", "FOK / Post-Only", "Order semantics and fail-closed validation."],
+      ["34", "Order Lifecycle", "Managed order state and execution reports."],
+      ["35", "Hedge Agent", "Automated offsetting intent path."],
+      ["36", "Smart Order Routing", "Venue-aware route planning."],
+      ["37", "Rate Limits", "Durable token buckets by venue/priority."],
+      ["38", "Cluster Failover", "Redundant stream recovery logic."],
+      ["39", "Janitor Agent", "State hygiene and log retention."],
+      ["40", "Slippage Analytics", "Execution quality and cost buffers."],
+      ["41", "Admin D1 Aggregator", "Logs, history, state, filters, indexes."],
+      ["42", "Live Admin Stream", "500ms dashboard pulse over WebSocket."],
+      ["43", "Agent CCTV", "Last 50 reasoning steps per agent."],
+      ["44", "Risk Command Center", "Kill-switch and risk-parameter controls."],
+      ["45", "Attribution", "Sharpe, profit factor, and driver PnL."],
+      ["46", "Credential Vault UI", "Masked status, encrypted rotation, test path."],
+      ["47", "Time Machine", "Date-ranged replay and progress state."],
+      ["48", "External Alerting", "Telegram and Discord alert dispatch."],
+      ["XXX", "Intelligence Upgrade", "Regime-aware Bayesian skepticism κ."]
+    ];
+
+    const phaseGrid = document.getElementById("phaseGrid");
+    phaseGrid.innerHTML = phases.map(([num, title, desc]) => `
+      <article class="phase">
+        <header><h3>Phase ${num}: ${title}</h3><span class="tag done">done</span></header>
+        <p>${desc}</p>
+        <span class="tag">local verified</span>
+      </article>
+    `).join("");
+
+    document.querySelectorAll(".nav button").forEach((button) => {
+      button.addEventListener("click", () => {
+        document.querySelectorAll(".nav button").forEach((item) => item.classList.remove("active"));
+        document.querySelectorAll(".section").forEach((item) => item.classList.remove("active"));
+        button.classList.add("active");
+        document.getElementById(button.dataset.tab).classList.add("active");
+      });
+    });
+  </script>
+</body>
+</html>

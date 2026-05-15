@@ -1,0 +1,32 @@
+### Phase 32: High-Speed Cryptographic Signature Engine **Objective:** Implement a low-latency signing module using the Web Crypto API to generate ED25519 or
+ECDSA
+
+signatures
+
+required
+
+for
+
+authenticated
+
+exchange
+
+requests.
+ **Technical Specifications:** 1. **Algorithm:** Support ED25519 (for Polymarket/Layer 2) and HMAC-SHA256 (for legacy
+exchanges).
+ 2. **Key Derivation:** Securely derive or import private keys from the environment's
+`SECRET_VAULT`.
+ 3. **Performance:** Ensure signing happens in <1ms to minimize the path from "Decision" to
+"Execution."
+ **Requirements:** - Create `src/utils/SignatureEngine.ts`. - **Logic:** Pre-cache the imported `CryptoKey` in the worker's global memory to avoid the
+overhead
+
+of
+
+re-importing
+
+on
+
+every
+
+trade.

@@ -1,0 +1,27 @@
+### Phase 34: Stateful Order Lifecycle Management **Objective:** Implement a lifecycle tracker inside the `TradingEngine` DO to manage the status of all
+"In-Flight"
+
+orders.
+ **Technical Specifications:** 1. **States:** `PENDING`, `OPEN`, `PARTIAL_FILL`, `FILLED`, `CANCELLED`, `REJECTED`. 2. **Timeout:** Implement a "Zombie Order" timeout. If an order isn't acknowledged by the
+exchange
+
+within
+
+2000ms,
+
+it
+
+must
+
+be
+
+flagged
+
+for
+
+manual/janitor
+
+cleanup.
+ 3. **Inventory Sync:** As partial fills occur, immediately update the
+`engineState.activePositions`.
+ **Requirements:** - Add an `orderMap` to the `TradingEngine` state. - **Logic:** Reconcile the exchange's `order_id` with our internal `client_id`.
