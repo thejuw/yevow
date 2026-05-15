@@ -33,6 +33,8 @@ export interface CroupierInput {
   minEvThreshold?: number;
   exchangeFeeBps?: number;
   executionCostBufferBps?: number;
+  fundingRateHourly?: number;
+  fundingHorizonHours?: number;
   macroBias?: MacroBias;
   observedAt: string;
 }
@@ -133,6 +135,15 @@ export class CroupierAgent {
     const fees = mid * exchangeFeeBps / 10_000;
     const executionCostBuffer =
       mid * Math.max(0, finiteNumber(input.executionCostBufferBps, 0)) / 10_000;
+    const fundingRateHourly = finiteNumber(input.fundingRateHourly, 0);
+    const fundingHorizonHours = Math.max(0, finiteNumber(input.fundingHorizonHours, 1));
+    const fundingCarryCost = calculateFundingCarryCost(
+      mid,
+      requestedSize,
+      direction,
+      fundingRateHourly,
+      fundingHorizonHours
+    );
     const inventoryPenalty = Math.abs(input.inventory.netDelta) * this.riskAversionFactor;
     const leadLagBoost = input.leadLag.executable ? Math.max(0, input.leadLag.expectedValue ?? 0) : 0;
     const macroBiasEv = mid * 0.0005 * macroScore;
@@ -141,6 +152,7 @@ export class CroupierAgent {
       estimatedSlippage +
       adverseSelectionCost * mid +
       executionCostBuffer +
+      fundingCarryCost +
       inventoryPenalty;
     const expectedValue =
       probabilityWin * profit - probabilityLoss * loss - executionCosts + leadLagBoost + macroBiasEv;
@@ -172,7 +184,8 @@ export class CroupierAgent {
       maxSlippageBps: Math.max(5, input.book.spreadBps ?? 5),
       confidence: Math.min(1, Math.max(0, Math.abs(input.book.weightedImbalance ?? 0))),
       rationale:
-        `Croupier EV calculation with toxicity, sentiment, inventory, slippage, lead-lag and macro bias inputs. ` +
+        `Croupier EV calculation with toxicity, sentiment, inventory, slippage, funding, lead-lag and macro bias inputs. ` +
+        `fundingHourly=${round(fundingRateHourly, 8)} fundingCarry=${round(fundingCarryCost, 8)} ` +
         `macroBias=${input.macroBias?.direction ?? "NEUTRAL"} score=${round(macroScore, 4)}`,
       createdAt: input.observedAt
     };
@@ -398,6 +411,27 @@ function estimateSlippageCost(
   }
 
   return Math.abs(notional / filled - best);
+}
+
+function calculateFundingCarryCost(
+  midPrice: number,
+  requestedSize: number,
+  direction: TradeDirection,
+  fundingRateHourly: number,
+  horizonHours: number
+): number {
+  if (!Number.isFinite(fundingRateHourly) || fundingRateHourly === 0 || horizonHours <= 0) {
+    return 0;
+  }
+
+  const notional = midPrice * requestedSize;
+  const signedCost =
+    direction === "LONG"
+      ? notional * fundingRateHourly * horizonHours
+      : -notional * fundingRateHourly * horizonHours;
+  const cap = notional * 0.05;
+
+  return Math.max(-cap, Math.min(cap, signedCost));
 }
 
 function finiteNumber(value: number | undefined, fallback: number): number {

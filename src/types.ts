@@ -22,6 +22,21 @@ export interface Env {
   EXCHANGE_WEIGHTS?: string;
   CLOCK_SYNC_ALPHA?: string;
   CLOCK_SYNC_MAX_OFFSET_MS?: string;
+  HL_WS_URL?: string;
+  HL_INFO_URL?: string;
+  HL_EXCHANGE_URL?: string;
+  HL_ASSET?: string;
+  HL_ASSET_INDEX?: string;
+  HL_ACCOUNT_ADDRESS?: string;
+  HL_AGENT_ADDRESS?: string;
+  HL_AGENT_SECRET?: string;
+  HL_VAULT_ADDRESS?: string;
+  HL_IS_MAINNET?: string;
+  HL_DEFAULT_TIF?: string;
+  HL_ORDER_EXPIRES_MS?: string;
+  HL_REST_RATE_LIMIT_PER_MINUTE?: string;
+  HL_REST_REFILL_PER_SECOND?: string;
+  FUNDING_HORIZON_HOURS?: string;
   EXCHANGE_API_HOSTNAME?: string;
   GOLDEN_COLOS?: string;
   HIGH_LATENCY_COLO_RISK_MULTIPLIER?: string;
@@ -133,6 +148,7 @@ export type MarketTransport = "grpc" | "websocket";
 export type MarketDataSource =
   | "KAIKO"
   | "BINANCE"
+  | "HYPERLIQUID"
   | "COINBASE"
   | "KRAKEN"
   | "OKX"
@@ -161,6 +177,10 @@ export interface UniversalTick {
   sourceWeight: number;
   bestBid?: number;
   bestAsk?: number;
+  fundingRateHourly?: number;
+  markPrice?: number;
+  oraclePrice?: number;
+  openInterest?: number;
   tickSize?: number;
   raw?: JsonRecord;
 }
@@ -236,6 +256,7 @@ export interface ExchangeStreamConfig {
   clusterUrls?: string[];
   snapshotUrl?: string;
   subscription?: string | JsonRecord;
+  subscriptions?: Array<string | JsonRecord>;
   authHeader?: string;
   apiKeyEnv?: string;
   weight?: number;
@@ -309,6 +330,7 @@ export interface EngineState {
   macroBias: MacroBias;
   temporaryOverride: TemporaryGovernanceOverride | null;
   location: EngineLocation;
+  fundingRates: Record<string, FundingRateSnapshot>;
   microstructure: MicrostructureMetrics;
   priceDiscovery: PriceDiscoveryMetrics;
   oracle: OracleState;
@@ -503,6 +525,18 @@ export interface EngineLocation {
   positionSizeMultiplier: number;
   observedLatencyMs: number | null;
   reason: "GOLDEN_REGION" | "NON_GOLDEN_REGION" | "UNKNOWN_COLO";
+}
+
+export interface FundingRateSnapshot {
+  instrumentCode: string;
+  source_exchange: string;
+  marketKey: string;
+  hourlyRate: number;
+  markPrice: number | null;
+  oraclePrice: number | null;
+  openInterest: number | null;
+  receivedAt: ISO8601;
+  updatedAt: ISO8601;
 }
 
 export interface PriceLevel {

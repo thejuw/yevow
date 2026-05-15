@@ -538,8 +538,14 @@ function sanitizeBucket(
 function isOrderFlowTick(tick: MarketTick): boolean {
   const commodity =
     typeof tick.raw?.commodity === "string" ? tick.raw.commodity.toUpperCase() : null;
+  const eventType =
+    typeof tick.raw?.eventType === "string" ? tick.raw.eventType.toLowerCase() : null;
 
-  return commodity === null || commodity.includes("TRADE");
+  if (commodity?.includes("ORDER_BOOK") || eventType === "l2book" || eventType === "depthupdate") {
+    return false;
+  }
+
+  return commodity === null || commodity.includes("TRADE") || eventType === "trade";
 }
 
 function rollingTradeSizeStats(

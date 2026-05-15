@@ -27,18 +27,27 @@ preview_id = "3d69fe3608404e049791ce81142dab8e"
 mode = "smart"
 
 [vars]
-EXCHANGE_ADAPTER = "binance-us"
-EXCHANGE_BASE_URL = "https://api.binance.us"
+EXCHANGE_ADAPTER = "hyperliquid"
+EXCHANGE_BASE_URL = "https://api.hyperliquid.xyz"
+HL_INFO_URL = "https://api.hyperliquid.xyz/info"
+HL_EXCHANGE_URL = "https://api.hyperliquid.xyz/exchange"
+HL_ASSET = "BTC"
+HL_DEFAULT_TIF = "Alo"
+HL_ORDER_EXPIRES_MS = "10000"
+HL_REST_RATE_LIMIT_PER_MINUTE = "1000"
+HL_REST_REFILL_PER_SECOND = "18"
+HL_IS_MAINNET = "true"
 EXCHANGE_ORDER_TEST_MODE = "true"
 EXCHANGE_RECV_WINDOW_MS = "5000"
-SIGNATURE_ALGORITHM = "HMAC-SHA256"
+SIGNATURE_ALGORITHM = "HYPERLIQUID_EIP712"
 SLIPPAGE_GUARD_TICKS = "2"
 
 # Secrets are intentionally excluded from source control/config values.
 # Provision them with:
-#   wrangler secret put EXCHANGE_API_KEY -c wrangler.executioner.toml
-#   wrangler secret put EXCHANGE_API_SECRET -c wrangler.executioner.toml
+#   wrangler secret put HL_AGENT_ADDRESS -c wrangler.executioner.toml
+#   wrangler secret put HL_AGENT_SECRET -c wrangler.executioner.toml
+#   wrangler secret put HL_ACCOUNT_ADDRESS -c wrangler.executioner.toml
 #
-# Keep EXCHANGE_ORDER_TEST_MODE="true" until Binance.US account, IP policy,
-# and minimum-order validation have all passed. Setting it to "false" enables
-# live order submission through POST /api/v3/order.
+# Keep EXCHANGE_ORDER_TEST_MODE="true" until the Hyperliquid API wallet is
+# approved, account reads pass, and signed test payloads have been reviewed.
+# Setting it to "false" enables live POST /exchange actions.

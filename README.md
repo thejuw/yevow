@@ -42,6 +42,17 @@ Alerting setup and verification lives in `docs/alerting-setup.md`.
 The repository is designed to fail closed:
 
 - `TRADING_ENABLED` should stay false until intentionally enabled through the authenticated admin API.
-- `EXCHANGE_ORDER_TEST_MODE` is true by default for Binance.US execution validation.
+- `EXCHANGE_ORDER_TEST_MODE` is true by default for Hyperliquid signed-payload validation.
+- Hyperliquid live execution requires an approved API wallet/agent, never the main fund-holding wallet private key.
 - No API credentials or runtime secrets belong in source control.
 - Runtime secrets should live in Cloudflare Worker Secrets when possible; the Settings Console can stage encrypted `RISK_VAULT` credentials for operator rotation workflows, and execution uses env secrets first with vault fallback.
+
+## Hyperliquid Secrets
+
+```bash
+wrangler secret put HL_AGENT_ADDRESS -c wrangler.executioner.toml
+wrangler secret put HL_AGENT_SECRET -c wrangler.executioner.toml
+wrangler secret put HL_ACCOUNT_ADDRESS -c wrangler.executioner.toml
+```
+
+Leave `EXCHANGE_ORDER_TEST_MODE=true` until account reads pass and a signed order/cancel payload has been reviewed against Hyperliquid.

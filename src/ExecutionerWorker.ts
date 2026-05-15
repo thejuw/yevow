@@ -6,13 +6,16 @@ import type { Env, ExchangeOpenOrder, ExecutionReport, JsonRecord, TradeIntent }
 
 const SINGLETON_ENGINE_NAME = "sovereign-sigma:singleton:trading-engine:v1";
 const BINANCE_US_BASE_URL = "https://api.binance.us";
+const HYPERLIQUID_BASE_URL = "https://api.hyperliquid.xyz";
 const DEFAULT_RECV_WINDOW_MS = 5_000;
 const MAX_RECV_WINDOW_MS = 60_000;
 const limiter = new RateLimiter();
 limiter.configure("default", 10, 10);
+limiter.configure("hyperliquid", 1_000, 18);
+let hyperliquidRateLimitConfigKey = "1000:18";
 const secretCache = new Map<string, { value: string | null; expiresAt: number }>();
 
-type ExchangeAdapter = "generic-json" | "binance-us";
+type ExchangeAdapter = "generic-json" | "binance-us" | "hyperliquid";
 
 interface PreparedExchangeRequest {
   endpoint: string;
@@ -33,6 +36,15 @@ interface BinanceSymbolFilters {
 }
 
 const binanceFilterCache = new Map<string, BinanceSymbolFilters>();
+
+interface HyperliquidAssetMeta {
+  coin: string;
+  assetIndex: number;
+  szDecimals: number;
+  loadedAt: number;
+}
+
+const hyperliquidAssetCache = new Map<string, HyperliquidAssetMeta>();
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -99,6 +111,7 @@ async function executeIntent(
   }
 
   const priority = intent.action === "SELL" && intent.orderType === "MARKET" ? "HEDGE" : "NEW";
+  configureRuntimeRateLimits(env);
   const reservation = limiter.reserve(intent.source_exchange ?? "default", priority);
 
   if (!reservation.allowed) {
@@ -134,7 +147,23 @@ async function executeIntent(
   let body: Record<string, unknown> | null;
 
   try {
-    response = await fetch(exchangeRequest.endpoint, exchangeRequest.init);
+    if (resolveAdapter(env) === "hyperliquid" && isExchangeOrderTestMode(env)) {
+      response = new Response(
+        JSON.stringify({
+          status: "TEST_ACCEPTED",
+          response: {
+            type: "order",
+            data: {
+              statuses: [{ resting: { oid: `test-${intent.intentId}` } }]
+            }
+          },
+          message: "Hyperliquid signed order validated locally; no live order was placed."
+        }),
+        { status: 200, headers: { "content-type": "application/json;charset=UTF-8" } }
+      );
+    } else {
+      response = await fetch(exchangeRequest.endpoint, exchangeRequest.init);
+    }
     body = await safeJson(response);
     if (resolveAdapter(env) === "binance-us" && isBinanceOrderTestMode(env) && response.ok) {
       body = {
@@ -241,6 +270,9 @@ async function listOpenOrders(env: Env, logger: Logger): Promise<Response> {
   if (resolveAdapter(env) === "binance-us") {
     return listBinanceOpenOrders(env, logger);
   }
+  if (resolveAdapter(env) === "hyperliquid") {
+    return listHyperliquidOpenOrders(env, logger);
+  }
 
   const endpoint = env.EXCHANGE_OPEN_ORDERS_ENDPOINT;
 
@@ -270,6 +302,9 @@ async function listOpenOrders(env: Env, logger: Logger): Promise<Response> {
 async function getAccountBalance(env: Env, logger: Logger): Promise<Response> {
   if (resolveAdapter(env) === "binance-us") {
     return getBinanceAccountBalance(env, logger);
+  }
+  if (resolveAdapter(env) === "hyperliquid") {
+    return getHyperliquidAccountBalance(env, logger);
   }
 
   const endpoint = env.EXCHANGE_ACCOUNT_BALANCE_ENDPOINT;
@@ -334,6 +369,9 @@ async function prepareOrderRequest(
 ): Promise<PreparedExchangeRequest> {
   if (adapter === "binance-us") {
     return prepareBinanceOrderRequest(env, intent);
+  }
+  if (adapter === "hyperliquid") {
+    return prepareHyperliquidOrderRequest(env, intent);
   }
 
   const payload = exchangePayload(intent, adapter);
@@ -435,6 +473,91 @@ async function prepareBinanceOrderRequest(
       quantity: params.quantity,
       postOnly: intent.postOnly,
       testMode: isBinanceOrderTestMode(env)
+    }
+  };
+}
+
+async function prepareHyperliquidOrderRequest(
+  env: Env,
+  intent: TradeIntent
+): Promise<PreparedExchangeRequest> {
+  const coin = hyperliquidCoin(env, intent.instrumentCode);
+  const asset = await hyperliquidAssetMeta(env, coin);
+  const expectedPrice = positive(intent.expectedPrice, "EXPECTED_PRICE");
+  const requestedSize = positive(intent.approvedSize ?? intent.requestedSize, "ORDER_SIZE");
+  const tif = hyperliquidTif(env, intent);
+  const nonce = Date.now();
+  const expiresAfter = hyperliquidExpiresAfter(env, nonce);
+  const vaultAddress = normalizeOptionalAddress(env.HL_VAULT_ADDRESS);
+  const agentSecret = requireString(
+    await exchangeSecret(env, "HL_AGENT_SECRET"),
+    "HL_AGENT_SECRET"
+  );
+  const agentAddress = await exchangeSecret(env, "HL_AGENT_ADDRESS");
+  const derivedAgentAddress =
+    SignatureEngine.hyperliquidAddressFromPrivateKey(agentSecret);
+
+  if (agentAddress && agentAddress.toLowerCase() !== derivedAgentAddress) {
+    throw new Error("HL_AGENT_ADDRESS_SECRET_MISMATCH");
+  }
+
+  const order: JsonRecord = {
+    a: asset.assetIndex,
+    b: intent.action === "BUY",
+    p: hyperliquidWireNumber(expectedPrice),
+    s: hyperliquidWireNumber(requestedSize),
+    r: isReduceOnlyIntent(intent),
+    t: { limit: { tif } },
+    c: hyperliquidCloid(intent.intentId)
+  };
+  const action: JsonRecord = {
+    type: "order",
+    orders: [order],
+    grouping: "na"
+  };
+  const signingStartedAt = performance.now();
+  const signature = await SignatureEngine.signHyperliquidL1Action({
+    secret: agentSecret,
+    action,
+    nonce,
+    vaultAddress,
+    expiresAfter,
+    isMainnet: hyperliquidIsMainnet(env)
+  });
+  const payload: JsonRecord = {
+    action,
+    nonce,
+    signature: signature as unknown as JsonRecord,
+    vaultAddress: vaultAddress ?? null
+  };
+
+  if (expiresAfter !== null) {
+    payload.expiresAfter = expiresAfter;
+  }
+
+  return {
+    endpoint: hyperliquidExchangeUrl(env),
+    init: {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json"
+      },
+      body: JSON.stringify(payload)
+    },
+    signingLatencyMs: roundLatency(performance.now() - signingStartedAt),
+    redactedPayload: {
+      adapter: "hyperliquid",
+      coin,
+      assetIndex: asset.assetIndex,
+      side: intent.action,
+      price: order.p,
+      size: order.s,
+      tif,
+      reduceOnly: order.r,
+      cloid: order.c,
+      testMode: isExchangeOrderTestMode(env),
+      agentAddress: derivedAgentAddress
     }
   };
 }
@@ -546,6 +669,10 @@ async function sendCancel(
     return fetch(signed.endpoint, signed.init);
   }
 
+  if (resolveAdapter(env) === "hyperliquid") {
+    return sendHyperliquidCancel(env, payload);
+  }
+
   const endpoint = requireEndpoint(env.EXCHANGE_CANCEL_ENDPOINT, "EXCHANGE_CANCEL_ENDPOINT");
   const body = JSON.stringify(payload);
 
@@ -602,6 +729,53 @@ async function getBinanceAccountBalance(env: Env, logger: Logger): Promise<Respo
   }
 }
 
+async function listHyperliquidOpenOrders(env: Env, logger: Logger): Promise<Response> {
+  try {
+    configureRuntimeRateLimits(env);
+    const response = await hyperliquidInfo(env, {
+      type: "openOrders",
+      user: hyperliquidAccountAddress(env)
+    });
+    const body = await safeJson(response);
+    const orders = normalizeOpenOrders(body);
+
+    logger.info("HYPERLIQUID_OPEN_ORDERS_SYNCED", "Fetched Hyperliquid open orders", {
+      status: response.status,
+      count: orders.length
+    });
+
+    return json({ ok: response.ok, status: response.status, orders, body }, response.ok ? 200 : 502);
+  } catch (error) {
+    logger.error("HYPERLIQUID_OPEN_ORDERS_FAILED", "Failed to fetch Hyperliquid open orders", {
+      error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
+    });
+    return json({ ok: false, orders: [], error: "HYPERLIQUID_OPEN_ORDERS_FAILED" }, 503);
+  }
+}
+
+async function getHyperliquidAccountBalance(env: Env, logger: Logger): Promise<Response> {
+  try {
+    configureRuntimeRateLimits(env);
+    const response = await hyperliquidInfo(env, {
+      type: "clearinghouseState",
+      user: hyperliquidAccountAddress(env)
+    });
+    const body = await safeJson(response);
+
+    logger.info("HYPERLIQUID_ACCOUNT_BALANCE_TESTED", "Hyperliquid account state endpoint tested", {
+      status: response.status,
+      ok: response.ok
+    });
+
+    return json({ ok: response.ok, status: response.status, body }, response.ok ? 200 : 502);
+  } catch (error) {
+    logger.error("HYPERLIQUID_ACCOUNT_BALANCE_FAILED", "Failed to test Hyperliquid account state", {
+      error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
+    });
+    return json({ ok: false, error: "HYPERLIQUID_ACCOUNT_BALANCE_FAILED" }, 503);
+  }
+}
+
 async function cancelBinanceOpenOrders(env: Env, instrumentCode?: string): Promise<Response> {
   if (instrumentCode && instrumentCode !== "ALL") {
     const signed = await binanceSignedRequest(env, "DELETE", "/api/v3/openOrders", {
@@ -642,6 +816,140 @@ async function cancelBinanceOpenOrders(env: Env, instrumentCode?: string): Promi
     status: ok ? 200 : 502,
     headers: { "content-type": "application/json;charset=UTF-8" }
   });
+}
+
+async function sendHyperliquidCancel(
+  env: Env,
+  payload: Record<string, unknown>
+): Promise<Response> {
+  configureRuntimeRateLimits(env);
+  const instrument = stringField(payload, ["instrument", "instrumentCode"]);
+
+  if (payload.cancel_all) {
+    const openOrdersResponse = await hyperliquidInfo(env, {
+      type: "openOrders",
+      user: hyperliquidAccountAddress(env)
+    });
+    const openOrdersBody = await safeJson(openOrdersResponse);
+    const orders = normalizeOpenOrders(openOrdersBody)
+      .filter((order) => !instrument || instrument === "ALL" || order.instrumentCode === instrument.toLowerCase());
+
+    if (!openOrdersResponse.ok) {
+      return new Response(JSON.stringify({ ok: false, status: openOrdersResponse.status, body: openOrdersBody }), {
+        status: 502,
+        headers: { "content-type": "application/json;charset=UTF-8" }
+      });
+    }
+
+    if (orders.length === 0) {
+      return new Response(JSON.stringify({ ok: true, cancelled: 0, results: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json;charset=UTF-8" }
+      });
+    }
+
+    const cancelPayload = await prepareHyperliquidCancelRequest(env, orders.map((order) => ({
+      instrumentCode: order.instrumentCode,
+      orderId: order.exchangeOrderId
+    })));
+    if (isExchangeOrderTestMode(env)) {
+      return hyperliquidTestCancelResponse(orders.length);
+    }
+    return fetch(cancelPayload.endpoint, cancelPayload.init);
+  }
+
+  const orderId = requireString(stringField(payload, ["order_id", "orderId"]), "orderId");
+  const instrumentCode = requireString(instrument, "instrumentCode");
+  const cancelPayload = await prepareHyperliquidCancelRequest(env, [{ instrumentCode, orderId }]);
+  if (isExchangeOrderTestMode(env)) {
+    return hyperliquidTestCancelResponse(1);
+  }
+  return fetch(cancelPayload.endpoint, cancelPayload.init);
+}
+
+async function prepareHyperliquidCancelRequest(
+  env: Env,
+  cancels: Array<{ instrumentCode: string; orderId: string }>
+): Promise<PreparedExchangeRequest> {
+  const nonce = Date.now();
+  const expiresAfter = hyperliquidExpiresAfter(env, nonce);
+  const vaultAddress = normalizeOptionalAddress(env.HL_VAULT_ADDRESS);
+  const agentSecret = requireString(
+    await exchangeSecret(env, "HL_AGENT_SECRET"),
+    "HL_AGENT_SECRET"
+  );
+  const cancelWires = [];
+
+  for (const cancel of cancels) {
+    const coin = hyperliquidCoin(env, cancel.instrumentCode);
+    const asset = await hyperliquidAssetMeta(env, coin);
+
+    if (/^\d+$/.test(cancel.orderId)) {
+      cancelWires.push({ a: asset.assetIndex, o: Number(cancel.orderId) });
+    } else {
+      cancelWires.push({ asset: asset.assetIndex, cloid: normalizeHyperliquidCloid(cancel.orderId) });
+    }
+  }
+
+  const action: JsonRecord =
+    "o" in cancelWires[0]
+      ? { type: "cancel", cancels: cancelWires as unknown as JsonRecord[] }
+      : { type: "cancelByCloid", cancels: cancelWires as unknown as JsonRecord[] };
+  const signingStartedAt = performance.now();
+  const signature = await SignatureEngine.signHyperliquidL1Action({
+    secret: agentSecret,
+    action,
+    nonce,
+    vaultAddress,
+    expiresAfter,
+    isMainnet: hyperliquidIsMainnet(env)
+  });
+  const body: JsonRecord = {
+    action,
+    nonce,
+    signature: signature as unknown as JsonRecord,
+    vaultAddress: vaultAddress ?? null
+  };
+
+  if (expiresAfter !== null) {
+    body.expiresAfter = expiresAfter;
+  }
+
+  return {
+    endpoint: hyperliquidExchangeUrl(env),
+    init: {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json"
+      },
+      body: JSON.stringify(body)
+    },
+    signingLatencyMs: roundLatency(performance.now() - signingStartedAt),
+    redactedPayload: {
+      adapter: "hyperliquid",
+      actionType: action.type,
+      cancelCount: cancels.length,
+      testMode: isExchangeOrderTestMode(env)
+    }
+  };
+}
+
+function hyperliquidTestCancelResponse(cancelCount: number): Response {
+  return new Response(
+    JSON.stringify({
+      status: "TEST_ACCEPTED",
+      response: {
+        type: "cancel",
+        data: { statuses: Array.from({ length: cancelCount }, () => "success") }
+      },
+      message: "Hyperliquid signed cancel validated locally; no live cancel was sent."
+    }),
+    {
+      status: 200,
+      headers: { "content-type": "application/json;charset=UTF-8" }
+    }
+  );
 }
 
 async function binanceSignedRequest(
@@ -782,6 +1090,14 @@ function instrumentFromBinanceSymbol(symbol: string | undefined): string | undef
   return symbol.toLowerCase();
 }
 
+function instrumentFromHyperliquidCoin(coin: string | undefined): string | undefined {
+  if (!coin) {
+    return undefined;
+  }
+
+  return `${coin.toLowerCase()}-usd`;
+}
+
 function binanceClientOrderId(value: string): string {
   const sanitized = value.replace(/[^a-zA-Z0-9_.-]/g, "_");
   if (sanitized.length <= 36) {
@@ -862,6 +1178,183 @@ function isBinanceOrderTestMode(env: Env): boolean {
   return env.EXCHANGE_ORDER_TEST_MODE !== "false";
 }
 
+function isExchangeOrderTestMode(env: Env): boolean {
+  return env.EXCHANGE_ORDER_TEST_MODE !== "false";
+}
+
+function configureRuntimeRateLimits(env: Env): void {
+  const capacity = positiveIntegerOrDefault(env.HL_REST_RATE_LIMIT_PER_MINUTE, 1_000);
+  const refill = positiveNumberOrDefault(env.HL_REST_REFILL_PER_SECOND, Math.min(18, capacity / 60));
+  const boundedCapacity = Math.min(1_200, capacity);
+  const boundedRefill = Math.min(20, refill);
+  const configKey = `${boundedCapacity}:${boundedRefill}`;
+
+  if (configKey === hyperliquidRateLimitConfigKey) {
+    return;
+  }
+
+  limiter.configure("hyperliquid", boundedCapacity, boundedRefill);
+  hyperliquidRateLimitConfigKey = configKey;
+}
+
+function hyperliquidBaseUrl(env: Env): string {
+  return (env.EXCHANGE_BASE_URL ?? HYPERLIQUID_BASE_URL).replace(/\/+$/, "");
+}
+
+function hyperliquidInfoUrl(env: Env): string {
+  return env.HL_INFO_URL ?? `${hyperliquidBaseUrl(env)}/info`;
+}
+
+function hyperliquidExchangeUrl(env: Env): string {
+  return env.HL_EXCHANGE_URL ?? env.EXCHANGE_ORDER_ENDPOINT ?? `${hyperliquidBaseUrl(env)}/exchange`;
+}
+
+async function hyperliquidInfo(env: Env, payload: Record<string, unknown>): Promise<Response> {
+  const reservation = limiter.reserve("hyperliquid", "NEW");
+  if (!reservation.allowed) {
+    await delay(reservation.waitMs);
+  }
+
+  return fetch(hyperliquidInfoUrl(env), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json"
+    },
+    body: JSON.stringify(payload)
+  });
+}
+
+async function hyperliquidAssetMeta(env: Env, coin: string): Promise<HyperliquidAssetMeta> {
+  const configuredIndex = Number(env.HL_ASSET_INDEX);
+  if (Number.isSafeInteger(configuredIndex) && configuredIndex >= 0) {
+    return {
+      coin,
+      assetIndex: configuredIndex,
+      szDecimals: 8,
+      loadedAt: Date.now()
+    };
+  }
+
+  const cacheKey = coin.toUpperCase();
+  const cached = hyperliquidAssetCache.get(cacheKey);
+  if (cached && Date.now() - cached.loadedAt < 10 * 60 * 1000) {
+    return cached;
+  }
+
+  const response = await hyperliquidInfo(env, { type: "metaAndAssetCtxs" });
+  const body = await safeJson(response);
+
+  if (!response.ok) {
+    throw new Error(`HYPERLIQUID_META_FAILED_${response.status}`);
+  }
+
+  const data = Array.isArray(body?.data) ? body.data : [];
+  const meta = isRecord(data[0]) ? data[0] : body;
+  const universe = Array.isArray(meta?.universe) ? meta.universe.filter(isRecord) : [];
+  const assetIndex = universe.findIndex(
+    (asset) => String(asset.name ?? "").toUpperCase() === cacheKey
+  );
+
+  if (assetIndex < 0) {
+    throw new Error(`HYPERLIQUID_ASSET_NOT_FOUND_${cacheKey}`);
+  }
+
+  const entry = universe[assetIndex];
+  const assetMeta: HyperliquidAssetMeta = {
+    coin: cacheKey,
+    assetIndex,
+    szDecimals: Number.isFinite(Number(entry.szDecimals)) ? Number(entry.szDecimals) : 8,
+    loadedAt: Date.now()
+  };
+  hyperliquidAssetCache.set(cacheKey, assetMeta);
+  return assetMeta;
+}
+
+function hyperliquidAccountAddress(env: Env): string {
+  return requireString(env.HL_ACCOUNT_ADDRESS ?? env.HL_AGENT_ADDRESS, "HL_ACCOUNT_ADDRESS").toLowerCase();
+}
+
+function hyperliquidCoin(env: Env, instrumentCode: string): string {
+  if (env.HL_ASSET) {
+    return env.HL_ASSET.trim().toUpperCase();
+  }
+
+  const [base] = instrumentCode.replace("-perp", "").split("-");
+  return requireString(base, "HL_ASSET").toUpperCase();
+}
+
+function hyperliquidTif(env: Env, intent: TradeIntent): "Alo" | "Ioc" | "Gtc" {
+  const configured = env.HL_DEFAULT_TIF?.trim().toLowerCase();
+  if (configured === "ioc") {
+    return "Ioc";
+  }
+  if (configured === "gtc") {
+    return "Gtc";
+  }
+  if (intent.postOnly !== false) {
+    return "Alo";
+  }
+  if (intent.timeInForce === "IOC" || intent.orderType === "MARKET") {
+    return "Ioc";
+  }
+  return "Alo";
+}
+
+function hyperliquidIsMainnet(env: Env): boolean {
+  return env.HL_IS_MAINNET !== "false" && !hyperliquidBaseUrl(env).includes("testnet");
+}
+
+function hyperliquidExpiresAfter(env: Env, nonce: number): number | null {
+  const ttlMs = Number(env.HL_ORDER_EXPIRES_MS ?? 10_000);
+  return Number.isFinite(ttlMs) && ttlMs > 0 ? nonce + Math.round(ttlMs) : null;
+}
+
+function hyperliquidWireNumber(value: number): string {
+  const rounded = Number(value.toFixed(8));
+  if (Math.abs(rounded - value) >= 1e-12) {
+    throw new Error("HYPERLIQUID_WIRE_NUMBER_PRECISION_LOSS");
+  }
+  const fixed = rounded.toFixed(8).replace(/\.?0+$/, "");
+  return fixed === "-0" || fixed.length === 0 ? "0" : fixed;
+}
+
+function hyperliquidCloid(value: string): string {
+  const hex = value.replace(/[^0-9a-fA-F]/g, "").padEnd(32, "0").slice(0, 32);
+  return `0x${hex}`;
+}
+
+function normalizeHyperliquidCloid(value: string): string {
+  return value.startsWith("0x") ? value : hyperliquidCloid(value);
+}
+
+function normalizeOptionalAddress(value: string | undefined): string | null {
+  if (!value || value.trim() === "") {
+    return null;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (!/^0x[0-9a-f]{40}$/.test(normalized)) {
+    throw new Error("INVALID_HYPERLIQUID_VAULT_ADDRESS");
+  }
+  return normalized;
+}
+
+function isReduceOnlyIntent(intent: TradeIntent): boolean {
+  const rationale = intent.rationale.toLowerCase();
+  return rationale.includes("hedge") || rationale.includes("closeout") || rationale.includes("reduce-only");
+}
+
+function positiveIntegerOrDefault(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function positiveNumberOrDefault(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 function redactBinanceParams(params: Record<string, string>): Record<string, unknown> {
   const redacted: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(params)) {
@@ -925,17 +1418,20 @@ function toExecutionReport(
   body: Record<string, unknown> | null,
   latencyMs: number
 ): ExecutionReport {
+  const hyperliquid = extractHyperliquidExecution(body);
   const exchangeOrderId = stringField(body, [
     "order_id",
     "orderId",
     "id",
     "exchange_order_id",
     "clientOrderId"
-  ]);
+  ]) ?? hyperliquid.exchangeOrderId;
   const filledSize = Number(
-    numberField(body, ["filled_size", "filledSize", "executed_size", "executedQty"]) ?? 0
+    numberField(body, ["filled_size", "filledSize", "executed_size", "executedQty"]) ??
+      hyperliquid.filledSize ??
+      0
   );
-  const rawStatus = stringField(body, ["status", "state", "order_status"]);
+  const rawStatus = hyperliquid.rawStatus ?? stringField(body, ["status", "state", "order_status"]);
   const status = normalizeOrderStatus(rawStatus, response.ok, filledSize, intent.approvedSize ?? intent.requestedSize);
 
   return {
@@ -947,13 +1443,14 @@ function toExecutionReport(
     status,
     filledSize,
     achievedPrice:
+      hyperliquid.achievedPrice ??
       averageExecutionPrice(body) ??
       numberField(body, ["price", "avg_price", "average_price"]) ??
       intent.expectedPrice,
     expectedPrice: intent.expectedPrice,
     fees: extractFees(body),
     latencyMs,
-    reason: response.ok ? undefined : String(body?.message ?? body?.error ?? response.status),
+    reason: response.ok ? hyperliquid.reason : String(body?.message ?? body?.error ?? response.status),
     rawStatus: rawStatus ?? undefined,
     observedAt: new Date().toISOString()
   };
@@ -1014,6 +1511,51 @@ function extractFees(body: Record<string, unknown> | null): number {
   return fills.reduce((sum, fill) => sum + (numberField(fill, ["commission"]) ?? 0), 0);
 }
 
+function extractHyperliquidExecution(body: Record<string, unknown> | null): {
+  exchangeOrderId?: string;
+  filledSize?: number;
+  achievedPrice?: number;
+  rawStatus?: string;
+  reason?: string;
+} {
+  const response = isRecord(body?.response) ? body.response : null;
+  const data = isRecord(response?.data) ? response.data : null;
+  const statuses = Array.isArray(data?.statuses) ? data.statuses.filter(isRecord) : [];
+  const first = statuses[0];
+
+  if (!first) {
+    return {};
+  }
+
+  if (isRecord(first.resting)) {
+    return {
+      exchangeOrderId: stringField(first.resting, ["oid"]),
+      rawStatus: "NEW"
+    };
+  }
+
+  if (isRecord(first.filled)) {
+    const totalSz = numberField(first.filled, ["totalSz", "sz", "size"]);
+    const avgPx = numberField(first.filled, ["avgPx", "px", "price"]);
+    return {
+      exchangeOrderId: stringField(first.filled, ["oid"]),
+      filledSize: totalSz,
+      achievedPrice: avgPx,
+      rawStatus: "FILLED"
+    };
+  }
+
+  const error = stringField(first, ["error"]);
+  if (error) {
+    return {
+      rawStatus: "REJECTED",
+      reason: error
+    };
+  }
+
+  return {};
+}
+
 async function forwardReport(env: Env, report: ExecutionReport): Promise<void> {
   const id = env.TRADING_ENGINE.idFromName(SINGLETON_ENGINE_NAME);
   const engine = env.TRADING_ENGINE.get(id);
@@ -1057,7 +1599,7 @@ function validateIntent(intent: TradeIntent): void {
 function resolveAdapter(env: Env): ExchangeAdapter {
   const adapter = env.EXCHANGE_ADAPTER ?? "generic-json";
 
-  if (adapter === "generic-json" || adapter === "binance-us") {
+  if (adapter === "generic-json" || adapter === "binance-us" || adapter === "hyperliquid") {
     return adapter;
   }
 
@@ -1078,16 +1620,18 @@ function normalizeOpenOrders(body: Record<string, unknown> | null): ExchangeOpen
       return {
         clientId: stringField(order, ["client_id", "clientId", "clientOrderId", "origClientOrderId"]) ?? null,
         exchangeOrderId: requireString(
-          stringField(order, ["order_id", "orderId", "id", "exchange_order_id"]),
+          stringField(order, ["order_id", "orderId", "id", "exchange_order_id", "oid"]),
           "exchangeOrderId"
         ),
         instrumentCode: requireString(
-          instrumentFromBinanceSymbol(rawSymbol) ?? rawSymbol?.toLowerCase(),
+          instrumentFromHyperliquidCoin(stringField(order, ["coin"])) ??
+            instrumentFromBinanceSymbol(rawSymbol) ??
+            rawSymbol?.toLowerCase(),
           "instrumentCode"
         ),
         side: normalizeSide(stringField(order, ["side"])),
-        price: numberField(order, ["price", "stopPrice"]) ?? 0,
-        size: numberField(order, ["origQty", "size", "quantity", "order_size"]) ?? 0,
+        price: numberField(order, ["price", "limitPx", "stopPrice"]) ?? 0,
+        size: numberField(order, ["origQty", "origSz", "sz", "size", "quantity", "order_size"]) ?? 0,
         filledSize: numberField(order, ["executedQty", "filled_size", "filledSize", "executed_size"]) ?? 0,
         status: normalizeOrderStatus(stringField(order, ["status", "state"]), true, 0, 1),
         observedAt: new Date().toISOString()

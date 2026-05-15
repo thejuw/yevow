@@ -142,7 +142,8 @@ interface TickIngestResult {
     | "ANOMALY_PAUSE"
     | "DESYNC"
     | "DUPLICATE_OR_OUT_OF_ORDER"
-    | "STALE_DROPPED";
+    | "STALE_DROPPED"
+    | "BOOK_NOT_READY";
   reason?: string;
   metrics?: LatencyMetrics;
   book?: InternalOrderBook;
@@ -622,6 +623,7 @@ export class TradingEngine {
         macroBias: this.macroBias,
         temporaryOverride: this.activeTemporaryOverride,
         location,
+        fundingRates: baseState.fundingRates ?? {},
         microstructure: baseState.microstructure ?? defaultMicrostructure(),
         priceDiscovery:
           baseState.priceDiscovery ??
@@ -2397,13 +2399,16 @@ export class TradingEngine {
       };
     }
 
-    const orderBookStartedAt = highResolutionNow();
-    const applied = await this.applyDelta(tickToDelta(tick), metrics.brainTimestamp);
-    const orderBookUpdateMs = roundLatency(highResolutionNow() - orderBookStartedAt);
-    metrics.timeToBookMs = applied.timeToBookMs;
+    this.applyFundingFromTick(tick, metrics.brainTimestamp);
 
-    if (!applied.accepted) {
-      if (applied.reason === "DUPLICATE_OR_OUT_OF_ORDER") {
+    let orderBookUpdateMs = 0;
+    let book: InternalOrderBook | undefined;
+
+    if (isInformationalTick(tick)) {
+      metrics.timeToBookMs = null;
+      book = this.currentBookForTick(tick);
+
+      if (!book) {
         this.observeExecutionProfile(metrics, {
           wakeUpTimeMs,
           orderBookUpdateMs,
@@ -2412,61 +2417,101 @@ export class TradingEngine {
           observedAt: metrics.brainTimestamp
         });
 
+        this.engineState = {
+          ...this.engineState,
+          processedTicks: this.engineState.processedTicks + 1,
+          maxLatencyMs: this.maxLatencyMs,
+          heartbeatAt: metrics.brainTimestamp,
+          updatedAt: metrics.brainTimestamp
+        };
+
+        await this.persistHotStorageSnapshot({
+          [ENGINE_STATE_KEY]: this.engineState,
+          [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
+          [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples
+        }, "INFORMATIONAL_TICK_BOOK_NOT_READY");
+
+        this.publishTickTelemetry(tick, metrics, "FRESH", hotPathStartedAt);
+
         return {
           accepted: false,
-          status: "DUPLICATE_OR_OUT_OF_ORDER",
+          status: "BOOK_NOT_READY",
+          reason: "INFORMATIONAL_TICK_WITHOUT_BOOK",
+          metrics
+        };
+      }
+    } else {
+      const orderBookStartedAt = highResolutionNow();
+      const applied = await this.applyDelta(tickToDelta(tick), metrics.brainTimestamp);
+      orderBookUpdateMs = roundLatency(highResolutionNow() - orderBookStartedAt);
+      metrics.timeToBookMs = applied.timeToBookMs;
+
+      if (!applied.accepted) {
+        if (applied.reason === "DUPLICATE_OR_OUT_OF_ORDER") {
+          this.observeExecutionProfile(metrics, {
+            wakeUpTimeMs,
+            orderBookUpdateMs,
+            agentLogicMs: null,
+            hotPathStartedAt,
+            observedAt: metrics.brainTimestamp
+          });
+
+          return {
+            accepted: false,
+            status: "DUPLICATE_OR_OUT_OF_ORDER",
+            reason: applied.reason,
+            metrics
+          };
+        }
+
+        this.observeExecutionProfile(metrics, {
+          wakeUpTimeMs,
+          orderBookUpdateMs,
+          agentLogicMs: null,
+          hotPathStartedAt,
+          observedAt: metrics.brainTimestamp
+        });
+
+        this.engineState = {
+          ...this.engineState,
+          processedTicks: this.engineState.processedTicks + 1,
+          internalOrderBookDepth: countBookLevels(this.bids, this.asks),
+          maxLatencyMs: this.maxLatencyMs,
+          heartbeatAt: metrics.brainTimestamp,
+          updatedAt: metrics.brainTimestamp
+        };
+
+        await this.persistHotStorageSnapshot({
+          [ENGINE_STATE_KEY]: this.engineState,
+          [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
+          [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples,
+          [`bookDesync:${tick.source_exchange}:${tick.instrumentCode}:${tick.sequence}`]: {
+            tick,
+            metrics,
+            reason: applied.reason,
+            expectedSequence: applied.expectedSequence,
+            actualSequence: applied.actualSequence
+          }
+        }, "BOOK_DESYNC");
+
+        this.publishTickTelemetry(tick, metrics, "FRESH", hotPathStartedAt);
+
+        return {
+          accepted: false,
+          status:
+            applied.reason === "SEQUENCE_GAP" || applied.reason === "CROSSED_BOOK"
+              ? "DESYNC"
+              : "DUPLICATE_OR_OUT_OF_ORDER",
           reason: applied.reason,
           metrics
         };
       }
 
-      this.observeExecutionProfile(metrics, {
-        wakeUpTimeMs,
-        orderBookUpdateMs,
-        agentLogicMs: null,
-        hotPathStartedAt,
-        observedAt: metrics.brainTimestamp
-      });
+      book = applied.book;
 
-      this.engineState = {
-        ...this.engineState,
-        processedTicks: this.engineState.processedTicks + 1,
-        internalOrderBookDepth: countBookLevels(this.bids, this.asks),
-        maxLatencyMs: this.maxLatencyMs,
-        heartbeatAt: metrics.brainTimestamp,
-        updatedAt: metrics.brainTimestamp
-      };
-
-      await this.persistHotStorageSnapshot({
-        [ENGINE_STATE_KEY]: this.engineState,
-        [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
-        [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples,
-        [`bookDesync:${tick.source_exchange}:${tick.instrumentCode}:${tick.sequence}`]: {
-          tick,
-          metrics,
-          reason: applied.reason,
-          expectedSequence: applied.expectedSequence,
-          actualSequence: applied.actualSequence
-        }
-      }, "BOOK_DESYNC");
-
-      this.publishTickTelemetry(tick, metrics, "FRESH", hotPathStartedAt);
-
-      return {
-        accepted: false,
-        status:
-          applied.reason === "SEQUENCE_GAP" || applied.reason === "CROSSED_BOOK"
-            ? "DESYNC"
-            : "DUPLICATE_OR_OUT_OF_ORDER",
-        reason: applied.reason,
-        metrics
-      };
-    }
-
-    const book = applied.book;
-
-    if (!book) {
-      throw new Error("ORDER_BOOK_APPLY_FAILED");
+      if (!book) {
+        throw new Error("ORDER_BOOK_APPLY_FAILED");
+      }
     }
 
     const domSnapshot = this.getLiquidityWalls(
@@ -2588,6 +2633,8 @@ export class TradingEngine {
       minEvThreshold: this.cachedConfig.MIN_EV_THRESHOLD,
       exchangeFeeBps: this.cachedConfig.EXCHANGE_FEE_BPS,
       executionCostBufferBps: this.engineState.slippage.executionCostBufferBps,
+      fundingRateHourly: this.currentFundingRate(book),
+      fundingHorizonHours: readPositiveNumber(this.env.FUNDING_HORIZON_HOURS, 1),
       macroBias: this.macroBias,
       observedAt: metrics.brainTimestamp
     });
@@ -2789,6 +2836,58 @@ export class TradingEngine {
       metrics,
       book
     };
+  }
+
+  private applyFundingFromTick(tick: MarketTick, observedAt: string): void {
+    const fundingRateHourly =
+      finiteNumber(tick.fundingRateHourly) ??
+      finiteNumber(tick.raw?.fundingRateHourly);
+
+    if (fundingRateHourly === null) {
+      return;
+    }
+
+    const marketKey = buildMarketKey(tick.source_exchange, tick.instrumentCode);
+    this.engineState = {
+      ...this.engineState,
+      fundingRates: {
+        ...this.engineState.fundingRates,
+        [marketKey]: {
+          instrumentCode: tick.instrumentCode,
+          source_exchange: tick.source_exchange,
+          marketKey,
+          hourlyRate: fundingRateHourly,
+          markPrice: finiteNumber(tick.markPrice) ?? finiteNumber(tick.raw?.markPrice),
+          oraclePrice: finiteNumber(tick.oraclePrice) ?? finiteNumber(tick.raw?.oraclePrice),
+          openInterest: finiteNumber(tick.openInterest) ?? finiteNumber(tick.raw?.openInterest),
+          receivedAt: tick.receivedAt,
+          updatedAt: observedAt
+        }
+      }
+    };
+  }
+
+  private currentBookForTick(tick: MarketTick): InternalOrderBook | undefined {
+    const marketKey = buildMarketKey(tick.source_exchange, tick.instrumentCode);
+    return (
+      this.orderBook.get(marketKey) ??
+      [...this.orderBook.values()]
+        .filter((book) => book.instrumentCode === tick.instrumentCode)
+        .sort((left, right) => right.sourceWeight - left.sourceWeight)[0]
+    );
+  }
+
+  private currentFundingRate(book: InternalOrderBook): number {
+    const direct = this.engineState.fundingRates[book.marketKey]?.hourlyRate;
+    if (typeof direct === "number" && Number.isFinite(direct)) {
+      return direct;
+    }
+
+    const fallback = Object.values(this.engineState.fundingRates).find(
+      (entry) => entry.instrumentCode === book.instrumentCode
+    )?.hourlyRate;
+
+    return typeof fallback === "number" && Number.isFinite(fallback) ? fallback : 0;
   }
 
   private updateLeadLagMetrics(
@@ -5501,6 +5600,7 @@ function defaultEngineState(engineId: string): EngineState {
     macroBias: neutralMacroBias(),
     temporaryOverride: null,
     location: defaultEngineLocation(),
+    fundingRates: {},
     microstructure: defaultMicrostructure(),
     priceDiscovery: defaultPriceDiscovery(),
     oracle: defaultOracleState(),
@@ -7385,6 +7485,26 @@ function readTelemetryNumber(value: unknown): number | null {
   }
 
   return value;
+}
+
+function finiteNumber(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isInformationalTick(tick: MarketTick): boolean {
+  const eventType =
+    typeof tick.raw?.eventType === "string" ? tick.raw.eventType.toLowerCase() : "";
+  const commodity =
+    typeof tick.raw?.commodity === "string" ? tick.raw.commodity.toUpperCase() : "";
+
+  return (
+    eventType === "trade" ||
+    eventType === "funding" ||
+    eventType === "book-snapshot" ||
+    commodity === "TRADE" ||
+    commodity === "FUNDING"
+  );
 }
 
 function shouldAggregateBusTelemetry(type: string): boolean {

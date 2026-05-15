@@ -28,6 +28,7 @@ const DEFAULT_CLOCK_SYNC_ALPHA = 0.1;
 const DEFAULT_CLOCK_SYNC_MAX_OFFSET_MS = 10_000;
 const DEFAULT_STALE_TICK_DROP_MS = 1_000;
 const PRE_SNAPSHOT_BUFFER_LIMIT = 1_000;
+const HYPERLIQUID_L2_DEPTH_LIMIT = 20;
 
 type ResolvedExchangeStreamConfig = Required<
   Pick<
@@ -40,6 +41,7 @@ type ResolvedExchangeStreamConfig = Required<
     | "clusterUrls"
     | "snapshotUrl"
     | "subscription"
+    | "subscriptions"
     | "apiKeyEnv"
     | "instrumentCode"
     | "exchangeCode"
@@ -73,6 +75,11 @@ interface NewsItem {
 interface BinanceSequenceWindow {
   firstUpdateId: number;
   finalUpdateId: number;
+}
+
+interface HyperliquidBookLevelSet {
+  bids: Set<string>;
+  asks: Set<string>;
 }
 
 const seenNewsItems = new Map<string, number>();
@@ -522,6 +529,7 @@ class ExchangeStreamController {
   private lastError: string | null = null;
   private providerSequence: number | null = null;
   private awaitingProviderBridge = false;
+  private readonly hyperliquidBookLevels = new Map<string, HyperliquidBookLevelSet>();
   private streamReady = false;
   private preSnapshotBuffer: Array<string | ArrayBuffer> = [];
 
@@ -726,7 +734,7 @@ class ExchangeStreamController {
           ? null
           : setInterval(() => {
               try {
-                socket.send(JSON.stringify({ type: "ping", ts: new Date().toISOString() }));
+                socket.send(JSON.stringify(heartbeatPayload(this.config.source)));
               } catch {
                 fail("PING_SEND_FAILED");
               }
@@ -861,15 +869,22 @@ class ExchangeStreamController {
   }
 
   private sendSubscription(socket: WebSocket): void {
-    if (!this.config.subscription) {
+    const subscriptions = [
+      ...(this.config.subscriptions ?? []),
+      ...(this.config.subscription ? [this.config.subscription] : [])
+    ];
+
+    if (subscriptions.length === 0) {
       return;
     }
 
-    socket.send(
-      typeof this.config.subscription === "string"
-        ? this.config.subscription
-        : JSON.stringify(this.config.subscription)
-    );
+    for (const subscription of subscriptions) {
+      socket.send(
+        typeof subscription === "string"
+          ? subscription
+          : JSON.stringify(subscription)
+      );
+    }
   }
 
   private async handleMessage(data: string | ArrayBuffer): Promise<void> {
@@ -951,7 +966,9 @@ class ExchangeStreamController {
           return;
         }
 
-        const ticks = normalizeMarketData(event, this.config, this.clockSync);
+        const ticks = this.expandSnapshotDeletes(
+          normalizeMarketData(event, this.config, this.clockSync)
+        );
 
         for (const tick of ticks) {
           const sequenced = this.sequenceTick(tick);
@@ -981,7 +998,7 @@ class ExchangeStreamController {
 
   private shouldDropStaleTick(tick: MarketTick): boolean {
     const maxAgeMs = readNumber(this.env.KAIKO_STALE_AFTER_MS, DEFAULT_STALE_TICK_DROP_MS);
-    const exchangeMs = Date.parse(tick.exchangeTimestamp);
+    const exchangeMs = Date.parse(tick.synchronizedExchangeTimestamp ?? tick.exchangeTimestamp);
     const receivedMs = Date.parse(tick.receivedAt);
 
     if (!Number.isFinite(exchangeMs) || !Number.isFinite(receivedMs)) {
@@ -1062,6 +1079,67 @@ class ExchangeStreamController {
         sequenceMode: "ingest-local"
       }
     };
+  }
+
+  private expandSnapshotDeletes(ticks: MarketTick[]): MarketTick[] {
+    if (
+      this.config.source !== "HYPERLIQUID" ||
+      ticks.length === 0 ||
+      ticks[0]?.raw?.eventType !== "l2Book"
+    ) {
+      return ticks;
+    }
+
+    const byMarket = new Map<string, {
+      template: MarketTick;
+      bids: Set<string>;
+      asks: Set<string>;
+    }>();
+
+    for (const tick of ticks) {
+      const marketKey = buildMarketKey(tick.source_exchange, tick.instrumentCode);
+      const entry = byMarket.get(marketKey) ?? {
+        template: tick,
+        bids: new Set<string>(),
+        asks: new Set<string>()
+      };
+      const priceKey = formatPriceKey(tick.price);
+
+      if (tick.side === "buy") {
+        entry.bids.add(priceKey);
+      } else if (tick.side === "sell") {
+        entry.asks.add(priceKey);
+      }
+
+      byMarket.set(marketKey, entry);
+    }
+
+    const deletes: MarketTick[] = [];
+
+    for (const [marketKey, current] of byMarket) {
+      const previous = this.hyperliquidBookLevels.get(marketKey);
+
+      if (previous) {
+        for (const price of previous.bids) {
+          if (!current.bids.has(price)) {
+            deletes.push(createDeleteTick(current.template, "buy", Number(price)));
+          }
+        }
+
+        for (const price of previous.asks) {
+          if (!current.asks.has(price)) {
+            deletes.push(createDeleteTick(current.template, "sell", Number(price)));
+          }
+        }
+      }
+
+      this.hyperliquidBookLevels.set(marketKey, {
+        bids: current.bids,
+        asks: current.asks
+      });
+    }
+
+    return [...ticks, ...deletes];
   }
 
   private async evaluateProviderSequence(
@@ -1399,11 +1477,225 @@ function normalizeMarketData(
       return [normalizeKaikoData(raw, config, clockSync)];
     case "BINANCE":
       return normalizeBinanceData(raw, config, clockSync);
+    case "HYPERLIQUID":
+      return normalizeHyperliquidData(raw, config, clockSync);
     case "COINBASE":
       return normalizeCoinbaseData(raw, config, clockSync);
     default:
       return [normalizeGenericExchangeData(raw, config, clockSync)];
   }
+}
+
+function normalizeHyperliquidData(
+  raw: unknown,
+  config: ResolvedExchangeStreamConfig,
+  clockSync: ClockSyncTracker
+): MarketTick[] {
+  if (!isRecord(raw)) {
+    throw new Error("INVALID_HYPERLIQUID_PAYLOAD");
+  }
+
+  const channel = normalizeString(readField(raw, ["channel"]));
+
+  if (channel === "SUBSCRIPTIONRESPONSE" || channel === "POST" || channel === "PONG") {
+    return [];
+  }
+
+  if (channel === "L2BOOK") {
+    return normalizeHyperliquidL2Book(raw, config, clockSync);
+  }
+
+  if (channel === "TRADES") {
+    return normalizeHyperliquidTrades(raw, config, clockSync);
+  }
+
+  if (channel === "ACTIVEASSETCTX" || channel === "ALLDEXSASSETCTXS") {
+    return normalizeHyperliquidAssetContext(raw, config, clockSync);
+  }
+
+  return [];
+}
+
+function normalizeHyperliquidL2Book(
+  raw: Record<string, unknown>,
+  config: ResolvedExchangeStreamConfig,
+  clockSync: ClockSyncTracker
+): MarketTick[] {
+  const data = readHyperliquidObject(raw);
+  const receivedAt = new Date().toISOString();
+  const coin = requireString(readField(data, ["coin"]) ?? config.instrumentCode, "coin");
+  const instrumentCode = hyperliquidInstrumentCode(coin, config.instrumentCode);
+  const exchangeTimestamp =
+    coerceExchangeTime(readField(data, ["time", "timestamp"])) ?? receivedAt;
+  const synchronized = clockSync.observe(exchangeTimestamp, receivedAt);
+  const sequenceSeed = coerceGenericSequence(readField(data, ["time", "sequence", "seq"]));
+  const [bidLevels, askLevels] = normalizeHyperliquidBookSides(readField(data, ["levels"]));
+  const ticks: MarketTick[] = [];
+
+  for (const [price, size, orderCount] of bidLevels) {
+    ticks.push(
+      createUniversalTick({
+        config,
+        instrumentCode,
+        price,
+        size,
+        side: "buy",
+        sequence: sequenceSeed + ticks.length,
+        exchangeTimestamp,
+        synchronized,
+        receivedAt,
+        rawMetadata: {
+          eventType: "l2Book",
+          commodity: "ORDER_BOOK",
+          depthSide: "bid",
+          orderCount,
+          coin
+        }
+      })
+    );
+  }
+
+  for (const [price, size, orderCount] of askLevels) {
+    ticks.push(
+      createUniversalTick({
+        config,
+        instrumentCode,
+        price,
+        size,
+        side: "sell",
+        sequence: sequenceSeed + ticks.length,
+        exchangeTimestamp,
+        synchronized,
+        receivedAt,
+        rawMetadata: {
+          eventType: "l2Book",
+          commodity: "ORDER_BOOK",
+          depthSide: "ask",
+          orderCount,
+          coin
+        }
+      })
+    );
+  }
+
+  if (ticks.length === 0) {
+    throw new Error("EMPTY_HYPERLIQUID_L2BOOK");
+  }
+
+  return ticks;
+}
+
+function normalizeHyperliquidTrades(
+  raw: Record<string, unknown>,
+  config: ResolvedExchangeStreamConfig,
+  clockSync: ClockSyncTracker
+): MarketTick[] {
+  const payload = readHyperliquidData(raw);
+  const trades = Array.isArray(payload)
+    ? payload
+    : isRecord(payload) && Array.isArray(payload.trades)
+      ? payload.trades
+      : [payload];
+  const receivedAt = new Date().toISOString();
+  const ticks: MarketTick[] = [];
+
+  for (const trade of trades) {
+    if (!isRecord(trade)) {
+      continue;
+    }
+
+    const coin = requireString(readField(trade, ["coin"]) ?? config.instrumentCode, "coin");
+    const instrumentCode = hyperliquidInstrumentCode(coin, config.instrumentCode);
+    const price = requireFiniteNumber(readField(trade, ["px", "price", "p"]), "price");
+    const size = requireFiniteNumber(readField(trade, ["sz", "size", "q"]), "size");
+    const exchangeTimestamp =
+      coerceExchangeTime(readField(trade, ["time", "timestamp", "ts"])) ?? receivedAt;
+    const synchronized = clockSync.observe(exchangeTimestamp, receivedAt);
+    const side = hyperliquidTradeSide(readField(trade, ["side"]));
+
+    ticks.push(
+      createUniversalTick({
+        config,
+        instrumentCode,
+        price,
+        size,
+        side,
+        sequence: coerceGenericSequence(readField(trade, ["tid", "id", "hash", "time"])) + ticks.length,
+        exchangeTimestamp,
+        synchronized,
+        receivedAt,
+        rawMetadata: {
+          eventType: "trade",
+          commodity: "TRADE",
+          coin,
+          tradeId: stringifyOrNull(readField(trade, ["tid", "id"])),
+          tradeHash: stringifyOrNull(readField(trade, ["hash"])),
+          aggressorSide: stringifyOrNull(readField(trade, ["side"]))
+        }
+      })
+    );
+  }
+
+  return ticks;
+}
+
+function normalizeHyperliquidAssetContext(
+  raw: Record<string, unknown>,
+  config: ResolvedExchangeStreamConfig,
+  clockSync: ClockSyncTracker
+): MarketTick[] {
+  const payload = readHyperliquidData(raw);
+  const items = Array.isArray(payload)
+    ? payload
+    : isRecord(payload) && Array.isArray(payload.ctxs)
+      ? payload.ctxs
+      : [payload];
+  const receivedAt = new Date().toISOString();
+  const ticks: MarketTick[] = [];
+
+  for (const item of items) {
+    if (!isRecord(item)) {
+      continue;
+    }
+
+    const ctx = isRecord(item.ctx) ? item.ctx : item;
+    const coin = requireString(readField(item, ["coin"]) ?? config.instrumentCode, "coin");
+    const instrumentCode = hyperliquidInstrumentCode(coin, config.instrumentCode);
+    const markPrice = finiteOrNull(readField(ctx, ["markPx", "markPrice"]));
+    const oraclePrice = finiteOrNull(readField(ctx, ["oraclePx", "oraclePrice"]));
+    const midPrice = finiteOrNull(readField(ctx, ["midPx", "midPrice"]));
+    const price = midPrice ?? markPrice ?? oraclePrice ?? 0;
+    const fundingRateHourly = finiteOrNull(readField(ctx, ["funding", "fundingRate"])) ?? 0;
+    const exchangeTimestamp =
+      coerceExchangeTime(readField(item, ["time", "timestamp"])) ?? receivedAt;
+    const synchronized = clockSync.observe(exchangeTimestamp, receivedAt);
+
+    ticks.push(
+      createUniversalTick({
+        config,
+        instrumentCode,
+        price,
+        size: 0,
+        side: "unknown",
+        sequence: coerceGenericSequence(`${coin}:${exchangeTimestamp}:funding`),
+        exchangeTimestamp,
+        synchronized,
+        receivedAt,
+        rawMetadata: {
+          eventType: "funding",
+          commodity: "FUNDING",
+          coin,
+          fundingRateHourly,
+          markPrice,
+          oraclePrice,
+          openInterest: finiteOrNull(readField(ctx, ["openInterest"])),
+          dayNtlVlm: finiteOrNull(readField(ctx, ["dayNtlVlm"]))
+        }
+      })
+    );
+  }
+
+  return ticks;
 }
 
 function normalizeBinanceData(
@@ -1665,6 +1957,10 @@ function extractMarketEvents(raw: unknown, source: MarketDataSource): unknown[] 
 
   if (source === "KAIKO") {
     return extractKaikoEvents(raw as KaikoStreamEnvelope);
+  }
+
+  if (source === "HYPERLIQUID") {
+    return [raw];
   }
 
   if (Array.isArray(raw.data)) {
@@ -1957,7 +2253,8 @@ function isPong(raw: unknown): boolean {
   }
 
   const eventType = normalizeString(raw.type ?? raw.event);
-  return eventType === "PONG" || eventType === "HEARTBEAT";
+  const channel = normalizeString(raw.channel);
+  return eventType === "PONG" || eventType === "HEARTBEAT" || channel === "PONG";
 }
 
 function extractHeartbeatLatencyMs(raw: unknown): number {
@@ -2039,6 +2336,7 @@ function resolveStreamConfig(
     snapshotUrl: config.snapshotUrl,
     clusterUrls: config.clusterUrls,
     subscription: config.subscription,
+    subscriptions: config.subscriptions,
     authHeader: config.authHeader ?? DEFAULT_AUTH_HEADER,
     apiKeyEnv: config.apiKeyEnv,
     weight,
@@ -2216,6 +2514,10 @@ function createUniversalTick(input: {
     clockOffsetMs: input.synchronized.offsetMs,
     receivedAt: input.receivedAt,
     sourceWeight: input.config.weight,
+    fundingRateHourly: finiteOrUndefined(input.rawMetadata.fundingRateHourly),
+    markPrice: finiteOrUndefined(input.rawMetadata.markPrice),
+    oraclePrice: finiteOrUndefined(input.rawMetadata.oraclePrice),
+    openInterest: finiteOrUndefined(input.rawMetadata.openInterest),
     raw: input.rawMetadata
   };
 }
@@ -2244,6 +2546,7 @@ function normalizeSource(value: unknown): MarketDataSource {
   switch (source) {
     case "KAIKO":
     case "BINANCE":
+    case "HYPERLIQUID":
     case "COINBASE":
     case "KRAKEN":
     case "OKX":
@@ -2341,6 +2644,103 @@ function normalizeDepthLevels(value: unknown): Array<[number, number]> {
     .filter((level): level is [number, number] => level !== null);
 }
 
+function readHyperliquidData(raw: Record<string, unknown>): unknown {
+  return raw.data ?? raw.result ?? raw;
+}
+
+function readHyperliquidObject(raw: Record<string, unknown>): Record<string, unknown> {
+  const data = readHyperliquidData(raw);
+  if (!isRecord(data)) {
+    throw new Error("INVALID_HYPERLIQUID_DATA");
+  }
+  return data;
+}
+
+function normalizeHyperliquidBookSides(
+  levels: unknown
+): [Array<[number, number, number | null]>, Array<[number, number, number | null]>] {
+  if (!Array.isArray(levels)) {
+    return [[], []];
+  }
+
+  const bidLevels = Array.isArray(levels[0]) ? levels[0] : [];
+  const askLevels = Array.isArray(levels[1]) ? levels[1] : [];
+  return [
+    normalizeHyperliquidBookLevels(bidLevels).slice(0, HYPERLIQUID_L2_DEPTH_LIMIT),
+    normalizeHyperliquidBookLevels(askLevels).slice(0, HYPERLIQUID_L2_DEPTH_LIMIT)
+  ];
+}
+
+function normalizeHyperliquidBookLevels(value: unknown): Array<[number, number, number | null]> {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .map((level) => {
+      const record = Array.isArray(level) ? null : isRecord(level) ? level : null;
+      const price = Number(record ? readField(record, ["px", "price", "p"]) : Array.isArray(level) ? level[0] : null);
+      const size = Number(record ? readField(record, ["sz", "size", "q"]) : Array.isArray(level) ? level[1] : null);
+      const orderCount = finiteOrNull(record ? readField(record, ["n", "count", "orders"]) : Array.isArray(level) ? level[2] : null);
+
+      return Number.isFinite(price) && Number.isFinite(size) && price >= 0 && size >= 0
+        ? ([price, size, orderCount] as [number, number, number | null])
+        : null;
+    })
+    .filter((level): level is [number, number, number | null] => level !== null);
+}
+
+function hyperliquidTradeSide(value: unknown): MarketTick["side"] {
+  const side = normalizeString(value);
+
+  if (side === "B" || side === "BUY" || side === "BID") {
+    return "buy";
+  }
+
+  if (side === "A" || side === "SELL" || side === "ASK") {
+    return "sell";
+  }
+
+  return "unknown";
+}
+
+function hyperliquidInstrumentCode(coin: string, fallback?: string): string {
+  const normalizedCoin = coin.trim().toLowerCase();
+  if (!normalizedCoin && fallback) {
+    return normalizeInstrumentCode(fallback);
+  }
+
+  if (normalizedCoin.includes("-") || normalizedCoin.includes("/")) {
+    return normalizeInstrumentCode(normalizedCoin.replace("/", "-"));
+  }
+
+  return `${normalizedCoin}-usd`;
+}
+
+function createDeleteTick(
+  template: MarketTick,
+  side: MarketTick["side"],
+  price: number
+): MarketTick {
+  return {
+    ...template,
+    price,
+    size: 0,
+    side,
+    raw: {
+      ...(template.raw ?? {}),
+      eventType: "l2Book",
+      commodity: "ORDER_BOOK",
+      depthSide: side === "buy" ? "bid" : "ask",
+      deleteReason: "missing-from-hyperliquid-snapshot"
+    }
+  };
+}
+
+function formatPriceKey(value: number): string {
+  return Number(value).toFixed(8).replace(/\.?0+$/, "");
+}
+
 function normalizeCoinbaseChange(
   change: unknown
 ): { side: MarketTick["side"]; price: number; size: number } | null {
@@ -2371,6 +2771,14 @@ function normalizeUniversalSide(value: unknown): MarketTick["side"] {
   }
 
   return "unknown";
+}
+
+function heartbeatPayload(source: MarketDataSource): JsonRecord {
+  if (source === "HYPERLIQUID") {
+    return { method: "ping" };
+  }
+
+  return { type: "ping", ts: new Date().toISOString() };
 }
 
 function sanitizeGenericMetadata(raw: Record<string, unknown>): JsonRecord {
@@ -2455,6 +2863,16 @@ function requireFiniteNumber(value: unknown, field: string): number {
   }
 
   return parsed;
+}
+
+function finiteOrNull(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function finiteOrUndefined(value: unknown): number | undefined {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function normalizeString(value: unknown): string | null {
