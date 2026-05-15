@@ -947,6 +947,8 @@ async function readTradeHistory(env: Env, url: URL): Promise<Response> {
       t.notional,
       t.ev_at_execution,
       t.slippage_bps,
+      t.resulting_pnl,
+      t.primary_driver,
       t.fees,
       t.status,
       t.exchange_trade_id,
@@ -1564,8 +1566,11 @@ function buildTradeFilters(url: URL): {
   const where: string[] = [];
   const bindings: string[] = [];
   const agent = normalizeEnum(url.searchParams.get("agent"), AGENT_NAMES);
+  const rawStatus = url.searchParams.get("status")?.trim().toUpperCase() ?? null;
   const status =
-    normalizeEnum(url.searchParams.get("status"), TRADE_STATUSES) ?? "FILLED";
+    rawStatus === "ALL"
+      ? null
+      : normalizeEnum(rawStatus, TRADE_STATUSES) ?? "FILLED";
   const asset = normalizeAsset(url.searchParams.get("asset"));
   const dateRange = parseDateRange(url);
 
@@ -1599,6 +1604,7 @@ function buildTradeFilters(url: URL): {
     bindings,
     publicFilters: {
       status,
+      statusMode: rawStatus === "ALL" ? "ALL" : status,
       agent,
       asset,
       dateRange: {
@@ -1636,6 +1642,8 @@ function formatTradeRow(row: TradeHistoryRow): JsonRecord {
     notional: row.notional,
     evAtExecution: row.ev_at_execution,
     slippageBps: row.slippage_bps,
+    resultingPnl: row.resulting_pnl ?? 0,
+    primaryDriver: row.primary_driver ?? null,
     fees: row.fees,
     status: row.status,
     exchangeTradeId: row.exchange_trade_id,

@@ -9,6 +9,7 @@ import {
   KeyRound,
   Lock,
   RadioTower,
+  ReceiptText,
   Shield,
   SlidersHorizontal,
   TerminalSquare,
@@ -23,6 +24,7 @@ import {
   readAttribution,
   readConfig,
   readState,
+  readTradeHistory,
   readTrace,
   resetLatencyBaseline,
   toWebSocketUrl,
@@ -43,6 +45,8 @@ import type {
   GovernanceMode,
   JsonRecord,
   MacroBiasDirection,
+  TradeHistoryEntry,
+  TradeHistoryResponse,
   TraceResponse
 } from "@/lib/types";
 
@@ -79,6 +83,7 @@ export default function CommandCenterPage() {
   const [draftConfig, setDraftConfig] = useState<Partial<GlobalRiskConfig>>({});
   const [trace, setTrace] = useState<TraceResponse | null>(null);
   const [attribution, setAttribution] = useState<AttributionResponse | null>(null);
+  const [tradeHistory, setTradeHistory] = useState<TradeHistoryResponse | null>(null);
   const [pulse, setPulse] = useState<DashboardPulse | null>(null);
   const [logicFeed, setLogicFeed] = useState<JsonRecord[]>([]);
   const [pendingFields, setPendingFields] = useState<string[]>([]);
@@ -107,11 +112,12 @@ export default function CommandCenterPage() {
       return;
     }
 
-    const [stateResult, configResult, traceResult, attributionResult] = await Promise.all([
+    const [stateResult, configResult, traceResult, attributionResult, historyResult] = await Promise.all([
       readState(apiBase, token),
       readConfig(apiBase, token),
       readTrace(apiBase, token),
-      readAttribution(apiBase, token)
+      readAttribution(apiBase, token),
+      readTradeHistory(apiBase, token)
     ]);
 
     setEngineState(stateResult.state);
@@ -121,6 +127,7 @@ export default function CommandCenterPage() {
     }
     setTrace(traceResult);
     setAttribution(attributionResult);
+    setTradeHistory(historyResult);
   }, [apiBase, token]);
 
   const connectStream = useCallback(() => {
@@ -155,6 +162,24 @@ export default function CommandCenterPage() {
 
       if (typed.type === "AGENT_SIGNAL" && typed.payload) {
         setLogicFeed((items) => [typed.payload as JsonRecord, ...items].slice(0, 80));
+      }
+
+      if (typed.type === "TRADE_EXECUTION_UPDATE" && typed.payload) {
+        const trade = normalizeTradePayload(typed.payload);
+        setTradeHistory((current) => ({
+          ok: true,
+          data: [trade, ...(current?.data ?? []).filter((row) => row.tradeId !== trade.tradeId)]
+            .slice(0, 50),
+          pagination: current?.pagination ?? {
+            page: 1,
+            limit: 50,
+            total: 1,
+            pageCount: 1,
+            hasNextPage: false,
+            hasPreviousPage: false
+          },
+          filters: current?.filters ?? { statusMode: "ALL" }
+        }));
       }
     };
 
@@ -220,6 +245,7 @@ export default function CommandCenterPage() {
       0,
     [attribution]
   );
+  const tradeSummary = useMemo(() => summarizeTrades(tradeHistory?.data ?? []), [tradeHistory]);
 
   const stateRows = useMemo(
     () => flattenState(engineState ?? {}).filter(([key]) => !key.includes("posteriorPdf.points")),
@@ -628,6 +654,40 @@ export default function CommandCenterPage() {
           </div>
         </section>
 
+        <section className="trade-panel glass">
+          <div className="panel-title">
+            <ReceiptText size={17} />
+            <span>Trade History</span>
+            <button disabled={!token} onClick={() => void refresh()}>
+              Refresh
+            </button>
+          </div>
+          <div className="trade-summary">
+            <Metric label="Executions" value={compact.format(tradeSummary.count)} />
+            <Metric label="Filled" value={compact.format(tradeSummary.filled)} />
+            <Metric label="Realized PnL" value={currency.format(tradeSummary.pnl)} />
+            <Metric label="Fees" value={currency.format(tradeSummary.fees)} />
+          </div>
+          <div className="trade-table">
+            {(tradeHistory?.data ?? []).length > 0 ? (
+              (tradeHistory?.data ?? []).map((trade) => (
+                <div className={`trade-row ${trade.status.toLowerCase()}`} key={trade.tradeId}>
+                  <span>{formatClock(trade.executedAt)}</span>
+                  <strong>{trade.asset}</strong>
+                  <span>{trade.side}</span>
+                  <span>{trade.status}</span>
+                  <span>{compact.format(trade.size)}</span>
+                  <span>{currency.format(trade.price)}</span>
+                  <span>{currency.format(trade.resultingPnl ?? 0)}</span>
+                  <code>{trade.primaryDriver ?? trade.agentName ?? "EXECUTIONER"}</code>
+                </div>
+              ))
+            ) : (
+              <div className="empty-row">NO EXECUTIONS</div>
+            )}
+          </div>
+        </section>
+
         <section className="cctv-panel glass">
           <div className="panel-title">
             <TerminalSquare size={17} />
@@ -787,6 +847,66 @@ function RangeField({
       </div>
     </label>
   );
+}
+
+function summarizeTrades(trades: TradeHistoryEntry[]) {
+  return trades.reduce(
+    (summary, trade) => ({
+      count: summary.count + 1,
+      filled: summary.filled + (trade.status === "FILLED" || trade.status === "PARTIAL" ? 1 : 0),
+      pnl: summary.pnl + Number(trade.resultingPnl ?? 0),
+      fees: summary.fees + Number(trade.fees ?? 0)
+    }),
+    { count: 0, filled: 0, pnl: 0, fees: 0 }
+  );
+}
+
+function normalizeTradePayload(payload: unknown): TradeHistoryEntry {
+  const record = (payload && typeof payload === "object" ? payload : {}) as Partial<TradeHistoryEntry> & {
+    tradeId?: string;
+    orderId?: string;
+    asset?: string;
+    price?: number;
+    size?: number;
+    evAtExecution?: number;
+    slippageBps?: number;
+    resultingPnl?: number;
+    fees?: number;
+    status?: TradeHistoryEntry["status"];
+    executedAt?: string;
+  };
+  const price = Number(record.price ?? 0);
+  const size = Number(record.size ?? 0);
+
+  return {
+    tradeId: record.tradeId ?? crypto.randomUUID(),
+    orderId: record.orderId ?? "unknown",
+    signalId: record.signalId ?? null,
+    venue: record.venue ?? "unknown",
+    asset: record.asset ?? "unknown",
+    side: record.side ?? "BUY",
+    orderType: record.orderType ?? "LIMIT",
+    price,
+    size,
+    notional: Number(record.notional ?? price * size),
+    evAtExecution: Number(record.evAtExecution ?? 0),
+    slippageBps: Number(record.slippageBps ?? 0),
+    resultingPnl: Number(record.resultingPnl ?? 0),
+    primaryDriver: record.primaryDriver ?? null,
+    fees: Number(record.fees ?? 0),
+    status: record.status ?? "ACCEPTED",
+    exchangeTradeId: record.exchangeTradeId ?? null,
+    rawExecution: record.rawExecution ?? {},
+    agentName: record.agentName ?? null,
+    traceId: record.traceId ?? null,
+    executedAt: record.executedAt ?? new Date().toISOString(),
+    createdAt: record.createdAt ?? new Date().toISOString()
+  };
+}
+
+function formatClock(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "n/a" : date.toLocaleTimeString();
 }
 
 function safeParse(value: string): unknown {

@@ -187,6 +187,45 @@ export interface AttributionResponse {
   timeline: JsonRecord[];
 }
 
+export interface TradeHistoryEntry {
+  tradeId: string;
+  orderId: string;
+  signalId: string | null;
+  venue: string;
+  asset: string;
+  side: "BUY" | "SELL";
+  orderType: string;
+  price: number;
+  size: number;
+  notional: number;
+  evAtExecution: number;
+  slippageBps: number;
+  resultingPnl: number;
+  primaryDriver: string | null;
+  fees: number;
+  status: "ACCEPTED" | "FILLED" | "PARTIAL" | "REJECTED" | "CANCELLED";
+  exchangeTradeId: string | null;
+  rawExecution: JsonRecord;
+  agentName: string | null;
+  traceId: string | null;
+  executedAt: string;
+  createdAt: string;
+}
+
+export interface TradeHistoryResponse {
+  ok: boolean;
+  data: TradeHistoryEntry[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    pageCount: number;
+    hasNextPage: boolean;
+    hasPreviousPage: boolean;
+  };
+  filters: JsonRecord;
+}
+
 export interface DashboardPulse {
   total_equity: number;
   unrealized_pnl: number;

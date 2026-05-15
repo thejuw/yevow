@@ -5,6 +5,7 @@ import type {
   LoginResponse,
   MacroBiasDirection,
   TemporaryGovernanceOverride,
+  TradeHistoryResponse,
   TraceResponse
 } from "./types";
 
@@ -57,6 +58,14 @@ export async function readTrace(apiBase: string, token: string): Promise<TraceRe
 
 export async function readAttribution(apiBase: string, token: string): Promise<AttributionResponse> {
   return apiFetch<AttributionResponse>(apiBase, "/admin/attribution?limit=1000", token);
+}
+
+export async function readTradeHistory(apiBase: string, token: string): Promise<TradeHistoryResponse> {
+  return apiFetch<TradeHistoryResponse>(
+    apiBase,
+    "/admin/history?status=ALL&limit=50",
+    token
+  );
 }
 
 export async function updateConfig(

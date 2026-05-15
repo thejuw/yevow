@@ -47,6 +47,7 @@ import type {
   GlobalRiskConfig,
   HealthReport,
   InternalOrderBook,
+  JsonRecord,
   JsonValue,
   LatencyMetrics,
   LiquidityWall,
@@ -67,6 +68,7 @@ import type {
   ReplayResult,
   RiskLimits,
   TemporaryGovernanceOverride,
+  TradeExecution,
   TradeIntent
 } from "./types";
 
@@ -3209,6 +3211,16 @@ export class TradingEngine {
     const orderMap = { ...this.engineState.orderMap };
     delete orderMap[existing?.clientId ?? report.clientId];
     orderMap[nextOrder.clientId] = nextOrder;
+    const realizedPnlDelta = roundCrypto(
+      portfolio.bankroll.realizedPnl - this.engineState.bankroll.realizedPnl
+    );
+    const tradeExecution = this.executionReportToTrade(
+      report,
+      nextOrder,
+      slippagePoint,
+      realizedPnlDelta,
+      observedAt
+    );
 
     this.engineState = {
       ...this.engineState,
@@ -3222,6 +3234,70 @@ export class TradingEngine {
     };
 
     await this.state.storage.put(ENGINE_STATE_KEY, this.engineState);
+    this.logger.recordExecution(tradeExecution);
+    this.publish(
+      "TRADE_EXECUTION_UPDATE",
+      tradeExecution as unknown as Record<string, unknown>,
+      tradeExecution.tradeId
+    );
+  }
+
+  private executionReportToTrade(
+    report: ExecutionReport,
+    order: ManagedOrder,
+    slippagePoint: ReturnType<TradingEngine["recordSlippage"]>,
+    resultingPnl: number,
+    observedAt: string
+  ): TradeExecution {
+    const matchedIntent =
+      this.engineState.lastTradeIntent &&
+      (this.engineState.lastTradeIntent.intentId === order.intentId ||
+        report.clientId.startsWith(`${this.engineState.lastTradeIntent.intentId}:`))
+        ? this.engineState.lastTradeIntent
+        : null;
+    const status = mapManagedStatusToTradeStatus(report.status);
+    const price = positiveNumber(
+      report.achievedPrice ?? report.expectedPrice ?? order.price,
+      this.currentMarkPrice(order.instrumentCode, order.price)
+    );
+    const size = positiveNumber(
+      executionReportSize(report, order, status),
+      order.size > 0 ? order.size : 0.00000001
+    );
+    const primaryDriver = inferExecutionPrimaryDriver(matchedIntent, order);
+
+    return {
+      tradeId: executionTradeId(report, status, observedAt),
+      orderId: report.clientId,
+      venue:
+        matchedIntent?.source_exchange ??
+        this.engineState.microstructure.source_exchange ??
+        "unknown",
+      asset: order.instrumentCode,
+      side: report.side ?? order.side,
+      orderType: matchedIntent?.orderType ?? "LIMIT",
+      price,
+      size,
+      evAtExecution: matchedIntent?.expectedValue ?? 0,
+      slippageBps: slippagePoint.slippageBps,
+      resultingPnl:
+        status === "FILLED" || status === "PARTIAL" ? resultingPnl : 0,
+      primaryDriver,
+      fees: report.fees ?? 0,
+      status,
+      exchangeTradeId: report.exchangeOrderId,
+      metadata: toJsonValue({
+        report,
+        order,
+        fillIncrementSize: report.fillIncrementSize ?? null,
+        cumulativeFilledSize: report.filledSize ?? order.filledSize,
+        reason: report.reason ?? null,
+        rawStatus: report.rawStatus ?? null,
+        implementationShortfall: slippagePoint.implementationShortfall,
+        latencyMs: slippagePoint.latencyMs
+      }) as JsonRecord,
+      executedAt: observedAt
+    };
   }
 
   private applyFillToPortfolio(
@@ -6637,6 +6713,78 @@ function isCrossedBook(book: InternalOrderBook): boolean {
     Number.isFinite(book.bestAsk) &&
     book.bestBid >= book.bestAsk
   );
+}
+
+function mapManagedStatusToTradeStatus(
+  status: ManagedOrder["status"]
+): TradeExecution["status"] {
+  switch (status) {
+    case "FILLED":
+      return "FILLED";
+    case "PARTIAL_FILL":
+      return "PARTIAL";
+    case "REJECTED":
+      return "REJECTED";
+    case "CANCELLED":
+      return "CANCELLED";
+    case "PENDING":
+    case "OPEN":
+    default:
+      return "ACCEPTED";
+  }
+}
+
+function executionReportSize(
+  report: ExecutionReport,
+  order: ManagedOrder,
+  status: TradeExecution["status"]
+): number {
+  if (status === "FILLED" || status === "PARTIAL") {
+    return (
+      report.fillIncrementSize ??
+      report.filledSize ??
+      order.filledSize ??
+      order.size
+    );
+  }
+
+  return report.orderSize ?? order.size;
+}
+
+function positiveNumber(value: unknown, fallback: number): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return roundCrypto(parsed);
+  }
+
+  return Number.isFinite(fallback) && fallback > 0 ? roundCrypto(fallback) : 0.00000001;
+}
+
+function executionTradeId(
+  report: ExecutionReport,
+  status: TradeExecution["status"],
+  observedAt: string
+): string {
+  const exchangeId = report.exchangeOrderId ?? "local";
+  return `execution:${report.clientId}:${exchangeId}:${status}:${Date.parse(observedAt) || observedAt}`;
+}
+
+function inferExecutionPrimaryDriver(
+  intent: TradeIntent | null,
+  order: ManagedOrder
+): AgentName {
+  const rationale = intent?.rationale.toLowerCase() ?? "";
+
+  if (rationale.includes("hedge") || order.clientId.includes(":hedge")) {
+    return "HEDGE";
+  }
+
+  if (intent?.traceId.includes("profiler")) {
+    return "PROFILER";
+  }
+
+  return intent ? "CROUPIER" : "EXECUTIONER";
 }
 
 function resolveTickSize(

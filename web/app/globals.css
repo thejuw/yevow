@@ -267,6 +267,11 @@ output {
   grid-column: span 4;
 }
 
+.trade-panel {
+  grid-column: span 7;
+  grid-row: span 3;
+}
+
 .cctv-panel {
   grid-column: span 5;
   grid-row: span 4;
@@ -391,6 +396,7 @@ output {
 }
 
 .efficacy-grid,
+.trade-table,
 .terminal-feed,
 .state-table {
   display: grid;
@@ -398,6 +404,7 @@ output {
 }
 
 .driver-row,
+.trade-row,
 .state-row {
   display: grid;
   grid-template-columns: 1.2fr repeat(3, minmax(70px, 1fr));
@@ -410,8 +417,63 @@ output {
 }
 
 .driver-row span,
+.trade-row span,
 .state-row span {
   color: var(--muted);
+}
+
+.trade-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.trade-table {
+  max-height: 336px;
+  overflow: auto;
+}
+
+.trade-row {
+  grid-template-columns:
+    minmax(78px, 0.8fr)
+    minmax(82px, 0.9fr)
+    minmax(48px, 0.5fr)
+    minmax(76px, 0.7fr)
+    minmax(76px, 0.8fr)
+    minmax(92px, 1fr)
+    minmax(92px, 1fr)
+    minmax(92px, 0.9fr);
+}
+
+.trade-row strong {
+  color: var(--text);
+}
+
+.trade-row code {
+  color: #bcd8ff;
+  overflow-wrap: anywhere;
+}
+
+.trade-row.filled code,
+.trade-row.partial code {
+  color: var(--green);
+}
+
+.trade-row.rejected code,
+.trade-row.cancelled code {
+  color: var(--red);
+}
+
+.empty-row {
+  min-height: 38px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line-cold);
+  border-radius: 7px;
+  color: var(--muted);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
 }
 
 .terminal-feed {
@@ -486,6 +548,7 @@ output {
   .moltworker-panel,
   .system-panel,
   .efficacy-panel,
+  .trade-panel,
   .cctv-panel,
   .state-panel {
     grid-column: 1 / -1;
@@ -514,8 +577,10 @@ output {
 
   .market-strip,
   .bridge-metrics,
+  .trade-summary,
   .param-grid,
   .driver-row,
+  .trade-row,
   .state-row {
     grid-template-columns: 1fr;
   }
