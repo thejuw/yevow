@@ -803,6 +803,51 @@ export class TradingEngine {
         );
       }
 
+      if (request.method === "POST" && url.pathname === "/ticks") {
+        const payload = await request.json<MarketTick[] | { ticks?: MarketTick[] }>();
+        const ticks = Array.isArray(payload)
+          ? payload
+          : Array.isArray(payload.ticks)
+            ? payload.ticks
+            : null;
+
+        if (!ticks) {
+          throw new Error("INVALID_MARKET_TICK_BATCH");
+        }
+
+        const results: TickIngestResult[] = [];
+        const cappedTicks = ticks.slice(0, 250);
+
+        for (const tickPayload of cappedTicks) {
+          const result = await this.enqueueTick(assertMarketTick(tickPayload), wakeUpTimeMs);
+          results.push(result);
+
+          if (result.status === "DESYNC") {
+            break;
+          }
+        }
+
+        const acceptedCount = results.filter((result) => result.accepted).length;
+        const terminalResult = results.find((result) => result.status === "DESYNC") ?? results.at(-1);
+
+        return json(
+          {
+            ok: terminalResult?.status !== "DESYNC",
+            accepted: acceptedCount > 0,
+            acceptedCount,
+            receivedCount: ticks.length,
+            processedCount: results.length,
+            droppedCount: Math.max(0, ticks.length - results.length),
+            status: terminalResult?.status ?? "EMPTY_BATCH",
+            reason: terminalResult?.reason,
+            metrics: terminalResult?.metrics ?? null,
+            book: terminalResult?.book,
+            state: this.engineState
+          },
+          terminalResult?.status === "DESYNC" ? 409 : 200
+        );
+      }
+
       if (request.method === "POST" && url.pathname === "/agent/signal") {
         const started = Date.now();
         const signal = assertAgentSignal(await request.json<AgentSignal>());
@@ -1292,8 +1337,9 @@ export class TradingEngine {
     const expectedSequence =
       syncState.lastSequence === null ? undefined : syncState.lastSequence + 1;
     const timeToBookMs = calculateTimeToBookMs(delta.exchangeTimestamp, updatedAt);
+    const enforceExactSequence = delta.source === "KAIKO";
 
-    if (expectedSequence !== undefined && delta.sequence > expectedSequence) {
+    if (enforceExactSequence && expectedSequence !== undefined && delta.sequence > expectedSequence) {
       await this.handleSequenceGap(delta, expectedSequence, timeToBookMs, updatedAt);
       return {
         accepted: false,
@@ -1305,12 +1351,14 @@ export class TradingEngine {
     }
 
     if (syncState.lastSequence !== null && delta.sequence <= syncState.lastSequence) {
-      this.logger.warn("ORDER_BOOK_DELTA_IGNORED", "Ignored duplicate/out-of-order book delta", {
-        instrumentCode,
-        exchangeCode,
-        currentSequence: syncState.lastSequence,
-        deltaSequence: delta.sequence
-      });
+      if (delta.source === "KAIKO" || delta.sequence % 100 === 0) {
+        this.logger.warn("ORDER_BOOK_DELTA_IGNORED", "Ignored duplicate/out-of-order book delta", {
+          instrumentCode,
+          exchangeCode,
+          currentSequence: syncState.lastSequence,
+          deltaSequence: delta.sequence
+        });
+      }
 
       return {
         accepted: false,
@@ -1883,8 +1931,9 @@ export class TradingEngine {
     const hotPathStartedAt = highResolutionNow();
 
     if (
-      (!options.shadowReplay && !this.cachedConfig.TRADING_ENABLED) ||
-      this.engineState.mode === "HALTED"
+      !options.shadowReplay &&
+      this.engineState.mode === "HALTED" &&
+      this.cachedConfig.TRADING_ENABLED
     ) {
       if (!this.killSwitchLogged) {
         this.logger.warn("KILL_SWITCH_ACTIVE", "Trading halted by cached config", {
@@ -1903,6 +1952,16 @@ export class TradingEngine {
       };
     }
 
+    if (!options.shadowReplay && !this.cachedConfig.TRADING_ENABLED && !this.killSwitchLogged) {
+      this.logger.warn("KILL_SWITCH_ACTIVE", "Trading disabled; market data remains enabled", {
+        instrumentCode: tick.instrumentCode,
+        configVersion: this.cachedConfig.version,
+        tradingEnabled: this.cachedConfig.TRADING_ENABLED,
+        mode: this.engineState.mode
+      });
+      this.killSwitchLogged = true;
+    }
+
     this.lastTickTimestamp = tick.receivedAt;
 
     const metrics = this.calculateLatency(tick);
@@ -1915,15 +1974,13 @@ export class TradingEngine {
     metrics.latencyRiskMultiplier = this.engineState.location.latencyRiskMultiplier;
     metrics.positionSizeMultiplier = this.engineState.location.positionSizeMultiplier;
     metrics.status =
-      !options.shadowReplay && metrics.totalLatencyMs > this.maxLatencyMs
-        ? "STALE"
-        : "FRESH";
+      !options.shadowReplay && metrics.totalLatencyMs > this.maxLatencyMs ? "STALE" : "FRESH";
 
     this.latencyHistory = [...this.latencyHistory, metrics].slice(
       -PERFORMANCE_HISTORY_LIMIT
     );
 
-    if (metrics.status === "STALE" && !options.shadowReplay) {
+    if (metrics.status === "STALE" && !options.shadowReplay && this.cachedConfig.TRADING_ENABLED) {
       this.observeExecutionProfile(metrics, {
         wakeUpTimeMs,
         orderBookUpdateMs: null,
@@ -1980,7 +2037,9 @@ export class TradingEngine {
           maxLatencyMs: this.maxLatencyMs
         }
       });
-      this.state.waitUntil(this.cancelAllQuotes(tick.instrumentCode, "STALE_DATA_KILL_SWITCH"));
+      if (this.cachedConfig.TRADING_ENABLED) {
+        this.state.waitUntil(this.cancelAllQuotes(tick.instrumentCode, "STALE_DATA_KILL_SWITCH"));
+      }
       this.publishTickTelemetry(tick, metrics, "STALE", hotPathStartedAt);
       this.maybeRecordAgentSnapshot(metrics.brainTimestamp);
 
@@ -1997,6 +2056,23 @@ export class TradingEngine {
     metrics.timeToBookMs = applied.timeToBookMs;
 
     if (!applied.accepted) {
+      if (applied.reason === "DUPLICATE_OR_OUT_OF_ORDER") {
+        this.observeExecutionProfile(metrics, {
+          wakeUpTimeMs,
+          orderBookUpdateMs,
+          agentLogicMs: null,
+          hotPathStartedAt,
+          observedAt: metrics.brainTimestamp
+        });
+
+        return {
+          accepted: false,
+          status: "DUPLICATE_OR_OUT_OF_ORDER",
+          reason: applied.reason,
+          metrics
+        };
+      }
+
       this.observeExecutionProfile(metrics, {
         wakeUpTimeMs,
         orderBookUpdateMs,
@@ -2059,7 +2135,11 @@ export class TradingEngine {
       observedAt: metrics.brainTimestamp
     });
 
-    if (anomalyResult.emergencyPause) {
+    if (
+      anomalyResult.emergencyPause &&
+      this.cachedConfig.TRADING_ENABLED &&
+      !options.shadowReplay
+    ) {
       const anomalyLogicMs = roundLatency(highResolutionNow() - anomalyLogicStartedAt);
 
       this.observeExecutionProfile(metrics, {
@@ -2200,8 +2280,15 @@ export class TradingEngine {
 
     this.engineState = {
       ...this.engineState,
-      mode: riskMetrics.isTradingEnabled ? this.engineState.mode : "HALTED",
+      mode:
+        !this.cachedConfig.TRADING_ENABLED && this.engineState.mode === "HALTED"
+          ? "PAPER"
+          : this.engineState.mode,
       processedTicks: this.engineState.processedTicks + 1,
+      staleTickCount:
+        metrics.status === "STALE" && !options.shadowReplay
+          ? this.engineState.staleTickCount + 1
+          : this.engineState.staleTickCount,
       internalOrderBookDepth: countBookLevels(this.bids, this.asks),
       microstructure: this.engineState.microstructure,
       oracle: oracleResult.state,
@@ -2217,7 +2304,7 @@ export class TradingEngine {
       lastTradeIntent:
         hedgePlan?.intent ?? executionPlan?.intent ?? croupierDecision.intent,
       hedge,
-      orderMap: executionPlans.length > 0
+      orderMap: executionPlans.length > 0 && (this.cachedConfig.TRADING_ENABLED || options.shadowReplay)
         ? {
             ...this.engineState.orderMap,
             ...Object.fromEntries(
@@ -2277,7 +2364,7 @@ export class TradingEngine {
         adverseSelectionCost: croupierDecision.adverseSelectionCost,
         minEvThreshold: croupierDecision.minEvThreshold
       });
-      if (!options.shadowReplay) {
+      if (!options.shadowReplay && this.cachedConfig.TRADING_ENABLED) {
         this.state.waitUntil(this.cancelAllQuotes(tick.instrumentCode, "ADVERSE_SELECTION_CRITICAL"));
       }
     } else if (croupierDecision.quote) {
@@ -2286,13 +2373,13 @@ export class TradingEngine {
         quoteToTelemetry(croupierDecision.quote),
         croupierDecision.quote.signalId
       );
-      if (!options.shadowReplay) {
+      if (!options.shadowReplay && this.cachedConfig.TRADING_ENABLED) {
         this.state.waitUntil(this.dispatchQuote(croupierDecision.quote));
       }
     }
 
     for (const plan of executionPlans) {
-      if (!options.shadowReplay) {
+      if (!options.shadowReplay && this.cachedConfig.TRADING_ENABLED) {
         this.logger.info("TRADE_INTENT_AUTHORIZED", "PitBoss authorized executable intent", {
           intentId: plan.intent.intentId,
           instrumentCode: plan.intent.instrumentCode,
@@ -2309,7 +2396,7 @@ export class TradingEngine {
             this.dispatchExecution(childIntent, plan.camouflage.timingJitterMs)
           );
         }
-      } else {
+      } else if (options.shadowReplay) {
         this.logger.info("SHADOW_TRADE_INTENT_AUTHORIZED", "Replay generated shadow trade intent", {
           intentId: plan.intent.intentId,
           instrumentCode: plan.intent.instrumentCode,
@@ -2325,7 +2412,8 @@ export class TradingEngine {
       await this.acceptAgentSignal(profilerResult.signal, profilerLatencyMs);
       if (
         profilerResult.signal.featureVector.signalType === "SUSPEND_QUOTES" &&
-        !options.shadowReplay
+        !options.shadowReplay &&
+        this.cachedConfig.TRADING_ENABLED
       ) {
         this.state.waitUntil(this.cancelAllQuotes(tick.instrumentCode, "PROFILER_ALERT"));
       }
@@ -2345,12 +2433,12 @@ export class TradingEngine {
       });
     }
 
-    this.publishTickTelemetry(tick, metrics, "FRESH", hotPathStartedAt);
+    this.publishTickTelemetry(tick, metrics, metrics.status, hotPathStartedAt);
     this.maybeRecordAgentSnapshot(metrics.brainTimestamp);
 
     return {
       accepted: true,
-      status: "FRESH",
+      status: metrics.status,
       metrics,
       book
     };

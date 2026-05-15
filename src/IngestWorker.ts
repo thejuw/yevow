@@ -48,6 +48,8 @@ type ResolvedExchangeStreamConfig = Required<
 
 interface EngineTickResponse {
   accepted?: boolean;
+  acceptedCount?: number;
+  processedCount?: number;
   status?: string;
   reason?: string;
 }
@@ -422,7 +424,8 @@ class ExchangeStreamController {
   private readonly clockSync: ClockSyncTracker;
   private readonly clusterPool: ClusterPool;
   private readonly notifier: Notifier;
-  private syntheticSequence = 0;
+  private messageQueue: Promise<void> = Promise.resolve();
+  private syntheticSequence = Date.now() * 1_000;
   private status: IngestHealth["status"] = "IDLE";
   private stopped = false;
   private connectionId: string | null = null;
@@ -578,6 +581,7 @@ class ExchangeStreamController {
 
   private async connectOnce(): Promise<void> {
     const streamUrl = this.clusterPool.activeUrl();
+    const fetchUrl = websocketFetchUrl(streamUrl);
     const authHeader = this.config.authHeader;
     const apiKey = this.config.apiKeyEnv
       ? readEnvSecret(this.env, this.config.apiKeyEnv)
@@ -595,7 +599,7 @@ class ExchangeStreamController {
       headers[authHeader] = apiKey;
     }
 
-    const response = await fetch(streamUrl, { headers });
+    const response = await fetch(fetchUrl, { headers });
 
     if (!response.webSocket) {
       this.clusterPool.recordFailure(streamUrl);
@@ -644,16 +648,21 @@ class ExchangeStreamController {
     return new Promise<void>((resolve, reject) => {
       let settled = false;
       let watchdog: ReturnType<typeof setTimeout> | null = null;
-      const heartbeat = setInterval(() => {
-        try {
-          socket.send(JSON.stringify({ type: "ping", ts: new Date().toISOString() }));
-        } catch {
-          fail("PING_SEND_FAILED");
-        }
-      }, pingIntervalMs);
+      const heartbeat =
+        this.config.source === "BINANCE"
+          ? null
+          : setInterval(() => {
+              try {
+                socket.send(JSON.stringify({ type: "ping", ts: new Date().toISOString() }));
+              } catch {
+                fail("PING_SEND_FAILED");
+              }
+            }, pingIntervalMs);
 
       const cleanup = () => {
-        clearInterval(heartbeat);
+        if (heartbeat !== null) {
+          clearInterval(heartbeat);
+        }
         if (watchdog !== null) {
           clearTimeout(watchdog);
           watchdog = null;
@@ -720,7 +729,19 @@ class ExchangeStreamController {
 
       socket.addEventListener("message", (event) => {
         resetWatchdog();
-        void this.handleMessage(event.data);
+        this.lastMessageAt = new Date().toISOString();
+        this.messageQueue = this.messageQueue
+          .then(() => this.handleMessage(event.data))
+          .catch((error) => {
+            this.ticksDropped += 1;
+            this.logger.error("STREAM_MESSAGE_QUEUE_ERROR", "Market message queue failed", {
+              streamId: this.config.id,
+              source: this.config.source,
+              source_exchange: this.config.source_exchange,
+              connectionId: this.connectionId,
+              reason: error instanceof Error ? error.message : "UNKNOWN_ERROR"
+            });
+          });
       });
 
       socket.addEventListener("close", (event) => {
@@ -786,12 +807,14 @@ class ExchangeStreamController {
 
     const events = extractMarketEvents(raw, this.config.source);
 
+    const batch: MarketTick[] = [];
+
     for (const event of events) {
       try {
         const ticks = normalizeMarketData(event, this.config, this.clockSync);
 
         for (const tick of ticks) {
-          await this.forwardTick(this.sequenceTick(tick));
+          batch.push(this.sequenceTick(tick));
         }
       } catch (error) {
         this.ticksDropped += 1;
@@ -803,6 +826,10 @@ class ExchangeStreamController {
           reason: error instanceof Error ? error.message : "UNKNOWN_ERROR"
         });
       }
+    }
+
+    if (batch.length > 0) {
+      await this.forwardTicks(batch);
     }
   }
 
@@ -873,12 +900,19 @@ class ExchangeStreamController {
       throw new Error(`${this.config.source}_SNAPSHOT_FETCH_FAILED_${response.status}`);
     }
 
-    return normalizeKaikoSnapshot(
+    const snapshot = normalizeKaikoSnapshot(
       await response.json<unknown>(),
       this.env,
       receivedAt,
       this.config
     );
+
+    return this.config.source === "KAIKO"
+      ? snapshot
+      : {
+          ...snapshot,
+          sequence: this.syntheticSequence
+        };
   }
 
   private async forwardSnapshot(snapshot: OrderBookSnapshot): Promise<void> {
@@ -901,16 +935,20 @@ class ExchangeStreamController {
   }
 
   private async forwardTick(tick: MarketTick): Promise<void> {
+    await this.forwardTicks([tick]);
+  }
+
+  private async forwardTicks(ticks: MarketTick[]): Promise<void> {
     const id = this.env.TRADING_ENGINE.idFromName(SINGLETON_ENGINE_NAME);
     const engine = this.env.TRADING_ENGINE.get(id);
     const response = await engine.fetch(
-      new Request("https://trading-engine.internal/tick", {
+      new Request("https://trading-engine.internal/ticks", {
         method: "POST",
         headers: {
           "content-type": "application/json",
           "x-source": "sovereign-sigma-ingest"
         },
-        body: JSON.stringify(tick)
+        body: JSON.stringify({ ticks })
       })
     );
     const payload = await readResponseJson<EngineTickResponse>(response);
@@ -923,7 +961,7 @@ class ExchangeStreamController {
       await this.recoverFromEngineDesync(payload.reason ?? "DESYNC");
     }
 
-    this.ticksForwarded += 1;
+    this.ticksForwarded += payload?.processedCount ?? ticks.length;
     this.lastForwardAt = new Date().toISOString();
   }
 
@@ -1487,6 +1525,7 @@ function coerceSnapshotSequence(snapshot: Record<string, unknown>): number {
     "sequenceId",
     "sequence_id",
     "seq",
+    "lastUpdateId",
     "lastSequence",
     "last_sequence"
   ]);
@@ -2064,6 +2103,18 @@ function hostnameOf(url: string): string {
   } catch {
     return "unknown";
   }
+}
+
+function websocketFetchUrl(url: string): string {
+  if (url.startsWith("wss://")) {
+    return `https://${url.slice("wss://".length)}`;
+  }
+
+  if (url.startsWith("ws://")) {
+    return `http://${url.slice("ws://".length)}`;
+  }
+
+  return url;
 }
 
 function clampNumber(value: number, min: number, max: number): number {
