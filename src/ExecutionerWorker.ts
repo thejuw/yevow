@@ -2,7 +2,7 @@ import { ConfigManager } from "./ConfigManager";
 import { Logger } from "./Logger";
 import { RateLimiter } from "./utils/RateLimiter";
 import { SignatureEngine } from "./utils/SignatureEngine";
-import type { Env, ExchangeOpenOrder, ExecutionReport, TradeIntent } from "./types";
+import type { Env, ExchangeOpenOrder, ExecutionReport, JsonRecord, TradeIntent } from "./types";
 
 const SINGLETON_ENGINE_NAME = "sovereign-sigma:singleton:trading-engine:v1";
 const BINANCE_US_BASE_URL = "https://api.binance.us";
@@ -10,6 +10,7 @@ const DEFAULT_RECV_WINDOW_MS = 5_000;
 const MAX_RECV_WINDOW_MS = 60_000;
 const limiter = new RateLimiter();
 limiter.configure("default", 10, 10);
+const secretCache = new Map<string, { value: string | null; expiresAt: number }>();
 
 type ExchangeAdapter = "generic-json" | "binance-us";
 
@@ -649,8 +650,12 @@ async function binanceSignedRequest(
   path: string,
   params: Record<string, string>
 ): Promise<PreparedExchangeRequest> {
-  const apiKey = requireString(env.EXCHANGE_API_KEY, "EXCHANGE_API_KEY");
-  const secret = requireString(env.EXCHANGE_API_SECRET ?? env.EXCHANGE_HMAC_SECRET, "EXCHANGE_API_SECRET");
+  const apiKey = requireString(await exchangeSecret(env, "EXCHANGE_API_KEY"), "EXCHANGE_API_KEY");
+  const secret = requireString(
+    (await exchangeSecret(env, "EXCHANGE_API_SECRET")) ??
+      (await exchangeSecret(env, "EXCHANGE_HMAC_SECRET")),
+    "EXCHANGE_API_SECRET"
+  );
   const query = new URLSearchParams();
 
   for (const [key, value] of Object.entries(params)) {
@@ -870,40 +875,42 @@ function redactBinanceParams(params: Record<string, string>): Record<string, unk
 
 async function signHeaders(env: Env, payload: string): Promise<Record<string, string>> {
   const configuredAlgorithm = env.SIGNATURE_ALGORITHM;
+  const ed25519Secret = await exchangeSecret(env, "EXCHANGE_ED25519_PRIVATE_KEY");
+  const hmacSecret = await exchangeSecret(env, "EXCHANGE_HMAC_SECRET");
 
   if (configuredAlgorithm === "ED25519") {
-    if (!env.EXCHANGE_ED25519_PRIVATE_KEY) {
+    if (!ed25519Secret) {
       throw new Error("MISSING_EXCHANGE_ED25519_PRIVATE_KEY");
     }
 
     return {
       "x-signature": await SignatureEngine.sign({
         algorithm: "ED25519",
-        secret: env.EXCHANGE_ED25519_PRIVATE_KEY,
+        secret: ed25519Secret,
         payload
       })
     };
   }
 
-  if (configuredAlgorithm === "HMAC-SHA256" || (!configuredAlgorithm && env.EXCHANGE_HMAC_SECRET)) {
-    if (!env.EXCHANGE_HMAC_SECRET) {
+  if (configuredAlgorithm === "HMAC-SHA256" || (!configuredAlgorithm && hmacSecret)) {
+    if (!hmacSecret) {
       return {};
     }
 
     return {
       "x-signature": await SignatureEngine.sign({
         algorithm: "HMAC-SHA256",
-        secret: env.EXCHANGE_HMAC_SECRET,
+        secret: hmacSecret,
         payload
       })
     };
   }
 
-  if (!configuredAlgorithm && env.EXCHANGE_ED25519_PRIVATE_KEY) {
+  if (!configuredAlgorithm && ed25519Secret) {
     return {
       "x-signature": await SignatureEngine.sign({
         algorithm: "ED25519",
-        secret: env.EXCHANGE_ED25519_PRIVATE_KEY,
+        secret: ed25519Secret,
         payload
       })
     };
@@ -1205,6 +1212,81 @@ function requireEndpoint(value: string | undefined, field: string): string {
   }
 
   return value;
+}
+
+async function exchangeSecret(env: Env, keyName: string): Promise<string | undefined> {
+  const direct = (env as unknown as Record<string, string | undefined>)[keyName];
+  if (direct) {
+    return direct;
+  }
+
+  const now = Date.now();
+  const cached = secretCache.get(keyName);
+  if (cached && cached.expiresAt > now) {
+    return cached.value ?? undefined;
+  }
+
+  const value = await readVaultSecret(env, keyName);
+  secretCache.set(keyName, {
+    value: value ?? null,
+    expiresAt: now + 60_000
+  });
+
+  return value ?? undefined;
+}
+
+async function readVaultSecret(env: Env, keyName: string): Promise<string | null> {
+  try {
+    const encryptionSecret = env.VAULT_ENCRYPTION_SECRET ?? env.JWT_SECRET ?? env.ADMIN_JWT_SECRET;
+    if (!encryptionSecret) {
+      return null;
+    }
+
+    const encrypted = await env.RISK_VAULT.get<JsonRecord>(`vault:secret:${keyName}`, "json");
+    if (!encrypted) {
+      return null;
+    }
+
+    return decryptSecret(encrypted, encryptionSecret);
+  } catch (error) {
+    console.error(
+      "[Sovereign-Sigma] executioner vault secret lookup failed",
+      keyName,
+      error instanceof Error ? error.message : error
+    );
+    return null;
+  }
+}
+
+async function decryptSecret(encrypted: JsonRecord, keyMaterial: string): Promise<string | null> {
+  if (
+    encrypted.alg !== "AES-GCM" ||
+    typeof encrypted.iv !== "string" ||
+    typeof encrypted.ciphertext !== "string"
+  ) {
+    return null;
+  }
+
+  const keyBytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(keyMaterial));
+  const key = await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["decrypt"]);
+  const plaintext = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: base64ToBytes(encrypted.iv) },
+    key,
+    base64ToBytes(encrypted.ciphertext)
+  );
+
+  return new TextDecoder().decode(plaintext);
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+
+  return bytes;
 }
 
 function delay(ms: number): Promise<void> {
