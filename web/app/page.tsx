@@ -271,7 +271,7 @@ export default function CommandCenterPage() {
             <input value={apiBase} onChange={(event) => setApiBase(event.target.value)} />
           </label>
           <label>
-            JWT
+            {token ? "Session Token" : "Admin Password"}
             <input
               value={token ? "••••••••••••••••" : password}
               type="password"
