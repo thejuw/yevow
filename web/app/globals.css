@@ -277,6 +277,122 @@ output {
   gap: 12px;
 }
 
+.settings-shell {
+  min-height: 100vh;
+  padding: 14px;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.settings-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.settings-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.settings-nav a {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 7px 10px;
+  color: var(--text);
+  text-decoration: none;
+  background: rgba(215, 196, 139, 0.1);
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.settings-panel {
+  grid-column: span 4;
+}
+
+.settings-panel-wide {
+  grid-column: span 8;
+}
+
+.settings-form {
+  display: grid;
+  gap: 10px;
+}
+
+.settings-form.two-col {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.settings-toggle {
+  min-height: 48px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  border: 1px solid var(--line-cold);
+  border-radius: 7px;
+  padding: 9px;
+  background: rgba(6, 8, 11, 0.42);
+}
+
+.settings-toggle span {
+  color: var(--text);
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.channel-list,
+.vault-table {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.vault-table {
+  max-height: 246px;
+  overflow: auto;
+}
+
+.vault-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px 80px;
+  gap: 8px;
+  align-items: center;
+  min-height: 34px;
+  border-bottom: 1px solid var(--line-cold);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+}
+
+.vault-row code {
+  color: #bcd8ff;
+  overflow-wrap: anywhere;
+}
+
+.vault-row span {
+  color: var(--muted);
+}
+
+.settings-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.settings-state-table {
+  max-height: 620px;
+}
+
 .glass {
   border: 1px solid var(--line-cold);
   background: var(--panel);
@@ -663,7 +779,9 @@ output {
   .efficacy-panel,
   .trade-panel,
   .cctv-panel,
-  .state-panel {
+  .state-panel,
+  .settings-panel,
+  .settings-panel-wide {
     grid-column: 1 / -1;
   }
 
@@ -692,10 +810,18 @@ output {
   .bridge-metrics,
     .trade-summary,
     .alert-summary,
+    .settings-form.two-col,
+    .settings-metrics,
     .param-grid,
   .driver-row,
   .trade-row,
-  .state-row {
+  .state-row,
+  .vault-row {
     grid-template-columns: 1fr;
+  }
+
+  .settings-hero {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }

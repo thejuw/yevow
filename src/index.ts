@@ -2,6 +2,10 @@ import { AuthManager } from "./AuthManager";
 import { ConfigManager } from "./ConfigManager";
 import { Governor } from "./Governor";
 import { Logger } from "./Logger";
+import {
+  readNotificationSettings,
+  writeNotificationSettings
+} from "./NotificationSettings";
 import { TradingEngine } from "./TradingEngine";
 import { Notifier, type AlertPriority } from "./utils/Notifier";
 import type { AdminScope, AuthClaims } from "./AuthManager";
@@ -10,7 +14,9 @@ import type {
   EdgeTopology,
   Env,
   GlobalRiskConfig,
-  JsonRecord
+  JsonRecord,
+  JsonValue,
+  NotificationSettingsUpdate
 } from "./types";
 
 export { TradingEngine };
@@ -143,6 +149,10 @@ interface AlertTestRequest {
   message?: string;
   dedupeKey?: string;
   metadata?: JsonRecord;
+}
+
+interface NotificationSettingsRequest {
+  notifications?: NotificationSettingsUpdate;
 }
 
 interface DateRangeFilter {
@@ -300,6 +310,8 @@ export default {
         "GET|POST|PUT|PATCH /admin/config",
         "GET /admin/health",
         "GET /admin/state",
+        "GET /admin/settings",
+        "POST /admin/settings/notifications",
         "GET /admin/performance",
         "GET /admin/metrics/performance",
         "GET /admin/slippage",
@@ -434,6 +446,8 @@ async function handleAdminRequest(
         "POST|PUT|PATCH /admin/config",
         "GET /admin/health",
         "GET /admin/state",
+        "GET /admin/settings",
+        "POST /admin/settings/notifications",
         "GET /admin/performance",
         "GET /admin/metrics/performance",
         "GET /admin/slippage",
@@ -486,6 +500,22 @@ async function handleAdminRequest(
       return json({ ok: false, error: "Method not allowed" }, 405);
     }
     return routeToEngine(remapRequestPath(request, "/state"), env, topology);
+  }
+
+  if (url.pathname === "/admin/settings") {
+    if (request.method !== "GET") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+
+    return readAdminSettings(env, configManager);
+  }
+
+  if (url.pathname === "/admin/settings/notifications") {
+    if (request.method !== "POST") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+
+    return updateNotificationSettings(request, env, logger, topology, auth);
   }
 
   if (url.pathname === "/admin/performance") {
@@ -814,9 +844,76 @@ async function handleAdminConfig(
   });
 }
 
-function readAlertingStatus(env: Env): Response {
+async function readAdminSettings(
+  env: Env,
+  configManager: ConfigManager
+): Promise<Response> {
   const notifier = new Notifier(env, () => undefined);
-  const status = notifier.status();
+  const [config, alerting, vault, notifications] = await Promise.all([
+    configManager.fetchConfig(),
+    notifier.statusAsync(),
+    vaultStatus(env),
+    readNotificationSettings(env)
+  ]);
+
+  return json({
+    ok: true,
+    config,
+    notifications,
+    alerting: {
+      ...alerting,
+      configured: alerting.channels.some((channel) => channel.configured)
+    },
+    vault,
+    backend: backendSettings(env)
+  });
+}
+
+async function updateNotificationSettings(
+  request: Request,
+  env: Env,
+  logger: Logger,
+  topology: EdgeTopology,
+  admin: AuthenticatedAdmin
+): Promise<Response> {
+  const body = (await readJsonBody<NotificationSettingsRequest>(request)) ?? {};
+  const update = body.notifications ?? (body as NotificationSettingsUpdate);
+  const notifications = await writeNotificationSettings(env, update, admin.subject);
+  const notifier = new Notifier(env, () => undefined);
+  const alerting = await notifier.statusAsync();
+
+  logger.warn("NOTIFICATION_SETTINGS_UPDATED", "Admin notification settings persisted", {
+    actor: admin.subject,
+    sourceIp: sourceIp(request),
+    settings: {
+      enabled: notifications.enabled,
+      minPriority: notifications.minPriority,
+      debounceMs: notifications.debounceMs,
+      textFrequencyMs: notifications.textFrequencyMs,
+      heartbeatDigestMinutes: notifications.heartbeatDigestMinutes,
+      tradeAlertMode: notifications.tradeAlertMode,
+      telegramEnabled: notifications.telegramEnabled,
+      discordEnabled: notifications.discordEnabled,
+      genericWebhookEnabled: notifications.genericWebhookEnabled,
+      quietHoursEnabled: notifications.quietHoursEnabled
+    },
+    colo: topology.colo,
+    placement: topology.placement
+  });
+
+  return json({
+    ok: true,
+    notifications,
+    alerting: {
+      ...alerting,
+      configured: alerting.channels.some((channel) => channel.configured)
+    }
+  });
+}
+
+async function readAlertingStatus(env: Env): Promise<Response> {
+  const notifier = new Notifier(env, () => undefined);
+  const status = await notifier.statusAsync();
 
   return json({
     ok: true,
@@ -881,7 +978,7 @@ async function sendTestAlert(
     {
       ok: result.ok,
       alerting: {
-        ...notifier.status(),
+        ...(await notifier.statusAsync()),
         configured: result.configuredChannels.some((channel) => channel.configured)
       },
       delivery: result
@@ -1521,6 +1618,73 @@ async function vaultStatus(env: Env): Promise<JsonRecord> {
   };
 }
 
+function backendSettings(env: Env): JsonRecord {
+  return {
+    api: {
+      gatewayRoute: "https://api.yevow.co",
+      adminStreamPath: "/admin/stream",
+      healthPath: "/health",
+      executionerBound: Boolean(env.EXECUTIONER),
+      aiBound: Boolean(env.AI)
+    },
+    ingest: {
+      kaikoStreamHostname: env.KAIKO_STREAM_HOSTNAME ?? null,
+      kaikoStreamUrlConfigured: Boolean(env.KAIKO_STREAM_URL),
+      kaikoSnapshotUrlConfigured: Boolean(env.KAIKO_SNAPSHOT_URL),
+      kaikoAuthHeader: env.KAIKO_AUTH_HEADER ?? null,
+      kaikoSnapshotAuthHeader: env.KAIKO_SNAPSHOT_AUTH_HEADER ?? null,
+      heartbeatIntervalMs: stringNumber(env.KAIKO_HEARTBEAT_INTERVAL_MS),
+      staleAfterMs: stringNumber(env.KAIKO_STALE_AFTER_MS),
+      watchdogTimeoutMs: stringNumber(env.KAIKO_WATCHDOG_TIMEOUT_MS),
+      maxBackoffMs: stringNumber(env.KAIKO_MAX_BACKOFF_MS),
+      marketStreams: parseJsonValue(env.MARKET_STREAMS)
+    },
+    execution: {
+      adapter: env.EXCHANGE_ADAPTER ?? null,
+      baseUrl: env.EXCHANGE_BASE_URL ?? null,
+      orderTestMode: env.EXCHANGE_ORDER_TEST_MODE ?? "true",
+      recvWindowMs: stringNumber(env.EXCHANGE_RECV_WINDOW_MS),
+      orderAckTimeoutMs: stringNumber(env.ORDER_ACK_TIMEOUT_MS),
+      slippageGuardTicks: stringNumber(env.SLIPPAGE_GUARD_TICKS),
+      signatureAlgorithm: env.SIGNATURE_ALGORITHM ?? null
+    },
+    riskAndStrategy: {
+      exchangeWeights: parseJsonValue(env.EXCHANGE_WEIGHTS),
+      clockSyncAlpha: stringNumber(env.CLOCK_SYNC_ALPHA),
+      clockSyncMaxOffsetMs: stringNumber(env.CLOCK_SYNC_MAX_OFFSET_MS),
+      goldenColos: env.GOLDEN_COLOS ?? null,
+      highLatencyColoRiskMultiplier: stringNumber(env.HIGH_LATENCY_COLO_RISK_MULTIPLIER),
+      profilerBucketVolume: stringNumber(env.PROFILER_BUCKET_VOLUME),
+      profilerRollingWindow: stringNumber(env.PROFILER_ROLLING_WINDOW),
+      profilerAlertThreshold: stringNumber(env.PROFILER_ALERT_THRESHOLD),
+      jitterThresholdMs: stringNumber(env.JITTER_THRESHOLD_MS),
+      jitterSampleWindow: stringNumber(env.JITTER_SAMPLE_WINDOW),
+      jitterComputeIntervalTicks: stringNumber(env.JITTER_COMPUTE_INTERVAL_TICKS)
+    },
+    bookAndAnomalies: {
+      orderBookTickSizeDefault: stringNumber(env.ORDER_BOOK_TICK_SIZE_DEFAULT),
+      orderBookTickSizes: parseJsonValue(env.ORDER_BOOK_TICK_SIZES),
+      domPriceBinSizeDefault: stringNumber(env.DOM_PRICE_BIN_SIZE_DEFAULT),
+      domPriceBinSizes: parseJsonValue(env.DOM_PRICE_BIN_SIZES),
+      domScanRangePct: stringNumber(env.DOM_SCAN_RANGE_PCT),
+      domWallHistoryLimit: stringNumber(env.DOM_WALL_HISTORY_LIMIT),
+      domSpoofProximityBps: stringNumber(env.DOM_SPOOF_PROXIMITY_BPS),
+      anomalyPriceZThreshold: stringNumber(env.ANOMALY_PRICE_Z_THRESHOLD),
+      anomalyVolumeZThreshold: stringNumber(env.ANOMALY_VOLUME_Z_THRESHOLD),
+      anomalyCancelExecRatioThreshold: stringNumber(env.ANOMALY_CANCEL_EXEC_RATIO_THRESHOLD),
+      anomalyPriceWindowMs: stringNumber(env.ANOMALY_PRICE_WINDOW_MS),
+      anomalyVolumeWindowMs: stringNumber(env.ANOMALY_VOLUME_WINDOW_MS),
+      anomalyTopOfBookWindowMs: stringNumber(env.ANOMALY_TOP_OF_BOOK_WINDOW_MS)
+    },
+    operations: {
+      notifierDebounceMs: stringNumber(env.NOTIFIER_DEBOUNCE_MS),
+      janitorIntervalMs: stringNumber(env.JANITOR_INTERVAL_MS),
+      janitorLogRetentionDays: stringNumber(env.JANITOR_LOG_RETENTION_DAYS),
+      newsFeeds: parseJsonValue(env.NEWS_FEEDS)
+    }
+  };
+}
+
 function normalizeVaultKey(value: string | undefined): string | null {
   const normalized = value?.trim().toUpperCase();
   const allowed = new Set([
@@ -1893,6 +2057,23 @@ function parseJsonRecord(value: string | null): JsonRecord | null {
   } catch {
     return null;
   }
+}
+
+function parseJsonValue(value: string | undefined): JsonValue | null {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(value) as JsonValue;
+  } catch {
+    return value;
+  }
+}
+
+function stringNumber(value: string | undefined): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function readString(record: JsonRecord | null, key: string): string | null {

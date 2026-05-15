@@ -6,6 +6,7 @@ export type GovernanceMode = "MANUAL" | "AUTONOMOUS" | "HYBRID";
 export type MacroBiasDirection = "BULLISH" | "BEARISH" | "RISK_ON" | "RISK_OFF" | "NEUTRAL";
 export type AlertPriority = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 export type AlertChannel = "DISCORD" | "TELEGRAM" | "GENERIC_WEBHOOK";
+export type TradeAlertMode = "ALL" | "FILLED_ONLY" | "NONE";
 
 export interface GlobalRiskConfig {
   TRADING_ENABLED: boolean;
@@ -52,6 +53,43 @@ export interface TemporaryGovernanceOverride {
   durationMs: number;
   configPatch: Partial<GlobalRiskConfig>;
 }
+
+export interface NotificationSettings {
+  schemaVersion: "notification-settings.v1";
+  enabled: boolean;
+  minPriority: AlertPriority;
+  debounceMs: number;
+  textFrequencyMs: number;
+  heartbeatDigestMinutes: number;
+  tradeAlertMode: TradeAlertMode;
+  telegramEnabled: boolean;
+  discordEnabled: boolean;
+  genericWebhookEnabled: boolean;
+  quietHoursEnabled: boolean;
+  quietHoursStartUtc: string;
+  quietHoursEndUtc: string;
+  updatedAt: string;
+  updatedBy: string;
+  version: string;
+}
+
+export type NotificationSettingsUpdate = Partial<
+  Pick<
+    NotificationSettings,
+    | "enabled"
+    | "minPriority"
+    | "debounceMs"
+    | "textFrequencyMs"
+    | "heartbeatDigestMinutes"
+    | "tradeAlertMode"
+    | "telegramEnabled"
+    | "discordEnabled"
+    | "genericWebhookEnabled"
+    | "quietHoursEnabled"
+    | "quietHoursStartUtc"
+    | "quietHoursEndUtc"
+  >
+>;
 
 export interface OracleState {
   regime: string;
@@ -231,6 +269,10 @@ export interface TradeHistoryResponse {
 export interface AlertChannelStatus {
   channel: AlertChannel;
   configured: boolean;
+  enabled?: boolean;
+  envConfigured?: boolean;
+  vaultConfigured?: boolean;
+  source?: "ENV" | "VAULT" | "MISSING";
 }
 
 export interface AlertDeliveryAttempt {
@@ -246,6 +288,7 @@ export interface AlertingResponse {
     configured: boolean;
     debounceMs: number;
     channels: AlertChannelStatus[];
+    settings?: NotificationSettings;
   };
 }
 
@@ -283,4 +326,42 @@ export interface DraftTransportSettings {
   watchdogMs: number;
   rateLimitCapacity: number;
   rateLimitRefillPerSecond: number;
+}
+
+export type VaultKeyName =
+  | "KAIKO_API_KEY"
+  | "EXCHANGE_API_KEY"
+  | "EXCHANGE_API_SECRET"
+  | "EXCHANGE_HMAC_SECRET"
+  | "EXCHANGE_ED25519_PRIVATE_KEY"
+  | "DISCORD_WEBHOOK_URL"
+  | "TELEGRAM_BOT_TOKEN"
+  | "TELEGRAM_CHAT_ID"
+  | "ALERT_WEBHOOK_URL";
+
+export interface VaultEntry {
+  envConfigured: boolean;
+  vaultConfigured: boolean;
+  masked: string | null;
+  updatedAt: string | null;
+  updatedBy: string | null;
+}
+
+export interface VaultStatus {
+  entries: Record<string, VaultEntry>;
+  rotationPolicy: string;
+}
+
+export interface AdminSettingsResponse {
+  ok: boolean;
+  config: GlobalRiskConfig;
+  notifications: NotificationSettings;
+  alerting: AlertingResponse["alerting"];
+  vault: VaultStatus;
+  backend: JsonRecord;
+}
+
+export interface VaultStatusResponse {
+  ok: boolean;
+  vault: VaultStatus;
 }

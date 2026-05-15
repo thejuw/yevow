@@ -127,6 +127,8 @@ export type EngineMode = "PAPER" | "LIVE" | "HALTED";
 export type EngineStabilityStatus = "STABLE" | "UNSTABLE";
 export type HealthStatus = "GREEN" | "YELLOW" | "RED";
 export type GovernanceMode = "MANUAL" | "AUTONOMOUS" | "HYBRID";
+export type NotificationPriority = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+export type TradeAlertMode = "ALL" | "FILLED_ONLY" | "NONE";
 export type MarketTransport = "grpc" | "websocket";
 export type MarketDataSource =
   | "KAIKO"
@@ -347,6 +349,43 @@ export interface GlobalRiskConfig {
   updatedBy: string;
   version: string;
 }
+
+export interface NotificationSettings {
+  schemaVersion: "notification-settings.v1";
+  enabled: boolean;
+  minPriority: NotificationPriority;
+  debounceMs: number;
+  textFrequencyMs: number;
+  heartbeatDigestMinutes: number;
+  tradeAlertMode: TradeAlertMode;
+  telegramEnabled: boolean;
+  discordEnabled: boolean;
+  genericWebhookEnabled: boolean;
+  quietHoursEnabled: boolean;
+  quietHoursStartUtc: string;
+  quietHoursEndUtc: string;
+  updatedAt: ISO8601;
+  updatedBy: string;
+  version: string;
+}
+
+export type NotificationSettingsUpdate = Partial<
+  Pick<
+    NotificationSettings,
+    | "enabled"
+    | "minPriority"
+    | "debounceMs"
+    | "textFrequencyMs"
+    | "heartbeatDigestMinutes"
+    | "tradeAlertMode"
+    | "telegramEnabled"
+    | "discordEnabled"
+    | "genericWebhookEnabled"
+    | "quietHoursEnabled"
+    | "quietHoursStartUtc"
+    | "quietHoursEndUtc"
+  >
+>;
 
 export type MacroBiasDirection = "BULLISH" | "BEARISH" | "RISK_ON" | "RISK_OFF" | "NEUTRAL";
 export type SupervisorSource = "MOLTWORKER" | "ADMIN" | "SYSTEM";

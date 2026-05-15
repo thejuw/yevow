@@ -12,6 +12,7 @@ Sovereign-Sigma is a Cloudflare-native trading engine and command center.
 
 - API: `https://api.yevow.co`
 - Command Center: `https://app.yevow.co`
+- Settings Console: `https://app.yevow.co/settings`
 - Ingest Worker: `https://sovereign-sigma-ingest.woveyyevow.workers.dev`
 - Executioner Worker: `https://sovereign-sigma-executioner.woveyyevow.workers.dev`
 

@@ -1,4 +1,5 @@
-import type { Env, JsonRecord, JsonValue } from "../types";
+import { defaultNotificationSettings, readNotificationSettings } from "../NotificationSettings";
+import type { Env, JsonRecord, JsonValue, NotificationSettings } from "../types";
 
 export type AlertPriority = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 export type AlertChannel = "DISCORD" | "TELEGRAM" | "GENERIC_WEBHOOK";
@@ -14,6 +15,10 @@ export interface NotifierEvent {
 export interface AlertChannelStatus {
   channel: AlertChannel;
   configured: boolean;
+  enabled: boolean;
+  envConfigured: boolean;
+  vaultConfigured: boolean;
+  source: "ENV" | "VAULT" | "MISSING";
 }
 
 export interface AlertDeliveryAttempt {
@@ -38,10 +43,23 @@ type DeliverOptions = {
   respectDebounce?: boolean;
 };
 
-const DEFAULT_DEBOUNCE_MS = 60_000;
 const TELEGRAM_MAX_MESSAGE_LENGTH = 3_500;
 const DISCORD_MAX_MESSAGE_LENGTH = 1_900;
 const GENERIC_WEBHOOK_MAX_MESSAGE_LENGTH = 5_000;
+const PRIORITY_RANK: Record<AlertPriority, number> = {
+  LOW: 1,
+  MEDIUM: 2,
+  HIGH: 3,
+  CRITICAL: 4
+};
+
+interface ChannelSecrets {
+  discordWebhookUrl: string | null;
+  telegramBotToken: string | null;
+  telegramChatId: string | null;
+  genericWebhookUrl: string | null;
+  statuses: AlertChannelStatus[];
+}
 
 export class Notifier {
   constructor(
@@ -53,10 +71,28 @@ export class Notifier {
     this.waitUntil(this.deliver(event));
   }
 
-  status(): { channels: AlertChannelStatus[]; debounceMs: number } {
+  status(): { channels: AlertChannelStatus[]; debounceMs: number; settings: NotificationSettings } {
+    const settings = defaultNotificationSettings(this.env);
+
     return {
-      channels: configuredChannels(this.env),
-      debounceMs: readPositiveInteger(this.env.NOTIFIER_DEBOUNCE_MS, DEFAULT_DEBOUNCE_MS)
+      channels: configuredChannelsFromEnv(this.env, settings),
+      debounceMs: settings.debounceMs,
+      settings
+    };
+  }
+
+  async statusAsync(): Promise<{
+    channels: AlertChannelStatus[];
+    debounceMs: number;
+    settings: NotificationSettings;
+  }> {
+    const settings = await readNotificationSettings(this.env);
+    const secrets = await this.resolveChannelSecrets(settings);
+
+    return {
+      channels: secrets.statuses,
+      debounceMs: settings.debounceMs,
+      settings
     };
   }
 
@@ -73,10 +109,28 @@ export class Notifier {
     event: NotifierEvent,
     options: DeliverOptions = { respectDebounce: true }
   ): Promise<AlertDeliveryResult> {
-    const channelStatus = configuredChannels(this.env);
+    const settings = await readNotificationSettings(this.env);
+    const secrets = await this.resolveChannelSecrets(settings);
+    const channelStatus = secrets.statuses;
 
     try {
-      if (options.respectDebounce !== false && (await this.isDebounced(event))) {
+      if (
+        !settings.enabled ||
+        PRIORITY_RANK[event.priority] < PRIORITY_RANK[settings.minPriority] ||
+        isQuietHour(settings)
+      ) {
+        return {
+          ok: true,
+          debounced: false,
+          configuredChannels: channelStatus,
+          attempted: 0,
+          delivered: 0,
+          attempts: [],
+          observedAt: new Date().toISOString()
+        };
+      }
+
+      if (options.respectDebounce !== false && (await this.isDebounced(event, settings))) {
         return {
           ok: true,
           debounced: true,
@@ -92,9 +146,9 @@ export class Notifier {
       const message = formatAlert(event, sanitized);
       const jobs: Array<Promise<AlertDeliveryAttempt>> = [];
 
-      if (this.env.DISCORD_WEBHOOK_URL) {
+      if (settings.discordEnabled && secrets.discordWebhookUrl) {
         jobs.push(
-          fetch(this.env.DISCORD_WEBHOOK_URL, {
+          fetch(secrets.discordWebhookUrl, {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
@@ -106,13 +160,13 @@ export class Notifier {
         );
       }
 
-      if (this.env.TELEGRAM_BOT_TOKEN && this.env.TELEGRAM_CHAT_ID) {
+      if (settings.telegramEnabled && secrets.telegramBotToken && secrets.telegramChatId) {
         jobs.push(
-          fetch(`https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+          fetch(`https://api.telegram.org/bot${secrets.telegramBotToken}/sendMessage`, {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
-              chat_id: this.env.TELEGRAM_CHAT_ID,
+              chat_id: secrets.telegramChatId,
               text: trim(message, TELEGRAM_MAX_MESSAGE_LENGTH),
               disable_web_page_preview: true
             })
@@ -121,9 +175,9 @@ export class Notifier {
         );
       }
 
-      if (this.env.ALERT_WEBHOOK_URL) {
+      if (settings.genericWebhookEnabled && secrets.genericWebhookUrl) {
         jobs.push(
-          fetch(this.env.ALERT_WEBHOOK_URL, {
+          fetch(secrets.genericWebhookUrl, {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
@@ -186,12 +240,19 @@ export class Notifier {
     }
   }
 
-  private async isDebounced(event: NotifierEvent): Promise<boolean> {
+  private async isDebounced(
+    event: NotifierEvent,
+    settings: NotificationSettings
+  ): Promise<boolean> {
     if (!event.dedupeKey || !this.env.CONFIG_STORE) {
       return false;
     }
 
-    const debounceMs = readPositiveInteger(this.env.NOTIFIER_DEBOUNCE_MS, DEFAULT_DEBOUNCE_MS);
+    const debounceMs = settings.debounceMs;
+    if (debounceMs <= 0) {
+      return false;
+    }
+
     const key = `notifier:dedupe:${event.priority}:${event.dedupeKey}`;
 
     try {
@@ -212,17 +273,81 @@ export class Notifier {
 
     return false;
   }
+
+  private async resolveChannelSecrets(settings: NotificationSettings): Promise<ChannelSecrets> {
+    const [
+      discordVault,
+      telegramBotVault,
+      telegramChatVault,
+      genericWebhookVault
+    ] = await Promise.all([
+      readVaultSecret(this.env, "DISCORD_WEBHOOK_URL"),
+      readVaultSecret(this.env, "TELEGRAM_BOT_TOKEN"),
+      readVaultSecret(this.env, "TELEGRAM_CHAT_ID"),
+      readVaultSecret(this.env, "ALERT_WEBHOOK_URL")
+    ]);
+    const discordWebhookUrl = this.env.DISCORD_WEBHOOK_URL ?? discordVault.value;
+    const telegramBotToken = this.env.TELEGRAM_BOT_TOKEN ?? telegramBotVault.value;
+    const telegramChatId = this.env.TELEGRAM_CHAT_ID ?? telegramChatVault.value;
+    const genericWebhookUrl = this.env.ALERT_WEBHOOK_URL ?? genericWebhookVault.value;
+    const statuses: AlertChannelStatus[] = [
+      channelStatus("DISCORD", settings.discordEnabled, Boolean(this.env.DISCORD_WEBHOOK_URL), discordVault.configured),
+      channelStatus(
+        "TELEGRAM",
+        settings.telegramEnabled,
+        Boolean(this.env.TELEGRAM_BOT_TOKEN && this.env.TELEGRAM_CHAT_ID),
+        telegramBotVault.configured && telegramChatVault.configured
+      ),
+      channelStatus(
+        "GENERIC_WEBHOOK",
+        settings.genericWebhookEnabled,
+        Boolean(this.env.ALERT_WEBHOOK_URL),
+        genericWebhookVault.configured
+      )
+    ];
+
+    return {
+      discordWebhookUrl,
+      telegramBotToken,
+      telegramChatId,
+      genericWebhookUrl,
+      statuses
+    };
+  }
 }
 
-function configuredChannels(env: Env): AlertChannelStatus[] {
+function configuredChannelsFromEnv(
+  env: Env,
+  settings: NotificationSettings
+): AlertChannelStatus[] {
   return [
-    { channel: "DISCORD", configured: Boolean(env.DISCORD_WEBHOOK_URL) },
-    {
-      channel: "TELEGRAM",
-      configured: Boolean(env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID)
-    },
-    { channel: "GENERIC_WEBHOOK", configured: Boolean(env.ALERT_WEBHOOK_URL) }
+    channelStatus("DISCORD", settings.discordEnabled, Boolean(env.DISCORD_WEBHOOK_URL), false),
+    channelStatus(
+      "TELEGRAM",
+      settings.telegramEnabled,
+      Boolean(env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID),
+      false
+    ),
+    channelStatus("GENERIC_WEBHOOK", settings.genericWebhookEnabled, Boolean(env.ALERT_WEBHOOK_URL), false)
   ];
+}
+
+function channelStatus(
+  channel: AlertChannel,
+  enabled: boolean,
+  envConfigured: boolean,
+  vaultConfigured: boolean
+): AlertChannelStatus {
+  const source = envConfigured ? "ENV" : vaultConfigured ? "VAULT" : "MISSING";
+
+  return {
+    channel,
+    enabled,
+    envConfigured,
+    vaultConfigured,
+    source,
+    configured: enabled && (envConfigured || vaultConfigured)
+  };
 }
 
 function deliveryAttempt(channel: AlertChannel, response: Response): AlertDeliveryAttempt {
@@ -301,7 +426,107 @@ function isSensitiveKey(value: string): boolean {
   return /(secret|token|password|api[_-]?key|webhook|authorization|bearer)/i.test(value);
 }
 
-function readPositiveInteger(value: string | undefined, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : fallback;
+function isQuietHour(settings: NotificationSettings): boolean {
+  if (!settings.quietHoursEnabled || settings.quietHoursStartUtc === settings.quietHoursEndUtc) {
+    return false;
+  }
+
+  const now = new Date();
+  const currentMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const startMinutes = parseUtcMinutes(settings.quietHoursStartUtc);
+  const endMinutes = parseUtcMinutes(settings.quietHoursEndUtc);
+
+  if (startMinutes === null || endMinutes === null) {
+    return false;
+  }
+
+  return startMinutes < endMinutes
+    ? currentMinutes >= startMinutes && currentMinutes < endMinutes
+    : currentMinutes >= startMinutes || currentMinutes < endMinutes;
+}
+
+function parseUtcMinutes(value: string): number | null {
+  const [hoursRaw, minutesRaw] = value.split(":");
+  const hours = Number(hoursRaw);
+  const minutes = Number(minutesRaw);
+
+  if (
+    !Number.isInteger(hours) ||
+    !Number.isInteger(minutes) ||
+    hours < 0 ||
+    hours > 23 ||
+    minutes < 0 ||
+    minutes > 59
+  ) {
+    return null;
+  }
+
+  return hours * 60 + minutes;
+}
+
+async function readVaultSecret(
+  env: Env,
+  keyName: string
+): Promise<{ configured: boolean; value: string | null }> {
+  try {
+    const metadata = await env.RISK_VAULT.get<JsonRecord>(`vault:metadata:${keyName}`, "json");
+    if (!metadata) {
+      return { configured: false, value: null };
+    }
+
+    const encryptionSecret = env.VAULT_ENCRYPTION_SECRET ?? env.JWT_SECRET ?? env.ADMIN_JWT_SECRET;
+    if (!encryptionSecret) {
+      return { configured: false, value: null };
+    }
+
+    const encrypted = await env.RISK_VAULT.get<JsonRecord>(`vault:secret:${keyName}`, "json");
+    if (!encrypted) {
+      return { configured: false, value: null };
+    }
+
+    const value = await decryptSecret(encrypted, encryptionSecret);
+
+    return {
+      configured: Boolean(value),
+      value
+    };
+  } catch (error) {
+    console.error(
+      "[Sovereign-Sigma] notifier vault lookup failed",
+      keyName,
+      error instanceof Error ? error.message : error
+    );
+    return { configured: false, value: null };
+  }
+}
+
+async function decryptSecret(encrypted: JsonRecord, keyMaterial: string): Promise<string | null> {
+  if (
+    encrypted.alg !== "AES-GCM" ||
+    typeof encrypted.iv !== "string" ||
+    typeof encrypted.ciphertext !== "string"
+  ) {
+    return null;
+  }
+
+  const keyBytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(keyMaterial));
+  const key = await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["decrypt"]);
+  const plaintext = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: base64ToBytes(encrypted.iv) },
+    key,
+    base64ToBytes(encrypted.ciphertext)
+  );
+
+  return new TextDecoder().decode(plaintext);
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+
+  return bytes;
 }

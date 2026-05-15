@@ -1,4 +1,5 @@
 import type {
+  AdminSettingsResponse,
   AdminStateResponse,
   AlertingResponse,
   AlertPriority,
@@ -7,9 +8,12 @@ import type {
   GlobalRiskConfig,
   LoginResponse,
   MacroBiasDirection,
+  NotificationSettingsUpdate,
   TemporaryGovernanceOverride,
   TradeHistoryResponse,
-  TraceResponse
+  TraceResponse,
+  VaultKeyName,
+  VaultStatusResponse
 } from "./types";
 
 export const DEFAULT_API_BASE =
@@ -73,6 +77,61 @@ export async function readTradeHistory(apiBase: string, token: string): Promise<
 
 export async function readAlerts(apiBase: string, token: string): Promise<AlertingResponse> {
   return apiFetch<AlertingResponse>(apiBase, "/admin/alerts", token);
+}
+
+export async function readSettings(
+  apiBase: string,
+  token: string
+): Promise<AdminSettingsResponse> {
+  return apiFetch<AdminSettingsResponse>(apiBase, "/admin/settings", token);
+}
+
+export async function updateNotificationSettings(
+  apiBase: string,
+  token: string,
+  notifications: NotificationSettingsUpdate
+): Promise<Pick<AdminSettingsResponse, "ok" | "notifications" | "alerting">> {
+  return apiFetch<Pick<AdminSettingsResponse, "ok" | "notifications" | "alerting">>(
+    apiBase,
+    "/admin/settings/notifications",
+    token,
+    {
+      method: "POST",
+      body: JSON.stringify({ notifications })
+    }
+  );
+}
+
+export async function readVaultStatus(
+  apiBase: string,
+  token: string
+): Promise<VaultStatusResponse> {
+  return apiFetch<VaultStatusResponse>(apiBase, "/admin/vault", token);
+}
+
+export async function rotateVaultSecret(
+  apiBase: string,
+  token: string,
+  payload: {
+    keyName: VaultKeyName;
+    secret: string;
+    rotationReason: string;
+  }
+): Promise<unknown> {
+  return apiFetch(apiBase, "/admin/vault", token, {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function testVaultConnection(
+  apiBase: string,
+  token: string
+): Promise<unknown> {
+  return apiFetch(apiBase, "/admin/vault/test", token, {
+    method: "POST",
+    body: JSON.stringify({})
+  });
 }
 
 export async function sendTestAlert(
