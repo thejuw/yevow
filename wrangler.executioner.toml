@@ -27,11 +27,6 @@ preview_id = "3d69fe3608404e049791ce81142dab8e"
 mode = "smart"
 
 [vars]
-EXCHANGE_BASE_URL = "https://replace-with-exchange-api"
-EXCHANGE_ORDER_ENDPOINT = "https://replace-with-exchange-order-endpoint"
-EXCHANGE_CANCEL_ENDPOINT = "https://replace-with-exchange-cancel-endpoint"
-EXCHANGE_OPEN_ORDERS_ENDPOINT = "https://replace-with-exchange-open-orders-endpoint"
-EXCHANGE_ACCOUNT_BALANCE_ENDPOINT = "https://replace-with-exchange-balance-endpoint"
 EXCHANGE_ADAPTER = "generic-json"
 SIGNATURE_ALGORITHM = "HMAC-SHA256"
 SLIPPAGE_GUARD_TICKS = "2"

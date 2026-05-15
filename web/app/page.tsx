@@ -24,6 +24,7 @@ import {
   readConfig,
   readState,
   readTrace,
+  resetLatencyBaseline,
   toWebSocketUrl,
   updateConfig
 } from "@/lib/api";
@@ -85,6 +86,7 @@ export default function CommandCenterPage() {
   const [commandStatus, setCommandStatus] = useState<string | null>(null);
   const [isApplyingMatrix, setIsApplyingMatrix] = useState(false);
   const [isClearingOverride, setIsClearingOverride] = useState(false);
+  const [isResettingLatency, setIsResettingLatency] = useState(false);
   const [transport, setTransport] = useState<DraftTransportSettings>(DEFAULT_TRANSPORT_SETTINGS);
   const [moltworker, setMoltworker] = useState<MoltworkerDraft>({
     direction: "RISK_OFF" as MacroBiasDirection,
@@ -161,6 +163,9 @@ export default function CommandCenterPage() {
     };
 
     ws.onclose = () => {
+      if (wsRef.current !== ws) {
+        return;
+      }
       if (!token) {
         return;
       }
@@ -176,8 +181,15 @@ export default function CommandCenterPage() {
   useEffect(() => {
     const savedToken = localStorage.getItem("sovereign.jwt");
     const savedBase = localStorage.getItem("sovereign.apiBase");
+    const savedTransport = localStorage.getItem("sovereign.transport");
     if (savedBase) {
       setApiBase(savedBase);
+    }
+    if (savedTransport) {
+      const parsed = safeParse(savedTransport) as Partial<DraftTransportSettings> | null;
+      if (parsed) {
+        setTransport((current) => ({ ...current, ...parsed }));
+      }
     }
     if (savedToken) {
       setToken(savedToken);
@@ -216,11 +228,20 @@ export default function CommandCenterPage() {
 
   async function handleLogin() {
     setError(null);
-    const response = await login(apiBase, password);
-    localStorage.setItem("sovereign.jwt", response.token);
-    localStorage.setItem("sovereign.apiBase", apiBase);
-    setToken(response.token);
-    setStatus("AUTHENTICATED");
+    setCommandStatus("Authenticating...");
+
+    try {
+      const response = await login(apiBase, password);
+      localStorage.setItem("sovereign.jwt", response.token);
+      localStorage.setItem("sovereign.apiBase", apiBase);
+      setToken(response.token);
+      setStatus("AUTHENTICATED");
+      setCommandStatus("Authenticated.");
+    } catch (caught: unknown) {
+      setStatus("ERROR");
+      setError(errorMessage(caught));
+      setCommandStatus("Authentication failed.");
+    }
   }
 
   function updateDraft(key: keyof GlobalRiskConfig, value: string | number | boolean) {
@@ -296,6 +317,31 @@ export default function CommandCenterPage() {
     }
   }
 
+  function submitTransportSettings() {
+    localStorage.setItem("sovereign.transport", JSON.stringify(transport));
+    reconnectRef.current = 0;
+    wsRef.current?.close();
+    connectStream();
+    setCommandStatus("Transport controls applied to the live dashboard stream.");
+  }
+
+  async function submitResetLatency() {
+    setError(null);
+    setCommandStatus("Resetting stale telemetry baseline...");
+    setIsResettingLatency(true);
+
+    try {
+      await resetLatencyBaseline(apiBase, token);
+      await refresh();
+      setCommandStatus("Latency baseline reset.");
+    } catch (caught: unknown) {
+      setError(errorMessage(caught));
+      setCommandStatus("Latency reset failed.");
+    } finally {
+      setIsResettingLatency(false);
+    }
+  }
+
   const macroBias = pulse?.macroBias ?? engineState?.macroBias ?? null;
   const temporaryOverride = pulse?.temporaryOverride ?? engineState?.temporaryOverride ?? null;
   const displayEquity = pulse?.total_equity ?? engineState?.bankroll.equity ?? 0;
@@ -336,7 +382,11 @@ export default function CommandCenterPage() {
               }}
             />
           </label>
-          <button className="primary-action" onClick={() => void handleLogin()}>
+          <button
+            className="primary-action"
+            disabled={!password.trim() && !token}
+            onClick={() => void handleLogin()}
+          >
             <KeyRound size={16} />
             Authenticate
           </button>
@@ -410,7 +460,10 @@ export default function CommandCenterPage() {
           <div className="panel-title">
             <SlidersHorizontal size={17} />
             <span>Full Parameter Matrix</span>
-            <button disabled={isApplyingMatrix} onClick={() => void submitDraftConfig()}>
+            <button
+              disabled={isApplyingMatrix || !token || !config}
+              onClick={() => void submitDraftConfig()}
+            >
               {isApplyingMatrix ? "Applying" : "Apply Matrix"}
             </button>
           </div>
@@ -430,7 +483,9 @@ export default function CommandCenterPage() {
           <div className="panel-title">
             <Brain size={17} />
             <span>Strategic Bias Injection</span>
-            <button onClick={() => void submitMoltworker()}>Inject Bias</button>
+            <button disabled={!token} onClick={() => void submitMoltworker()}>
+              Inject Bias
+            </button>
           </div>
           <div className="supervisor-grid">
             <label>
@@ -523,6 +578,7 @@ export default function CommandCenterPage() {
           <div className="panel-title">
             <RadioTower size={17} />
             <span>Transport & Limits</span>
+            <button onClick={submitTransportSettings}>Apply Transport</button>
           </div>
           <div className="transport-grid">
             {(
@@ -546,6 +602,13 @@ export default function CommandCenterPage() {
               </label>
             ))}
           </div>
+          <button
+            className="danger-action full-action"
+            disabled={isResettingLatency || !token}
+            onClick={() => void submitResetLatency()}
+          >
+            {isResettingLatency ? "Resetting" : "Reset Latency Baseline"}
+          </button>
         </section>
 
         <section className="efficacy-panel glass">

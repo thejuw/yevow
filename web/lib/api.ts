@@ -9,7 +9,7 @@ import type {
 } from "./types";
 
 export const DEFAULT_API_BASE =
-  process.env.NEXT_PUBLIC_SOVEREIGN_API_BASE ?? "http://127.0.0.1:8787";
+  process.env.NEXT_PUBLIC_SOVEREIGN_API_BASE ?? "https://api.yevow.co";
 
 export class SovereignApiError extends Error {
   constructor(
@@ -126,6 +126,16 @@ export async function clearOverride(
       actor: "command-center",
       clearTemporaryOverride: true
     })
+  });
+}
+
+export async function resetLatencyBaseline(
+  apiBase: string,
+  token: string
+): Promise<unknown> {
+  return apiFetch(apiBase, "/admin/maintenance/reset-latency", token, {
+    method: "POST",
+    body: JSON.stringify({})
   });
 }
 

@@ -77,6 +77,7 @@ const REPLAY_STATUS_KEY = "replay:status";
 const RISK_LIMITS_KEY = "risk:limits";
 const CONFIG_KEY = "engine:config";
 const DEFAULT_MAX_LATENCY_MS = 250;
+const DEFAULT_HARD_STALE_DROP_MS = 1_000;
 const PERFORMANCE_HISTORY_LIMIT = 100;
 const CONFIG_ALARM_INTERVAL_MS = 5_000;
 const CRYPTO_DECIMAL_PLACES = 8;
@@ -135,7 +136,8 @@ interface TickIngestResult {
     | "DISABLED"
     | "ANOMALY_PAUSE"
     | "DESYNC"
-    | "DUPLICATE_OR_OUT_OF_ORDER";
+    | "DUPLICATE_OR_OUT_OF_ORDER"
+    | "STALE_DROPPED";
   reason?: string;
   metrics?: LatencyMetrics;
   book?: InternalOrderBook;
@@ -162,6 +164,44 @@ interface TelemetryLogEntry {
   createdAt: string;
 }
 
+interface TickTelemetryAggregate {
+  count: number;
+  freshCount: number;
+  staleCount: number;
+  firstObservedAt: string;
+  lastObservedAt: string;
+  latestInstrumentCode: string | null;
+  latestExchangeCode: string | null;
+  latestSequence: number | null;
+  latestStatus: string | null;
+  sumCpuTimeMs: number;
+  sumTotalLatencyMs: number;
+  sumWebsocketLatencyMs: number;
+  sumProcessingLatencyMs: number;
+  sumTimeToBookMs: number;
+  timeToBookSamples: number;
+  maxTotalLatencyMs: number;
+  maxWebsocketLatencyMs: number;
+  maxProcessingLatencyMs: number;
+  maxTimeToBookMs: number | null;
+  latestAverageLatencyMs: number | null;
+  latestOrderBookDepth: number | null;
+  latestToxicityScore: number | null;
+  latestJitterMs: number | null;
+  latestExecutionStatus: string | null;
+  latestWeightedImbalance: number | null;
+  latestMidPrice: number | null;
+}
+
+interface EventTelemetryAggregate {
+  telemetryType: string;
+  count: number;
+  firstObservedAt: string;
+  lastObservedAt: string;
+  latestPayload: Record<string, unknown>;
+  latestCorrelationId: string | null;
+}
+
 interface BookSyncState {
   marketKey: string;
   source: MarketDataSource;
@@ -182,7 +222,11 @@ interface BookSyncState {
 
 interface AppliedBookUpdate {
   accepted: boolean;
-  reason?: "SEQUENCE_GAP" | "DUPLICATE_OR_OUT_OF_ORDER" | "UNKNOWN_SIDE";
+  reason?:
+    | "SEQUENCE_GAP"
+    | "DUPLICATE_OR_OUT_OF_ORDER"
+    | "UNKNOWN_SIDE"
+    | "CROSSED_BOOK";
   book?: InternalOrderBook;
   timeToBookMs: number | null;
   expectedSequence?: number;
@@ -308,6 +352,8 @@ export class TradingEngine {
   private signals: AgentSignal[] = [];
   private latestAgentSignals = new Map<AgentName, AgentSignal>();
   private telemetryBuffer: TelemetryLogEntry[] = [];
+  private tickTelemetryAggregate: TickTelemetryAggregate | null = null;
+  private eventTelemetryAggregates = new Map<string, EventTelemetryAggregate>();
   private telemetryFlushScheduled = false;
   private busSequence = 0;
   private latencyHistory: LatencyMetrics[] = [];
@@ -648,6 +694,17 @@ export class TradingEngine {
 
       if (request.method === "GET" && url.pathname === "/metrics/performance") {
         return this.performanceMetricsResponse();
+      }
+
+      if (request.method === "POST" && url.pathname === "/maintenance/reset-latency") {
+        const observedAt = new Date().toISOString();
+        this.resetLatencyBaseline(observedAt, "ADMIN_MAINTENANCE");
+        await this.state.storage.put({
+          [ENGINE_STATE_KEY]: this.engineState,
+          [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
+          [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples
+        });
+        return json({ ok: true, state: this.engineState });
       }
 
       if (request.method === "GET" && url.pathname === "/book/snapshot") {
@@ -1179,6 +1236,10 @@ export class TradingEngine {
       updatedAt: now
     };
 
+    if (source === "INGEST_WORKER") {
+      this.resetLatencyBaseline(now, `ORDER_BOOK_RESET:${reason}`);
+    }
+
     const writes: Record<string, unknown> = {
       [ENGINE_STATE_KEY]: this.engineState
     };
@@ -1398,6 +1459,17 @@ export class TradingEngine {
       timeToBookMs
     );
 
+    if (isCrossedBook(book)) {
+      await this.handleCrossedBook(delta, book, timeToBookMs, updatedAt);
+      return {
+        accepted: false,
+        reason: "CROSSED_BOOK",
+        expectedSequence,
+        actualSequence: delta.sequence,
+        timeToBookMs
+      };
+    }
+
     this.maybeCrossCheckTopOfBook(delta, book);
 
     return {
@@ -1457,6 +1529,59 @@ export class TradingEngine {
       reason: "SEQUENCE_GAP",
       instrumentCode,
       source_exchange: sourceExchange,
+      connectionId: null,
+      blackoutDurationMs: null,
+      recoveredAt: observedAt
+    });
+  }
+
+  private async handleCrossedBook(
+    delta: OrderBookDelta,
+    book: InternalOrderBook,
+    timeToBookMs: number | null,
+    observedAt: string
+  ): Promise<void> {
+    const syncState = this.getBookSync(
+      book.marketKey,
+      book.instrumentCode,
+      book.exchangeCode,
+      book.source_exchange,
+      book.tickSize,
+      book.source,
+      book.sourceWeight
+    );
+
+    syncState.isSynced = false;
+    syncState.desyncReason = "CROSSED_BOOK";
+    syncState.lastDesyncAt = observedAt;
+    syncState.ttbLatencyMs = timeToBookMs;
+
+    this.logger.error("ORDER_BOOK_CROSSED", "Crossed book detected; purging local book", {
+      instrumentCode: book.instrumentCode,
+      exchangeCode: book.exchangeCode,
+      source_exchange: book.source_exchange,
+      sequence: delta.sequence,
+      bestBid: book.bestBid,
+      bestAsk: book.bestAsk,
+      spread: book.spread,
+      timeToBookMs
+    });
+    this.publish("ORDER_BOOK_CROSSED", {
+      instrumentCode: book.instrumentCode,
+      exchangeCode: book.exchangeCode,
+      source_exchange: book.source_exchange,
+      sequence: delta.sequence,
+      bestBid: book.bestBid,
+      bestAsk: book.bestAsk,
+      spread: book.spread,
+      timeToBookMs
+    });
+
+    await this.resetOrderBook({
+      source: "SYSTEM",
+      reason: "CROSSED_BOOK",
+      instrumentCode: book.instrumentCode,
+      source_exchange: book.source_exchange,
       connectionId: null,
       blackoutDurationMs: null,
       recoveredAt: observedAt
@@ -1965,6 +2090,67 @@ export class TradingEngine {
     this.lastTickTimestamp = tick.receivedAt;
 
     const metrics = this.calculateLatency(tick);
+    const hardStaleDropMs = readPositiveNumber(
+      this.env.KAIKO_STALE_AFTER_MS,
+      DEFAULT_HARD_STALE_DROP_MS
+    );
+    const isHardStale =
+      !options.shadowReplay && metrics.totalLatencyMs > hardStaleDropMs;
+
+    if (isHardStale) {
+      const nextStaleTickCount = this.engineState.staleTickCount + 1;
+      metrics.status = "STALE";
+      metrics.maxLatencyMs = this.maxLatencyMs;
+      metrics.averageLatencyMs = this.engineState.averageLatency;
+      metrics.sampleCount = this.engineState.latencySampleCount;
+
+      this.engineState = {
+        ...this.engineState,
+        processedTicks: this.engineState.processedTicks + 1,
+        staleTickCount: nextStaleTickCount,
+        heartbeatAt: metrics.brainTimestamp,
+        updatedAt: metrics.brainTimestamp
+      };
+
+      if (this.engineState.averageLatency > hardStaleDropMs) {
+        this.resetLatencyBaseline(metrics.brainTimestamp, "HARD_STALE_DROP");
+      }
+
+      await this.state.storage.put({
+        [ENGINE_STATE_KEY]: this.engineState,
+        [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
+        [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples
+      });
+
+      if (nextStaleTickCount <= 5 || nextStaleTickCount % 500 === 0) {
+        this.logger.warn("HARD_STALE_TICK_DROPPED", "Dropped tick beyond hard stale threshold", {
+          instrumentCode: tick.instrumentCode,
+          exchangeCode: tick.exchangeCode,
+          source_exchange: tick.source_exchange,
+          sequence: tick.sequence,
+          totalLatencyMs: metrics.totalLatencyMs,
+          networkLatencyMs: metrics.networkLatencyMs,
+          processingLatencyMs: metrics.processingLatencyMs,
+          hardStaleDropMs
+        });
+      }
+
+      return {
+        accepted: false,
+        status: "STALE_DROPPED",
+        reason: "TICK_EXCEEDED_HARD_STALE_THRESHOLD",
+        metrics
+      };
+    }
+
+    if (
+      !options.shadowReplay &&
+      this.engineState.averageLatency > hardStaleDropMs * 5 &&
+      metrics.totalLatencyMs <= hardStaleDropMs
+    ) {
+      this.resetLatencyBaseline(metrics.brainTimestamp, "FRESH_SAMPLE_AFTER_BACKLOG");
+    }
+
     this.updateLatencyAverage(metrics.totalLatencyMs);
     this.applyLocationLatency(metrics.totalLatencyMs, metrics.brainTimestamp);
 
@@ -2108,7 +2294,7 @@ export class TradingEngine {
       return {
         accepted: false,
         status:
-          applied.reason === "SEQUENCE_GAP"
+          applied.reason === "SEQUENCE_GAP" || applied.reason === "CROSSED_BOOK"
             ? "DESYNC"
             : "DUPLICATE_OR_OUT_OF_ORDER",
         reason: applied.reason,
@@ -3922,6 +4108,31 @@ export class TradingEngine {
     };
   }
 
+  private resetLatencyBaseline(observedAt: string, reason: string): void {
+    this.latencyHistory = [];
+    this.processingLatencySamples = [];
+    this.engineState = {
+      ...this.engineState,
+      averageLatency: 0,
+      latencySampleCount: 0,
+      executionProfile: {
+        ...this.engineState.executionProfile,
+        status: "STABLE",
+        jitterMs: 0,
+        sampleCount: 0,
+        averageProcessingLatencyMs: 0,
+        maxProcessingLatencyMs: 0,
+        lastProcessingLatencyMs: 0,
+        updatedAt: observedAt
+      },
+      updatedAt: observedAt
+    };
+    this.logger.info("LATENCY_BASELINE_RESET", "Reset stale latency baseline", {
+      reason,
+      observedAt
+    });
+  }
+
   private observeExecutionProfile(
     metrics: LatencyMetrics,
     trace: ExecutionTraceInput
@@ -4365,6 +4576,18 @@ export class TradingEngine {
     };
 
     this.broadcast(message);
+    if (type === "TICK_TELEMETRY") {
+      this.accumulateTickTelemetry(payload, message.emittedAt);
+      this.scheduleTelemetryFlush();
+      return;
+    }
+
+    if (shouldAggregateBusTelemetry(type)) {
+      this.accumulateEventTelemetry(type, payload, message.emittedAt, correlationId ?? null);
+      this.scheduleTelemetryFlush();
+      return;
+    }
+
     this.queueTelemetry({
       telemetryType: type,
       message: `Telemetry event: ${type}`,
@@ -4376,6 +4599,191 @@ export class TradingEngine {
       },
       createdAt: message.emittedAt
     });
+  }
+
+  private accumulateEventTelemetry(
+    type: string,
+    payload: Record<string, unknown>,
+    emittedAt: string,
+    correlationId: string | null
+  ): void {
+    const current = this.eventTelemetryAggregates.get(type);
+
+    if (!current) {
+      this.eventTelemetryAggregates.set(type, {
+        telemetryType: type,
+        count: 1,
+        firstObservedAt: emittedAt,
+        lastObservedAt: emittedAt,
+        latestPayload: payload,
+        latestCorrelationId: correlationId
+      });
+      return;
+    }
+
+    current.count += 1;
+    current.lastObservedAt = emittedAt;
+    current.latestPayload = payload;
+    current.latestCorrelationId = correlationId;
+  }
+
+  private consumeEventTelemetryAggregates(): TelemetryLogEntry[] {
+    const entries: TelemetryLogEntry[] = [];
+
+    for (const aggregate of this.eventTelemetryAggregates.values()) {
+      entries.push({
+        telemetryType: `${aggregate.telemetryType}_AGGREGATE`,
+        message: `Aggregated ${aggregate.telemetryType} telemetry`,
+        correlationId:
+          aggregate.latestCorrelationId ??
+          `${aggregate.telemetryType.toLowerCase()}:${aggregate.firstObservedAt}`,
+        createdAt: aggregate.lastObservedAt,
+        payload: {
+          telemetryType: aggregate.telemetryType,
+          count: aggregate.count,
+          firstObservedAt: aggregate.firstObservedAt,
+          lastObservedAt: aggregate.lastObservedAt,
+          latestPayload: aggregate.latestPayload,
+          flushIntervalMs: TELEMETRY_FLUSH_INTERVAL_MS
+        }
+      });
+    }
+
+    this.eventTelemetryAggregates.clear();
+    return entries;
+  }
+
+  private accumulateTickTelemetry(
+    payload: Record<string, unknown>,
+    emittedAt: string
+  ): void {
+    const cpuTimeMs = readTelemetryNumber(payload.cpuTimeMs);
+    const totalLatencyMs = readTelemetryNumber(payload.totalLatencyMs);
+    const websocketLatencyMs = readTelemetryNumber(payload.websocketLatencyMs);
+    const processingLatencyMs = readTelemetryNumber(payload.processingLatencyMs);
+    const timeToBookMs = readTelemetryNumber(payload.timeToBookMs);
+    const status =
+      typeof payload.status === "string" && payload.status.length > 0
+        ? payload.status
+        : null;
+
+    const current =
+      this.tickTelemetryAggregate ??
+      {
+        count: 0,
+        freshCount: 0,
+        staleCount: 0,
+        firstObservedAt: emittedAt,
+        lastObservedAt: emittedAt,
+        latestInstrumentCode: null,
+        latestExchangeCode: null,
+        latestSequence: null,
+        latestStatus: null,
+        sumCpuTimeMs: 0,
+        sumTotalLatencyMs: 0,
+        sumWebsocketLatencyMs: 0,
+        sumProcessingLatencyMs: 0,
+        sumTimeToBookMs: 0,
+        timeToBookSamples: 0,
+        maxTotalLatencyMs: 0,
+        maxWebsocketLatencyMs: 0,
+        maxProcessingLatencyMs: 0,
+        maxTimeToBookMs: null,
+        latestAverageLatencyMs: null,
+        latestOrderBookDepth: null,
+        latestToxicityScore: null,
+        latestJitterMs: null,
+        latestExecutionStatus: null,
+        latestWeightedImbalance: null,
+        latestMidPrice: null
+      };
+
+    current.count += 1;
+    current.freshCount += status === "FRESH" ? 1 : 0;
+    current.staleCount += status === "STALE" ? 1 : 0;
+    current.lastObservedAt = emittedAt;
+    current.latestInstrumentCode =
+      typeof payload.instrumentCode === "string" ? payload.instrumentCode : current.latestInstrumentCode;
+    current.latestExchangeCode =
+      typeof payload.exchangeCode === "string" ? payload.exchangeCode : current.latestExchangeCode;
+    current.latestSequence =
+      typeof payload.sequence === "number" && Number.isFinite(payload.sequence)
+        ? payload.sequence
+        : current.latestSequence;
+    current.latestStatus = status ?? current.latestStatus;
+
+    if (cpuTimeMs !== null) {
+      current.sumCpuTimeMs += cpuTimeMs;
+    }
+    if (totalLatencyMs !== null) {
+      current.sumTotalLatencyMs += totalLatencyMs;
+      current.maxTotalLatencyMs = Math.max(current.maxTotalLatencyMs, totalLatencyMs);
+    }
+    if (websocketLatencyMs !== null) {
+      current.sumWebsocketLatencyMs += websocketLatencyMs;
+      current.maxWebsocketLatencyMs = Math.max(
+        current.maxWebsocketLatencyMs,
+        websocketLatencyMs
+      );
+    }
+    if (processingLatencyMs !== null) {
+      current.sumProcessingLatencyMs += processingLatencyMs;
+      current.maxProcessingLatencyMs = Math.max(
+        current.maxProcessingLatencyMs,
+        processingLatencyMs
+      );
+    }
+    if (timeToBookMs !== null) {
+      current.sumTimeToBookMs += timeToBookMs;
+      current.timeToBookSamples += 1;
+      current.maxTimeToBookMs =
+        current.maxTimeToBookMs === null
+          ? timeToBookMs
+          : Math.max(current.maxTimeToBookMs, timeToBookMs);
+    }
+
+    current.latestAverageLatencyMs = readTelemetryNumber(payload.averageLatencyMs);
+    current.latestOrderBookDepth = readTelemetryNumber(payload.orderBookDepth);
+    current.latestToxicityScore = readTelemetryNumber(payload.toxicityScore);
+    current.latestJitterMs = readTelemetryNumber(payload.jitterMs);
+    current.latestExecutionStatus =
+      typeof payload.executionStatus === "string"
+        ? payload.executionStatus
+        : current.latestExecutionStatus;
+    current.latestWeightedImbalance = readTelemetryNumber(payload.weightedImbalance);
+    current.latestMidPrice = readTelemetryNumber(payload.midPrice);
+
+    this.tickTelemetryAggregate = current;
+  }
+
+  private consumeTickTelemetryAggregate(): TelemetryLogEntry | null {
+    const aggregate = this.tickTelemetryAggregate;
+    this.tickTelemetryAggregate = null;
+
+    if (!aggregate || aggregate.count === 0) {
+      return null;
+    }
+
+    const average = (sum: number): number => roundLatency(sum / aggregate.count);
+
+    return {
+      telemetryType: "TICK_TELEMETRY_AGGREGATE",
+      message: "Aggregated tick telemetry",
+      correlationId: `tick-telemetry:${aggregate.firstObservedAt}`,
+      createdAt: aggregate.lastObservedAt,
+      payload: {
+        ...aggregate,
+        averageCpuTimeMs: average(aggregate.sumCpuTimeMs),
+        averageTotalLatencyMs: average(aggregate.sumTotalLatencyMs),
+        averageWebsocketLatencyMs: average(aggregate.sumWebsocketLatencyMs),
+        averageProcessingLatencyMs: average(aggregate.sumProcessingLatencyMs),
+        averageTimeToBookMs:
+          aggregate.timeToBookSamples > 0
+            ? roundLatency(aggregate.sumTimeToBookMs / aggregate.timeToBookSamples)
+            : null,
+        flushIntervalMs: TELEMETRY_FLUSH_INTERVAL_MS
+      }
+    };
   }
 
   private broadcast(message: unknown): void {
@@ -4434,7 +4842,13 @@ export class TradingEngine {
   }
 
   private async flushTelemetryBatch(): Promise<void> {
-    const batch = this.telemetryBuffer.splice(0);
+    const tickAggregate = this.consumeTickTelemetryAggregate();
+    const eventAggregates = this.consumeEventTelemetryAggregates();
+    const batch = [
+      ...(tickAggregate ? [tickAggregate] : []),
+      ...eventAggregates,
+      ...this.telemetryBuffer.splice(0)
+    ];
     this.telemetryFlushScheduled = false;
 
     if (batch.length === 0) {
@@ -4469,7 +4883,11 @@ export class TradingEngine {
       );
     }
 
-    if (this.telemetryBuffer.length > 0) {
+    if (
+      this.telemetryBuffer.length > 0 ||
+      this.tickTelemetryAggregate !== null ||
+      this.eventTelemetryAggregates.size > 0
+    ) {
       this.scheduleTelemetryFlush();
     }
   }
@@ -6211,6 +6629,16 @@ function calculateTimeToBookMs(exchangeTimestamp: string, bookTimestamp: string)
   );
 }
 
+function isCrossedBook(book: InternalOrderBook): boolean {
+  return (
+    book.bestBid !== null &&
+    book.bestAsk !== null &&
+    Number.isFinite(book.bestBid) &&
+    Number.isFinite(book.bestAsk) &&
+    book.bestBid >= book.bestAsk
+  );
+}
+
 function resolveTickSize(
   env: Env,
   instrumentCode: string,
@@ -6573,6 +7001,18 @@ function assertAgentSignal(value: AgentSignal): AgentSignal {
   }
 
   return value;
+}
+
+function readTelemetryNumber(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return null;
+  }
+
+  return value;
+}
+
+function shouldAggregateBusTelemetry(type: string): boolean {
+  return type === "POST_QUOTE";
 }
 
 function decodeWebSocketMessage(data: string | ArrayBuffer): string | null {

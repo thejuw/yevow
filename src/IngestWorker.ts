@@ -16,6 +16,7 @@ import type {
 } from "./types";
 
 const SINGLETON_ENGINE_NAME = "sovereign-sigma:singleton:trading-engine:v1";
+const SINGLETON_INGEST_COORDINATOR_NAME = "sovereign-sigma:singleton:ingest-coordinator:v1";
 const DEFAULT_AUTH_HEADER = "X-Api-Key";
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000;
 const DEFAULT_WATCHDOG_TIMEOUT_MS = 5_000;
@@ -25,6 +26,8 @@ const SNAPSHOT_SEQUENCE_FALLBACK_SEED = "snapshot";
 const DEFAULT_SOURCE_WEIGHT = 1;
 const DEFAULT_CLOCK_SYNC_ALPHA = 0.1;
 const DEFAULT_CLOCK_SYNC_MAX_OFFSET_MS = 10_000;
+const DEFAULT_STALE_TICK_DROP_MS = 1_000;
+const PRE_SNAPSHOT_BUFFER_LIMIT = 1_000;
 
 type ResolvedExchangeStreamConfig = Required<
   Pick<
@@ -67,7 +70,11 @@ interface NewsItem {
   publishedAt: string | null;
 }
 
-let activeStreams = new Map<string, ExchangeStreamController>();
+interface BinanceSequenceWindow {
+  firstUpdateId: number;
+  finalUpdateId: number;
+}
+
 const seenNewsItems = new Map<string, number>();
 
 export default {
@@ -84,7 +91,7 @@ export default {
     );
 
     if (request.method === "GET" && url.pathname === "/health") {
-      return json(getHealth());
+      return routeToIngestCoordinator(request, env);
     }
 
     if (request.method === "POST" && url.pathname === "/stream/start") {
@@ -93,8 +100,7 @@ export default {
         return json({ ok: false, error: "Unauthorized" }, 401);
       }
 
-      ensureStreams(env, ctx, logger);
-      return json({ ok: true, health: getHealth() });
+      return routeToIngestCoordinator(request, env);
     }
 
     if (request.method === "POST" && url.pathname === "/stream/stop") {
@@ -103,8 +109,7 @@ export default {
         return json({ ok: false, error: "Unauthorized" }, 401);
       }
 
-      stopAllStreams("CONTROL_STOP");
-      return json({ ok: true, health: getHealth() });
+      return routeToIngestCoordinator(request, env);
     }
 
     return json({
@@ -119,16 +124,86 @@ export default {
     env: Env,
     ctx: ExecutionContext
   ): Promise<void> {
-    const logger = new Logger(
-      env.TRADING_DB,
-      (promise) => ctx.waitUntil(promise),
-      "IngestWorker"
+    ctx.waitUntil(
+      routeToIngestCoordinator(
+        new Request("https://sovereign-sigma-ingest.internal/scheduled", {
+          method: "POST",
+          headers: { "x-sovereign-scheduled": "1" }
+        }),
+        env
+      )
     );
-
-    ensureStreams(env, ctx, logger);
-    ctx.waitUntil(ingestNewsFeeds(env, logger));
   }
 } satisfies ExportedHandler<Env>;
+
+function routeToIngestCoordinator(request: Request, env: Env): Promise<Response> {
+  if (!env.INGEST_COORDINATOR) {
+    return Promise.resolve(
+      json({ ok: false, error: "INGEST_COORDINATOR_NOT_BOUND" }, 503)
+    );
+  }
+
+  const url = new URL(request.url);
+  const coordinatorUrl = new URL(
+    `${url.pathname}${url.search}`,
+    "https://sovereign-sigma-ingest-coordinator.internal"
+  );
+  const id = env.INGEST_COORDINATOR.idFromName(SINGLETON_INGEST_COORDINATOR_NAME);
+  const coordinator = env.INGEST_COORDINATOR.get(id);
+
+  return coordinator.fetch(new Request(coordinatorUrl, request));
+}
+
+export class IngestCoordinator {
+  private readonly activeStreams = new Map<string, ExchangeStreamController>();
+  private readonly logger: Logger;
+
+  constructor(
+    private readonly state: DurableObjectState,
+    private readonly env: Env
+  ) {
+    this.logger = new Logger(
+      env.TRADING_DB,
+      (promise) => this.state.waitUntil(promise),
+      "IngestCoordinator"
+    );
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+
+    if (request.method === "GET" && url.pathname === "/health") {
+      return json(getHealth(this.activeStreams));
+    }
+
+    if (request.method === "POST" && url.pathname === "/stream/start") {
+      this.ensureStreams();
+      return json({ ok: true, health: getHealth(this.activeStreams) });
+    }
+
+    if (request.method === "POST" && url.pathname === "/stream/stop") {
+      stopAllStreams(this.activeStreams, "CONTROL_STOP");
+      return json({ ok: true, health: getHealth(this.activeStreams) });
+    }
+
+    if (request.method === "POST" && url.pathname === "/scheduled") {
+      this.ensureStreams();
+      this.state.waitUntil(ingestNewsFeeds(this.env, this.logger));
+      return json({ ok: true, health: getHealth(this.activeStreams) });
+    }
+
+    return json({ ok: false, error: "Not found" }, 404);
+  }
+
+  private ensureStreams(): void {
+    ensureStreams(
+      this.env,
+      (promise) => this.state.waitUntil(promise),
+      this.logger,
+      this.activeStreams
+    );
+  }
+}
 
 export function normalizeKaikoData(
   raw: unknown,
@@ -248,8 +323,9 @@ export function normalizeKaikoSnapshot(
 
 function ensureStreams(
   env: Env,
-  ctx: ExecutionContext,
-  logger: Logger
+  waitUntil: (promise: Promise<unknown>) => void,
+  logger: Logger,
+  activeStreams: Map<string, ExchangeStreamController>
 ): void {
   const configs = loadStreamConfigs(env);
   const configuredIds = new Set(configs.map((config) => config.id));
@@ -270,16 +346,19 @@ function ensureStreams(
 
     const controller = new ExchangeStreamController(env, logger, config);
     activeStreams.set(config.id, controller);
-    ctx.waitUntil(controller.run());
+    waitUntil(controller.run());
   }
 }
 
-function stopAllStreams(reason: string): void {
+function stopAllStreams(
+  activeStreams: Map<string, ExchangeStreamController>,
+  reason: string
+): void {
   for (const stream of activeStreams.values()) {
     stream.stop(reason);
   }
 
-  activeStreams = new Map<string, ExchangeStreamController>();
+  activeStreams.clear();
 }
 
 async function ingestNewsFeeds(env: Env, logger: Logger): Promise<void> {
@@ -441,6 +520,10 @@ class ExchangeStreamController {
   private lastRecoveredAt: string | null = null;
   private lastRecoveryDurationMs: number | null = null;
   private lastError: string | null = null;
+  private providerSequence: number | null = null;
+  private awaitingProviderBridge = false;
+  private streamReady = false;
+  private preSnapshotBuffer: Array<string | ArrayBuffer> = [];
 
   constructor(
     private readonly env: Env,
@@ -498,6 +581,8 @@ class ExchangeStreamController {
   stop(reason: string): void {
     this.stopped = true;
     this.status = "STOPPED";
+    this.streamReady = false;
+    this.preSnapshotBuffer = [];
     closeSocket(this.socket, 1000, reason);
     this.socket = null;
   }
@@ -611,6 +696,8 @@ class ExchangeStreamController {
 
     this.socket = socket;
     this.status = "CONNECTED";
+    this.streamReady = false;
+    this.preSnapshotBuffer = [];
     this.backoffCounter = 0;
     const recoveredAt = new Date().toISOString();
     const blackoutDurationMs = this.currentBlackoutDurationMs(recoveredAt);
@@ -630,20 +717,6 @@ class ExchangeStreamController {
       pingIntervalMs
     });
     this.clusterPool.recordHeartbeat(streamUrl, 0);
-
-    try {
-      await this.resetEngineBook(blackoutDurationMs, recoveredAt);
-      if (this.config.snapshotUrl) {
-        await this.syncEngineSnapshot("STREAM_CONNECTED", recoveredAt);
-      }
-    } catch (error) {
-      closeSocket(socket, 1011, "SNAPSHOT_SYNC_FAILED");
-      this.markDisconnected("SNAPSHOT_SYNC_FAILED");
-      throw error;
-    }
-
-    this.blackoutStartedAt = null;
-    this.sendSubscription(socket);
 
     return new Promise<void>((resolve, reject) => {
       let settled = false;
@@ -763,6 +836,27 @@ class ExchangeStreamController {
       });
 
       resetWatchdog();
+
+      void (async () => {
+        try {
+          await this.resetEngineBook(blackoutDurationMs, recoveredAt);
+          if (this.config.snapshotUrl) {
+            await this.syncEngineSnapshot("STREAM_CONNECTED", recoveredAt);
+          }
+          this.blackoutStartedAt = null;
+          this.streamReady = true;
+          this.sendSubscription(socket);
+          await this.flushPreSnapshotBuffer();
+        } catch (error) {
+          this.lastError =
+            error instanceof Error ? error.message : "SNAPSHOT_SYNC_FAILED";
+          closeSocket(socket, 1011, "SNAPSHOT_SYNC_FAILED");
+          this.markDisconnected("SNAPSHOT_SYNC_FAILED");
+          finish(
+            new Error(error instanceof Error ? error.message : "SNAPSHOT_SYNC_FAILED")
+          );
+        }
+      })();
     });
   }
 
@@ -779,6 +873,42 @@ class ExchangeStreamController {
   }
 
   private async handleMessage(data: string | ArrayBuffer): Promise<void> {
+    if (!this.streamReady) {
+      this.bufferPreSnapshotMessage(data);
+      return;
+    }
+
+    await this.processMessage(data);
+  }
+
+  private bufferPreSnapshotMessage(data: string | ArrayBuffer): void {
+    if (this.preSnapshotBuffer.length >= PRE_SNAPSHOT_BUFFER_LIMIT) {
+      this.preSnapshotBuffer.shift();
+      this.ticksDropped += 1;
+
+      if (this.ticksDropped <= 5 || this.ticksDropped % 100 === 0) {
+        this.logger.warn("PRE_SNAPSHOT_BUFFER_OVERFLOW", "Dropped buffered stream packet before snapshot bridge", {
+          streamId: this.config.id,
+          source: this.config.source,
+          source_exchange: this.config.source_exchange,
+          connectionId: this.connectionId,
+          bufferLimit: PRE_SNAPSHOT_BUFFER_LIMIT
+        });
+      }
+    }
+
+    this.preSnapshotBuffer.push(data);
+  }
+
+  private async flushPreSnapshotBuffer(): Promise<void> {
+    const buffered = this.preSnapshotBuffer.splice(0);
+
+    for (const message of buffered) {
+      await this.processMessage(message);
+    }
+  }
+
+  private async processMessage(data: string | ArrayBuffer): Promise<void> {
     this.messagesReceived += 1;
     this.lastMessageAt = new Date().toISOString();
 
@@ -811,10 +941,26 @@ class ExchangeStreamController {
 
     for (const event of events) {
       try {
+        const sequenceDecision = await this.evaluateProviderSequence(event);
+
+        if (sequenceDecision === "SKIP") {
+          continue;
+        }
+
+        if (sequenceDecision === "RESYNC") {
+          return;
+        }
+
         const ticks = normalizeMarketData(event, this.config, this.clockSync);
 
         for (const tick of ticks) {
-          batch.push(this.sequenceTick(tick));
+          const sequenced = this.sequenceTick(tick);
+
+          if (this.shouldDropStaleTick(sequenced)) {
+            continue;
+          }
+
+          batch.push(sequenced);
         }
       } catch (error) {
         this.ticksDropped += 1;
@@ -833,6 +979,41 @@ class ExchangeStreamController {
     }
   }
 
+  private shouldDropStaleTick(tick: MarketTick): boolean {
+    const maxAgeMs = readNumber(this.env.KAIKO_STALE_AFTER_MS, DEFAULT_STALE_TICK_DROP_MS);
+    const exchangeMs = Date.parse(tick.exchangeTimestamp);
+    const receivedMs = Date.parse(tick.receivedAt);
+
+    if (!Number.isFinite(exchangeMs) || !Number.isFinite(receivedMs)) {
+      return false;
+    }
+
+    const ageMs = Math.max(0, receivedMs - exchangeMs);
+
+    if (ageMs <= maxAgeMs) {
+      return false;
+    }
+
+    this.ticksDropped += 1;
+
+    if (this.ticksDropped <= 5 || this.ticksDropped % 100 === 0) {
+      this.logger.warn("STALE_TICK_DROPPED", "Dropped stale market tick before engine forwarding", {
+        streamId: this.config.id,
+        source: this.config.source,
+        source_exchange: this.config.source_exchange,
+        connectionId: this.connectionId,
+        instrumentCode: tick.instrumentCode,
+        sequence: tick.sequence,
+        ageMs,
+        maxAgeMs,
+        exchangeTimestamp: tick.exchangeTimestamp,
+        receivedAt: tick.receivedAt
+      });
+    }
+
+    return true;
+  }
+
   private async syncEngineSnapshot(reason: string, observedAt: string): Promise<void> {
     if (this.snapshotSync) {
       await this.snapshotSync;
@@ -842,6 +1023,8 @@ class ExchangeStreamController {
     this.snapshotSync = (async () => {
       const snapshot = await this.fetchSnapshot(observedAt);
       await this.forwardSnapshot(snapshot);
+      this.providerSequence = snapshot.sequence;
+      this.awaitingProviderBridge = this.config.source === "BINANCE";
       this.logger.info("ORDER_BOOK_SNAPSHOT_SYNCED", "Market REST snapshot applied", {
         streamId: this.config.id,
         source: this.config.source,
@@ -881,6 +1064,77 @@ class ExchangeStreamController {
     };
   }
 
+  private async evaluateProviderSequence(
+    event: unknown
+  ): Promise<"PROCESS" | "SKIP" | "RESYNC"> {
+    if (this.config.source !== "BINANCE") {
+      return "PROCESS";
+    }
+
+    const window = readBinanceSequenceWindow(event);
+
+    if (!window || this.providerSequence === null) {
+      return "PROCESS";
+    }
+
+    if (window.finalUpdateId <= this.providerSequence) {
+      return "SKIP";
+    }
+
+    const expectedNextUpdateId = this.providerSequence + 1;
+
+    if (this.awaitingProviderBridge) {
+      if (
+        window.firstUpdateId <= expectedNextUpdateId &&
+        expectedNextUpdateId <= window.finalUpdateId
+      ) {
+        this.providerSequence = window.finalUpdateId;
+        this.awaitingProviderBridge = false;
+        return "PROCESS";
+      }
+
+      await this.handleProviderSequenceGap(
+        "BINANCE_SNAPSHOT_BRIDGE_GAP",
+        window,
+        expectedNextUpdateId
+      );
+      return "RESYNC";
+    }
+
+    if (window.firstUpdateId > expectedNextUpdateId) {
+      await this.handleProviderSequenceGap(
+        "BINANCE_DIFF_SEQUENCE_GAP",
+        window,
+        expectedNextUpdateId
+      );
+      return "RESYNC";
+    }
+
+    this.providerSequence = window.finalUpdateId;
+    return "PROCESS";
+  }
+
+  private async handleProviderSequenceGap(
+    reason: string,
+    window: BinanceSequenceWindow,
+    expectedNextUpdateId: number
+  ): Promise<void> {
+    this.ticksDropped += 1;
+    this.logger.warn("PROVIDER_SEQUENCE_GAP", "Provider sequence gap detected; resyncing book", {
+      streamId: this.config.id,
+      source: this.config.source,
+      source_exchange: this.config.source_exchange,
+      connectionId: this.connectionId,
+      reason,
+      expectedNextUpdateId,
+      firstUpdateId: window.firstUpdateId,
+      finalUpdateId: window.finalUpdateId,
+      providerSequence: this.providerSequence
+    });
+
+    await this.recoverFromEngineDesync(reason);
+  }
+
   private async fetchSnapshot(receivedAt: string): Promise<OrderBookSnapshot> {
     const snapshotUrl = requireString(this.config.snapshotUrl, "SNAPSHOT_URL");
     const authHeader =
@@ -907,7 +1161,7 @@ class ExchangeStreamController {
       this.config
     );
 
-    return this.config.source === "KAIKO"
+    return this.config.source === "KAIKO" || this.config.source === "BINANCE"
       ? snapshot
       : {
           ...snapshot,
@@ -953,12 +1207,15 @@ class ExchangeStreamController {
     );
     const payload = await readResponseJson<EngineTickResponse>(response);
 
-    if (!response.ok) {
-      throw new Error(`ENGINE_FORWARD_FAILED_${response.status}`);
+    if (payload?.status === "DESYNC" || response.status === 409) {
+      await this.recoverFromEngineDesync(payload?.reason ?? "DESYNC");
+      this.ticksForwarded += payload?.processedCount ?? 0;
+      this.lastForwardAt = new Date().toISOString();
+      return;
     }
 
-    if (payload?.status === "DESYNC") {
-      await this.recoverFromEngineDesync(payload.reason ?? "DESYNC");
+    if (!response.ok) {
+      throw new Error(`ENGINE_FORWARD_FAILED_${response.status}`);
     }
 
     this.ticksForwarded += payload?.processedCount ?? ticks.length;
@@ -1098,7 +1355,7 @@ class ExchangeStreamController {
   }
 }
 
-function getHealth(): IngestHealth {
+function getHealth(activeStreams: Map<string, ExchangeStreamController>): IngestHealth {
   const streams = Array.from(activeStreams.values()).map((stream) => stream.snapshot());
 
   if (streams.length === 0) {
@@ -1193,7 +1450,11 @@ function normalizeBinanceData(
           exchangeTimestamp,
           synchronized,
           receivedAt,
-          rawMetadata: { eventType: eventType ?? "DEPTHUPDATE", depthSide: "bid" }
+          rawMetadata: {
+            eventType: eventType ?? "DEPTHUPDATE",
+            depthSide: "bid",
+            ...(readBinanceSequenceWindow(raw) ?? {})
+          }
         })
       );
     }
@@ -1210,7 +1471,11 @@ function normalizeBinanceData(
           exchangeTimestamp,
           synchronized,
           receivedAt,
-          rawMetadata: { eventType: eventType ?? "DEPTHUPDATE", depthSide: "ask" }
+          rawMetadata: {
+            eventType: eventType ?? "DEPTHUPDATE",
+            depthSide: "ask",
+            ...(readBinanceSequenceWindow(raw) ?? {})
+          }
         })
       );
     }
@@ -1240,6 +1505,26 @@ function normalizeBinanceData(
       rawMetadata: { eventType: eventType ?? "TRADE" }
     })
   ];
+}
+
+function readBinanceSequenceWindow(raw: unknown): BinanceSequenceWindow | null {
+  if (!isRecord(raw)) {
+    return null;
+  }
+
+  const firstUpdateId = Number(readField(raw, ["U", "firstUpdateId"]));
+  const finalUpdateId = Number(readField(raw, ["u", "lastUpdateId", "finalUpdateId"]));
+
+  if (
+    Number.isSafeInteger(firstUpdateId) &&
+    firstUpdateId >= 0 &&
+    Number.isSafeInteger(finalUpdateId) &&
+    finalUpdateId >= firstUpdateId
+  ) {
+    return { firstUpdateId, finalUpdateId };
+  }
+
+  return null;
 }
 
 function normalizeCoinbaseData(
@@ -1931,8 +2216,6 @@ function createUniversalTick(input: {
     clockOffsetMs: input.synchronized.offsetMs,
     receivedAt: input.receivedAt,
     sourceWeight: input.config.weight,
-    bestBid: input.side === "buy" ? input.price : undefined,
-    bestAsk: input.side === "sell" ? input.price : undefined,
     raw: input.rawMetadata
   };
 }

@@ -1,5 +1,6 @@
 export interface Env {
   TRADING_ENGINE: DurableObjectNamespace;
+  INGEST_COORDINATOR?: DurableObjectNamespace;
   TRADING_DB: D1Database;
   CONFIG_STORE: KVNamespace;
   RISK_VAULT: KVNamespace;

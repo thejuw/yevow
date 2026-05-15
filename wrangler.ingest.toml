@@ -7,6 +7,14 @@ name = "TRADING_ENGINE"
 class_name = "TradingEngine"
 script_name = "sovereign-sigma-core"
 
+[[durable_objects.bindings]]
+name = "INGEST_COORDINATOR"
+class_name = "IngestCoordinator"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["IngestCoordinator"]
+
 [[d1_databases]]
 binding = "TRADING_DB"
 database_name = "TRADING_DB"
@@ -30,14 +38,10 @@ crons = ["*/1 * * * *"]
 mode = "smart"
 
 [vars]
-KAIKO_STREAM_URL = "wss://replace-with-kaiko-websocket-endpoint"
-KAIKO_SNAPSHOT_URL = "https://replace-with-kaiko-rest-snapshot-endpoint"
-KAIKO_SNAPSHOT_EXCHANGE = "cbse"
-KAIKO_SNAPSHOT_INSTRUMENT = "btc-usd"
 KAIKO_AUTH_HEADER = "X-Api-Key"
 KAIKO_SNAPSHOT_AUTH_HEADER = "X-Api-Key"
 KAIKO_HEARTBEAT_INTERVAL_MS = "15000"
-KAIKO_STALE_AFTER_MS = "5000"
+KAIKO_STALE_AFTER_MS = "1000"
 KAIKO_WATCHDOG_TIMEOUT_MS = "5000"
 KAIKO_MAX_BACKOFF_MS = "30000"
 MARKET_STREAMS = "[{\"id\":\"binance-us-btc-usdt\",\"source\":\"BINANCE\",\"source_exchange\":\"binance-us\",\"streamUrl\":\"wss://stream.binance.us:9443/ws/btcusdt@depth@100ms\",\"snapshotUrl\":\"https://api.binance.us/api/v3/depth?symbol=BTCUSDT&limit=100\",\"weight\":1.0,\"instrumentCode\":\"btc-usdt\",\"exchangeCode\":\"binance-us\"}]"
@@ -46,7 +50,6 @@ CLOCK_SYNC_ALPHA = "0.10"
 CLOCK_SYNC_MAX_OFFSET_MS = "10000"
 NOTIFIER_DEBOUNCE_MS = "60000"
 NEWS_FEEDS = "[]"
-KAIKO_STREAM_SUBSCRIPTION = "{\"instrumentCriteria\":{\"exchange\":\"cbse\",\"instrumentClass\":\"spot\",\"code\":\"btc-usd\"},\"commodities\":[\"SMUC_TRADE\",\"SMUC_TOP_OF_BOOK\"]}"
 
 # Secrets are intentionally excluded from source control/config values.
 # Provision alerting and stream credentials with:

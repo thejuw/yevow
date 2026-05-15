@@ -494,6 +494,18 @@ async function handleAdminRequest(
     );
   }
 
+  if (url.pathname === "/admin/maintenance/reset-latency") {
+    if (request.method !== "POST") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+
+    return routeToEngine(
+      remapRequestPath(request, "/maintenance/reset-latency"),
+      env,
+      topology
+    );
+  }
+
   if (url.pathname === "/admin/slippage") {
     if (request.method !== "GET") {
       return json({ ok: false, error: "Method not allowed" }, 405);

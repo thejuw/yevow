@@ -484,7 +484,7 @@
             <div class="gate pass"><strong>Passed: Ingest Worker dry-run</strong><span><code>wrangler deploy --dry-run -c wrangler.ingest.toml</code></span></div>
             <div class="gate pass"><strong>Passed: Executioner Worker dry-run</strong><span><code>wrangler deploy --dry-run -c wrangler.executioner.toml</code></span></div>
             <div class="gate pass"><strong>Passed: D1 schema parse</strong><span><code>sqlite3 :memory: &lt; schema.sql</code></span></div>
-            <div class="gate pending"><strong>Pending: Real production IDs</strong><span>Replace placeholder D1, KV, endpoint, and exchange values.</span></div>
+            <div class="gate done"><strong>Production IDs wired</strong><span>D1, KV, API, Pages, Binance.US ingest, and execution fail-closed config are connected.</span></div>
             <div class="gate pending"><strong>Pending: Worker secrets</strong><span>Provision JWT, admin, Kaiko, exchange, vault, Telegram, and Discord secrets.</span></div>
             <div class="gate pending"><strong>Pending: Live Cloudflare deploy</strong><span>Run actual deploys and live smoke tests before enabling trading.</span></div>
           </div>
