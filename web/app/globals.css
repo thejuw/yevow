@@ -105,6 +105,40 @@ output {
   grid-template-columns: 312px minmax(0, 1fr);
 }
 
+.login-shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+}
+
+.login-panel {
+  width: min(430px, 100%);
+  display: grid;
+  gap: 18px;
+}
+
+.login-copy {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: rgba(215, 196, 139, 0.06);
+}
+
+.login-copy strong {
+  font-family: "Bodoni 72", Didot, Georgia, serif;
+  font-size: 25px;
+  letter-spacing: 0;
+}
+
+.login-copy span {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
 .command-rail {
   min-height: 100vh;
   padding: 18px;
@@ -150,6 +184,7 @@ output {
 }
 
 .auth-grid,
+.session-card,
 .transport-grid,
 .supervisor-grid {
   display: grid;
@@ -176,6 +211,34 @@ output {
   min-height: 30px;
   padding: 7px 10px;
   font-size: 11px;
+}
+
+.session-card {
+  border: 1px solid var(--line-cold);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(6, 8, 11, 0.42);
+}
+
+.session-token {
+  display: grid;
+  gap: 4px;
+  border: 1px solid rgba(102, 227, 161, 0.24);
+  border-radius: 7px;
+  padding: 9px;
+  font-family: "SFMono-Regular", Consolas, monospace;
+}
+
+.session-token span {
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.session-token strong {
+  color: var(--green);
+  font-size: 12px;
 }
 
 .full-action {

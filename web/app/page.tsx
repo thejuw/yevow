@@ -8,6 +8,7 @@ import {
   CircleDot,
   Gauge,
   KeyRound,
+  LogOut,
   Lock,
   RadioTower,
   ReceiptText,
@@ -115,6 +116,7 @@ export default function CommandCenterPage() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectRef = useRef<number>(0);
   const draftDirtyRef = useRef(false);
+  const isUnlocked = Boolean(token);
 
   const refresh = useCallback(async () => {
     if (!token) {
@@ -274,11 +276,31 @@ export default function CommandCenterPage() {
       setToken(response.token);
       setStatus("AUTHENTICATED");
       setCommandStatus("Authenticated.");
+      setPassword("");
     } catch (caught: unknown) {
       setStatus("ERROR");
       setError(errorMessage(caught));
       setCommandStatus("Authentication failed.");
     }
+  }
+
+  function handleLogout() {
+    localStorage.removeItem("sovereign.jwt");
+    wsRef.current?.close();
+    setToken("");
+    setPassword("");
+    setStatus("LOCKED");
+    setCommandStatus("Console locked.");
+    setEngineState(null);
+    setConfig(null);
+    setDraftConfig({});
+    setTrace(null);
+    setAttribution(null);
+    setTradeHistory(null);
+    setAlerts(null);
+    setLastAlertTest(null);
+    setPulse(null);
+    setLogicFeed([]);
   }
 
   function updateDraft(key: keyof GlobalRiskConfig, value: string | number | boolean) {
@@ -408,6 +430,74 @@ export default function CommandCenterPage() {
   const imbalance = pulse?.current_imbalance ?? engineState?.microstructure.weightedImbalance ?? null;
   const regime = pulse?.regime ?? engineState?.oracle.regime ?? "UNKNOWN";
 
+  if (!isUnlocked) {
+    return (
+      <main className="login-shell">
+        <section className="login-panel glass">
+          <div className="brand-lockup">
+            <div className="sigil">
+              <Brain size={22} />
+            </div>
+            <div>
+              <h1>Sovereign-Sigma</h1>
+              <p>Admin Command Center</p>
+            </div>
+          </div>
+
+          <div className="login-copy">
+            <strong>Operator gate</strong>
+            <span>Authenticate to unlock live telemetry, matrix controls, and Moltworker governance.</span>
+          </div>
+
+          <form
+            className="auth-grid"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void handleLogin();
+            }}
+          >
+            <label>
+              API
+              <input value={apiBase} onChange={(event) => setApiBase(event.target.value)} />
+            </label>
+            <label>
+              Admin Password
+              <input
+                value={password}
+                type="password"
+                autoComplete="current-password"
+                onChange={(event) => setPassword(event.target.value)}
+              />
+            </label>
+            <button className="primary-action" disabled={!password.trim()} type="submit">
+              <KeyRound size={16} />
+              Unlock Admin
+            </button>
+          </form>
+
+          <div className={`system-state ${status.toLowerCase()}`}>
+            <CircleDot size={14} />
+            <span>{status}</span>
+          </div>
+
+          {error ? (
+            <div className="fault">
+              <AlertTriangle size={16} />
+              <span>{error}</span>
+            </div>
+          ) : null}
+
+          {commandStatus ? (
+            <div className="system-state">
+              <ChevronRight size={14} />
+              <span>{commandStatus}</span>
+            </div>
+          ) : null}
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="shell">
       <section className="command-rail">
@@ -421,33 +511,18 @@ export default function CommandCenterPage() {
           </div>
         </div>
 
-        <div className="auth-grid">
+        <div className="session-card">
           <label>
             API
             <input value={apiBase} onChange={(event) => setApiBase(event.target.value)} />
           </label>
-          <label>
-            {token ? "Session Token" : "Admin Password"}
-            <input
-              value={token ? "••••••••••••••••" : password}
-              type="password"
-              onChange={(event) => {
-                setPassword(event.target.value);
-                if (token) {
-                  localStorage.removeItem("sovereign.jwt");
-                  setToken("");
-                  setStatus("LOCKED");
-                }
-              }}
-            />
-          </label>
-          <button
-            className="primary-action"
-            disabled={!password.trim() && !token}
-            onClick={() => void handleLogin()}
-          >
-            <KeyRound size={16} />
-            Authenticate
+          <div className="session-token">
+            <span>Session</span>
+            <strong>JWT active</strong>
+          </div>
+          <button className="compact-action" onClick={handleLogout}>
+            <LogOut size={16} />
+            Lock Console
           </button>
         </div>
 
