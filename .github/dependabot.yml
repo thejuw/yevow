@@ -1,0 +1,31 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "10:00"
+    open-pull-requests-limit: 3
+    groups:
+      worker-toolchain:
+        patterns:
+          - typescript
+          - wrangler
+          - "@cloudflare/*"
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+      day: monday
+      time: "10:30"
+    open-pull-requests-limit: 3
+    groups:
+      command-center:
+        patterns:
+          - next
+          - react
+          - react-dom
+          - "@types/*"
+          - typescript

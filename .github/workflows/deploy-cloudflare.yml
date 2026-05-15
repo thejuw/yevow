@@ -1,0 +1,80 @@
+name: Deploy Cloudflare
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Deployment target
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - workers
+          - pages
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cloudflare-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to Cloudflare
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      NEXT_PUBLIC_SOVEREIGN_API_BASE: https://api.yevow.co
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+
+      - name: Install Worker dependencies
+        run: npm ci
+
+      - name: Install Command Center dependencies
+        run: npm ci --prefix web
+
+      - name: Typecheck Workers
+        run: npm run typecheck
+
+      - name: Typecheck Command Center
+        run: npm run web:typecheck
+
+      - name: Deploy core Worker
+        if: ${{ inputs.target == 'all' || inputs.target == 'workers' }}
+        run: npx wrangler deploy
+
+      - name: Deploy ingest Worker
+        if: ${{ inputs.target == 'all' || inputs.target == 'workers' }}
+        run: npx wrangler deploy --config wrangler.ingest.toml
+
+      - name: Deploy executioner Worker
+        if: ${{ inputs.target == 'all' || inputs.target == 'workers' }}
+        run: npx wrangler deploy --config wrangler.executioner.toml
+
+      - name: Build Command Center static export
+        if: ${{ inputs.target == 'all' || inputs.target == 'pages' }}
+        run: npm run web:build
+
+      - name: Deploy Command Center Pages
+        if: ${{ inputs.target == 'all' || inputs.target == 'pages' }}
+        run: >
+          npx wrangler pages deploy web/out
+          --project-name sovereign-sigma-command-center
+          --branch main
