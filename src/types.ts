@@ -59,6 +59,8 @@ export interface Env {
   EXCHANGE_ACCOUNT_BALANCE_ENDPOINT?: string;
   EXCHANGE_REPORTS_WS_URL?: string;
   EXCHANGE_ADAPTER?: string;
+  EXCHANGE_RECV_WINDOW_MS?: string;
+  EXCHANGE_ORDER_TEST_MODE?: string;
   EXCHANGE_FEE_BPS?: string;
   MIN_EV_THRESHOLD?: string;
   KELLY_FRACTION?: string;

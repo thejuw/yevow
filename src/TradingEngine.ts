@@ -92,6 +92,9 @@ const TELEMETRY_FLUSH_INTERVAL_MS = 5_000;
 const TELEMETRY_BUFFER_LIMIT = 1_000;
 const ADMIN_STREAM_PULSE_INTERVAL_MS = 500;
 const AGENT_SNAPSHOT_TICK_INTERVAL = 1_000;
+const HOT_STORAGE_SNAPSHOT_INTERVAL_MS = 15_000;
+const HOT_STORAGE_SNAPSHOT_TICK_INTERVAL = 1_000;
+const STORAGE_WRITE_BACKOFF_MS = 60_000;
 const BOOK_SNAPSHOT_TOP_LEVELS = 50;
 const TOP_OF_BOOK_CROSS_CHECK_INTERVAL_MS = 60_000;
 const DEFAULT_ORDER_BOOK_TICK_SIZE = 0.00000001;
@@ -372,6 +375,10 @@ export class TradingEngine {
   private killSwitchLogged = false;
   private warmedColo: string | null = null;
   private warmedAt = 0;
+  private storageWriteDisabledUntil = 0;
+  private storageWriteFailures = 0;
+  private lastHotStorageSnapshotAt = 0;
+  private lastHotStorageSnapshotTick = 0;
   private engineState: EngineState = defaultEngineState("booting");
 
   constructor(
@@ -505,29 +512,52 @@ export class TradingEngine {
     this.notifier = new Notifier(env, (promise) => this.state.waitUntil(promise));
 
     this.initialized = this.state.blockConcurrencyWhile(async () => {
-      const [
-        persistedState,
-        persistedBooks,
-        persistedLatencyHistory,
-        persistedProcessingLatencySamples,
-        persistedDomWallHistory,
-        persistedProfilerState,
-        persistedAnomalyState,
-        persistedRateLimits,
-        kvRiskLimits,
-        kvConfig
-      ] = await Promise.all([
-        this.state.storage.get<EngineState>(ENGINE_STATE_KEY),
-        this.state.storage.list<InternalOrderBook>({ prefix: ORDER_BOOK_PREFIX }),
-        this.state.storage.get<LatencyMetrics[]>(PERFORMANCE_HISTORY_KEY),
-        this.state.storage.get<number[]>(PROCESSING_LATENCY_SAMPLES_KEY),
-        this.state.storage.get<LiquidityWall[]>(DOM_WALL_HISTORY_KEY),
-        this.state.storage.get<ProfilerState>(PROFILER_STATE_STORAGE_KEY),
-        this.state.storage.get<AnomalyDetectorState>(ANOMALY_DETECTOR_STORAGE_KEY),
-        this.state.storage.get<Record<string, RateLimitBucketSnapshot>>(RATE_LIMIT_STATE_KEY),
-        this.env.RISK_VAULT.get<Partial<RiskLimits>>(RISK_LIMITS_KEY, "json"),
-        this.env.CONFIG_STORE.get<AdminConfigUpdate>(CONFIG_KEY, "json")
-      ]);
+      let persistedState: EngineState | undefined;
+      let persistedBooks = new Map<string, InternalOrderBook>();
+      let persistedLatencyHistory: LatencyMetrics[] | undefined;
+      let persistedProcessingLatencySamples: number[] | undefined;
+      let persistedDomWallHistory: LiquidityWall[] | undefined;
+      let persistedProfilerState: ProfilerState | undefined;
+      let persistedAnomalyState: AnomalyDetectorState | undefined;
+      let persistedRateLimits: Record<string, RateLimitBucketSnapshot> | undefined;
+      let kvRiskLimits: Partial<RiskLimits> | null = null;
+      let kvConfig: AdminConfigUpdate | null = null;
+
+      try {
+        [
+          persistedState,
+          persistedBooks,
+          persistedLatencyHistory,
+          persistedProcessingLatencySamples,
+          persistedDomWallHistory,
+          persistedProfilerState,
+          persistedAnomalyState,
+          persistedRateLimits,
+          kvRiskLimits,
+          kvConfig
+        ] = await Promise.all([
+          this.state.storage.get<EngineState>(ENGINE_STATE_KEY),
+          this.state.storage.list<InternalOrderBook>({ prefix: ORDER_BOOK_PREFIX }),
+          this.state.storage.get<LatencyMetrics[]>(PERFORMANCE_HISTORY_KEY),
+          this.state.storage.get<number[]>(PROCESSING_LATENCY_SAMPLES_KEY),
+          this.state.storage.get<LiquidityWall[]>(DOM_WALL_HISTORY_KEY),
+          this.state.storage.get<ProfilerState>(PROFILER_STATE_STORAGE_KEY),
+          this.state.storage.get<AnomalyDetectorState>(ANOMALY_DETECTOR_STORAGE_KEY),
+          this.state.storage.get<Record<string, RateLimitBucketSnapshot>>(RATE_LIMIT_STATE_KEY),
+          this.env.RISK_VAULT.get<Partial<RiskLimits>>(RISK_LIMITS_KEY, "json"),
+          this.env.CONFIG_STORE.get<AdminConfigUpdate>(CONFIG_KEY, "json")
+        ]);
+      } catch (error) {
+        this.handleStorageWriteFailure("SYSTEM_INIT_STORAGE_READ", error);
+        try {
+          [kvRiskLimits, kvConfig] = await Promise.all([
+            this.env.RISK_VAULT.get<Partial<RiskLimits>>(RISK_LIMITS_KEY, "json"),
+            this.env.CONFIG_STORE.get<AdminConfigUpdate>(CONFIG_KEY, "json")
+          ]);
+        } catch (kvError) {
+          this.handleStorageWriteFailure("SYSTEM_INIT_KV_FALLBACK_READ", kvError);
+        }
+      }
 
       const baseState = persistedState ?? defaultEngineState(this.state.id.toString());
       const now = new Date().toISOString();
@@ -628,7 +658,7 @@ export class TradingEngine {
       };
       this.lastPerformanceStatus = this.engineState.executionProfile.status;
 
-      await this.state.storage.put(ENGINE_STATE_KEY, this.engineState);
+      await this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "SYSTEM_INIT");
       await this.scheduleConfigRefresh();
 
       this.logger.info("SYSTEM_INIT", "Trading engine singleton initialized", {
@@ -701,11 +731,11 @@ export class TradingEngine {
       if (request.method === "POST" && url.pathname === "/maintenance/reset-latency") {
         const observedAt = new Date().toISOString();
         this.resetLatencyBaseline(observedAt, "ADMIN_MAINTENANCE");
-        await this.state.storage.put({
+        await this.safeStoragePut({
           [ENGINE_STATE_KEY]: this.engineState,
           [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
           [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples
-        });
+        }, "ADMIN_RESET_LATENCY");
         return json({ ok: true, state: this.engineState });
       }
 
@@ -820,7 +850,7 @@ export class TradingEngine {
           heartbeatAt: sentiment.updatedAt ?? new Date().toISOString(),
           updatedAt: sentiment.updatedAt ?? new Date().toISOString()
         };
-        await this.state.storage.put(ENGINE_STATE_KEY, this.engineState);
+        await this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "SENTIMENT_UPDATED");
         this.logger.info("SENTIMENT_UPDATED", "Sentiment agent updated headline bias", {
           score: sentiment.score,
           bias: sentiment.bias,
@@ -943,7 +973,7 @@ export class TradingEngine {
       heartbeatAt: now,
       updatedAt: now
     };
-    this.state.waitUntil(this.state.storage.put(ENGINE_STATE_KEY, this.engineState));
+    this.waitUntilStoragePut(ENGINE_STATE_KEY, this.engineState, "HEALTH_HEARTBEAT");
 
     const memory = (globalThis as RuntimeWithMemory).performance?.memory;
 
@@ -984,6 +1014,130 @@ export class TradingEngine {
         }).length
       }
     };
+  }
+
+  private async safeStoragePut(
+    key: string,
+    value: unknown,
+    reason: string
+  ): Promise<void>;
+  private async safeStoragePut(
+    entries: Record<string, unknown>,
+    reason: string
+  ): Promise<void>;
+  private async safeStoragePut(
+    keyOrEntries: string | Record<string, unknown>,
+    valueOrReason: unknown,
+    maybeReason?: string
+  ): Promise<void> {
+    if (this.storageWriteDisabledUntil > Date.now()) {
+      return;
+    }
+
+    const reason =
+      typeof keyOrEntries === "string"
+        ? maybeReason ?? "STORAGE_WRITE"
+        : typeof valueOrReason === "string"
+          ? valueOrReason
+          : "STORAGE_WRITE";
+
+    try {
+      if (typeof keyOrEntries === "string") {
+        await this.state.storage.put(keyOrEntries, valueOrReason);
+      } else {
+        await this.state.storage.put(keyOrEntries);
+      }
+      this.storageWriteFailures = 0;
+    } catch (error) {
+      this.handleStorageWriteFailure(reason, error);
+    }
+  }
+
+  private waitUntilStoragePut(
+    key: string,
+    value: unknown,
+    reason: string
+  ): void {
+    this.state.waitUntil(this.safeStoragePut(key, value, reason));
+  }
+
+  private waitUntilStoragePutEntries(
+    entries: Record<string, unknown>,
+    reason: string
+  ): void {
+    this.state.waitUntil(this.safeStoragePut(entries, reason));
+  }
+
+  private async safeStorageDelete(
+    keys: string[],
+    reason: string
+  ): Promise<void> {
+    if (keys.length === 0 || this.storageWriteDisabledUntil > Date.now()) {
+      return;
+    }
+
+    try {
+      await this.state.storage.delete(keys);
+      this.storageWriteFailures = 0;
+    } catch (error) {
+      this.handleStorageWriteFailure(reason, error);
+    }
+  }
+
+  private async safeSetAlarm(timestamp: number, reason: string): Promise<void> {
+    if (this.storageWriteDisabledUntil > Date.now()) {
+      return;
+    }
+
+    try {
+      await this.state.storage.setAlarm(timestamp);
+      this.storageWriteFailures = 0;
+    } catch (error) {
+      this.handleStorageWriteFailure(reason, error);
+    }
+  }
+
+  private async persistHotStorageSnapshot(
+    entries: Record<string, unknown>,
+    reason: string
+  ): Promise<void> {
+    const now = Date.now();
+    const tickCount = this.engineState.processedTicks;
+    const dueByTime = now - this.lastHotStorageSnapshotAt >= HOT_STORAGE_SNAPSHOT_INTERVAL_MS;
+    const dueByTicks =
+      tickCount - this.lastHotStorageSnapshotTick >= HOT_STORAGE_SNAPSHOT_TICK_INTERVAL;
+
+    if (!dueByTime && !dueByTicks) {
+      return;
+    }
+
+    this.lastHotStorageSnapshotAt = now;
+    this.lastHotStorageSnapshotTick = tickCount;
+    await this.safeStoragePut(entries, reason);
+  }
+
+  private handleStorageWriteFailure(reason: string, error: unknown): void {
+    this.storageWriteFailures += 1;
+    const message = error instanceof Error ? error.message : "UNKNOWN_STORAGE_ERROR";
+    const lowered = message.toLowerCase();
+    const isQuota =
+      message.includes("Exceeded allowed rows written") ||
+      lowered.includes("quota") ||
+      lowered.includes("limit");
+    const backoffMs = isQuota
+      ? STORAGE_WRITE_BACKOFF_MS
+      : Math.min(STORAGE_WRITE_BACKOFF_MS, this.storageWriteFailures * 5_000);
+
+    this.storageWriteDisabledUntil = Date.now() + backoffMs;
+    console.error(
+      JSON.stringify({
+        event: "DO_STORAGE_WRITE_FAILED",
+        reason,
+        message,
+        backoffMs,
+        failures: this.storageWriteFailures
+      })
+    );
   }
 
   private acceptMarketStream(): Response {
@@ -1201,9 +1355,14 @@ export class TradingEngine {
       resetInstrument && resetSourceExchange
         ? buildMarketKey(resetSourceExchange, resetInstrument)
         : null;
-    const persistedBooks = await this.state.storage.list<InternalOrderBook>({
-      prefix: ORDER_BOOK_PREFIX
-    });
+    let persistedBooks = new Map<string, InternalOrderBook>();
+    try {
+      persistedBooks = await this.state.storage.list<InternalOrderBook>({
+        prefix: ORDER_BOOK_PREFIX
+      });
+    } catch (error) {
+      this.handleStorageWriteFailure("ORDER_BOOK_RESET_LIST", error);
+    }
     const deleteKeys = resetMarketKey
       ? [`${ORDER_BOOK_PREFIX}${resetMarketKey}`].filter((key) => persistedBooks.has(key))
       : [...persistedBooks.keys()];
@@ -1247,8 +1406,8 @@ export class TradingEngine {
     };
 
     await Promise.all([
-      this.state.storage.put(writes),
-      deleteKeys.length > 0 ? this.state.storage.delete(deleteKeys) : Promise.resolve()
+      this.safeStoragePut(writes, "ORDER_BOOK_RESET"),
+      this.safeStorageDelete(deleteKeys, "ORDER_BOOK_RESET_DELETE")
     ]);
 
     this.logger.warn("ORDER_BOOK_RESET", "Internal order book purged after stream recovery", {
@@ -1347,11 +1506,11 @@ export class TradingEngine {
       updatedAt
     };
 
-    await this.state.storage.put({
+    await this.safeStoragePut({
       [ENGINE_STATE_KEY]: this.engineState,
       [DOM_WALL_HISTORY_KEY]: this.domWallHistory,
       [`${ORDER_BOOK_PREFIX}${marketKey}`]: book
-    });
+    }, "ORDER_BOOK_SNAPSHOT_APPLIED");
 
     this.logger.info("ORDER_BOOK_SNAPSHOT_APPLIED", "Full order book snapshot applied", {
       instrumentCode,
@@ -2118,11 +2277,11 @@ export class TradingEngine {
         this.resetLatencyBaseline(metrics.brainTimestamp, "HARD_STALE_DROP");
       }
 
-      await this.state.storage.put({
+      await this.persistHotStorageSnapshot({
         [ENGINE_STATE_KEY]: this.engineState,
         [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
         [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples
-      });
+      }, "HARD_STALE_TICK_DROPPED");
 
       if (nextStaleTickCount <= 5 || nextStaleTickCount % 500 === 0) {
         this.logger.warn("HARD_STALE_TICK_DROPPED", "Dropped tick beyond hard stale threshold", {
@@ -2193,7 +2352,7 @@ export class TradingEngine {
         updatedAt: metrics.brainTimestamp
       };
 
-      await this.state.storage.put({
+      await this.persistHotStorageSnapshot({
         [ENGINE_STATE_KEY]: this.engineState,
         [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
         [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples,
@@ -2201,7 +2360,7 @@ export class TradingEngine {
           tick,
           metrics
         }
-      });
+      }, "STALE_DATA_KILL_SWITCH");
 
       this.logPerformance(metrics);
       this.publish("STALE_DATA_KILL_SWITCH", {
@@ -2278,7 +2437,7 @@ export class TradingEngine {
         updatedAt: metrics.brainTimestamp
       };
 
-      await this.state.storage.put({
+      await this.persistHotStorageSnapshot({
         [ENGINE_STATE_KEY]: this.engineState,
         [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
         [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples,
@@ -2289,7 +2448,7 @@ export class TradingEngine {
           expectedSequence: applied.expectedSequence,
           actualSequence: applied.actualSequence
         }
-      });
+      }, "BOOK_DESYNC");
 
       this.publishTickTelemetry(tick, metrics, "FRESH", hotPathStartedAt);
 
@@ -2355,7 +2514,7 @@ export class TradingEngine {
         updatedAt: metrics.brainTimestamp
       };
 
-      await this.state.storage.put({
+      await this.safeStoragePut({
         [ENGINE_STATE_KEY]: this.engineState,
         [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
         [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples,
@@ -2364,7 +2523,7 @@ export class TradingEngine {
         [`${ORDER_BOOK_PREFIX}${book.marketKey}`]: book,
         [`lastTick:${book.marketKey}`]: tick,
         [`anomaly:${book.marketKey}:${tick.sequence}`]: anomalyResult.anomalies
-      });
+      }, "ANOMALY_EMERGENCY_PAUSE");
 
       this.triggerEmergencyPause(tick, book, domSnapshot, anomalyResult, metrics);
       this.publishTickTelemetry(tick, metrics, "FRESH", hotPathStartedAt);
@@ -2536,7 +2695,7 @@ export class TradingEngine {
       writes[PROFILER_STATE_STORAGE_KEY] = profilerResult.state;
     }
 
-    await this.state.storage.put(writes);
+    await this.persistHotStorageSnapshot(writes, "HOT_PATH_TICK_SNAPSHOT");
     this.logger.recordMarketTick(tick);
 
     if (oracleResult.bayesianTrace) {
@@ -3035,8 +3194,10 @@ export class TradingEngine {
 
     const priority = intent.orderType === "MARKET" ? "HEDGE" : "NEW";
     const reservation = this.rateLimiter.reserve(intent.source_exchange ?? "default", priority);
-    this.state.waitUntil(
-      this.state.storage.put(RATE_LIMIT_STATE_KEY, this.rateLimiter.exportState())
+    this.waitUntilStoragePut(
+      RATE_LIMIT_STATE_KEY,
+      this.rateLimiter.exportState(),
+      "EXECUTION_RATE_LIMIT"
     );
 
     if (!reservation.allowed) {
@@ -3065,7 +3226,7 @@ export class TradingEngine {
     priority: QueuedExecutionIntent["priority"],
     waitMs: number
   ): Promise<void> {
-    const queue = (await this.state.storage.get<QueuedExecutionIntent[]>(EXECUTION_QUEUE_KEY)) ?? [];
+    const queue = await this.readExecutionQueue("EXECUTION_QUEUE_ENQUEUE_READ");
     const runAfterMs = Date.now() + Math.max(0, waitMs);
     const nextQueue = [...queue, {
       intent,
@@ -3076,8 +3237,11 @@ export class TradingEngine {
       .sort(compareQueuedExecutionIntent)
       .slice(0, 1_000);
 
-    await this.state.storage.put(EXECUTION_QUEUE_KEY, nextQueue);
-    await this.state.storage.setAlarm(Math.min(runAfterMs, Date.now() + CONFIG_ALARM_INTERVAL_MS));
+    await this.safeStoragePut(EXECUTION_QUEUE_KEY, nextQueue, "EXECUTION_QUEUE_ENQUEUE");
+    await this.safeSetAlarm(
+      Math.min(runAfterMs, Date.now() + CONFIG_ALARM_INTERVAL_MS),
+      "EXECUTION_QUEUE_ALARM"
+    );
     this.logger.warn("EXECUTION_DEFERRED_BY_RATE_LIMIT", "Execution intent deferred by durable rate limiter", {
       intentId: intent.intentId,
       priority,
@@ -3086,8 +3250,17 @@ export class TradingEngine {
     });
   }
 
+  private async readExecutionQueue(reason: string): Promise<QueuedExecutionIntent[]> {
+    try {
+      return (await this.state.storage.get<QueuedExecutionIntent[]>(EXECUTION_QUEUE_KEY)) ?? [];
+    } catch (error) {
+      this.handleStorageWriteFailure(reason, error);
+      return [];
+    }
+  }
+
   private async drainExecutionQueue(): Promise<void> {
-    const queue = (await this.state.storage.get<QueuedExecutionIntent[]>(EXECUTION_QUEUE_KEY)) ?? [];
+    const queue = await this.readExecutionQueue("EXECUTION_QUEUE_DRAIN_READ");
 
     if (queue.length === 0) {
       return;
@@ -3097,7 +3270,7 @@ export class TradingEngine {
     const due = queue.filter((item) => item.runAfterMs <= now).sort(compareQueuedExecutionIntent);
     const pending = queue.filter((item) => item.runAfterMs > now).sort(compareQueuedExecutionIntent);
 
-    await this.state.storage.put(EXECUTION_QUEUE_KEY, pending);
+    await this.safeStoragePut(EXECUTION_QUEUE_KEY, pending, "EXECUTION_QUEUE_DRAIN");
 
     for (const item of due) {
       await this.dispatchExecution(item.intent);
@@ -3105,7 +3278,10 @@ export class TradingEngine {
 
     const nextWake = pending[0]?.runAfterMs;
     if (nextWake) {
-      await this.state.storage.setAlarm(Math.min(nextWake, Date.now() + CONFIG_ALARM_INTERVAL_MS));
+      await this.safeSetAlarm(
+        Math.min(nextWake, Date.now() + CONFIG_ALARM_INTERVAL_MS),
+        "EXECUTION_QUEUE_NEXT_WAKE"
+      );
     }
   }
 
@@ -3116,7 +3292,11 @@ export class TradingEngine {
 
     const reservation = this.rateLimiter.reserve("default", "CANCEL");
     this.state.waitUntil(
-      this.state.storage.put(RATE_LIMIT_STATE_KEY, this.rateLimiter.exportState())
+      this.safeStoragePut(
+        RATE_LIMIT_STATE_KEY,
+        this.rateLimiter.exportState(),
+        "EXECUTION_RATE_LIMIT_DRAIN"
+      )
     );
 
     if (!reservation.allowed) {
@@ -3233,7 +3413,7 @@ export class TradingEngine {
       heartbeatAt: observedAt
     };
 
-    await this.state.storage.put(ENGINE_STATE_KEY, this.engineState);
+    await this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "EXECUTION_REPORT");
     this.logger.recordExecution(tradeExecution);
     this.publish(
       "TRADE_EXECUTION_UPDATE",
@@ -3499,12 +3679,20 @@ export class TradingEngine {
       }
 
       orphanExchangeOrders.push(remote.exchangeOrderId);
-      await this.cancelOrder(remote.exchangeOrderId, "JANITOR_ORPHAN_EXCHANGE_ORDER");
+      await this.cancelOrder(
+        remote.exchangeOrderId,
+        "JANITOR_ORPHAN_EXCHANGE_ORDER",
+        remote.instrumentCode
+      );
       cancelledOrders.push(remote.exchangeOrderId);
     }
 
     for (const clientId of baseReport.zombieOrders) {
-      await this.cancelOrder(clientId, "JANITOR_ZOMBIE_LOCAL_ORDER");
+      await this.cancelOrder(
+        clientId,
+        "JANITOR_ZOMBIE_LOCAL_ORDER",
+        nextOrderMap[clientId]?.instrumentCode
+      );
       cancelledOrders.push(clientId);
       if (nextOrderMap[clientId]) {
         nextOrderMap[clientId] = {
@@ -3557,7 +3745,7 @@ export class TradingEngine {
       updatedAt: observedAt,
       heartbeatAt: observedAt
     };
-    await this.state.storage.put(ENGINE_STATE_KEY, this.engineState);
+    await this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "JANITOR_REPORT");
   }
 
   private async fetchExchangeOpenOrders(): Promise<ExchangeOpenOrder[]> {
@@ -3584,14 +3772,20 @@ export class TradingEngine {
     }
   }
 
-  private async cancelOrder(orderId: string, reason: string): Promise<void> {
+  private async cancelOrder(
+    orderId: string,
+    reason: string,
+    instrumentCode?: string
+  ): Promise<void> {
     if (!this.env.EXECUTIONER) {
       return;
     }
 
     const reservation = this.rateLimiter.reserve("default", "CANCEL");
-    this.state.waitUntil(
-      this.state.storage.put(RATE_LIMIT_STATE_KEY, this.rateLimiter.exportState())
+    this.waitUntilStoragePut(
+      RATE_LIMIT_STATE_KEY,
+      this.rateLimiter.exportState(),
+      "JANITOR_CANCEL_RATE_LIMIT"
     );
 
     if (!reservation.allowed) {
@@ -3603,12 +3797,13 @@ export class TradingEngine {
         new Request("https://executioner.internal/cancel", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ orderId, reason })
+          body: JSON.stringify({ orderId, instrumentCode, reason })
         })
       );
     } catch (error) {
       this.logger.error("JANITOR_CANCEL_FAILED", "Failed to cancel order during janitor run", {
         orderId,
+        instrumentCode: instrumentCode ?? null,
         reason,
         error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
       });
@@ -3902,7 +4097,12 @@ export class TradingEngine {
   }
 
   private async currentReplayStatus(): Promise<ReplayStatus> {
-    const status = await this.state.storage.get<ReplayStatus>(REPLAY_STATUS_KEY);
+    let status: ReplayStatus | undefined;
+    try {
+      status = await this.state.storage.get<ReplayStatus>(REPLAY_STATUS_KEY);
+    } catch (error) {
+      this.handleStorageWriteFailure("REPLAY_STATUS_READ", error);
+    }
 
     return status ?? {
       replayId: null,
@@ -3922,7 +4122,7 @@ export class TradingEngine {
   }
 
   private async writeReplayStatus(status: ReplayStatus): Promise<void> {
-    await this.state.storage.put(REPLAY_STATUS_KEY, status);
+    await this.safeStoragePut(REPLAY_STATUS_KEY, status, "REPLAY_STATUS");
     this.publish("REPLAY_PROGRESS", {
       replayId: status.replayId,
       status: status.status,
@@ -3942,9 +4142,14 @@ export class TradingEngine {
     const hydratedBooks = hydrateOrderBooks(
       new Map(snapshot.orderBooks.map((book) => [`${ORDER_BOOK_PREFIX}${book.marketKey}`, book]))
     );
-    const persistedBookKeys = await this.state.storage.list<InternalOrderBook>({
-      prefix: ORDER_BOOK_PREFIX
-    });
+    let persistedBookKeys = new Map<string, InternalOrderBook>();
+    try {
+      persistedBookKeys = await this.state.storage.list<InternalOrderBook>({
+        prefix: ORDER_BOOK_PREFIX
+      });
+    } catch (error) {
+      this.handleStorageWriteFailure("REPLAY_RESTORE_LIST_BOOKS", error);
+    }
 
     this.engineState = snapshot.engineState;
     this.orderBook = hydratedBooks.snapshots;
@@ -3979,11 +4184,12 @@ export class TradingEngine {
       )
     };
 
-    if (persistedBookKeys.size > 0) {
-      await this.state.storage.delete([...persistedBookKeys.keys()]);
-    }
+    await this.safeStorageDelete(
+      [...persistedBookKeys.keys()],
+      "REPLAY_RESTORE_DELETE_BOOKS"
+    );
 
-    await this.state.storage.put(writes);
+    await this.safeStoragePut(writes, "REPLAY_RESTORE");
   }
 
   private async loadReplayTicks(
@@ -4998,7 +5204,7 @@ export class TradingEngine {
       updatedAt: now
     };
 
-    this.state.waitUntil(this.state.storage.put(ENGINE_STATE_KEY, this.engineState));
+    this.waitUntilStoragePut(ENGINE_STATE_KEY, this.engineState, "COLO_TOPOLOGY_CHANGED");
 
     if (previous.colo !== next.colo || previous.placement !== next.placement) {
       this.logger.warn(
@@ -5106,7 +5312,7 @@ export class TradingEngine {
       updatedAt: now
     };
 
-    await this.state.storage.put(ENGINE_STATE_KEY, this.engineState);
+    await this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "CONFIG_REFRESH");
 
     if (source === "ADMIN_SIGNAL" || previousVersion !== nextConfig.version) {
       this.logger.warn("CONFIG_REFRESHED", "Trading engine config cache refreshed", {
@@ -5123,7 +5329,7 @@ export class TradingEngine {
   }
 
   private async scheduleConfigRefresh(): Promise<void> {
-    await this.state.storage.setAlarm(Date.now() + CONFIG_ALARM_INTERVAL_MS);
+    await this.safeSetAlarm(Date.now() + CONFIG_ALARM_INTERVAL_MS, "CONFIG_REFRESH_ALARM");
   }
 
   private async acceptAgentSignal(signal: AgentSignal, latencyMs: number): Promise<void> {
@@ -5154,10 +5360,10 @@ export class TradingEngine {
       updatedAt: signal.createdAt
     };
 
-    await this.state.storage.put({
+    await this.safeStoragePut({
       [ENGINE_STATE_KEY]: this.engineState,
       [`signal:${signal.signalId}`]: signal
-    });
+    }, "AGENT_SIGNAL");
 
     this.logger.agentDecision(signal, latencyMs);
     this.publish(
@@ -5209,7 +5415,7 @@ export class TradingEngine {
       updatedAt: now
     };
 
-    await this.state.storage.put(ENGINE_STATE_KEY, this.engineState);
+    await this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "ADMIN_CONFIG_APPLIED");
 
     this.logger.warn("ADMIN_CONFIG_APPLIED", "Runtime configuration updated", {
       mode: this.engineState.mode,
