@@ -83,6 +83,7 @@ export interface Env {
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_CHAT_ID?: string;
   DISCORD_WEBHOOK_URL?: string;
+  ALERT_WEBHOOK_URL?: string;
   NOTIFIER_DEBOUNCE_MS?: string;
   VAULT_ENCRYPTION_SECRET?: string;
   NEWS_FEEDS?: string;

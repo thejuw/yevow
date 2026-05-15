@@ -3,6 +3,7 @@ import { ConfigManager } from "./ConfigManager";
 import { Governor } from "./Governor";
 import { Logger } from "./Logger";
 import { TradingEngine } from "./TradingEngine";
+import { Notifier, type AlertPriority } from "./utils/Notifier";
 import type { AdminScope, AuthClaims } from "./AuthManager";
 import type {
   AdminConfigUpdate,
@@ -134,6 +135,14 @@ interface VaultUpdateRequest {
   secret?: string;
   metadata?: JsonRecord;
   rotationReason?: string;
+}
+
+interface AlertTestRequest {
+  priority?: AlertPriority;
+  title?: string;
+  message?: string;
+  dedupeKey?: string;
+  metadata?: JsonRecord;
 }
 
 interface DateRangeFilter {
@@ -297,6 +306,8 @@ export default {
         "GET /admin/history",
         "GET /admin/trace",
         "GET /admin/attribution",
+        "GET /admin/alerts",
+        "POST /admin/alerts/test",
         "POST /admin/replay",
         "GET /admin/replay/status",
         "GET|POST /admin/vault",
@@ -429,6 +440,8 @@ async function handleAdminRequest(
         "GET /admin/history",
         "GET /admin/trace",
         "GET /admin/attribution",
+        "GET /admin/alerts",
+        "POST /admin/alerts/test",
         "POST /admin/replay",
         "GET /admin/replay/status",
         "GET|POST /admin/vault",
@@ -536,6 +549,22 @@ async function handleAdminRequest(
     }
 
     return readAttribution(env, url);
+  }
+
+  if (url.pathname === "/admin/alerts") {
+    if (request.method !== "GET") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+
+    return readAlertingStatus(env);
+  }
+
+  if (url.pathname === "/admin/alerts/test") {
+    if (request.method !== "POST") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+
+    return sendTestAlert(request, env, logger, topology, auth);
   }
 
   if (url.pathname === "/admin/replay") {
@@ -671,6 +700,37 @@ async function handleAdminConfig(
       colo: topology.colo,
       placement: topology.placement
     });
+
+    if (changedParameters.TRADING_ENABLED) {
+      const delivery = await new Notifier(env, () => undefined).deliverNow(
+        {
+          priority: nextConfig.TRADING_ENABLED ? "CRITICAL" : "HIGH",
+          title: nextConfig.TRADING_ENABLED
+            ? "Sovereign-Sigma trading enabled"
+            : "Sovereign-Sigma trading disabled",
+          message: `${actor} changed TRADING_ENABLED from ${String(
+            changedParameters.TRADING_ENABLED.before
+          )} to ${String(changedParameters.TRADING_ENABLED.after)}.`,
+          dedupeKey: `trading-enabled:${String(changedParameters.TRADING_ENABLED.after)}`,
+          metadata: {
+            actor,
+            sourceIp: sourceIp(request),
+            colo: topology.colo,
+            placement: topology.placement,
+            changedParameters
+          }
+        },
+        { respectDebounce: false }
+      );
+
+      logger.warn("TRADING_ENABLED_ALERT_SENT", "Trading-enabled change alert dispatched", {
+        actor,
+        attempted: delivery.attempted,
+        delivered: delivery.delivered,
+        deliveryOk: delivery.ok,
+        enabled: nextConfig.TRADING_ENABLED
+      });
+    }
   }
 
   const macroBias = update.clearMacroBias
@@ -752,6 +812,82 @@ async function handleAdminConfig(
     clearedTemporaryOverride,
     engineRefreshStatus: refreshResponse.status
   });
+}
+
+function readAlertingStatus(env: Env): Response {
+  const notifier = new Notifier(env, () => undefined);
+  const status = notifier.status();
+
+  return json({
+    ok: true,
+    alerting: {
+      ...status,
+      configured: status.channels.some((channel) => channel.configured)
+    }
+  });
+}
+
+async function sendTestAlert(
+  request: Request,
+  env: Env,
+  logger: Logger,
+  topology: EdgeTopology,
+  admin: AuthenticatedAdmin
+): Promise<Response> {
+  const body = (await readJsonBody<AlertTestRequest>(request)) ?? {};
+  const priority = normalizeAlertPriority(body.priority);
+  const notifier = new Notifier(env, () => undefined);
+  const result = await notifier.deliverNow(
+    {
+      priority,
+      title: safeAlertText(body.title, "Sovereign-Sigma alert route test", 96),
+      message: safeAlertText(
+        body.message,
+        `Manual alert-channel verification requested by ${admin.subject}.`,
+        512
+      ),
+      dedupeKey:
+        typeof body.dedupeKey === "string" && body.dedupeKey.length > 0
+          ? body.dedupeKey.slice(0, 120)
+          : undefined,
+      metadata: {
+        ...(body.metadata ?? {}),
+        requestedBy: admin.subject,
+        endpoint: new URL(request.url).pathname,
+        sourceIp: sourceIp(request),
+        colo: topology.colo,
+        placement: topology.placement,
+        requestId: topology.requestId
+      }
+    },
+    { respectDebounce: false }
+  );
+
+  logger.warn("ALERT_TEST_REQUESTED", "Admin requested alert-channel test", {
+    subject: admin.subject,
+    priority,
+    attempted: result.attempted,
+    delivered: result.delivered,
+    channels: result.configuredChannels
+      .filter((channel) => channel.configured)
+      .map((channel) => channel.channel)
+      .join(","),
+    sourceIp: sourceIp(request),
+    colo: topology.colo,
+    placement: topology.placement
+  });
+
+  return json(
+    {
+      ok: result.ok,
+      alerting: {
+        ...notifier.status(),
+        configured: result.configuredChannels.some((channel) => channel.configured)
+      },
+      delivery: result
+    },
+    result.ok ? 200 : result.attempted === 0 ? 424 : 502
+  );
 }
 
 async function routeToEngine(
@@ -1353,7 +1489,17 @@ function calculateAttributionTimeline(trades: AttributionTrade[]): JsonRecord[] 
 }
 
 async function vaultStatus(env: Env): Promise<JsonRecord> {
-  const keys = ["KAIKO_API_KEY", "EXCHANGE_API_KEY", "EXCHANGE_API_SECRET", "JWT_SECRET", "ADMIN_PASSWORD"];
+  const keys = [
+    "KAIKO_API_KEY",
+    "EXCHANGE_API_KEY",
+    "EXCHANGE_API_SECRET",
+    "JWT_SECRET",
+    "ADMIN_PASSWORD",
+    "DISCORD_WEBHOOK_URL",
+    "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_CHAT_ID",
+    "ALERT_WEBHOOK_URL"
+  ];
   const entries: JsonRecord = {};
 
   for (const keyName of keys) {
@@ -1384,7 +1530,9 @@ function normalizeVaultKey(value: string | undefined): string | null {
     "EXCHANGE_HMAC_SECRET",
     "EXCHANGE_ED25519_PRIVATE_KEY",
     "DISCORD_WEBHOOK_URL",
-    "TELEGRAM_BOT_TOKEN"
+    "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_CHAT_ID",
+    "ALERT_WEBHOOK_URL"
   ]);
 
   return normalized && allowed.has(normalized) ? normalized : null;
@@ -1396,6 +1544,20 @@ function sanitizeReason(value: string | undefined): string | null {
   }
 
   return value.slice(0, 256).replace(/[^\w .:/@-]/g, "");
+}
+
+function normalizeAlertPriority(value: AlertPriority | undefined): AlertPriority {
+  return value === "LOW" ||
+    value === "MEDIUM" ||
+    value === "HIGH" ||
+    value === "CRITICAL"
+    ? value
+    : "HIGH";
+}
+
+function safeAlertText(value: string | undefined, fallback: string, maxLength: number): string {
+  const text = typeof value === "string" && value.trim().length > 0 ? value.trim() : fallback;
+  return text.slice(0, maxLength).replace(/[^\w .,:/@()[\]#-]/g, "");
 }
 
 async function encryptSecret(secret: string, keyMaterial: string): Promise<JsonRecord> {

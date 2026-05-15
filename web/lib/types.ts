@@ -4,6 +4,8 @@ export type JsonRecord = Record<string, JsonValue>;
 
 export type GovernanceMode = "MANUAL" | "AUTONOMOUS" | "HYBRID";
 export type MacroBiasDirection = "BULLISH" | "BEARISH" | "RISK_ON" | "RISK_OFF" | "NEUTRAL";
+export type AlertPriority = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+export type AlertChannel = "DISCORD" | "TELEGRAM" | "GENERIC_WEBHOOK";
 
 export interface GlobalRiskConfig {
   TRADING_ENABLED: boolean;
@@ -224,6 +226,39 @@ export interface TradeHistoryResponse {
     hasPreviousPage: boolean;
   };
   filters: JsonRecord;
+}
+
+export interface AlertChannelStatus {
+  channel: AlertChannel;
+  configured: boolean;
+}
+
+export interface AlertDeliveryAttempt {
+  channel: AlertChannel;
+  ok: boolean;
+  status: number | null;
+  error?: string;
+}
+
+export interface AlertingResponse {
+  ok: boolean;
+  alerting: {
+    configured: boolean;
+    debounceMs: number;
+    channels: AlertChannelStatus[];
+  };
+}
+
+export interface AlertTestResponse extends AlertingResponse {
+  delivery: {
+    ok: boolean;
+    debounced: boolean;
+    configuredChannels: AlertChannelStatus[];
+    attempted: number;
+    delivered: number;
+    attempts: AlertDeliveryAttempt[];
+    observedAt: string;
+  };
 }
 
 export interface DashboardPulse {

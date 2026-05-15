@@ -34,6 +34,8 @@ GitHub CI and manual Cloudflare deployment workflows live in `.github/workflows`
 
 See `docs/github-cloudflare-setup.md` for the GitHub Secrets, production environment, and deployment flow.
 
+Alerting setup and verification lives in `docs/alerting-setup.md`.
+
 ## Safety Defaults
 
 The repository is designed to fail closed:

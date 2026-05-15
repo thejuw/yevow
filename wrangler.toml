@@ -116,3 +116,4 @@ ANOMALY_TOP_OF_BOOK_WINDOW_MS = "600000"
 #   wrangler secret put DISCORD_WEBHOOK_URL
 #   wrangler secret put TELEGRAM_BOT_TOKEN
 #   wrangler secret put TELEGRAM_CHAT_ID
+#   wrangler secret put ALERT_WEBHOOK_URL

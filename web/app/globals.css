@@ -263,6 +263,7 @@ output {
 }
 
 .system-panel,
+.alert-panel,
 .efficacy-panel {
   grid-column: span 4;
 }
@@ -396,6 +397,8 @@ output {
 }
 
 .efficacy-grid,
+.alert-grid,
+.alert-attempts,
 .trade-table,
 .terminal-feed,
 .state-table {
@@ -404,6 +407,7 @@ output {
 }
 
 .driver-row,
+.channel-row,
 .trade-row,
 .state-row {
   display: grid;
@@ -417,9 +421,54 @@ output {
 }
 
 .driver-row span,
+.channel-row span,
 .trade-row span,
 .state-row span {
   color: var(--muted);
+}
+
+.channel-row {
+  grid-template-columns: 1fr auto;
+}
+
+.channel-row.configured span {
+  color: var(--green);
+}
+
+.channel-row.missing span {
+  color: var(--red);
+}
+
+.alert-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.alert-attempts {
+  margin-top: 10px;
+}
+
+.alert-attempts div {
+  min-height: 30px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid var(--line-cold);
+  border-radius: 7px;
+  padding: 7px 9px;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+}
+
+.alert-attempts .ok span {
+  color: var(--green);
+}
+
+.alert-attempts .fail span {
+  color: var(--red);
 }
 
 .trade-summary {
@@ -547,6 +596,7 @@ output {
   .matrix-panel,
   .moltworker-panel,
   .system-panel,
+  .alert-panel,
   .efficacy-panel,
   .trade-panel,
   .cctv-panel,
@@ -577,8 +627,9 @@ output {
 
   .market-strip,
   .bridge-metrics,
-  .trade-summary,
-  .param-grid,
+    .trade-summary,
+    .alert-summary,
+    .param-grid,
   .driver-row,
   .trade-row,
   .state-row {

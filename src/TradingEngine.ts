@@ -4508,6 +4508,28 @@ export class TradingEngine {
         },
         `${snapshot.engineId}:${snapshot.processedTicks}`
       );
+      this.notifier.notify({
+        priority: nextProfile.status === "UNSTABLE" ? "HIGH" : "LOW",
+        title:
+          nextProfile.status === "UNSTABLE"
+            ? "Sovereign-Sigma execution jitter unstable"
+            : "Sovereign-Sigma execution jitter recovered",
+        message:
+          nextProfile.status === "UNSTABLE"
+            ? `Processing jitter ${snapshot.jitterMs}ms exceeded ${snapshot.jitterThresholdMs}ms threshold.`
+            : `Processing jitter ${snapshot.jitterMs}ms returned below ${snapshot.jitterThresholdMs}ms threshold.`,
+        dedupeKey: `performance:${nextProfile.status}`,
+        metadata: {
+          engineId: snapshot.engineId,
+          status: snapshot.status,
+          jitterMs: snapshot.jitterMs,
+          jitterThresholdMs: snapshot.jitterThresholdMs,
+          averageProcessingLatencyMs: snapshot.averageProcessingLatencyMs,
+          maxProcessingLatencyMs: snapshot.maxProcessingLatencyMs,
+          sampleCount: snapshot.sampleCount,
+          processedTicks: snapshot.processedTicks
+        }
+      });
     }
   }
 

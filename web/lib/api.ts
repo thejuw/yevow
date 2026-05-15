@@ -1,5 +1,8 @@
 import type {
   AdminStateResponse,
+  AlertingResponse,
+  AlertPriority,
+  AlertTestResponse,
   AttributionResponse,
   GlobalRiskConfig,
   LoginResponse,
@@ -66,6 +69,29 @@ export async function readTradeHistory(apiBase: string, token: string): Promise<
     "/admin/history?status=ALL&limit=50",
     token
   );
+}
+
+export async function readAlerts(apiBase: string, token: string): Promise<AlertingResponse> {
+  return apiFetch<AlertingResponse>(apiBase, "/admin/alerts", token);
+}
+
+export async function sendTestAlert(
+  apiBase: string,
+  token: string,
+  priority: AlertPriority = "HIGH"
+): Promise<AlertTestResponse> {
+  return apiFetch<AlertTestResponse>(apiBase, "/admin/alerts/test", token, {
+    method: "POST",
+    body: JSON.stringify({
+      priority,
+      title: "Sovereign-Sigma alert route test",
+      message: "Manual Command Center alert-route verification.",
+      metadata: {
+        source: "command-center",
+        requestedAt: new Date().toISOString()
+      }
+    })
+  });
 }
 
 export async function updateConfig(
