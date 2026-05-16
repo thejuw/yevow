@@ -12,6 +12,7 @@ export interface ParameterDescriptor {
   max?: number;
   step?: number;
   options?: string[];
+  help?: string;
 }
 
 export const PARAMETER_MATRIX: ParameterDescriptor[] = [
@@ -20,7 +21,8 @@ export const PARAMETER_MATRIX: ParameterDescriptor[] = [
     label: "Governance",
     group: "Oracle",
     kind: "select",
-    options: ["MANUAL", "AUTONOMOUS", "HYBRID"]
+    options: ["MANUAL", "AUTONOMOUS", "HYBRID"],
+    help: "Controls whether System 2 governance, manual operator input, or a hybrid policy controls Oracle skepticism."
   },
   {
     key: "ORACLE_MANUAL_SKEPTICISM",
@@ -29,7 +31,8 @@ export const PARAMETER_MATRIX: ParameterDescriptor[] = [
     kind: "number",
     min: 1,
     max: 10,
-    step: 0.05
+    step: 0.05,
+    help: "Manual skepticism multiplier applied to probability updates when governance is in manual or hybrid intervention."
   },
   {
     key: "ORACLE_MAX_SKEPTICISM",
@@ -38,7 +41,8 @@ export const PARAMETER_MATRIX: ParameterDescriptor[] = [
     kind: "number",
     min: 1,
     max: 10,
-    step: 0.05
+    step: 0.05,
+    help: "Upper bound on the Oracle skepticism multiplier during regime stress or manual overrides."
   },
   {
     key: "VAR_CONFIDENCE_Z",
@@ -47,7 +51,8 @@ export const PARAMETER_MATRIX: ParameterDescriptor[] = [
     kind: "number",
     min: 1,
     max: 4,
-    step: 0.001
+    step: 0.001,
+    help: "Z-score used by the Pit Boss risk model for one-hour value-at-risk estimation."
   },
   {
     key: "MIN_EV_THRESHOLD",
@@ -69,12 +74,13 @@ export const PARAMETER_MATRIX: ParameterDescriptor[] = [
   },
   {
     key: "RISK_AVERSION_FACTOR",
-    label: "AS γ",
+    label: "Risk Aversion (γ)",
     group: "Croupier",
     kind: "number",
     min: 0,
     max: 1,
-    step: 0.0001
+    step: 0.0001,
+    help: "Avellaneda-Stoikov coefficient determining how aggressively the bot skews its quotes away from its reservation price to defend its delta inventory."
   },
   {
     key: "FUNDING_BIAS_THRESHOLD",
@@ -114,21 +120,23 @@ export const PARAMETER_MATRIX: ParameterDescriptor[] = [
   },
   {
     key: "AM_VPIN_ROLLING_WINDOW",
-    label: "AM-VPIN Window",
+    label: "AM-VPIN Window (N)",
     group: "Profiler",
     kind: "number",
     min: 5,
     max: 500,
-    step: 1
+    step: 1,
+    help: "The number of rolling volume buckets analyzed to calculate order flow toxicity. Higher values smooth out noise; lower values react faster."
   },
   {
     key: "AM_VPIN_DIRECTIONAL_DECAY",
-    label: "Directional Decay",
+    label: "Directional Decay (α)",
     group: "Profiler",
     kind: "number",
     min: 0,
     max: 0.999,
-    step: 0.001
+    step: 0.001,
+    help: "The exponential memory factor applied to net-volume imbalances. Dampens false alarms from back-and-forth choppy execution."
   },
   {
     key: "AM_VPIN_NORMAL_THRESHOLD",
@@ -159,12 +167,13 @@ export const PARAMETER_MATRIX: ParameterDescriptor[] = [
   },
   {
     key: "AM_VPIN_OBI_DEPTH",
-    label: "OBI Depth",
+    label: "OBI Level Depth (M)",
     group: "Profiler",
     kind: "number",
     min: 1,
     max: 50,
-    step: 1
+    step: 1,
+    help: "The depth level of the L2 order book delta tracked to verify liquidity resilience against aggressive market trades."
   },
   {
     key: "AM_VPIN_CRITICAL_OBI",
@@ -320,4 +329,11 @@ export function changedMoreThanTenPercent(
 
     return Math.abs(draftValue - currentValue) / Math.abs(currentValue) > 0.1 ? [key] : [];
   });
+}
+
+export function parameterHelp(param: ParameterDescriptor): string {
+  return (
+    param.help ??
+    `${param.label} feeds the ${param.group} control surface and is validated before it can alter the live hot path.`
+  );
 }

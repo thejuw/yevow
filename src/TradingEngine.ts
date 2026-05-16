@@ -3,7 +3,8 @@ import { Governor, neutralMacroBias } from "./Governor";
 import { Logger } from "./Logger";
 import {
   ProfilerAgent,
-  PROFILER_STATE_STORAGE_KEY
+  PROFILER_STATE_STORAGE_KEY,
+  PROFILER_STATE_STORAGE_PREFIX
 } from "./agents/ProfilerAgent";
 import {
   AnomalyDetector,
@@ -45,6 +46,7 @@ import type {
   AgentHealth,
   AgentName,
   AgentSignal,
+  AssetRuntimeState,
   BookSnapshotResponse,
   ExchangeOpenOrder,
   ExecutionReport,
@@ -148,6 +150,12 @@ const DEFAULT_PREDATORY_ORDER_OFFSET_BPS = 2;
 const DEFAULT_WHALE_PRINT_Z_THRESHOLD = 5;
 const DEFAULT_QUOTE_HIBERNATE_MS = 3_000;
 const DEFAULT_VAR_CONFIDENCE_Z = 2.326;
+const TARGET_ASSET_MATRIX = [
+  { coin: "BTC", instrumentCode: "btc-usd" },
+  { coin: "ETH", instrumentCode: "eth-usd" },
+  { coin: "HYPE", instrumentCode: "hype-usd" },
+  { coin: "SOL", instrumentCode: "sol-usd" }
+] as const;
 const DEFAULT_JANITOR_INTERVAL_MS = 60_000;
 const DEFAULT_ORDER_ACK_TIMEOUT_MS = 2_000;
 const DEFAULT_REPLAY_LIMIT = 250;
@@ -298,6 +306,7 @@ interface EngineReplaySnapshot {
   maxLatencyMs: number;
   lastTickTimestamp: string | null;
   profilerState: ProfilerState;
+  profilerStates: Array<[string, ProfilerState]>;
   anomalyState: AnomalyDetectorState;
   oracleState: EngineState["oracle"];
   sentimentState: EngineState["sentiment"];
@@ -370,6 +379,7 @@ export class TradingEngine {
   private readonly logger: Logger;
   private readonly notifier: Notifier;
   private readonly profilerAgent: ProfilerAgent;
+  private readonly profilerAgents = new Map<string, ProfilerAgent>();
   private readonly heatmapAgent: HeatmapAgent;
   private readonly anomalyDetector: AnomalyDetector;
   private readonly sentimentAgent = new SentimentAgent();
@@ -574,6 +584,7 @@ export class TradingEngine {
       let persistedProcessingLatencySamples: number[] | undefined;
       let persistedDomWallHistory: LiquidityWall[] | undefined;
       let persistedProfilerState: ProfilerState | undefined;
+      let persistedProfilerStates = new Map<string, ProfilerState>();
       let persistedHeatmapState: LiquidationHeatmapState | undefined;
       let persistedAnomalyState: AnomalyDetectorState | undefined;
       let persistedRateLimits: Record<string, RateLimitBucketSnapshot> | undefined;
@@ -588,6 +599,7 @@ export class TradingEngine {
           persistedProcessingLatencySamples,
           persistedDomWallHistory,
           persistedProfilerState,
+          persistedProfilerStates,
           persistedHeatmapState,
           persistedAnomalyState,
           persistedRateLimits,
@@ -600,6 +612,7 @@ export class TradingEngine {
           this.state.storage.get<number[]>(PROCESSING_LATENCY_SAMPLES_KEY),
           this.state.storage.get<LiquidityWall[]>(DOM_WALL_HISTORY_KEY),
           this.state.storage.get<ProfilerState>(PROFILER_STATE_STORAGE_KEY),
+          this.state.storage.list<ProfilerState>({ prefix: PROFILER_STATE_STORAGE_PREFIX }),
           this.state.storage.get<LiquidationHeatmapState>(LIQUIDATION_HEATMAP_STORAGE_KEY),
           this.state.storage.get<AnomalyDetectorState>(ANOMALY_DETECTOR_STORAGE_KEY),
           this.state.storage.get<Record<string, RateLimitBucketSnapshot>>(RATE_LIMIT_STATE_KEY),
@@ -627,7 +640,7 @@ export class TradingEngine {
       this.bids = hydratedBooks.bids;
       this.asks = hydratedBooks.asks;
       this.bookSync = hydratedBooks.sync;
-      this.profilerAgent.hydrate(persistedProfilerState);
+      this.hydrateProfilerAgents(persistedProfilerState, persistedProfilerStates);
       this.heatmapAgent.hydrate(persistedHeatmapState ?? baseState.liquidationHeatmap);
       this.anomalyDetector.hydrate(persistedAnomalyState);
       this.rateLimiter.hydrate(persistedRateLimits);
@@ -651,7 +664,7 @@ export class TradingEngine {
       this.cachedConfig = effectiveGovernance.config;
       this.macroBias = effectiveGovernance.macroBias;
       this.activeTemporaryOverride = effectiveGovernance.temporaryOverride;
-      this.profilerAgent.configure(this.cachedConfig);
+      this.configureProfilerAgents(this.cachedConfig);
       this.maxLatencyMs = this.cachedConfig.LATENCY_THRESHOLD_MS;
       const location = baseState.location ?? defaultEngineLocation();
       const risk = applyLocationRisk(
@@ -677,7 +690,7 @@ export class TradingEngine {
         averageLatency: baseState.averageLatency ?? 0,
         latencySampleCount: baseState.latencySampleCount ?? 0,
         staleTickCount: baseState.staleTickCount ?? 0,
-        toxicityScore: baseState.toxicityScore ?? this.profilerAgent.toxicityScore,
+        toxicityScore: baseState.toxicityScore ?? this.maxProfilerToxicity(),
         current_inventory_delta:
           baseState.current_inventory_delta ??
           baseState.inventory?.current_inventory_delta ??
@@ -688,6 +701,10 @@ export class TradingEngine {
         cachedConfig: this.cachedConfig,
         macroBias: this.macroBias,
         temporaryOverride: this.activeTemporaryOverride,
+        assetMatrix:
+          baseState.assetMatrix ??
+          defaultAssetMatrix(this.cachedConfig, this.macroBias, now),
+        profilerStates: this.profilerStateSnapshot(),
         location,
         fundingRates: baseState.fundingRates ?? {},
         microstructure: baseState.microstructure ?? defaultMicrostructure(),
@@ -785,6 +802,10 @@ export class TradingEngine {
           })
         );
         return json(this.healthCheck());
+      }
+
+      if (request.method === "GET" && url.pathname === "/diagnostics") {
+        return json(this.engineDiagnostics());
       }
 
       if (request.method === "GET" && url.pathname === "/state") {
@@ -1109,6 +1130,8 @@ export class TradingEngine {
       executionProfile: this.engineState.executionProfile,
       dom: this.engineState.dom,
       anomaly: this.engineState.anomaly,
+      assetMatrix: this.engineState.assetMatrix,
+      profilerStates: this.engineState.profilerStates,
       memoryUsage: {
         available: Boolean(memory),
         usedJSHeapSize: memory?.usedJSHeapSize ?? null,
@@ -1120,6 +1143,288 @@ export class TradingEngine {
         }).length
       }
     };
+  }
+
+  private engineDiagnostics(): JsonRecord {
+    const memory = (globalThis as RuntimeWithMemory).performance?.memory;
+    const marketSync = [...this.bookSync.entries()].map(([marketKey, sync]) => ({
+      marketKey,
+      instrumentCode: sync.instrumentCode,
+      isSynced: sync.isSynced,
+      lastSequence: sync.lastSequence,
+      expectedNextSequence: sync.lastSequence === null ? null : sync.lastSequence + 1,
+      desyncReason: sync.desyncReason ?? null,
+      lastDesyncAt: sync.lastDesyncAt ?? null
+    }));
+    const desynced = marketSync.filter((entry) => !entry.isSynced);
+    const profilerBuffers = Object.fromEntries(
+      [...this.profilerAgents.entries()].map(([instrumentCode, agent]) => [
+        instrumentCode,
+        agent.diagnostics()
+      ])
+    );
+    const allBuffersFlat = Object.values(profilerBuffers).every(
+      (entry) =>
+        typeof entry === "object" &&
+        entry !== null &&
+        (entry as { flatMemory?: boolean }).flatMemory === true
+    );
+    const heapRatio =
+      memory?.jsHeapSizeLimit && memory.usedJSHeapSize
+        ? memory.usedJSHeapSize / memory.jsHeapSizeLimit
+        : null;
+
+    return {
+      ok: desynced.length === 0 && allBuffersFlat && (heapRatio === null || heapRatio < 0.8),
+      observedAt: new Date().toISOString(),
+      l1Sync: {
+        ok: desynced.length === 0,
+        desyncCount: desynced.length,
+        markets: marketSync,
+        expectedAssets: TARGET_ASSET_MATRIX.map((asset) => asset.instrumentCode)
+      },
+      v8Memory: {
+        ok: allBuffersFlat && (heapRatio === null || heapRatio < 0.8),
+        profilerBuffers,
+        heap: {
+          available: Boolean(memory),
+          usedJSHeapSize: memory?.usedJSHeapSize ?? null,
+          totalJSHeapSize: memory?.totalJSHeapSize ?? null,
+          jsHeapSizeLimit: memory?.jsHeapSizeLimit ?? null,
+          heapRatio
+        }
+      },
+      assetMatrix: this.engineState.assetMatrix as unknown as JsonValue
+    };
+  }
+
+  private profilerFor(instrumentCode: string): ProfilerAgent {
+    const normalized = normalizeNativeInstrumentCode(instrumentCode);
+    const existing = this.profilerAgents.get(normalized);
+
+    if (existing) {
+      return existing;
+    }
+
+    const agent = normalized === "btc-usd" ? this.profilerAgent : this.createProfilerAgent();
+    agent.configure(this.cachedConfig);
+    this.profilerAgents.set(normalized, agent);
+    return agent;
+  }
+
+  private createProfilerAgent(): ProfilerAgent {
+    return new ProfilerAgent({
+      bucketSize: readPositiveNumber(
+        this.env.PROFILER_BUCKET_VOLUME,
+        DEFAULT_PROFILER_BUCKET_VOLUME
+      ),
+      rollingWindow: readPositiveInteger(
+        this.env.PROFILER_ROLLING_WINDOW,
+        DEFAULT_PROFILER_ROLLING_WINDOW,
+        1,
+        500
+      ),
+      alertThreshold: readBoundedNumber(
+        this.env.PROFILER_ALERT_THRESHOLD,
+        DEFAULT_PROFILER_ALERT_THRESHOLD,
+        0,
+        1
+      ),
+      whalePrintZThreshold: readPositiveNumber(
+        this.env.WHALE_PRINT_Z_THRESHOLD,
+        DEFAULT_WHALE_PRINT_Z_THRESHOLD
+      ),
+      quoteHibernateMs: readPositiveInteger(
+        this.env.QUOTE_HIBERNATE_MS,
+        DEFAULT_QUOTE_HIBERNATE_MS,
+        100,
+        60_000
+      )
+    });
+  }
+
+  private hydrateProfilerAgents(
+    legacyState: ProfilerState | undefined,
+    persistedStates: Map<string, ProfilerState>
+  ): void {
+    this.profilerAgents.clear();
+    this.profilerAgent.hydrate(legacyState);
+    this.profilerAgents.set("btc-usd", this.profilerAgent);
+
+    for (const [storageKey, state] of persistedStates) {
+      const instrumentCode = profilerInstrumentFromStorageKey(storageKey);
+      const agent = instrumentCode === "btc-usd" ? this.profilerAgent : this.createProfilerAgent();
+      agent.hydrate(state);
+      this.profilerAgents.set(instrumentCode, agent);
+    }
+
+    for (const asset of TARGET_ASSET_MATRIX) {
+      this.profilerFor(asset.instrumentCode);
+    }
+  }
+
+  private resetProfilerAgents(): void {
+    this.profilerAgents.clear();
+    this.profilerAgent.hydrate(null);
+    this.profilerAgent.configure(this.cachedConfig);
+    this.profilerAgents.set("btc-usd", this.profilerAgent);
+
+    for (const asset of TARGET_ASSET_MATRIX) {
+      this.profilerFor(asset.instrumentCode).hydrate(null);
+      this.profilerFor(asset.instrumentCode).configure(this.cachedConfig);
+    }
+  }
+
+  private configureProfilerAgents(config: GlobalRiskConfig): void {
+    this.profilerAgent.configure(config);
+    for (const agent of this.profilerAgents.values()) {
+      agent.configure(config);
+    }
+  }
+
+  private profilerStateSnapshot(
+    overrideInstrument?: string,
+    overrideState?: ProfilerState
+  ): Record<string, ProfilerState> {
+    const entries: Array<[string, ProfilerState]> = [];
+
+    for (const asset of TARGET_ASSET_MATRIX) {
+      entries.push([asset.instrumentCode, this.profilerFor(asset.instrumentCode).snapshot()]);
+    }
+
+    for (const [instrumentCode, agent] of this.profilerAgents) {
+      if (!TARGET_ASSET_MATRIX.some((asset) => asset.instrumentCode === instrumentCode)) {
+        entries.push([instrumentCode, agent.snapshot()]);
+      }
+    }
+
+    if (overrideInstrument && overrideState) {
+      const normalized = normalizeNativeInstrumentCode(overrideInstrument);
+      const index = entries.findIndex(([instrumentCode]) => instrumentCode === normalized);
+      if (index >= 0) {
+        entries[index] = [normalized, overrideState];
+      } else {
+        entries.push([normalized, overrideState]);
+      }
+    }
+
+    return Object.fromEntries(entries);
+  }
+
+  private maxProfilerToxicity(): number {
+    let max = this.profilerAgent.toxicityScore;
+    for (const agent of this.profilerAgents.values()) {
+      max = Math.max(max, agent.toxicityScore);
+    }
+    return max;
+  }
+
+  private findBestAssetBook(instrumentCode: string): InternalOrderBook | undefined {
+    const normalized = normalizeNativeInstrumentCode(instrumentCode);
+    let best: InternalOrderBook | undefined;
+    let bestScore = Number.NEGATIVE_INFINITY;
+    let bestObservedAt = 0;
+
+    for (const book of this.orderBook.values()) {
+      if (book.instrumentCode !== normalized) {
+        continue;
+      }
+
+      const observedAt = Date.parse(book.updatedAt);
+      const score =
+        (book.isSynced ? 100 : 0) +
+        (book.midPrice !== null ? 10 : 0) +
+        Math.min(Math.max(book.bids.length, book.asks.length), 50) / 100;
+
+      if (
+        !best ||
+        score > bestScore ||
+        (score === bestScore && Number.isFinite(observedAt) && observedAt > bestObservedAt)
+      ) {
+        best = book;
+        bestScore = score;
+        bestObservedAt = Number.isFinite(observedAt) ? observedAt : 0;
+      }
+    }
+
+    return best;
+  }
+
+  private calculateAssetMatrix(
+    observedAt: string,
+    latestInstrumentCode: string | undefined,
+    latestOracle: EngineState["oracle"],
+    profilerStates: Record<string, ProfilerState>
+  ): Record<string, AssetRuntimeState> {
+    const selected = selectedMoltworkerInstruments(this.macroBias);
+    const activeWeights: Record<string, number> = {};
+    let totalWeight = 0;
+
+    for (const asset of TARGET_ASSET_MATRIX) {
+      const oracleState =
+        latestOracle.instrumentCode === asset.instrumentCode
+          ? latestOracle
+          : latestOracle.instrumentStates?.[asset.instrumentCode];
+      const volatility = Math.max(0.000001, finiteMetric(oracleState?.volatility ?? 0.01, 0.01));
+      const selectedByMoltworker =
+        selected.size === 0 ||
+        selected.has(asset.instrumentCode) ||
+        selected.has(asset.coin.toLowerCase()) ||
+        selected.has(`${asset.coin.toLowerCase()}-perp`);
+      const book = this.findBestAssetBook(asset.instrumentCode);
+      const active = selectedByMoltworker && Boolean(book?.isSynced);
+      const weight = active ? 1 / volatility : 0;
+      activeWeights[asset.instrumentCode] = weight;
+      totalWeight += weight;
+    }
+
+    const equity = Math.max(this.engineState.bankroll.equity, this.engineState.bankroll.cash, 0);
+    const maxPositionPct =
+      this.cachedConfig.MAX_POSITION_PCT > 0
+        ? this.cachedConfig.MAX_POSITION_PCT
+        : readPositiveNumber(this.env.MAX_POSITION_PCT, DEFAULT_MAX_POSITION_PCT);
+
+    return Object.fromEntries(
+      TARGET_ASSET_MATRIX.map((asset) => {
+        const book = this.findBestAssetBook(asset.instrumentCode);
+        const oracleState =
+          latestOracle.instrumentCode === asset.instrumentCode
+            ? latestOracle
+            : latestOracle.instrumentStates?.[asset.instrumentCode];
+        const profilerState = profilerStates[asset.instrumentCode] ?? this.profilerFor(asset.instrumentCode).snapshot();
+        const allocation =
+          totalWeight > 0 ? activeWeights[asset.instrumentCode] / totalWeight : 0;
+        const selectedByMoltworker =
+          selected.size === 0 ||
+          selected.has(asset.instrumentCode) ||
+          selected.has(asset.coin.toLowerCase()) ||
+          selected.has(`${asset.coin.toLowerCase()}-perp`);
+
+        return [
+          asset.instrumentCode,
+          {
+            instrumentCode: asset.instrumentCode,
+            coin: asset.coin,
+            selectedByMoltworker,
+            active: selectedByMoltworker && Boolean(book?.isSynced),
+            isSynced: Boolean(book?.isSynced),
+            lastSequence: book?.lastSequence ?? null,
+            midPrice: book?.midPrice ?? null,
+            volatility: finiteMetric(oracleState?.volatility ?? 0.01, 0.01),
+            capitalAllocationPct: roundMetric(allocation, 8),
+            maxNotional: roundMetric(equity * maxPositionPct * allocation, 8),
+            toxicityState: profilerState.toxicityState,
+            amVpin: profilerState.amVpinScore,
+            obi: profilerState.obi,
+            quoteStatus:
+              latestInstrumentCode === asset.instrumentCode
+                ? this.engineState.quoteState.status
+                : "ACTIVE",
+            updatedAt: book?.updatedAt ?? observedAt
+          } satisfies AssetRuntimeState
+        ];
+      })
+    );
   }
 
   private async safeStoragePut(
@@ -1545,7 +1850,15 @@ export class TradingEngine {
     );
     const sourceWeight = normalizeSourceWeight(payload.sourceWeight);
     const exchangeTimestamp = nativeExchangeTimestamp(data.time ?? data.timestamp) ?? receivedAt;
-    const sequence = nativeSequence(data.time ?? data.sequence ?? data.seq);
+    const explicitSequenceValue = data.sequence ?? data.seq;
+    const explicitSequence = Number(explicitSequenceValue);
+    const hasExplicitSequence =
+      explicitSequenceValue !== undefined &&
+      Number.isSafeInteger(explicitSequence) &&
+      explicitSequence >= 0;
+    const sequence = nativeSequence(
+      hasExplicitSequence ? explicitSequenceValue : data.time ?? data.timestamp
+    );
     const marketKey = buildMarketKey(sourceExchange, instrumentCode);
     const existingSync = this.bookSync.get(marketKey);
     const gapMs = readPositiveNumber(this.env.HL_SEQUENCE_GAP_MS, DEFAULT_HL_SEQUENCE_GAP_MS);
@@ -1575,7 +1888,7 @@ export class TradingEngine {
         };
       }
 
-      if (sequence - existingSync.lastSequence > gapMs) {
+      if (hasExplicitSequence && sequence - existingSync.lastSequence > gapMs) {
         existingSync.lastDesyncAt = receivedAt;
         existingSync.desyncReason = "HYPERLIQUID_SEQUENCE_GAP";
         existingSync.isSynced = false;
@@ -3145,8 +3458,9 @@ export class TradingEngine {
       };
     }
 
+    const profilerAgent = this.profilerFor(tick.instrumentCode);
     const profilerStartedAt = highResolutionNow();
-    const profilerResult = this.profilerAgent.processTick(tick, {
+    const profilerResult = profilerAgent.processTick(tick, {
       engineId: this.engineState.engineId,
       observedAt: metrics.brainTimestamp,
       midPrice: book.midPrice,
@@ -3181,6 +3495,13 @@ export class TradingEngine {
     const leadLag = this.engineState.leadLag;
     const inventory = this.calculateInventoryState(metrics.brainTimestamp);
     const riskMetrics = this.updatePortfolioRisk(oracleResult.state, metrics.brainTimestamp);
+    const profilerStates = this.profilerStateSnapshot(tick.instrumentCode, profilerResult.state);
+    const assetMatrix = this.calculateAssetMatrix(
+      metrics.brainTimestamp,
+      tick.instrumentCode,
+      oracleResult.state,
+      profilerStates
+    );
     const hedge = this.hedgeAgent.evaluate({
       positions: this.engineState.openPositions,
       books: [...this.orderBook.values()],
@@ -3226,12 +3547,17 @@ export class TradingEngine {
     });
     const executionPlan = this.prepareExecutionPlan(
       croupierDecision.intent,
-      metrics.brainTimestamp
+      metrics.brainTimestamp,
+      { stateOverride: { ...this.engineState, assetMatrix } }
     );
     const hedgePlan = this.prepareExecutionPlan(
       hedge.lastIntent,
       metrics.brainTimestamp,
-      { bypassQuoteSuspension: true, bypassPitBoss: hedge.hedgeRequired }
+      {
+        bypassQuoteSuspension: true,
+        bypassPitBoss: hedge.hedgeRequired,
+        stateOverride: { ...this.engineState, assetMatrix }
+      }
     );
     const executionPlans = [executionPlan, hedgePlan].filter(
       (plan): plan is NonNullable<typeof executionPlan> => plan !== null
@@ -3308,6 +3634,8 @@ export class TradingEngine {
       dom: domSnapshot,
       anomaly: anomalyResult.status,
       liquidationHeatmap: this.engineState.liquidationHeatmap,
+      assetMatrix,
+      profilerStates,
       toxicityScore: profilerResult.toxicityScore,
       agentHealth: profilerResult.processed
         ? touchAgentHealth(
@@ -3337,7 +3665,10 @@ export class TradingEngine {
     };
 
     if (profilerResult.processed) {
-      writes[PROFILER_STATE_STORAGE_KEY] = profilerResult.state;
+      writes[profilerStorageKey(tick.instrumentCode)] = profilerResult.state;
+      if (tick.instrumentCode === "btc-usd") {
+        writes[PROFILER_STATE_STORAGE_KEY] = profilerResult.state;
+      }
     }
 
     await this.persistHotStorageSnapshot(writes, "HOT_PATH_TICK_SNAPSHOT");
@@ -3760,7 +4091,11 @@ export class TradingEngine {
   private prepareExecutionPlan(
     intent: EngineState["lastTradeIntent"],
     observedAt: string,
-    options: { bypassQuoteSuspension?: boolean; bypassPitBoss?: boolean } = {}
+    options: {
+      bypassQuoteSuspension?: boolean;
+      bypassPitBoss?: boolean;
+      stateOverride?: EngineState;
+    } = {}
   ):
     | {
         intent: NonNullable<EngineState["lastTradeIntent"]>;
@@ -3776,6 +4111,7 @@ export class TradingEngine {
       return null;
     }
 
+    const riskState = options.stateOverride ?? this.engineState;
     const pitBossDecision = options.bypassPitBoss
       ? {
           approved: true,
@@ -3785,11 +4121,13 @@ export class TradingEngine {
           },
           kellyFraction: 0,
           cappedFraction: 0,
+          capitalAllocationPct: 1,
+          assetMaxNotional: Number.POSITIVE_INFINITY,
           reason: "APPROVED_HARD_HEDGE"
         }
       : this.pitBossAgent.approve(
           intent,
-          this.engineState,
+          riskState,
           this.cachedConfig,
           this.cachedConfig.MAX_POSITION_PCT > 0
             ? this.cachedConfig.MAX_POSITION_PCT
@@ -4752,7 +5090,7 @@ export class TradingEngine {
       heartbeatAt: startedAt,
       updatedAt: startedAt
     };
-    this.profilerAgent.hydrate(null);
+    this.resetProfilerAgents();
     this.anomalyDetector.hydrate(null);
     this.oracleAgent.hydrate(null);
     this.sentimentAgent.hydrate(null);
@@ -4878,6 +5216,9 @@ export class TradingEngine {
       maxLatencyMs: this.maxLatencyMs,
       lastTickTimestamp: this.lastTickTimestamp,
       profilerState: this.profilerAgent.snapshot(),
+      profilerStates: deepClone([...this.profilerAgents.entries()].map(
+        ([instrumentCode, agent]) => [instrumentCode, agent.snapshot()] as [string, ProfilerState]
+      )),
       anomalyState: this.anomalyDetector.snapshot(),
       oracleState: this.oracleAgent.snapshot(),
       sentimentState: this.sentimentAgent.snapshot(),
@@ -4956,7 +5297,10 @@ export class TradingEngine {
     this.lastTickTimestamp = snapshot.lastTickTimestamp;
     this.signals = snapshot.signals;
     this.latestAgentSignals = new Map(snapshot.latestAgentSignals);
-    this.profilerAgent.hydrate(snapshot.profilerState);
+    this.hydrateProfilerAgents(
+      snapshot.profilerState,
+      new Map(snapshot.profilerStates)
+    );
     this.anomalyDetector.hydrate(snapshot.anomalyState);
     this.oracleAgent.hydrate(snapshot.oracleState);
     this.sentimentAgent.hydrate(snapshot.sentimentState);
@@ -4968,6 +5312,12 @@ export class TradingEngine {
       [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples,
       [DOM_WALL_HISTORY_KEY]: this.domWallHistory,
       [PROFILER_STATE_STORAGE_KEY]: snapshot.profilerState,
+      ...Object.fromEntries(
+        snapshot.profilerStates.map(([instrumentCode, state]) => [
+          profilerStorageKey(instrumentCode),
+          state
+        ])
+      ),
       [ANOMALY_DETECTOR_STORAGE_KEY]: snapshot.anomalyState,
       [RATE_LIMIT_STATE_KEY]: snapshot.rateLimits,
       ...Object.fromEntries(
@@ -6166,7 +6516,7 @@ export class TradingEngine {
     this.cachedConfig = nextConfig;
     this.macroBias = effectiveGovernance.macroBias;
     this.activeTemporaryOverride = effectiveGovernance.temporaryOverride;
-    this.profilerAgent.configure(nextConfig);
+    this.configureProfilerAgents(nextConfig);
     this.maxLatencyMs = nextConfig.LATENCY_THRESHOLD_MS;
     if (nextConfig.TRADING_ENABLED) {
       this.killSwitchLogged = false;
@@ -6196,6 +6546,13 @@ export class TradingEngine {
       cachedConfig: nextConfig,
       macroBias: this.macroBias,
       temporaryOverride: this.activeTemporaryOverride,
+      assetMatrix: this.calculateAssetMatrix(
+        now,
+        this.engineState.microstructure.instrumentCode ?? undefined,
+        this.engineState.oracle,
+        this.profilerStateSnapshot()
+      ),
+      profilerStates: this.profilerStateSnapshot(),
       maxLatencyMs: nextConfig.LATENCY_THRESHOLD_MS,
       location: refreshedLocation,
       risk: applyLocationRisk(
@@ -6918,6 +7275,8 @@ function defaultEngineState(engineId: string): EngineState {
     cachedConfig: { ...defaultConfig },
     macroBias: neutralMacroBias(),
     temporaryOverride: null,
+    assetMatrix: defaultAssetMatrix(defaultConfig, neutralMacroBias(), now),
+    profilerStates: {},
     location: defaultEngineLocation(),
     fundingRates: {},
     microstructure: defaultMicrostructure(),
@@ -7649,6 +8008,75 @@ function resolveCurrentInstrument(
 
 function buildMarketKey(sourceExchange: string, instrumentCode: string): string {
   return `${normalizeSourceExchange(sourceExchange)}:${instrumentCode.toLowerCase()}`;
+}
+
+function profilerStorageKey(instrumentCode: string): string {
+  return `${PROFILER_STATE_STORAGE_PREFIX}${normalizeNativeInstrumentCode(instrumentCode)}`;
+}
+
+function profilerInstrumentFromStorageKey(storageKey: string): string {
+  return normalizeNativeInstrumentCode(
+    storageKey.startsWith(PROFILER_STATE_STORAGE_PREFIX)
+      ? storageKey.slice(PROFILER_STATE_STORAGE_PREFIX.length)
+      : storageKey
+  );
+}
+
+function selectedMoltworkerInstruments(macroBias: MacroBias): Set<string> {
+  return new Set(
+    (macroBias.instruments ?? [])
+      .filter((instrument) => typeof instrument === "string" && instrument.trim().length > 0)
+      .map((instrument) => normalizeNativeInstrumentCode(instrument))
+  );
+}
+
+function defaultAssetMatrix(
+  config: GlobalRiskConfig,
+  macroBias: MacroBias,
+  observedAt: string
+): Record<string, AssetRuntimeState> {
+  const selected = selectedMoltworkerInstruments(macroBias);
+  const selectedCount =
+    selected.size > 0
+      ? TARGET_ASSET_MATRIX.filter(
+          (asset) =>
+            selected.has(asset.instrumentCode) ||
+            selected.has(asset.coin.toLowerCase()) ||
+            selected.has(`${asset.coin.toLowerCase()}-perp`)
+        ).length
+      : TARGET_ASSET_MATRIX.length;
+  const allocation = selectedCount > 0 ? 1 / selectedCount : 0;
+
+  return Object.fromEntries(
+    TARGET_ASSET_MATRIX.map((asset) => {
+      const selectedByMoltworker =
+        selected.size === 0 ||
+        selected.has(asset.instrumentCode) ||
+        selected.has(asset.coin.toLowerCase()) ||
+        selected.has(`${asset.coin.toLowerCase()}-perp`);
+
+      return [
+        asset.instrumentCode,
+        {
+          instrumentCode: asset.instrumentCode,
+          coin: asset.coin,
+          selectedByMoltworker,
+          active: false,
+          isSynced: false,
+          lastSequence: null,
+          midPrice: null,
+          volatility: 0.01,
+          capitalAllocationPct: selectedByMoltworker ? roundMetric(allocation, 8) : 0,
+          maxNotional: 0,
+          toxicityState: "NORMAL",
+          amVpin: 0,
+          obi: null,
+          quoteStatus: config.TRADING_ENABLED ? "ACTIVE" : "SUSPENDED",
+          updatedAt: observedAt
+        } satisfies AssetRuntimeState
+      ];
+    })
+  );
 }
 
 function normalizeMarketKey(value: string): string {

@@ -9,6 +9,7 @@ import {
 } from "./NotificationSettings";
 import { TradingEngine } from "./TradingEngine";
 import { Notifier, type AlertPriority } from "./utils/Notifier";
+import { SignatureEngine } from "./utils/SignatureEngine";
 import type { AdminScope, AuthClaims } from "./AuthManager";
 import type {
   AdminConfigUpdate,
@@ -327,6 +328,7 @@ export default {
         "GET /admin/health",
         "GET /admin/state",
         "GET /admin/settings",
+        "GET /admin/diagnostics",
         "POST /admin/settings/notifications",
         "GET|POST /admin/topology/calibrate",
         "GET /admin/performance",
@@ -465,6 +467,7 @@ async function handleAdminRequest(
         "GET /admin/health",
         "GET /admin/state",
         "GET /admin/settings",
+        "GET /admin/diagnostics",
         "POST /admin/settings/notifications",
         "GET|POST /admin/topology/calibrate",
         "GET /admin/performance",
@@ -536,6 +539,14 @@ async function handleAdminRequest(
     }
 
     return updateNotificationSettings(request, env, logger, topology, auth);
+  }
+
+  if (url.pathname === "/admin/diagnostics") {
+    if (request.method !== "GET") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+
+    return runDiagnostics(env, logger, topology);
   }
 
   if (url.pathname === "/admin/topology/calibrate") {
@@ -942,6 +953,100 @@ async function readAdminSettings(
     },
     vault,
     backend: backendSettings(env)
+  });
+}
+
+async function runDiagnostics(
+  env: Env,
+  logger: Logger,
+  topology: EdgeTopology
+): Promise<Response> {
+  const observedAt = new Date().toISOString();
+  const engineResponse = await routeToEngine(
+    new Request("https://trading-engine.internal/diagnostics"),
+    env,
+    topology
+  );
+  const engineDiagnostics = await safeResponseJson(engineResponse);
+  const d1StartedAt = performance.now();
+  let d1Ok = false;
+  let d1Error: string | null = null;
+
+  try {
+    await env.TRADING_DB.prepare("SELECT 1 AS ok").first();
+    d1Ok = true;
+  } catch (error) {
+    d1Error = error instanceof Error ? error.message : "D1_QUERY_FAILED";
+  }
+
+  const d1LatencyMs = Math.round((performance.now() - d1StartedAt) * 1000) / 1000;
+  const secretDiagnostic = await evaluateHyperliquidSecrets(env);
+  const moltworker = await evaluateMoltworkerHeartbeat(env);
+  const l1Sync = isJsonRecord(engineDiagnostics?.l1Sync)
+    ? engineDiagnostics.l1Sync
+    : null;
+  const v8Memory = isJsonRecord(engineDiagnostics?.v8Memory)
+    ? engineDiagnostics.v8Memory
+    : null;
+  const checks = [
+    diagnosticCheck(
+      "l1_sync",
+      "L1 Sync Check",
+      Boolean(l1Sync?.ok),
+      l1Sync?.ok
+        ? "Hyperliquid book sequence state is synchronized."
+        : `Desync detected across ${Number(l1Sync?.desyncCount ?? 0)} market(s).`,
+      l1Sync
+    ),
+    diagnosticCheck(
+      "secret_valuation",
+      "Secret Valuations",
+      secretDiagnostic.ok,
+      secretDiagnostic.detail,
+      secretDiagnostic.metadata
+    ),
+    diagnosticCheck(
+      "v8_memory_layout",
+      "V8 Memory Layout",
+      Boolean(v8Memory?.ok),
+      v8Memory?.ok
+        ? "Profiler Float32Array buffers are flat and below heap pressure limits."
+        : "Profiler memory layout or heap pressure requires review.",
+      v8Memory
+    ),
+    diagnosticCheck(
+      "d1_log_latency",
+      "D1 Log Latency",
+      d1Ok && d1LatencyMs < 100,
+      d1Ok
+        ? `D1 round trip ${d1LatencyMs}ms.`
+        : `D1 diagnostic query failed: ${d1Error ?? "UNKNOWN_ERROR"}.`,
+      { latencyMs: d1LatencyMs, error: d1Error }
+    ),
+    diagnosticCheck(
+      "moltworker_heartbeat",
+      "Moltworker Heartbeat",
+      moltworker.ok,
+      moltworker.detail,
+      moltworker.metadata,
+      moltworker.status
+    )
+  ];
+  const ok = checks.every((check) => check.status === "OPTIMAL");
+
+  logger.info("ADMIN_DIAGNOSTICS_RUN", "Admin integrity diagnostics executed", {
+    ok,
+    colo: topology.colo,
+    placement: topology.placement,
+    checkSummary: Object.fromEntries(checks.map((check) => [check.id, check.status]))
+  });
+
+  return json({
+    ok,
+    observedAt,
+    topology,
+    checks,
+    engine: engineDiagnostics
   });
 }
 
@@ -2615,6 +2720,190 @@ function configTelemetry(config: GlobalRiskConfig): Record<string, boolean | num
     updatedBy: config.updatedBy,
     version: config.version
   };
+}
+
+function diagnosticCheck(
+  id: string,
+  label: string,
+  ok: boolean,
+  detail: string,
+  metadata: unknown,
+  overrideStatus?: "OPTIMAL" | "WARN" | "ANOMALY"
+): JsonRecord {
+  return {
+    id,
+    label,
+    status: overrideStatus ?? (ok ? "OPTIMAL" : "ANOMALY"),
+    detail,
+    metadata: toJsonRecord(metadata)
+  };
+}
+
+async function evaluateHyperliquidSecrets(env: Env): Promise<{
+  ok: boolean;
+  detail: string;
+  metadata: JsonRecord;
+}> {
+  const [secret, address] = await Promise.all([
+    readDiagnosticSecret(env, "HL_AGENT_SECRET"),
+    readDiagnosticSecret(env, "HL_AGENT_ADDRESS")
+  ]);
+
+  if (!secret.value || !address.value) {
+    return {
+      ok: false,
+      detail: "HL_AGENT_SECRET or HL_AGENT_ADDRESS is not available from Workers secrets or the encrypted vault.",
+      metadata: {
+        secretSource: secret.source,
+        addressSource: address.source,
+        hasSecret: Boolean(secret.value),
+        hasAddress: Boolean(address.value)
+      }
+    };
+  }
+
+  try {
+    const derivedAddress = SignatureEngine.preloadHyperliquidAgentSecret(secret.value).address;
+    const configuredAddress = address.value.trim().toLowerCase();
+    const ok = derivedAddress === configuredAddress;
+
+    return {
+      ok,
+      detail: ok
+        ? "Hyperliquid API agent private key derives the configured agent address."
+        : "HL_AGENT_ADDRESS does not match the address derived from HL_AGENT_SECRET.",
+      metadata: {
+        secretSource: secret.source,
+        addressSource: address.source,
+        configuredAddress: maskAddress(configuredAddress),
+        derivedAddress: maskAddress(derivedAddress)
+      }
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      detail: error instanceof Error ? error.message : "HL_AGENT_SECRET_VALIDATION_FAILED",
+      metadata: {
+        secretSource: secret.source,
+        addressSource: address.source
+      }
+    };
+  }
+}
+
+async function readDiagnosticSecret(
+  env: Env,
+  keyName: "HL_AGENT_SECRET" | "HL_AGENT_ADDRESS"
+): Promise<{ source: "ENV" | "VAULT" | "MISSING"; value: string | null }> {
+  const direct = (env as unknown as Record<string, string | undefined>)[keyName];
+  if (direct) {
+    return { source: "ENV", value: direct };
+  }
+
+  const encryptionSecret = env.VAULT_ENCRYPTION_SECRET ?? env.JWT_SECRET ?? env.ADMIN_JWT_SECRET;
+  if (!encryptionSecret) {
+    return { source: "MISSING", value: null };
+  }
+
+  const encrypted = await env.RISK_VAULT.get<JsonRecord>(`vault:secret:${keyName}`, "json");
+  if (!encrypted) {
+    return { source: "MISSING", value: null };
+  }
+
+  return {
+    source: "VAULT",
+    value: await decryptDiagnosticSecret(encrypted, encryptionSecret)
+  };
+}
+
+async function decryptDiagnosticSecret(
+  encrypted: JsonRecord,
+  keyMaterial: string
+): Promise<string | null> {
+  if (
+    encrypted.alg !== "AES-GCM" ||
+    typeof encrypted.iv !== "string" ||
+    typeof encrypted.ciphertext !== "string"
+  ) {
+    return null;
+  }
+
+  const keyBytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(keyMaterial));
+  const key = await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["decrypt"]);
+  const plaintext = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: base64ToBytes(encrypted.iv) },
+    key,
+    base64ToBytes(encrypted.ciphertext)
+  );
+
+  return new TextDecoder().decode(plaintext);
+}
+
+async function evaluateMoltworkerHeartbeat(env: Env): Promise<{
+  ok: boolean;
+  status: "OPTIMAL" | "WARN" | "ANOMALY";
+  detail: string;
+  metadata: JsonRecord;
+}> {
+  if (!env.MOLTWORKER_HEALTH_URL) {
+    return {
+      ok: false,
+      status: "WARN",
+      detail: "MOLTWORKER_HEALTH_URL is not configured; supervisor heartbeat cannot be verified from the edge.",
+      metadata: { configured: false }
+    };
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort("MOLTWORKER_TIMEOUT"), 1_200);
+  const startedAt = performance.now();
+
+  try {
+    const response = await fetch(env.MOLTWORKER_HEALTH_URL, {
+      method: "GET",
+      signal: controller.signal,
+      headers: { accept: "application/json,text/plain;q=0.9,*/*;q=0.1" }
+    });
+    const latencyMs = Math.round((performance.now() - startedAt) * 1000) / 1000;
+
+    return {
+      ok: response.ok,
+      status: response.ok ? "OPTIMAL" : "ANOMALY",
+      detail: response.ok
+        ? `Moltworker heartbeat responded in ${latencyMs}ms.`
+        : `Moltworker heartbeat returned HTTP ${response.status}.`,
+      metadata: {
+        configured: true,
+        status: response.status,
+        latencyMs
+      }
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: "ANOMALY",
+      detail: error instanceof Error ? error.message : "MOLTWORKER_HEARTBEAT_FAILED",
+      metadata: { configured: true }
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function maskAddress(value: string): string {
+  return value.length > 12 ? `${value.slice(0, 6)}...${value.slice(-4)}` : "configured";
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  return Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
+}
+
+function toJsonRecord(value: unknown): JsonRecord {
+  if (isJsonRecord(value)) {
+    return value;
+  }
+
+  return JSON.parse(JSON.stringify(value ?? {})) as JsonRecord;
 }
 
 function json(

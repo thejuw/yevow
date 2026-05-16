@@ -5,6 +5,7 @@ import type {
   AlertPriority,
   AlertTestResponse,
   AttributionResponse,
+  DiagnosticsResponse,
   GlobalRiskConfig,
   LoginResponse,
   MacroBiasDirection,
@@ -77,6 +78,13 @@ export async function readTradeHistory(apiBase: string, token: string): Promise<
 
 export async function readAlerts(apiBase: string, token: string): Promise<AlertingResponse> {
   return apiFetch<AlertingResponse>(apiBase, "/admin/alerts", token);
+}
+
+export async function readDiagnostics(
+  apiBase: string,
+  token: string
+): Promise<DiagnosticsResponse> {
+  return apiFetch<DiagnosticsResponse>(apiBase, "/admin/diagnostics", token);
 }
 
 export async function readSettings(

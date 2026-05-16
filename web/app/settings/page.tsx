@@ -6,6 +6,7 @@ import {
   ChevronRight,
   CircleDot,
   DatabaseZap,
+  Info,
   KeyRound,
   Lock,
   RadioTower,
@@ -33,7 +34,8 @@ import {
 import {
   PARAMETER_MATRIX,
   changedMoreThanTenPercent,
-  flattenState
+  flattenState,
+  parameterHelp
 } from "@/lib/parameters";
 import type {
   AdminSettingsResponse,
@@ -674,11 +676,13 @@ function ParameterControl({
   value: unknown;
   onChange: (value: string | number | boolean) => void;
 }) {
+  const help = parameterHelp(param);
+
   if (param.kind === "boolean") {
     return (
       <label className="param-control toggle-control">
         <span>{param.group}</span>
-        <strong>{param.label}</strong>
+        <strong>{param.label}<InfoBadge text={help} /></strong>
         <input
           type="checkbox"
           checked={Boolean(value)}
@@ -692,7 +696,7 @@ function ParameterControl({
     return (
       <label className="param-control">
         <span>{param.group}</span>
-        <strong>{param.label}</strong>
+        <strong>{param.label}<InfoBadge text={help} /></strong>
         <select value={String(value ?? "")} onChange={(event) => onChange(event.target.value)}>
           {param.options?.map((option) => <option key={option}>{option}</option>)}
         </select>
@@ -703,7 +707,7 @@ function ParameterControl({
   return (
     <label className="param-control">
       <span>{param.group}</span>
-      <strong>{param.label}</strong>
+      <strong>{param.label}<InfoBadge text={help} /></strong>
       <input
         type="number"
         min={param.min}
@@ -713,6 +717,15 @@ function ParameterControl({
         onChange={(event) => onChange(Number(event.target.value))}
       />
     </label>
+  );
+}
+
+function InfoBadge({ text }: { text: string }) {
+  return (
+    <span className="info-badge" tabIndex={0}>
+      <Info size={11} />
+      <span className="info-popover">{text}</span>
+    </span>
   );
 }
 

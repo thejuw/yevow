@@ -14,6 +14,7 @@ import type {
 } from "../types";
 
 export const PROFILER_STATE_STORAGE_KEY = "agent:profiler:state";
+export const PROFILER_STATE_STORAGE_PREFIX = `${PROFILER_STATE_STORAGE_KEY}:`;
 
 const DEFAULT_BUCKET_SIZE = 10;
 const DEFAULT_ROLLING_WINDOW = 50;
@@ -432,6 +433,43 @@ export class ProfilerAgent {
 
   get toxicityScore(): number {
     return this.state.toxicityScore;
+  }
+
+  diagnostics(): {
+    bucketSize: number;
+    rollingWindow: number;
+    ringCount: number;
+    ringIndex: number;
+    activeTotalVolume: number;
+    allocatedBuffers: number;
+    allocatedFloat32Slots: number;
+    allocatedBytes: number;
+    flatMemory: boolean;
+  } {
+    const allocatedBuffers = 5;
+    const allocatedFloat32Slots =
+      this.buyVolumes.length +
+      this.sellVolumes.length +
+      this.signedImbalances.length +
+      this.directionalImbalances.length +
+      this.obiValues.length;
+
+    return {
+      bucketSize: this.bucketSize,
+      rollingWindow: this.rollingWindow,
+      ringCount: this.ringCount,
+      ringIndex: this.ringIndex,
+      activeTotalVolume: this.activeTotalVolume,
+      allocatedBuffers,
+      allocatedFloat32Slots,
+      allocatedBytes: allocatedFloat32Slots * Float32Array.BYTES_PER_ELEMENT,
+      flatMemory:
+        this.buyVolumes.length === this.rollingWindow &&
+        this.sellVolumes.length === this.rollingWindow &&
+        this.signedImbalances.length === this.rollingWindow &&
+        this.directionalImbalances.length === this.rollingWindow &&
+        this.obiValues.length === this.rollingWindow
+    };
   }
 
   private skipped(reason: string): ProfilerEvaluation {

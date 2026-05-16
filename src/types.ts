@@ -11,6 +11,7 @@ export interface Env {
   CLOCK_SYNC_ALPHA?: string;
   CLOCK_SYNC_MAX_OFFSET_MS?: string;
   HL_WS_URL?: string;
+  HL_ASSETS?: string;
   HL_HEARTBEAT_INTERVAL_MS?: string;
   HL_WATCHDOG_TIMEOUT_MS?: string;
   HL_MAX_BACKOFF_MS?: string;
@@ -106,6 +107,7 @@ export interface Env {
   VAULT_ENCRYPTION_SECRET?: string;
   NEWS_FEEDS?: string;
   JANITOR_LOG_RETENTION_DAYS?: string;
+  MOLTWORKER_HEALTH_URL?: string;
 }
 
 export type ISO8601 = string;
@@ -276,6 +278,24 @@ export interface RiskLimits {
   updatedAt: ISO8601;
 }
 
+export interface AssetRuntimeState {
+  instrumentCode: string;
+  coin: string;
+  selectedByMoltworker: boolean;
+  active: boolean;
+  isSynced: boolean;
+  lastSequence: number | null;
+  midPrice: number | null;
+  volatility: number;
+  capitalAllocationPct: number;
+  maxNotional: number;
+  toxicityState: ToxicityState;
+  amVpin: number;
+  obi: number | null;
+  quoteStatus: "ACTIVE" | "SUSPENDED";
+  updatedAt: ISO8601 | null;
+}
+
 export interface EngineState {
   engineId: string;
   mode: EngineMode;
@@ -302,6 +322,8 @@ export interface EngineState {
   cachedConfig: GlobalRiskConfig;
   macroBias: MacroBias;
   temporaryOverride: TemporaryGovernanceOverride | null;
+  assetMatrix: Record<string, AssetRuntimeState>;
+  profilerStates: Record<string, ProfilerState>;
   location: EngineLocation;
   fundingRates: Record<string, FundingRateSnapshot>;
   microstructure: MicrostructureMetrics;
@@ -1417,6 +1439,8 @@ export interface HealthReport {
   toxicityScore: number;
   current_inventory_delta: number;
   liquidationHeatmap: LiquidationHeatmapState;
+  assetMatrix: Record<string, AssetRuntimeState>;
+  profilerStates: Record<string, ProfilerState>;
   cachedConfig: GlobalRiskConfig;
   location: EngineLocation;
   microstructure: MicrostructureMetrics;

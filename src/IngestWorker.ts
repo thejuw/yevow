@@ -28,6 +28,7 @@ const DEFAULT_CLOCK_SYNC_MAX_OFFSET_MS = 10_000;
 const DEFAULT_STALE_TICK_DROP_MS = 1_000;
 const PRE_SNAPSHOT_BUFFER_LIMIT = 1_000;
 const HYPERLIQUID_L2_DEPTH_LIMIT = 20;
+const DEFAULT_HYPERLIQUID_ASSET_MATRIX = ["BTC", "ETH", "HYPE", "SOL"] as const;
 
 type ResolvedExchangeStreamConfig = Required<
   Pick<
@@ -1260,7 +1261,7 @@ class ExchangeStreamController {
     const payload: OrderBookResetRequest = {
       source: "INGEST_WORKER",
       reason: this.blackoutStartedAt ? "STREAM_RECONNECTED" : "STREAM_CONNECTED",
-      instrumentCode: this.config.instrumentCode ?? null,
+      instrumentCode: resetInstrumentForStream(this.config),
       source_exchange: this.config.source_exchange,
       connectionId: this.connectionId,
       blackoutDurationMs,
@@ -2203,19 +2204,25 @@ function loadStreamConfigs(env: Env): ResolvedExchangeStreamConfig[] {
 }
 
 function defaultHyperliquidStreamConfig(env: Env): ExchangeStreamConfig[] {
-  const coin = env.HL_ASSET ?? "BTC";
+  const coins = parseAssetList(env.HL_ASSETS ?? env.HL_ASSET).slice(0, 12);
+  const activeCoins = coins.length > 0 ? coins : [...DEFAULT_HYPERLIQUID_ASSET_MATRIX];
+
   return [
     {
-      id: `hyperliquid-${coin.toLowerCase()}-perp`,
+      id:
+        activeCoins.length === 1
+          ? `hyperliquid-${activeCoins[0].toLowerCase()}-perp`
+          : "hyperliquid-multi-perp",
       source: "HYPERLIQUID",
       source_exchange: "hyperliquid",
       streamUrl: env.HL_WS_URL ?? "wss://api.hyperliquid.xyz/ws",
-      subscriptions: [
+      subscriptions: activeCoins.flatMap((coin) => [
         { method: "subscribe", subscription: { type: "l2Book", coin } },
         { method: "subscribe", subscription: { type: "trades", coin } },
         { method: "subscribe", subscription: { type: "activeAssetCtx", coin } }
-      ],
-      instrumentCode: `${coin.toLowerCase()}-usd`,
+      ]),
+      instrumentCode:
+        activeCoins.length === 1 ? `${activeCoins[0].toLowerCase()}-usd` : undefined,
       exchangeCode: "hyperliquid"
     }
   ];
@@ -2277,6 +2284,43 @@ function withLiquidationWatchlistSubscriptions(
       subscriptions: [...(config.subscriptions ?? []), ...liquidationSubscriptions]
     };
   });
+}
+
+function parseAssetList(value: string | undefined): string[] {
+  if (!value) {
+    return [];
+  }
+
+  return [
+    ...new Set(
+      value
+        .split(",")
+        .map((entry) => entry.trim().replace(/-perp$/i, "").toUpperCase())
+        .filter((entry) => /^[A-Z0-9]+$/.test(entry))
+    )
+  ];
+}
+
+function resetInstrumentForStream(
+  config: ResolvedExchangeStreamConfig
+): string | null {
+  const coins = new Set<string>();
+
+  for (const subscription of config.subscriptions ?? []) {
+    if (typeof subscription === "string") {
+      continue;
+    }
+    const payload = subscription.subscription;
+    if (isRecord(payload) && typeof payload.coin === "string") {
+      coins.add(payload.coin.trim().toUpperCase());
+    }
+  }
+
+  if (coins.size > 1) {
+    return null;
+  }
+
+  return config.instrumentCode ?? null;
 }
 
 function resolveStreamConfig(

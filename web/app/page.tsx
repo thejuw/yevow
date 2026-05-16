@@ -8,6 +8,7 @@ import {
   CircleDot,
   Flame,
   Gauge,
+  Info,
   KeyRound,
   LogOut,
   Lock,
@@ -27,6 +28,7 @@ import {
   readAttribution,
   readAlerts,
   readConfig,
+  readDiagnostics,
   readState,
   readTradeHistory,
   readTrace,
@@ -40,7 +42,8 @@ import {
   DEFAULT_TRANSPORT_SETTINGS,
   PARAMETER_MATRIX,
   changedMoreThanTenPercent,
-  flattenState
+  flattenState,
+  parameterHelp
 } from "@/lib/parameters";
 import type {
   AttributionResponse,
@@ -48,6 +51,8 @@ import type {
   AlertPriority,
   AlertTestResponse,
   DashboardPulse,
+  DiagnosticCheck,
+  DiagnosticsResponse,
   DraftTransportSettings,
   EngineState,
   GlobalRiskConfig,
@@ -107,6 +112,8 @@ export default function CommandCenterPage() {
   const [isResettingLatency, setIsResettingLatency] = useState(false);
   const [isTestingAlert, setIsTestingAlert] = useState(false);
   const [isSwitchingMode, setIsSwitchingMode] = useState(false);
+  const [isRunningDiagnostics, setIsRunningDiagnostics] = useState(false);
+  const [diagnostics, setDiagnostics] = useState<DiagnosticsResponse | null>(null);
   const [transport, setTransport] = useState<DraftTransportSettings>(DEFAULT_TRANSPORT_SETTINGS);
   const [moltworker, setMoltworker] = useState<MoltworkerDraft>({
     direction: "RISK_OFF" as MacroBiasDirection,
@@ -313,6 +320,7 @@ export default function CommandCenterPage() {
     setTradeHistory(null);
     setAlerts(null);
     setLastAlertTest(null);
+    setDiagnostics(null);
     setPulse(null);
     setLogicFeed([]);
   }
@@ -389,6 +397,28 @@ export default function CommandCenterPage() {
     } catch (caught: unknown) {
       setError(errorMessage(caught));
       setCommandStatus(mode === "LIVE" ? "Live mode is locked by execution safeguards." : "Mode switch failed.");
+    } finally {
+      setIsSwitchingMode(false);
+    }
+  }
+
+  async function switchGovernanceMode(mode: "AUTONOMOUS" | "MANUAL") {
+    if (!token) {
+      return;
+    }
+
+    setError(null);
+    setIsSwitchingMode(true);
+    setCommandStatus(`Switching governance to ${mode.toLowerCase()}...`);
+
+    try {
+      await updateConfig(apiBase, token, { ORACLE_GOVERNANCE_MODE: mode });
+      draftDirtyRef.current = false;
+      await refresh();
+      setCommandStatus(mode === "AUTONOMOUS" ? "Autonomous governance armed." : "Manual intervention armed.");
+    } catch (caught: unknown) {
+      setError(errorMessage(caught));
+      setCommandStatus("Governance switch failed.");
     } finally {
       setIsSwitchingMode(false);
     }
@@ -472,8 +502,38 @@ export default function CommandCenterPage() {
     }
   }
 
+  async function runIntegrityCheck() {
+    if (!token) {
+      return;
+    }
+
+    setError(null);
+    setIsRunningDiagnostics(true);
+    setCommandStatus("Running integrity diagnostics...");
+
+    try {
+      const response = await readDiagnostics(apiBase, token);
+      setDiagnostics(response);
+      setCommandStatus(response.ok ? "Integrity check optimal." : "Integrity check found anomalies.");
+    } catch (caught: unknown) {
+      setError(errorMessage(caught));
+      setCommandStatus("Integrity check failed.");
+    } finally {
+      setIsRunningDiagnostics(false);
+    }
+  }
+
   const macroBias = pulse?.macroBias ?? engineState?.macroBias ?? null;
   const temporaryOverride = pulse?.temporaryOverride ?? engineState?.temporaryOverride ?? null;
+  const governanceMode =
+    engineState?.cachedConfig.ORACLE_GOVERNANCE_MODE ??
+    config?.ORACLE_GOVERNANCE_MODE ??
+    "HYBRID";
+  const isManualGovernance = governanceMode === "MANUAL";
+  const assetMatrix = useMemo(
+    () => normalizeAssetMatrix(engineState?.assetMatrix),
+    [engineState?.assetMatrix]
+  );
   const displayEquity = pulse?.total_equity ?? engineState?.bankroll.equity ?? 0;
   const drawdown = pulse?.active_drawdown ?? engineState?.riskMetrics.rollingDrawdownPct ?? 0;
   const imbalance = pulse?.current_imbalance ?? engineState?.microstructure.weightedImbalance ?? null;
@@ -557,7 +617,7 @@ export default function CommandCenterPage() {
   }
 
   return (
-    <main className="shell">
+    <main className={isManualGovernance ? "shell manual-governance" : "shell"}>
       <section className="command-rail">
         <div className="brand-lockup">
           <div className="sigil">
@@ -581,6 +641,14 @@ export default function CommandCenterPage() {
           <button className="compact-action" onClick={handleLogout}>
             <LogOut size={16} />
             Lock Console
+          </button>
+          <button
+            className="compact-action integrity-action"
+            disabled={isRunningDiagnostics}
+            onClick={() => void runIntegrityCheck()}
+          >
+            <Shield size={16} />
+            {isRunningDiagnostics ? "Scanning" : "Run Integrity Check"}
           </button>
         </div>
 
@@ -627,6 +695,24 @@ export default function CommandCenterPage() {
                 ? `${temporaryOverride.reason} · expires ${new Date(temporaryOverride.expiresAt).toLocaleTimeString()}`
                 : macroBias?.reason ?? "No active supervisor intervention"}
             </p>
+          </div>
+          <button
+            className={isManualGovernance ? "governance-switch manual" : "governance-switch autonomous"}
+            disabled={isSwitchingMode}
+            onClick={() => void switchGovernanceMode(isManualGovernance ? "AUTONOMOUS" : "MANUAL")}
+          >
+            [{isManualGovernance ? " MANUAL INTERVENTION " : " AUTONOMOUS MODE "}]
+          </button>
+          <div className={isManualGovernance ? "asset-pulse-grid dimmed" : "asset-pulse-grid"}>
+            {assetMatrix.map((asset) => (
+              <span
+                className={asset.selectedByMoltworker && asset.active ? "asset-pill live" : "asset-pill"}
+                key={asset.instrumentCode}
+                title={`${asset.instrumentCode} allocation ${compact.format(asset.capitalAllocationPct * 100)}%`}
+              >
+                {asset.selectedByMoltworker && asset.active ? "●" : "○"} {asset.coin}
+              </span>
+            ))}
           </div>
           <div className="bridge-metrics">
             <Metric label="Realized Alpha" value={currency.format(realizedAlpha)} />
@@ -779,10 +865,10 @@ export default function CommandCenterPage() {
             <SlidersHorizontal size={17} />
             <span>Full Parameter Matrix</span>
             <button
-              disabled={isApplyingMatrix || !token || !config}
+              disabled={isApplyingMatrix || !token || !config || !isManualGovernance}
               onClick={() => void submitDraftConfig()}
             >
-              {isApplyingMatrix ? "Applying" : "Apply Matrix"}
+              {isApplyingMatrix ? "APPLYING" : "APPLY CHANGES"}
             </button>
           </div>
           <div className="param-grid">
@@ -792,6 +878,7 @@ export default function CommandCenterPage() {
                 param={param}
                 value={draftConfig[param.key] ?? config?.[param.key]}
                 onChange={(value) => updateDraft(param.key, value)}
+                disabled={!isManualGovernance}
               />
             ))}
           </div>
@@ -1066,7 +1153,8 @@ export default function CommandCenterPage() {
               <span>Confirm Action</span>
             </div>
             <p>
-              {pendingFields.join(", ")} changed by more than 10%. Type CONFIRM to apply.
+              Warning: Overriding System 2 Logic. Confirm manual parameter override?
+              {" "}{pendingFields.join(", ")} changed by more than 10%. Type CONFIRM to apply.
             </p>
             <input value={confirmText} onChange={(event) => setConfirmText(event.target.value)} />
             <div className="modal-actions">
@@ -1077,6 +1165,28 @@ export default function CommandCenterPage() {
                 onClick={() => void submitDraftConfig(true)}
               >
                 Confirm
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {diagnostics ? (
+        <div className="modal-backdrop">
+          <div className="confirm-modal diagnostics-modal">
+            <div className="panel-title">
+              <Shield size={17} />
+              <span>System Integrity Protocol</span>
+            </div>
+            <div className="diagnostic-list">
+              {diagnostics.checks.map((check) => (
+                <DiagnosticRow check={check} key={check.id} />
+              ))}
+            </div>
+            <div className="modal-actions">
+              <button onClick={() => setDiagnostics(null)}>Close</button>
+              <button onClick={() => void runIntegrityCheck()} disabled={isRunningDiagnostics}>
+                Re-run
               </button>
             </div>
           </div>
@@ -1106,20 +1216,25 @@ function Metric({
 function ParameterControl({
   param,
   value,
-  onChange
+  onChange,
+  disabled = false
 }: {
   param: (typeof PARAMETER_MATRIX)[number];
   value: unknown;
   onChange: (value: string | number | boolean) => void;
+  disabled?: boolean;
 }) {
+  const help = parameterHelp(param);
+
   if (param.kind === "boolean") {
     return (
       <label className="param-control toggle-control">
         <span>{param.group}</span>
-        <strong>{param.label}</strong>
+        <strong>{param.label}<InfoBadge text={help} /></strong>
         <input
           type="checkbox"
           checked={Boolean(value)}
+          disabled={disabled}
           onChange={(event) => onChange(event.target.checked)}
         />
       </label>
@@ -1130,8 +1245,12 @@ function ParameterControl({
     return (
       <label className="param-control">
         <span>{param.group}</span>
-        <strong>{param.label}</strong>
-        <select value={String(value ?? "")} onChange={(event) => onChange(event.target.value)}>
+        <strong>{param.label}<InfoBadge text={help} /></strong>
+        <select
+          value={String(value ?? "")}
+          disabled={disabled}
+          onChange={(event) => onChange(event.target.value)}
+        >
           {param.options?.map((option) => <option key={option}>{option}</option>)}
         </select>
       </label>
@@ -1141,16 +1260,38 @@ function ParameterControl({
   return (
     <label className="param-control">
       <span>{param.group}</span>
-      <strong>{param.label}</strong>
+      <strong>{param.label}<InfoBadge text={help} /></strong>
       <input
         type="number"
         min={param.min}
         max={param.max}
         step={param.step}
         value={Number(value ?? 0)}
+        disabled={disabled}
         onChange={(event) => onChange(Number(event.target.value))}
       />
     </label>
+  );
+}
+
+function InfoBadge({ text }: { text: string }) {
+  return (
+    <span className="info-badge" tabIndex={0}>
+      <Info size={11} />
+      <span className="info-popover">{text}</span>
+    </span>
+  );
+}
+
+function DiagnosticRow({ check }: { check: DiagnosticCheck }) {
+  return (
+    <div className={`diagnostic-row ${check.status.toLowerCase()}`}>
+      <code>{check.status}</code>
+      <div>
+        <strong>{check.label}</strong>
+        <span>{check.detail}</span>
+      </div>
+    </div>
   );
 }
 
@@ -1280,6 +1421,29 @@ function topOrderBookLadder(orderBook: JsonRecord | null, midPrice: number | nul
     bids: selected.bids.slice(0, 8),
     asks: selected.asks.slice(0, 8).reverse()
   };
+}
+
+function normalizeAssetMatrix(value: EngineState["assetMatrix"] | undefined) {
+  const fallback = [
+    ["btc-usd", "BTC"],
+    ["eth-usd", "ETH"],
+    ["hype-usd", "HYPE"],
+    ["sol-usd", "SOL"]
+  ] as const;
+
+  return fallback.map(([instrumentCode, coin]) => {
+    const asset = value?.[instrumentCode];
+    return {
+      instrumentCode,
+      coin,
+      selectedByMoltworker: asset?.selectedByMoltworker ?? true,
+      active: asset?.active ?? false,
+      capitalAllocationPct: Number(asset?.capitalAllocationPct ?? 0),
+      amVpin: Number(asset?.amVpin ?? 0),
+      obi: asset?.obi ?? null,
+      toxicityState: asset?.toxicityState ?? "NORMAL"
+    };
+  });
 }
 
 function readBookLevels(value: unknown): Array<{ price: number; size: number }> {

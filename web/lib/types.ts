@@ -152,6 +152,24 @@ export interface ProfilerState {
   updatedAt: string;
 }
 
+export interface AssetRuntimeState {
+  instrumentCode: string;
+  coin: string;
+  selectedByMoltworker: boolean;
+  active: boolean;
+  isSynced: boolean;
+  lastSequence: number | null;
+  midPrice: number | null;
+  volatility: number;
+  capitalAllocationPct: number;
+  maxNotional: number;
+  toxicityState: ToxicityState;
+  amVpin: number;
+  obi: number | null;
+  quoteStatus: "ACTIVE" | "SUSPENDED";
+  updatedAt: string | null;
+}
+
 export type LiquidationSide = "LONG" | "SHORT" | "UNKNOWN";
 
 export interface LiquidationHeatmapLevel {
@@ -255,6 +273,8 @@ export interface EngineState {
   cachedConfig: GlobalRiskConfig;
   macroBias: MacroBias;
   temporaryOverride: TemporaryGovernanceOverride | null;
+  assetMatrix: Record<string, AssetRuntimeState>;
+  profilerStates: Record<string, ProfilerState>;
   microstructure: {
     bestBid: number | null;
     bestAsk: number | null;
@@ -412,6 +432,22 @@ export interface AlertTestResponse extends AlertingResponse {
     attempts: AlertDeliveryAttempt[];
     observedAt: string;
   };
+}
+
+export interface DiagnosticCheck {
+  id: string;
+  label: string;
+  status: "OPTIMAL" | "WARN" | "ANOMALY";
+  detail: string;
+  metadata: JsonRecord;
+}
+
+export interface DiagnosticsResponse {
+  ok: boolean;
+  observedAt: string;
+  topology: JsonRecord;
+  checks: DiagnosticCheck[];
+  engine: JsonRecord;
 }
 
 export interface DashboardPulse {

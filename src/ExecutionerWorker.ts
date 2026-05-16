@@ -1231,17 +1231,22 @@ async function hyperliquidInfo(env: Env, payload: Record<string, unknown>): Prom
 }
 
 async function hyperliquidAssetMeta(env: Env, coin: string): Promise<HyperliquidAssetMeta> {
+  const cacheKey = coin.toUpperCase();
   const configuredIndex = Number(env.HL_ASSET_INDEX);
-  if (Number.isSafeInteger(configuredIndex) && configuredIndex >= 0) {
+  const configuredAsset = env.HL_ASSET?.trim().toUpperCase();
+  if (
+    Number.isSafeInteger(configuredIndex) &&
+    configuredIndex >= 0 &&
+    (!configuredAsset || configuredAsset === cacheKey)
+  ) {
     return {
-      coin,
+      coin: cacheKey,
       assetIndex: configuredIndex,
       szDecimals: 8,
       loadedAt: Date.now()
     };
   }
 
-  const cacheKey = coin.toUpperCase();
   const cached = hyperliquidAssetCache.get(cacheKey);
   if (cached && Date.now() - cached.loadedAt < 10 * 60 * 1000) {
     return cached;
@@ -1281,12 +1286,12 @@ function hyperliquidAccountAddress(env: Env): string {
 }
 
 function hyperliquidCoin(env: Env, instrumentCode: string): string {
-  if (env.HL_ASSET) {
-    return env.HL_ASSET.trim().toUpperCase();
+  const [base] = instrumentCode.replace("-perp", "").split("-");
+  if (base && base.trim().length > 0) {
+    return base.trim().toUpperCase();
   }
 
-  const [base] = instrumentCode.replace("-perp", "").split("-");
-  return requireString(base, "HL_ASSET").toUpperCase();
+  return requireString(env.HL_ASSET, "HL_ASSET").toUpperCase();
 }
 
 function hyperliquidTif(env: Env, intent: TradeIntent): "Alo" | "Ioc" | "Gtc" {

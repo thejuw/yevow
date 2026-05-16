@@ -5,6 +5,8 @@ export interface PitBossDecision {
   intent: TradeIntent;
   kellyFraction: number;
   cappedFraction: number;
+  capitalAllocationPct: number;
+  assetMaxNotional: number;
   reason: string;
 }
 
@@ -24,7 +26,11 @@ export class PitBossAgent {
       b > 0 ? (intent.probabilityWin * (b + 1) - 1) / b : 0;
     const effectiveKelly = Math.min(1, Math.max(0, kellyFractionOverride));
     const kellyFraction = Math.max(0, rawKelly * effectiveKelly);
-    const cappedFraction = Math.min(kellyFraction, maxPositionPct, 0.05);
+    const allocation =
+      engineState.assetMatrix?.[intent.instrumentCode]?.capitalAllocationPct ?? 1;
+    const safeAllocation = Math.min(1, Math.max(0, allocation));
+    const assetMaxFraction = Math.max(0, maxPositionPct * safeAllocation);
+    const cappedFraction = Math.min(kellyFraction, assetMaxFraction, 0.05);
     const maxNotional = Math.min(
       config.MAX_POSITION_SIZE > 0 ? config.MAX_POSITION_SIZE : Number.POSITIVE_INFINITY,
       bankroll * cappedFraction
@@ -41,7 +47,11 @@ export class PitBossAgent {
       },
       kellyFraction,
       cappedFraction,
-      reason: approved ? "APPROVED_FRACTIONAL_KELLY" : "REJECTED_BY_KELLY_OR_EV"
+      capitalAllocationPct: safeAllocation,
+      assetMaxNotional: Number.isFinite(maxNotional) ? maxNotional : bankroll * cappedFraction,
+      reason: approved
+        ? "APPROVED_FRACTIONAL_KELLY_VOL_WEIGHTED_ASSET_BUDGET"
+        : "REJECTED_BY_KELLY_OR_EV"
     };
   }
 }
