@@ -350,6 +350,7 @@ export default {
         "GET|POST /admin/topology/calibrate",
         "GET /admin/performance",
         "GET /admin/metrics/performance",
+        "POST /admin/maintenance/recover",
         "GET /admin/slippage",
         "GET /admin/history",
         "GET /admin/trace",
@@ -489,6 +490,7 @@ async function handleAdminRequest(
         "GET|POST /admin/topology/calibrate",
         "GET /admin/performance",
         "GET /admin/metrics/performance",
+        "POST /admin/maintenance/recover",
         "GET /admin/slippage",
         "GET /admin/history",
         "GET /admin/trace",
@@ -607,6 +609,25 @@ async function handleAdminRequest(
 
     return routeToEngine(
       remapRequestPath(request, "/maintenance/reset-latency"),
+      env,
+      topology
+    );
+  }
+
+  if (url.pathname === "/admin/maintenance/recover") {
+    if (request.method !== "POST") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+
+    logger.warn("ADMIN_ENGINE_RECOVERY_REQUESTED", "Admin requested controlled engine recovery", {
+      actor: auth.subject,
+      sourceIp: sourceIp(request),
+      colo: topology.colo,
+      placement: topology.placement
+    });
+
+    return routeToEngine(
+      remapRequestPath(request, "/maintenance/recover"),
       env,
       topology
     );
@@ -931,6 +952,7 @@ async function handleAdminConfig(
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         signal: "REFRESH_CONFIG",
+        config: nextConfig,
         ...(requestedMode ? { mode: requestedMode } : {})
       } satisfies AdminConfigUpdate)
     }),

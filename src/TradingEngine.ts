@@ -54,6 +54,7 @@ import type {
   EngineState,
   Env,
   GlobalRiskConfig,
+  GlobalRiskConfigUpdate,
   HealthReport,
   InternalOrderBook,
   InventoryState,
@@ -898,6 +899,23 @@ export class TradingEngine {
         return json({ ok: true, state: this.engineState });
       }
 
+      if (request.method === "POST" && url.pathname === "/maintenance/recover") {
+        const payload =
+          (await readJsonOrNull<{
+            reason?: string;
+            resetInstruments?: string[] | string;
+            instrumentCode?: string;
+            source_exchange?: string;
+            clearCitadel?: boolean;
+            clearQuoteState?: boolean;
+            clearLatency?: boolean;
+            resetPaperPortfolio?: boolean;
+          }>(request)) ?? {};
+        const recovery = await this.recoverEngineState(payload);
+
+        return json(recovery);
+      }
+
       if (request.method === "GET" && url.pathname === "/book/snapshot") {
         const instrumentCode =
           url.searchParams.get("instrumentCode") ??
@@ -959,6 +977,13 @@ export class TradingEngine {
           (await readJsonOrNull<Partial<OrderBookResetRequest>>(request)) ?? {};
         await this.enqueueOrderBookReset(payload);
         return json({ ok: true, state: this.engineState });
+      }
+
+      if (request.method === "POST" && url.pathname === "/ingest/connection") {
+        const payload =
+          (await readJsonOrNull<Partial<OrderBookResetRequest>>(request)) ?? {};
+        const registration = this.registerIngestConnection(payload);
+        return json({ ok: true, registration, state: this.engineState });
       }
 
       if (request.method === "POST" && url.pathname === "/admin/replay") {
@@ -1449,7 +1474,7 @@ export class TradingEngine {
       totalWeight += weight;
     }
 
-    const equity = Math.max(this.engineState.bankroll.equity, this.engineState.bankroll.cash, 0);
+    const equity = Math.max(this.engineState.bankroll.equity, 0);
     const maxPositionPct =
       this.cachedConfig.MAX_POSITION_PCT > 0
         ? this.cachedConfig.MAX_POSITION_PCT
@@ -1862,8 +1887,9 @@ export class TradingEngine {
 
     const key = this.ingestConnectionKey(payload.source_exchange, payload.streamId);
     const fallbackKey = this.ingestConnectionKey(payload.source_exchange, null);
-    const activeConnection =
-      this.activeIngestConnections.get(key) ?? this.activeIngestConnections.get(fallbackKey);
+    const activeConnection = payload.streamId
+      ? this.activeIngestConnections.get(key)
+      : this.activeIngestConnections.get(fallbackKey);
 
     return !activeConnection || activeConnection === payload.connectionId;
   }
@@ -2389,6 +2415,59 @@ export class TradingEngine {
     return job;
   }
 
+  private registerIngestConnection(
+    payload: Partial<OrderBookResetRequest>
+  ): Record<string, unknown> {
+    const observedAt = new Date().toISOString();
+    const sourceExchange = normalizeSourceExchange(payload.source_exchange ?? "hyperliquid");
+    const streamId =
+      typeof payload.streamId === "string" && payload.streamId.length > 0
+        ? payload.streamId
+        : null;
+    const connectionId =
+      typeof payload.connectionId === "string" && payload.connectionId.length > 0
+        ? payload.connectionId
+        : null;
+
+    if (!connectionId) {
+      return {
+        registered: false,
+        reason: "MISSING_CONNECTION_ID",
+        source_exchange: sourceExchange,
+        streamId,
+        observedAt
+      };
+    }
+
+    this.activeIngestConnections.set(
+      this.ingestConnectionKey(sourceExchange, streamId),
+      connectionId
+    );
+
+    if (!streamId) {
+      this.activeIngestConnections.set(
+        this.ingestConnectionKey(sourceExchange, null),
+        connectionId
+      );
+    }
+
+    this.engineState = {
+      ...this.engineState,
+      heartbeatAt: observedAt,
+      updatedAt: observedAt
+    };
+    this.waitUntilStoragePut(ENGINE_STATE_KEY, this.engineState, "INGEST_CONNECTION_REGISTERED");
+
+    return {
+      registered: true,
+      source_exchange: sourceExchange,
+      streamId,
+      connectionId,
+      reason: payload.reason ?? "INGEST_CONNECTION_REGISTERED",
+      observedAt
+    };
+  }
+
   private async resetOrderBook(
     payload: Partial<OrderBookResetRequest>
   ): Promise<void> {
@@ -2464,10 +2543,12 @@ export class TradingEngine {
           this.ingestConnectionKey(resetSourceExchange, resetStreamId),
           payload.connectionId
         );
-        this.activeIngestConnections.set(
-          this.ingestConnectionKey(resetSourceExchange, null),
-          payload.connectionId
-        );
+        if (!resetStreamId) {
+          this.activeIngestConnections.set(
+            this.ingestConnectionKey(resetSourceExchange, null),
+            payload.connectionId
+          );
+        }
       }
     }
 
@@ -2505,6 +2586,158 @@ export class TradingEngine {
       recoveredAt: payload.recoveredAt ?? now,
       deletedBookSnapshots: deleteKeys.length
     });
+  }
+
+  private async recoverEngineState(payload: {
+    reason?: string;
+    resetInstruments?: string[] | string;
+    instrumentCode?: string;
+    source_exchange?: string;
+    clearCitadel?: boolean;
+    clearQuoteState?: boolean;
+    clearLatency?: boolean;
+    resetPaperPortfolio?: boolean;
+  }): Promise<JsonRecord> {
+    const observedAt = new Date().toISOString();
+    const reason =
+      typeof payload.reason === "string" && payload.reason.length > 0
+        ? payload.reason
+        : "ADMIN_CONTROLLED_RECOVERY";
+    const sourceExchange = payload.source_exchange
+      ? normalizeSourceExchange(payload.source_exchange)
+      : "hyperliquid";
+    const resetInstruments = maintenanceRecoveryInstruments(payload);
+
+    for (const instrumentCode of resetInstruments) {
+      await this.resetOrderBook({
+        source: "ADMIN",
+        reason,
+        instrumentCode,
+        source_exchange: sourceExchange,
+        connectionId: null,
+        blackoutDurationMs: null,
+        recoveredAt: observedAt
+      });
+    }
+
+    if (payload.clearLatency !== false) {
+      this.resetLatencyBaseline(observedAt, reason);
+    }
+
+    const nextQuoteState =
+      payload.clearQuoteState === false
+        ? this.engineState.quoteState
+        : {
+            ...this.engineState.quoteState,
+            status: "ACTIVE" as const,
+            reason: null,
+            suspendedUntil: null,
+            updatedAt: observedAt
+          };
+    const nextCitadel =
+      payload.clearCitadel === false
+        ? this.engineState.citadel
+        : {
+            ...defaultCitadelState(observedAt),
+            shadowMode: isShadowMode(this.env)
+          };
+    const riskTradingEnabled =
+      this.cachedConfig.TRADING_ENABLED &&
+      (payload.resetPaperPortfolio ||
+        this.engineState.riskMetrics.rollingDrawdownPct <= this.cachedConfig.MAX_DRAWDOWN_PCT);
+    const paperBankroll = readPositiveNumber(
+      this.env.PAPER_BANKROLL_USD,
+      DEFAULT_PAPER_BANKROLL_USD
+    );
+    const nextBankroll = payload.resetPaperPortfolio
+      ? {
+          ...this.engineState.bankroll,
+          cash: paperBankroll,
+          equity: paperBankroll,
+          realizedPnl: 0,
+          updatedAt: observedAt
+        }
+      : this.engineState.bankroll;
+    const nextOpenPositions = payload.resetPaperPortfolio ? {} : this.engineState.openPositions;
+    const nextInventory = payload.resetPaperPortfolio
+      ? {
+          ...defaultInventoryState(
+            this.cachedConfig.MAX_INVENTORY_UNITS,
+            this.cachedConfig.MAX_INVENTORY_DELTA
+          ),
+          updatedAt: observedAt
+        }
+      : this.engineState.inventory;
+    const nextRiskMetrics = {
+      ...(payload.resetPaperPortfolio
+        ? defaultRiskMetrics(nextBankroll.equity, observedAt)
+        : this.engineState.riskMetrics),
+      isTradingEnabled: riskTradingEnabled,
+      updatedAt: observedAt
+    };
+    const nextRisk = {
+      ...this.engineState.risk,
+      killSwitch: !riskTradingEnabled,
+      maxDrawdownPct: this.cachedConfig.MAX_DRAWDOWN_PCT,
+      updatedAt: observedAt
+    };
+
+    this.engineState = {
+      ...this.engineState,
+      bankroll: nextBankroll,
+      openPositions: nextOpenPositions,
+      inventory: nextInventory,
+      current_inventory_delta: nextInventory.current_inventory_delta,
+      staleTickCount: 0,
+      quoteState: nextQuoteState,
+      citadel: nextCitadel,
+      riskMetrics: nextRiskMetrics,
+      risk: nextRisk,
+      executionProfile: {
+        ...this.engineState.executionProfile,
+        status: "STABLE",
+        updatedAt: observedAt
+      },
+      heartbeatAt: observedAt,
+      updatedAt: observedAt
+    };
+
+    await this.safeStoragePut({
+      [ENGINE_STATE_KEY]: this.engineState,
+      [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
+      [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples
+    }, "ADMIN_CONTROLLED_RECOVERY");
+
+    this.logger.warn("ADMIN_CONTROLLED_RECOVERY", "Admin controlled recovery applied", {
+      reason,
+      resetInstruments,
+      source_exchange: sourceExchange,
+      clearCitadel: payload.clearCitadel !== false,
+      clearQuoteState: payload.clearQuoteState !== false,
+      clearLatency: payload.clearLatency !== false,
+      resetPaperPortfolio: payload.resetPaperPortfolio === true,
+      tradingEnabled: this.cachedConfig.TRADING_ENABLED,
+      observedAt
+    });
+    this.publish("ADMIN_CONTROLLED_RECOVERY", {
+      reason,
+      resetInstruments,
+      source_exchange: sourceExchange,
+      clearCitadel: payload.clearCitadel !== false,
+      clearQuoteState: payload.clearQuoteState !== false,
+      clearLatency: payload.clearLatency !== false,
+      resetPaperPortfolio: payload.resetPaperPortfolio === true,
+      tradingEnabled: this.cachedConfig.TRADING_ENABLED,
+      observedAt
+    });
+
+    return {
+      ok: true,
+      reason,
+      resetInstruments,
+      source_exchange: sourceExchange,
+      state: this.engineState as unknown as JsonValue
+    };
   }
 
   private async applySnapshot(
@@ -4308,8 +4541,12 @@ export class TradingEngine {
     oracle: EngineState["oracle"],
     observedAt: string
   ): EngineState["riskMetrics"] {
-    const equity = Math.max(this.engineState.bankroll.equity, this.engineState.bankroll.cash, 0);
-    const highWaterMark = Math.max(this.engineState.riskMetrics.highWaterMark, equity);
+    const equity = Math.max(this.engineState.bankroll.equity, 0);
+    const priorHighWaterMark = Math.max(this.engineState.riskMetrics.highWaterMark, equity);
+    const highWaterMark =
+      this.engineState.mode === "PAPER" && priorHighWaterMark > Math.max(equity * 1.5, equity + 1_000)
+        ? equity
+        : Math.max(priorHighWaterMark, equity);
     const rollingDrawdownPct =
       highWaterMark > 0 ? Math.max(0, (highWaterMark - equity) / highWaterMark) : 0;
     const notional = Object.values(this.engineState.openPositions).reduce(
@@ -4326,7 +4563,7 @@ export class TradingEngine {
         : readPositiveNumber(this.env.VAR_CONFIDENCE_Z, DEFAULT_VAR_CONFIDENCE_Z));
     const drawdownBreached = rollingDrawdownPct > this.cachedConfig.MAX_DRAWDOWN_PCT;
 
-    if (drawdownBreached) {
+    if (drawdownBreached && this.cachedConfig.TRADING_ENABLED) {
       this.cachedConfig = {
         ...this.cachedConfig,
         TRADING_ENABLED: false,
@@ -6835,10 +7072,13 @@ export class TradingEngine {
     this.state.waitUntil(warmUp);
   }
 
-  private async refreshConfig(source: "ALARM" | "ADMIN_SIGNAL"): Promise<void> {
+  private async refreshConfig(
+    source: "ALARM" | "ADMIN_SIGNAL",
+    configSnapshot?: GlobalRiskConfig
+  ): Promise<void> {
     const previousVersion = this.cachedConfig.version;
     const effectiveGovernance = await this.governor.readEffectiveConfig(
-      await this.configManager.fetchConfig()
+      configSnapshot ?? await this.configManager.fetchConfig()
     );
     const nextConfig = effectiveGovernance.config;
     const now = new Date().toISOString();
@@ -7061,7 +7301,10 @@ export class TradingEngine {
 
   private async applyConfigUpdate(update: AdminConfigUpdate): Promise<void> {
     if (update.signal === "REFRESH_CONFIG" || update.config) {
-      await this.refreshConfig("ADMIN_SIGNAL");
+      const directConfig = update.config
+        ? this.configFromAdminSnapshot(update.config)
+        : undefined;
+      await this.refreshConfig("ADMIN_SIGNAL", directConfig);
       await this.scheduleConfigRefresh();
       if (!hasRuntimeConfigUpdate(update)) {
         return;
@@ -7099,6 +7342,29 @@ export class TradingEngine {
       maxLatencyMs: this.maxLatencyMs,
       killSwitch: this.engineState.risk.killSwitch
     });
+  }
+
+  private configFromAdminSnapshot(snapshot: GlobalRiskConfigUpdate): GlobalRiskConfig {
+    const observedAt = new Date().toISOString();
+    const metadata = snapshot as Partial<GlobalRiskConfig>;
+
+    return {
+      ...defaultConfig,
+      ...this.cachedConfig,
+      ...snapshot,
+      updatedAt:
+        typeof metadata.updatedAt === "string" && metadata.updatedAt.length > 0
+          ? metadata.updatedAt
+          : observedAt,
+      updatedBy:
+        typeof metadata.updatedBy === "string" && metadata.updatedBy.length > 0
+          ? metadata.updatedBy
+          : "admin",
+      version:
+        typeof metadata.version === "string" && metadata.version.length > 0
+          ? metadata.version
+          : crypto.randomUUID()
+    };
   }
 }
 
@@ -8088,6 +8354,26 @@ function defaultCitadelState(observedAt: string): EngineState["citadel"] {
     lastEvacuationAt: null,
     updatedAt: observedAt
   };
+}
+
+function maintenanceRecoveryInstruments(payload: {
+  resetInstruments?: string[] | string;
+  instrumentCode?: string;
+}): string[] {
+  const values = [
+    ...(Array.isArray(payload.resetInstruments)
+      ? payload.resetInstruments
+      : typeof payload.resetInstruments === "string"
+        ? payload.resetInstruments.split(",")
+        : []),
+    ...(typeof payload.instrumentCode === "string" ? [payload.instrumentCode] : [])
+  ];
+  const normalized = values
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean)
+    .map((value) => (value.includes("-") ? value : `${value}-usd`));
+
+  return [...new Set(normalized)];
 }
 
 function defaultHedgeState(): EngineState["hedge"] {

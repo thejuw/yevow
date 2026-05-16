@@ -797,6 +797,7 @@ class ExchangeStreamController {
           if (this.shouldResetBookOnConnect(blackoutDurationMs, previousDisconnectReason)) {
             await this.resetEngineBook(blackoutDurationMs, recoveredAt);
           } else {
+            await this.registerEngineConnection("STREAM_RECYCLED_NO_RESET", recoveredAt);
             this.logger.info("STREAM_RECOVERED_NO_RESET", "Provider stream recycled without book reset", {
               streamId: this.config.id,
               source: this.config.source,
@@ -1911,6 +1912,36 @@ class ExchangeStreamController {
         recoveryReason: payload.reason
       }
     });
+  }
+
+  private async registerEngineConnection(reason: string, observedAt: string): Promise<void> {
+    if (!this.connectionId) {
+      return;
+    }
+
+    const engine = getTradingEngineStub(this.env);
+    const response = await engine.fetch(
+      new Request("https://trading-engine.internal/ingest/connection", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-source": "sovereign-sigma-ingest"
+        },
+        body: JSON.stringify({
+          source: "INGEST_WORKER",
+          reason,
+          streamId: this.config.id,
+          instrumentCode: resetInstrumentForStream(this.config),
+          source_exchange: this.config.source_exchange,
+          connectionId: this.connectionId,
+          recoveredAt: observedAt
+        })
+      })
+    );
+
+    if (!response.ok) {
+      throw new Error(`ENGINE_REGISTER_CONNECTION_FAILED_${response.status}`);
+    }
   }
 
   private markDisconnected(reason: string): void {
