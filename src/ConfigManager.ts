@@ -22,10 +22,35 @@ export const defaultConfig: GlobalRiskConfig = {
   ORACLE_GOVERNANCE_MODE: "HYBRID",
   ORACLE_MANUAL_SKEPTICISM: 1.4,
   ORACLE_MAX_SKEPTICISM: 4,
+  AM_VPIN_BUCKET_VOLUME: 10,
+  AM_VPIN_ROLLING_WINDOW: 50,
+  AM_VPIN_DIRECTIONAL_DECAY: 0.3,
+  AM_VPIN_NORMAL_THRESHOLD: 0.65,
+  AM_VPIN_TOXIC_THRESHOLD: 0.75,
+  AM_VPIN_CRITICAL_THRESHOLD: 0.85,
+  AM_VPIN_OBI_DEPTH: 5,
+  AM_VPIN_CRITICAL_OBI: 0.8,
+  AM_VPIN_CONTESTED_SPREAD_MULTIPLIER: 1.5,
+  AM_VPIN_TOXIC_SPREAD_MULTIPLIER: 3,
+  AM_VPIN_QUOTE_HALT_MS: 60_000,
   updatedAt: "1970-01-01T00:00:00.000Z",
   updatedBy: "system-default",
   version: "fail-closed"
 };
+
+const AM_VPIN_CONFIG_KEYS = [
+  "AM_VPIN_BUCKET_VOLUME",
+  "AM_VPIN_ROLLING_WINDOW",
+  "AM_VPIN_DIRECTIONAL_DECAY",
+  "AM_VPIN_NORMAL_THRESHOLD",
+  "AM_VPIN_TOXIC_THRESHOLD",
+  "AM_VPIN_CRITICAL_THRESHOLD",
+  "AM_VPIN_OBI_DEPTH",
+  "AM_VPIN_CRITICAL_OBI",
+  "AM_VPIN_CONTESTED_SPREAD_MULTIPLIER",
+  "AM_VPIN_TOXIC_SPREAD_MULTIPLIER",
+  "AM_VPIN_QUOTE_HALT_MS"
+] as const;
 
 export class ConfigManager {
   constructor(private readonly configStore: KVNamespace) {}
@@ -210,6 +235,12 @@ function extractConfigUpdate(
   if (oracleMaxSkepticism !== undefined) {
     direct.ORACLE_MAX_SKEPTICISM = oracleMaxSkepticism;
   }
+  for (const key of AM_VPIN_CONFIG_KEYS) {
+    const value = key in update ? update[key] : nested[key];
+    if (value !== undefined) {
+      direct[key] = value as number;
+    }
+  }
 
   return direct;
 }
@@ -262,6 +293,64 @@ function normalizeConfig(value: Partial<GlobalRiskConfig>): GlobalRiskConfig {
       1,
       10,
       defaultConfig.ORACLE_MAX_SKEPTICISM
+    ),
+    AM_VPIN_BUCKET_VOLUME: positiveNumber(
+      value.AM_VPIN_BUCKET_VOLUME,
+      defaultConfig.AM_VPIN_BUCKET_VOLUME
+    ),
+    AM_VPIN_ROLLING_WINDOW: boundedInteger(
+      value.AM_VPIN_ROLLING_WINDOW,
+      5,
+      500,
+      defaultConfig.AM_VPIN_ROLLING_WINDOW
+    ),
+    AM_VPIN_DIRECTIONAL_DECAY: boundedNumber(
+      value.AM_VPIN_DIRECTIONAL_DECAY,
+      0,
+      0.999,
+      defaultConfig.AM_VPIN_DIRECTIONAL_DECAY
+    ),
+    AM_VPIN_NORMAL_THRESHOLD: boundedNumber(
+      value.AM_VPIN_NORMAL_THRESHOLD,
+      0,
+      1,
+      defaultConfig.AM_VPIN_NORMAL_THRESHOLD
+    ),
+    AM_VPIN_TOXIC_THRESHOLD: boundedNumber(
+      value.AM_VPIN_TOXIC_THRESHOLD,
+      0,
+      1,
+      defaultConfig.AM_VPIN_TOXIC_THRESHOLD
+    ),
+    AM_VPIN_CRITICAL_THRESHOLD: boundedNumber(
+      value.AM_VPIN_CRITICAL_THRESHOLD,
+      0,
+      1,
+      defaultConfig.AM_VPIN_CRITICAL_THRESHOLD
+    ),
+    AM_VPIN_OBI_DEPTH: boundedInteger(
+      value.AM_VPIN_OBI_DEPTH,
+      1,
+      50,
+      defaultConfig.AM_VPIN_OBI_DEPTH
+    ),
+    AM_VPIN_CRITICAL_OBI: boundedNumber(
+      value.AM_VPIN_CRITICAL_OBI,
+      0,
+      1,
+      defaultConfig.AM_VPIN_CRITICAL_OBI
+    ),
+    AM_VPIN_CONTESTED_SPREAD_MULTIPLIER: positiveNumber(
+      value.AM_VPIN_CONTESTED_SPREAD_MULTIPLIER,
+      defaultConfig.AM_VPIN_CONTESTED_SPREAD_MULTIPLIER
+    ),
+    AM_VPIN_TOXIC_SPREAD_MULTIPLIER: positiveNumber(
+      value.AM_VPIN_TOXIC_SPREAD_MULTIPLIER,
+      defaultConfig.AM_VPIN_TOXIC_SPREAD_MULTIPLIER
+    ),
+    AM_VPIN_QUOTE_HALT_MS: positiveInteger(
+      value.AM_VPIN_QUOTE_HALT_MS,
+      defaultConfig.AM_VPIN_QUOTE_HALT_MS
     ),
     updatedAt:
       typeof value.updatedAt === "string" ? value.updatedAt : defaultConfig.updatedAt,
@@ -320,4 +409,16 @@ function boundedNumber(value: unknown, minimum: number, maximum: number, fallbac
 function positiveInteger(value: unknown, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : fallback;
+}
+
+function boundedInteger(
+  value: unknown,
+  minimum: number,
+  maximum: number,
+  fallback: number
+): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= minimum && parsed <= maximum
+    ? Math.round(parsed)
+    : fallback;
 }

@@ -7,6 +7,8 @@ export type MacroBiasDirection = "BULLISH" | "BEARISH" | "RISK_ON" | "RISK_OFF" 
 export type AlertPriority = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 export type AlertChannel = "DISCORD" | "TELEGRAM" | "GENERIC_WEBHOOK";
 export type TradeAlertMode = "ALL" | "FILLED_ONLY" | "NONE";
+export type ToxicityState = "NORMAL" | "CONTESTED" | "TOXIC" | "CRITICAL";
+export type ToxicityPressureSide = "BUY" | "SELL" | "NEUTRAL";
 
 export interface GlobalRiskConfig {
   TRADING_ENABLED: boolean;
@@ -24,6 +26,17 @@ export interface GlobalRiskConfig {
   FUNDING_BIAS_THRESHOLD: number;
   FUNDING_INVENTORY_BIAS: number;
   QUOTE_HIBERNATE_MS: number;
+  AM_VPIN_BUCKET_VOLUME: number;
+  AM_VPIN_ROLLING_WINDOW: number;
+  AM_VPIN_DIRECTIONAL_DECAY: number;
+  AM_VPIN_NORMAL_THRESHOLD: number;
+  AM_VPIN_TOXIC_THRESHOLD: number;
+  AM_VPIN_CRITICAL_THRESHOLD: number;
+  AM_VPIN_OBI_DEPTH: number;
+  AM_VPIN_CRITICAL_OBI: number;
+  AM_VPIN_CONTESTED_SPREAD_MULTIPLIER: number;
+  AM_VPIN_TOXIC_SPREAD_MULTIPLIER: number;
+  AM_VPIN_QUOTE_HALT_MS: number;
   VAR_CONFIDENCE_Z: number;
   ORACLE_GOVERNANCE_MODE: GovernanceMode;
   ORACLE_MANUAL_SKEPTICISM: number;
@@ -115,6 +128,20 @@ export interface ProfilerState {
   rollingWindow: number;
   alertThreshold: number;
   toxicityScore: number;
+  amVpinScore?: number;
+  obi?: number | null;
+  obiDepth?: number;
+  directionalDecay?: number;
+  latestSignedImbalance?: number;
+  latestDirectionalImbalance?: number;
+  toxicityState?: ToxicityState;
+  pressureSide?: ToxicityPressureSide;
+  spreadMultiplier?: number;
+  reservationShiftBps?: number;
+  quoteHaltUntil?: string | null;
+  amVpinBucketCompletions?: number;
+  amVpinMean?: number;
+  amVpinVariance?: number;
   distanceToCascadePct: number | null;
   cascadeShieldUntil: string | null;
   cascadeClusterId: string | null;

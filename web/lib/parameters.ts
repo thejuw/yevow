@@ -104,6 +104,105 @@ export const PARAMETER_MATRIX: ParameterDescriptor[] = [
     step: 100
   },
   {
+    key: "AM_VPIN_BUCKET_VOLUME",
+    label: "AM-VPIN Bucket",
+    group: "Profiler",
+    kind: "number",
+    min: 0.001,
+    max: 10000,
+    step: 0.001
+  },
+  {
+    key: "AM_VPIN_ROLLING_WINDOW",
+    label: "AM-VPIN Window",
+    group: "Profiler",
+    kind: "number",
+    min: 5,
+    max: 500,
+    step: 1
+  },
+  {
+    key: "AM_VPIN_DIRECTIONAL_DECAY",
+    label: "Directional Decay",
+    group: "Profiler",
+    kind: "number",
+    min: 0,
+    max: 0.999,
+    step: 0.001
+  },
+  {
+    key: "AM_VPIN_NORMAL_THRESHOLD",
+    label: "Normal Ceiling",
+    group: "Profiler",
+    kind: "number",
+    min: 0,
+    max: 1,
+    step: 0.001
+  },
+  {
+    key: "AM_VPIN_TOXIC_THRESHOLD",
+    label: "Toxic Trigger",
+    group: "Profiler",
+    kind: "number",
+    min: 0,
+    max: 1,
+    step: 0.001
+  },
+  {
+    key: "AM_VPIN_CRITICAL_THRESHOLD",
+    label: "Critical Trigger",
+    group: "Profiler",
+    kind: "number",
+    min: 0,
+    max: 1,
+    step: 0.001
+  },
+  {
+    key: "AM_VPIN_OBI_DEPTH",
+    label: "OBI Depth",
+    group: "Profiler",
+    kind: "number",
+    min: 1,
+    max: 50,
+    step: 1
+  },
+  {
+    key: "AM_VPIN_CRITICAL_OBI",
+    label: "Critical OBI",
+    group: "Profiler",
+    kind: "number",
+    min: 0,
+    max: 1,
+    step: 0.001
+  },
+  {
+    key: "AM_VPIN_CONTESTED_SPREAD_MULTIPLIER",
+    label: "Contested Spread",
+    group: "Profiler",
+    kind: "number",
+    min: 1,
+    max: 10,
+    step: 0.01
+  },
+  {
+    key: "AM_VPIN_TOXIC_SPREAD_MULTIPLIER",
+    label: "Toxic Spread",
+    group: "Profiler",
+    kind: "number",
+    min: 1,
+    max: 20,
+    step: 0.01
+  },
+  {
+    key: "AM_VPIN_QUOTE_HALT_MS",
+    label: "Critical Halt",
+    group: "Profiler",
+    kind: "number",
+    min: 1000,
+    max: 300000,
+    step: 1000
+  },
+  {
     key: "KELLY_FRACTION",
     label: "Kelly Fraction",
     group: "Pit Boss",

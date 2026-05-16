@@ -344,6 +344,17 @@ export interface GlobalRiskConfig {
   ORACLE_GOVERNANCE_MODE: GovernanceMode;
   ORACLE_MANUAL_SKEPTICISM: number;
   ORACLE_MAX_SKEPTICISM: number;
+  AM_VPIN_BUCKET_VOLUME: number;
+  AM_VPIN_ROLLING_WINDOW: number;
+  AM_VPIN_DIRECTIONAL_DECAY: number;
+  AM_VPIN_NORMAL_THRESHOLD: number;
+  AM_VPIN_TOXIC_THRESHOLD: number;
+  AM_VPIN_CRITICAL_THRESHOLD: number;
+  AM_VPIN_OBI_DEPTH: number;
+  AM_VPIN_CRITICAL_OBI: number;
+  AM_VPIN_CONTESTED_SPREAD_MULTIPLIER: number;
+  AM_VPIN_TOXIC_SPREAD_MULTIPLIER: number;
+  AM_VPIN_QUOTE_HALT_MS: number;
   updatedAt: ISO8601;
   updatedBy: string;
   version: string;
@@ -473,6 +484,17 @@ export type GlobalRiskConfigUpdate = Partial<
     | "ORACLE_GOVERNANCE_MODE"
     | "ORACLE_MANUAL_SKEPTICISM"
     | "ORACLE_MAX_SKEPTICISM"
+    | "AM_VPIN_BUCKET_VOLUME"
+    | "AM_VPIN_ROLLING_WINDOW"
+    | "AM_VPIN_DIRECTIONAL_DECAY"
+    | "AM_VPIN_NORMAL_THRESHOLD"
+    | "AM_VPIN_TOXIC_THRESHOLD"
+    | "AM_VPIN_CRITICAL_THRESHOLD"
+    | "AM_VPIN_OBI_DEPTH"
+    | "AM_VPIN_CRITICAL_OBI"
+    | "AM_VPIN_CONTESTED_SPREAD_MULTIPLIER"
+    | "AM_VPIN_TOXIC_SPREAD_MULTIPLIER"
+    | "AM_VPIN_QUOTE_HALT_MS"
   >
 >;
 
@@ -839,6 +861,21 @@ export interface ProfilerVolumeBucket {
   sellVolume: number;
   totalVolume: number;
   imbalance: number;
+  directionalImbalance?: number;
+  obi?: number | null;
+  amVpin?: number;
+  toxicityState?: ToxicityState;
+}
+
+export type ToxicityState = "NORMAL" | "CONTESTED" | "TOXIC" | "CRITICAL";
+export type ToxicityPressureSide = "BUY" | "SELL" | "NEUTRAL";
+
+export interface AmVpinRingSnapshot {
+  buyVolumes: number[];
+  sellVolumes: number[];
+  signedImbalances: number[];
+  directionalImbalances: number[];
+  obiValues: number[];
 }
 
 export interface ProfilerState {
@@ -847,6 +884,22 @@ export interface ProfilerState {
   rollingWindow: number;
   alertThreshold: number;
   toxicityScore: number;
+  amVpinScore: number;
+  obi: number | null;
+  obiDepth: number;
+  directionalDecay: number;
+  latestSignedImbalance: number;
+  latestDirectionalImbalance: number;
+  toxicityState: ToxicityState;
+  pressureSide: ToxicityPressureSide;
+  spreadMultiplier: number;
+  reservationShiftBps: number;
+  quoteHaltUntil: ISO8601 | null;
+  amVpinBucketCompletions: number;
+  amVpinMean: number;
+  amVpinM2: number;
+  amVpinVariance: number;
+  amVpinRing: AmVpinRingSnapshot;
   distanceToCascadePct: number | null;
   cascadeShieldUntil: ISO8601 | null;
   cascadeClusterId: string | null;
@@ -1329,6 +1382,17 @@ export interface AdminConfigUpdate {
   ORACLE_GOVERNANCE_MODE?: GovernanceMode;
   ORACLE_MANUAL_SKEPTICISM?: number;
   ORACLE_MAX_SKEPTICISM?: number;
+  AM_VPIN_BUCKET_VOLUME?: number;
+  AM_VPIN_ROLLING_WINDOW?: number;
+  AM_VPIN_DIRECTIONAL_DECAY?: number;
+  AM_VPIN_NORMAL_THRESHOLD?: number;
+  AM_VPIN_TOXIC_THRESHOLD?: number;
+  AM_VPIN_CRITICAL_THRESHOLD?: number;
+  AM_VPIN_OBI_DEPTH?: number;
+  AM_VPIN_CRITICAL_OBI?: number;
+  AM_VPIN_CONTESTED_SPREAD_MULTIPLIER?: number;
+  AM_VPIN_TOXIC_SPREAD_MULTIPLIER?: number;
+  AM_VPIN_QUOTE_HALT_MS?: number;
   maxLatencyMs?: number;
   MAX_LATENCY?: number;
   performance?: Partial<PerformanceConfig>;

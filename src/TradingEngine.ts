@@ -651,6 +651,7 @@ export class TradingEngine {
       this.cachedConfig = effectiveGovernance.config;
       this.macroBias = effectiveGovernance.macroBias;
       this.activeTemporaryOverride = effectiveGovernance.temporaryOverride;
+      this.profilerAgent.configure(this.cachedConfig);
       this.maxLatencyMs = this.cachedConfig.LATENCY_THRESHOLD_MS;
       const location = baseState.location ?? defaultEngineLocation();
       const risk = applyLocationRisk(
@@ -3151,6 +3152,8 @@ export class TradingEngine {
       midPrice: book.midPrice,
       spreadBps: book.spreadBps,
       weightedImbalance: book.weightedImbalance,
+      orderBookBids: book.bids,
+      orderBookAsks: book.asks,
       liquidityWalls: domSnapshot.walls,
       spoofingAlerts: domSnapshot.pulledWalls,
       liquidationHeatmap: this.engineState.liquidationHeatmap
@@ -3214,6 +3217,10 @@ export class TradingEngine {
         this.env.HL_PREDATORY_ORDER_OFFSET_BPS,
         DEFAULT_PREDATORY_ORDER_OFFSET_BPS
       ),
+      profilerToxicityState: profilerResult.state.toxicityState,
+      profilerSpreadMultiplier: profilerResult.state.spreadMultiplier,
+      profilerReservationShiftBps: profilerResult.state.reservationShiftBps,
+      profilerPressureSide: profilerResult.state.pressureSide,
       macroBias: this.macroBias,
       observedAt: metrics.brainTimestamp
     });
@@ -3234,17 +3241,27 @@ export class TradingEngine {
       croupierDecision.pullAllQuotes,
       metrics.brainTimestamp
     );
+    const profilerSignalType = profilerResult.signal?.featureVector.signalType;
+    const isCascadeShield = profilerSignalType === "CASCADE_SHIELD";
+    const isProfilerQuoteHalt =
+      profilerSignalType === "SUSPEND_QUOTES" ||
+      profilerSignalType === "AM_VPIN_CRITICAL";
 
-    if (profilerResult.signal?.featureVector.signalType === "SUSPEND_QUOTES") {
+    if (isProfilerQuoteHalt) {
+      const suspendedUntil =
+        typeof profilerResult.signal?.featureVector.suspendedUntil === "string"
+          ? profilerResult.signal.featureVector.suspendedUntil
+          : profilerResult.state.quoteHaltUntil ??
+            new Date(
+              Date.parse(metrics.brainTimestamp) +
+                (profilerSignalType === "AM_VPIN_CRITICAL"
+                  ? this.cachedConfig.AM_VPIN_QUOTE_HALT_MS
+                  : this.resolveQuoteHibernateMs())
+            ).toISOString();
       quoteState = {
         status: "SUSPENDED",
-        reason: "WHALE_PRINT",
-        suspendedUntil:
-          typeof profilerResult.signal.featureVector.suspendedUntil === "string"
-            ? profilerResult.signal.featureVector.suspendedUntil
-            : new Date(
-                Date.parse(metrics.brainTimestamp) + this.resolveQuoteHibernateMs()
-              ).toISOString(),
+        reason: profilerSignalType === "AM_VPIN_CRITICAL" ? "AM_VPIN_CRITICAL" : "WHALE_PRINT",
+        suspendedUntil,
         lastQuote: quoteState.lastQuote,
         updatedAt: metrics.brainTimestamp
       };
@@ -3333,9 +3350,6 @@ export class TradingEngine {
       });
     }
 
-    const isCascadeShield =
-      profilerResult.signal?.featureVector.signalType === "CASCADE_SHIELD";
-
     if (croupierDecision.pullAllQuotes) {
       this.publish("PULL_ALL_QUOTES", {
         instrumentCode: tick.instrumentCode,
@@ -3351,7 +3365,11 @@ export class TradingEngine {
         quoteToTelemetry(croupierDecision.quote),
         croupierDecision.quote.signalId
       );
-      if (!options.shadowReplay && this.cachedConfig.TRADING_ENABLED) {
+      if (
+        !options.shadowReplay &&
+        this.cachedConfig.TRADING_ENABLED &&
+        !isProfilerQuoteHalt
+      ) {
         const quote = croupierDecision.quote;
         this.state.waitUntil(
           isCascadeShield
@@ -3396,11 +3414,11 @@ export class TradingEngine {
       this.publishProfilerAlert(profilerResult.signal, profilerResult.state);
       await this.acceptAgentSignal(profilerResult.signal, profilerLatencyMs);
       if (
-        (profilerResult.signal.featureVector.signalType === "SUSPEND_QUOTES" ||
+        (isProfilerQuoteHalt ||
           profilerResult.signal.featureVector.signalType === "CASCADE_SHIELD") &&
         !options.shadowReplay &&
         this.cachedConfig.TRADING_ENABLED &&
-        !croupierDecision.quote
+        (!croupierDecision.quote || isProfilerQuoteHalt)
       ) {
         this.state.waitUntil(this.cancelAllQuotes(tick.instrumentCode, "PROFILER_ALERT"));
       }
@@ -3421,6 +3439,9 @@ export class TradingEngine {
     }
 
     this.publishTickTelemetry(tick, metrics, metrics.status, hotPathStartedAt);
+    if (profilerResult.closedBuckets > 0) {
+      this.publishAmVpinTelemetry(profilerResult.state, tick.instrumentCode, metrics.brainTimestamp);
+    }
     this.maybeRecordAgentSnapshot(metrics.brainTimestamp);
 
     return {
@@ -5632,6 +5653,14 @@ export class TradingEngine {
         traceId: signal.traceId,
         instrumentCode: signal.instrumentCode,
         toxicityScore: profilerState.toxicityScore,
+        amVpin: profilerState.amVpinScore,
+        obi: profilerState.obi,
+        obiDepth: profilerState.obiDepth,
+        toxicityState: profilerState.toxicityState,
+        pressureSide: profilerState.pressureSide,
+        spreadMultiplier: profilerState.spreadMultiplier,
+        reservationShiftBps: profilerState.reservationShiftBps,
+        quoteHaltUntil: profilerState.quoteHaltUntil,
         alertThreshold: profilerState.alertThreshold,
         bucketSize: profilerState.bucketSize,
         rollingWindow: profilerState.rollingWindow,
@@ -5645,6 +5674,37 @@ export class TradingEngine {
         riskContext: signal.riskContext
       },
       signal.signalId
+    );
+  }
+
+  private publishAmVpinTelemetry(
+    profilerState: ProfilerState,
+    instrumentCode: string,
+    observedAt: string
+  ): void {
+    this.publish(
+      "AM_VPIN_TELEMETRY",
+      {
+        instrumentCode,
+        observedAt,
+        am_vpin: profilerState.amVpinScore,
+        obi: profilerState.obi,
+        obiDepth: profilerState.obiDepth,
+        toxicity_state: profilerState.toxicityState,
+        pressureSide: profilerState.pressureSide,
+        spreadMultiplier: profilerState.spreadMultiplier,
+        reservationShiftBps: profilerState.reservationShiftBps,
+        quoteHaltUntil: profilerState.quoteHaltUntil,
+        latestSignedImbalance: profilerState.latestSignedImbalance,
+        latestDirectionalImbalance: profilerState.latestDirectionalImbalance,
+        directionalDecay: profilerState.directionalDecay,
+        bucketSize: profilerState.bucketSize,
+        rollingWindow: profilerState.rollingWindow,
+        completedBuckets: profilerState.amVpinBucketCompletions,
+        amVpinMean: profilerState.amVpinMean,
+        amVpinVariance: profilerState.amVpinVariance
+      },
+      `am-vpin:${instrumentCode}:${profilerState.amVpinBucketCompletions}`
     );
   }
 
@@ -6106,6 +6166,7 @@ export class TradingEngine {
     this.cachedConfig = nextConfig;
     this.macroBias = effectiveGovernance.macroBias;
     this.activeTemporaryOverride = effectiveGovernance.temporaryOverride;
+    this.profilerAgent.configure(nextConfig);
     this.maxLatencyMs = nextConfig.LATENCY_THRESHOLD_MS;
     if (nextConfig.TRADING_ENABLED) {
       this.killSwitchLogged = false;
@@ -6627,6 +6688,8 @@ function createNativeHyperliquidTradeTick(
   const sourceWeight = normalizeSourceWeight(payload.sourceWeight);
   const price = nativeNumber(item.px ?? item.price ?? item.p);
   const size = nativeNumber(item.sz ?? item.size ?? item.s);
+  const isBuy = typeof item.isBuy === "boolean" ? item.isBuy : null;
+  const side = isBuy === null ? nativeSide(item.side) : isBuy ? "buy" : "sell";
 
   if (price === null || price < 0) {
     throw new Error("INVALID_HYPERLIQUID_TRADE_PRICE");
@@ -6657,7 +6720,7 @@ function createNativeHyperliquidTradeTick(
     quoteAsset: instrument.quoteAsset,
     price,
     size,
-    side: nativeSide(item.side),
+    side,
     sequence,
     providerTimestamp: exchangeTimestamp,
     exchangeTimestamp,
@@ -6672,6 +6735,7 @@ function createNativeHyperliquidTradeTick(
       tradeId: item.tid ?? item.id ?? null,
       tradeHash: item.hash ?? null,
       aggressorSide: item.side ?? null,
+      isBuy: isBuy ?? (side === "unknown" ? null : side === "buy"),
       streamId: payload.streamId ?? null,
       connectionId: payload.connectionId ?? null
     }) as JsonRecord

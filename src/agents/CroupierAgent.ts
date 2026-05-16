@@ -9,6 +9,8 @@ import type {
   QuoteOrder,
   QuoteSignal,
   SentimentState,
+  ToxicityPressureSide,
+  ToxicityState,
   TradeDirection,
   TradeIntent
 } from "../types";
@@ -42,6 +44,10 @@ export interface CroupierInput {
   fundingInventoryBias?: number;
   liquidationHeatmap?: LiquidationHeatmapState | null;
   predatoryOrderOffsetBps?: number;
+  profilerToxicityState?: ToxicityState;
+  profilerSpreadMultiplier?: number;
+  profilerReservationShiftBps?: number;
+  profilerPressureSide?: ToxicityPressureSide;
   macroBias?: MacroBias;
   observedAt: string;
 }
@@ -203,7 +209,8 @@ export class CroupierAgent {
         `Croupier EV calculation with toxicity, sentiment, AS reservation price, inventory, slippage, funding, lead-lag and macro bias inputs. ` +
         `fundingHourly=${round(fundingRateHourly, 8)} fundingCarry=${round(fundingCarryCost, 8)} ` +
         `reservation=${round(reservationPrice ?? mid, 8)} gamma=${round(riskAversionFactor, 8)} ` +
-        `macroBias=${input.macroBias?.direction ?? "NEUTRAL"} score=${round(macroScore, 4)}`,
+        `macroBias=${input.macroBias?.direction ?? "NEUTRAL"} score=${round(macroScore, 4)} ` +
+        `amVpinState=${input.profilerToxicityState ?? "NORMAL"} spreadMultiplier=${round(input.profilerSpreadMultiplier ?? 1, 4)}`,
       createdAt: input.observedAt
     };
   }
@@ -247,11 +254,19 @@ class AMMEngine {
     const currentDelta =
       input.inventory.current_inventory_delta ?? input.inventory.netDelta;
     const inventoryDisplacement = currentDelta - fundingTargetDelta;
-    const reservationPrice = mid - inventoryDisplacement * riskAversionFactor * variance;
+    const reservationPrice =
+      mid -
+      inventoryDisplacement * riskAversionFactor * variance +
+      profilerReservationShift(input, mid);
+    const profilerSpreadMultiplier = Math.max(
+      1,
+      finiteNumber(input.profilerSpreadMultiplier, 1)
+    );
     const halfSpread =
-      Math.max(input.book.spread ?? mid * 0.0001, mid * input.oracle.volatility * 0.25) *
+      (Math.max(input.book.spread ?? mid * 0.0001, mid * input.oracle.volatility * 0.25) *
         liquidityTightening +
-      adverseSelectionCost * mid;
+        adverseSelectionCost * mid) *
+      profilerSpreadMultiplier;
     const imbalance = input.book.weightedImbalance ?? 0;
     const toxicBuyPressure = Math.max(0, imbalance) * input.toxicityScore;
     const toxicSellPressure = Math.max(0, -imbalance) * input.toxicityScore;
@@ -438,6 +453,17 @@ function fundingInventoryTargetDelta(input: CroupierInput): number {
 
   // Positive funding means longs pay shorts, so the neutral target is nudged short.
   return fundingRateHourly > 0 ? -maxBias * scaled : maxBias * scaled;
+}
+
+function profilerReservationShift(input: CroupierInput, mid: number): number {
+  const bps = Math.max(0, finiteNumber(input.profilerReservationShiftBps, 0));
+
+  if (bps === 0 || input.profilerPressureSide === "NEUTRAL") {
+    return 0;
+  }
+
+  const sign = input.profilerPressureSide === "BUY" ? 1 : -1;
+  return sign * mid * bps / 10_000;
 }
 
 function predatoryLiquidationOrder(
