@@ -42,6 +42,7 @@ ENGINE_OBJECT_NAME = "sovereign-sigma:singleton:trading-engine:v2:weur"
 ENGINE_LOCATION_HINT = "weur"
 INGEST_COORDINATOR_OBJECT_NAME = "sovereign-sigma:singleton:ingest-coordinator:v2:weur"
 INGEST_COORDINATOR_LOCATION_HINT = "weur"
+INGEST_TRANSPORT = "websocket"
 HL_WS_URL = "wss://api.hyperliquid.xyz/ws"
 HL_HEARTBEAT_INTERVAL_MS = "15000"
 HL_WATCHDOG_TIMEOUT_MS = "5000"
@@ -59,8 +60,20 @@ NOTIFIER_DEBOUNCE_MS = "60000"
 NEWS_FEEDS = "[]"
 
 # Secrets are intentionally excluded from source control/config values.
+# Phase 58 gRPC mode is intentionally opt-in until the provider-supplied
+# Hyperliquid proto descriptor is compiled with `npm run proto:compile`.
+# To enable it after provisioning:
+#   INGEST_TRANSPORT = "grpc"
+#   RPC_GRPC_ENDPOINT = "https://<provider-grpc-host>"
+#   RPC_GRPC_SERVICE = "<provider.package.Service>"
+#   RPC_GRPC_STREAM_METHOD = "StreamData"
+#   RPC_GRPC_SUBSCRIBE_TYPE = "<provider.package.SubscribeRequest>"
+#   RPC_GRPC_UPDATE_TYPE = "<provider.package.SubscribeUpdate>"
+#   RPC_GRPC_STREAM_TYPES = "TRADES,BOOK_UPDATES"
+#   RPC_AUTH_HEADER = "x-token"
 # Provision alerting credentials with:
 #   wrangler secret put INGESTOR_CONTROL_TOKEN -c wrangler.ingest.toml
+#   wrangler secret put RPC_AUTH_TOKEN -c wrangler.ingest.toml
 #   wrangler secret put DISCORD_WEBHOOK_URL -c wrangler.ingest.toml
 #   wrangler secret put TELEGRAM_BOT_TOKEN -c wrangler.ingest.toml
 #   wrangler secret put TELEGRAM_CHAT_ID -c wrangler.ingest.toml

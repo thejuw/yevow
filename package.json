@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "proto:compile": "node scripts/compile-protos.mjs",
     "typecheck": "tsc --noEmit",
     "web:dev": "npm run dev --prefix web",
     "web:build": "npm run build --prefix web",
@@ -18,6 +19,7 @@
   },
   "dependencies": {
     "@msgpack/msgpack": "^3.1.3",
-    "ethers": "^6.16.0"
+    "ethers": "^6.16.0",
+    "protobufjs": "^8.3.0"
   }
 }

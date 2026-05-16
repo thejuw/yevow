@@ -1,5 +1,9 @@
 import { Logger } from "./Logger";
 import { parseLiquidationWallets } from "./agents/HeatmapAgent";
+import {
+  HyperliquidGrpcClient,
+  type HyperliquidGrpcUpdate
+} from "./grpc/HyperliquidGrpcClient";
 import { Notifier } from "./utils/Notifier";
 import {
   durableObjectLocationOptions,
@@ -20,6 +24,7 @@ import type {
 
 const DEFAULT_INGEST_COORDINATOR_NAME = "sovereign-sigma:singleton:ingest-coordinator:v2:weur";
 const DEFAULT_AUTH_HEADER = "X-Api-Key";
+const DEFAULT_GRPC_AUTH_HEADER = "x-token";
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000;
 const DEFAULT_WATCHDOG_TIMEOUT_MS = 5_000;
 const DEFAULT_BACKOFF_BASE_MS = 1_000;
@@ -41,6 +46,7 @@ type ResolvedExchangeStreamConfig = Required<
 > &
   Pick<
     ExchangeStreamConfig,
+    | "transport"
     | "clusterUrls"
     | "snapshotUrl"
     | "subscription"
@@ -48,7 +54,17 @@ type ResolvedExchangeStreamConfig = Required<
     | "apiKeyEnv"
     | "instrumentCode"
     | "exchangeCode"
+    | "grpcEndpoint"
+    | "grpcService"
+    | "grpcStreamMethod"
+    | "grpcPingMethod"
+    | "grpcSubscribeType"
+    | "grpcUpdateType"
+    | "grpcPingRequestType"
+    | "grpcPingResponseType"
+    | "grpcStreamTypes"
   > & {
+    transport: "websocket" | "grpc";
     heartbeatIntervalMs: number;
     watchdogTimeoutMs: number;
     maxBackoffMs: number;
@@ -397,6 +413,7 @@ function pruneSeenNewsItems(): void {
 
 class ExchangeStreamController {
   private socket: WebSocket | null = null;
+  private grpcAbort: AbortController | null = null;
   private snapshotSync: Promise<void> | null = null;
   private readonly clockSync: ClockSyncTracker;
   private readonly clusterPool: ClusterPool;
@@ -449,6 +466,7 @@ class ExchangeStreamController {
       streamId: this.config.id,
       source: this.config.source,
       source_exchange: this.config.source_exchange,
+      transport: this.config.transport,
       streamHost: hostnameOf(this.clusterPool.activeUrl()),
       activeClusterUrl: this.clusterPool.activeUrl(),
       heartbeatLatencyMs: this.clusterPool.activeHeartbeatLatencyMs(),
@@ -482,6 +500,8 @@ class ExchangeStreamController {
     this.status = "STOPPED";
     this.streamReady = false;
     this.preSnapshotBuffer = [];
+    this.grpcAbort?.abort(reason);
+    this.grpcAbort = null;
     closeSocket(this.socket, 1000, reason);
     this.socket = null;
   }
@@ -564,6 +584,11 @@ class ExchangeStreamController {
   }
 
   private async connectOnce(): Promise<void> {
+    if (this.config.transport === "grpc") {
+      await this.connectGrpcOnce();
+      return;
+    }
+
     const streamUrl = this.clusterPool.activeUrl();
     const fetchUrl = websocketFetchUrl(streamUrl);
     const authHeader = this.config.authHeader;
@@ -759,6 +784,166 @@ class ExchangeStreamController {
     });
   }
 
+  private async connectGrpcOnce(): Promise<void> {
+    const endpoint = this.config.grpcEndpoint ?? this.clusterPool.activeUrl();
+    const token = await this.resolveGrpcAuthToken();
+    const heartbeatIntervalMs = this.config.heartbeatIntervalMs;
+    const watchdogTimeoutMs = this.config.watchdogTimeoutMs;
+
+    if (!token) {
+      throw new Error("RPC_AUTH_TOKEN_MISSING");
+    }
+
+    const client = new HyperliquidGrpcClient({
+      endpoint,
+      token,
+      authHeader:
+        this.env.RPC_AUTH_HEADER ??
+        (this.config.authHeader === DEFAULT_AUTH_HEADER
+          ? DEFAULT_GRPC_AUTH_HEADER
+          : this.config.authHeader),
+      service: requireString(
+        this.config.grpcService ?? this.env.RPC_GRPC_SERVICE,
+        "RPC_GRPC_SERVICE"
+      ),
+      streamMethod: requireString(
+        this.config.grpcStreamMethod ?? this.env.RPC_GRPC_STREAM_METHOD,
+        "RPC_GRPC_STREAM_METHOD"
+      ),
+      pingMethod: this.config.grpcPingMethod ?? this.env.RPC_GRPC_PING_METHOD,
+      subscribeType: requireString(
+        this.config.grpcSubscribeType ?? this.env.RPC_GRPC_SUBSCRIBE_TYPE,
+        "RPC_GRPC_SUBSCRIBE_TYPE"
+      ),
+      updateType: requireString(
+        this.config.grpcUpdateType ?? this.env.RPC_GRPC_UPDATE_TYPE,
+        "RPC_GRPC_UPDATE_TYPE"
+      ),
+      pingRequestType:
+        this.config.grpcPingRequestType ?? this.env.RPC_GRPC_PING_REQUEST_TYPE,
+      pingResponseType:
+        this.config.grpcPingResponseType ?? this.env.RPC_GRPC_PING_RESPONSE_TYPE,
+      streamTypes:
+        this.config.grpcStreamTypes ??
+        parseCsvList(this.env.RPC_GRPC_STREAM_TYPES, ["TRADES", "BOOK_UPDATES"]),
+      coins: streamCoins(this.config),
+      heartbeatIntervalMs
+    });
+
+    this.status = "CONNECTED";
+    this.streamReady = true;
+    this.preSnapshotBuffer = [];
+    this.backoffCounter = 0;
+    const recoveredAt = new Date().toISOString();
+    const blackoutDurationMs = this.currentBlackoutDurationMs(recoveredAt);
+    this.lastMessageAt = recoveredAt;
+    this.lastRecoveredAt = recoveredAt;
+    this.lastRecoveryDurationMs = blackoutDurationMs;
+    this.lastError = null;
+
+    this.logger.info("GRPC_STREAM_CONNECT", "Hyperliquid gRPC stream connected", {
+      streamId: this.config.id,
+      source: this.config.source,
+      source_exchange: this.config.source_exchange,
+      sourceWeight: this.config.weight,
+      connectionId: this.connectionId,
+      streamHost: new URL(endpoint).host,
+      watchdogTimeoutMs,
+      heartbeatIntervalMs,
+      descriptor: client.descriptorInfo()
+    });
+    this.clusterPool.recordHeartbeat(endpoint, 0);
+
+    await this.resetEngineBook(blackoutDurationMs, recoveredAt);
+
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      let watchdog: ReturnType<typeof setTimeout> | null = null;
+      const controller = new AbortController();
+      this.grpcAbort = controller;
+
+      const cleanup = () => {
+        if (watchdog !== null) {
+          clearTimeout(watchdog);
+          watchdog = null;
+        }
+        controller.abort("GRPC_STREAM_CLEANUP");
+        if (this.grpcAbort === controller) {
+          this.grpcAbort = null;
+        }
+      };
+
+      const finish = (error?: Error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve();
+      };
+
+      const fail = (reason: string, error?: unknown) => {
+        this.markDisconnected(reason);
+        this.clusterPool.recordFailure(endpoint);
+        finish(
+          error instanceof Error
+            ? error
+            : new Error(error === undefined ? reason : `${reason}:${String(error)}`)
+        );
+      };
+
+      const resetWatchdog = () => {
+        if (watchdog !== null) {
+          clearTimeout(watchdog);
+        }
+        watchdog = setTimeout(() => {
+          const staleForMs = this.lastMessageAt
+            ? Date.now() - Date.parse(this.lastMessageAt)
+            : Number.POSITIVE_INFINITY;
+
+          this.logger.warn("STREAM_DISCONNECT", "gRPC stream watchdog timeout", {
+            streamId: this.config.id,
+            source: this.config.source,
+            source_exchange: this.config.source_exchange,
+            connectionId: this.connectionId,
+            staleForMs,
+            watchdogTimeoutMs
+          });
+
+          fail("GRPC_WATCHDOG_TIMEOUT");
+        }, watchdogTimeoutMs);
+      };
+
+      resetWatchdog();
+
+      void client
+        .ping(controller.signal)
+        .catch((error) => {
+          this.logger.warn("GRPC_PING_FAILED", "Hyperliquid gRPC ping failed before stream read", {
+            streamId: this.config.id,
+            source: this.config.source,
+            source_exchange: this.config.source_exchange,
+            connectionId: this.connectionId,
+            reason: error instanceof Error ? error.message : "UNKNOWN_ERROR"
+          });
+        })
+        .then(() =>
+          client.stream(async (update) => {
+            resetWatchdog();
+            await this.handleGrpcUpdate(update);
+          }, controller.signal)
+        )
+        .then(() => finish())
+        .catch((error) => fail("GRPC_STREAM_ERROR", error));
+    });
+  }
+
   private sendSubscription(socket: WebSocket): void {
     const subscriptions = [
       ...(this.config.subscriptions ?? []),
@@ -890,6 +1075,37 @@ class ExchangeStreamController {
     if (batch.length > 0) {
       await this.forwardTicks(batch);
     }
+  }
+
+  private async handleGrpcUpdate(update: HyperliquidGrpcUpdate): Promise<void> {
+    this.messagesReceived += 1;
+    this.lastMessageAt = update.receivedAt;
+
+    const raw = isRecord(update.providerData)
+      ? update.providerData
+      : isRecord(update.decoded)
+        ? update.decoded
+        : null;
+
+    if (!raw) {
+      this.ticksDropped += 1;
+      this.logger.warn("GRPC_PACKET_DROPPED", "Dropped undecodable gRPC market packet", {
+        streamId: this.config.id,
+        source: this.config.source,
+        source_exchange: this.config.source_exchange,
+        connectionId: this.connectionId,
+        streamType: update.streamType,
+        reason: "UNSUPPORTED_PROVIDER_PAYLOAD"
+      });
+      return;
+    }
+
+    if (this.config.source === "HYPERLIQUID") {
+      await this.forwardHyperliquidRaw(raw, update.receivedAt);
+      return;
+    }
+
+    await this.processMessage(JSON.stringify(raw));
   }
 
   private shouldDropStaleTick(tick: MarketTick): boolean {
@@ -1228,6 +1444,19 @@ class ExchangeStreamController {
 
     this.ticksForwarded += payload?.processedCount ?? 1;
     this.lastForwardAt = new Date().toISOString();
+  }
+
+  private async resolveGrpcAuthToken(): Promise<string | null> {
+    const direct = this.env.RPC_AUTH_TOKEN?.trim();
+    if (direct) {
+      return direct;
+    }
+
+    const key = (this.env.RPC_AUTH_TOKEN_KV_KEY ?? "RPC_AUTH_TOKEN").trim();
+    const vault = this.env.SECRET_VAULT ?? this.env.RISK_VAULT;
+    const vaulted = await vault.get(key);
+    const token = vaulted?.trim();
+    return token && token.length > 0 ? token : null;
   }
 
   private async recoverFromEngineDesync(reason: string): Promise<void> {
@@ -2210,6 +2439,8 @@ function loadStreamConfigs(env: Env): ResolvedExchangeStreamConfig[] {
 function defaultHyperliquidStreamConfig(env: Env): ExchangeStreamConfig[] {
   const coins = parseAssetList(env.HL_ASSETS ?? env.HL_ASSET).slice(0, 12);
   const activeCoins = coins.length > 0 ? coins : [...DEFAULT_HYPERLIQUID_ASSET_MATRIX];
+  const transport = normalizeTransport(env.INGEST_TRANSPORT);
+  const grpcEndpoint = env.RPC_GRPC_ENDPOINT;
 
   return [
     {
@@ -2219,7 +2450,20 @@ function defaultHyperliquidStreamConfig(env: Env): ExchangeStreamConfig[] {
           : "hyperliquid-multi-perp",
       source: "HYPERLIQUID",
       source_exchange: "hyperliquid",
-      streamUrl: env.HL_WS_URL ?? "wss://api.hyperliquid.xyz/ws",
+      transport,
+      streamUrl:
+        transport === "grpc"
+          ? requireString(grpcEndpoint, "RPC_GRPC_ENDPOINT")
+          : env.HL_WS_URL ?? "wss://api.hyperliquid.xyz/ws",
+      grpcEndpoint,
+      grpcService: env.RPC_GRPC_SERVICE,
+      grpcStreamMethod: env.RPC_GRPC_STREAM_METHOD,
+      grpcPingMethod: env.RPC_GRPC_PING_METHOD,
+      grpcSubscribeType: env.RPC_GRPC_SUBSCRIBE_TYPE,
+      grpcUpdateType: env.RPC_GRPC_UPDATE_TYPE,
+      grpcPingRequestType: env.RPC_GRPC_PING_REQUEST_TYPE,
+      grpcPingResponseType: env.RPC_GRPC_PING_RESPONSE_TYPE,
+      grpcStreamTypes: parseCsvList(env.RPC_GRPC_STREAM_TYPES, ["TRADES", "BOOK_UPDATES"]),
       subscriptions: activeCoins.flatMap((coin) => [
         { method: "subscribe", subscription: { type: "l2Book", coin } },
         { method: "subscribe", subscription: { type: "trades", coin } },
@@ -2305,6 +2549,44 @@ function parseAssetList(value: string | undefined): string[] {
   ];
 }
 
+function parseCsvList(value: string | undefined, fallback: string[]): string[] {
+  if (!value) {
+    return [...fallback];
+  }
+
+  const parsed = value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+
+  return parsed.length > 0 ? parsed : [...fallback];
+}
+
+function normalizeTransport(value: string | undefined): "websocket" | "grpc" {
+  return value?.trim().toLowerCase() === "grpc" ? "grpc" : "websocket";
+}
+
+function streamCoins(config: ResolvedExchangeStreamConfig): string[] {
+  const coins = new Set<string>();
+
+  for (const subscription of config.subscriptions ?? []) {
+    if (typeof subscription === "string") {
+      continue;
+    }
+
+    const payload = subscription.subscription;
+    if (isRecord(payload) && typeof payload.coin === "string") {
+      coins.add(payload.coin.trim().toUpperCase());
+    }
+  }
+
+  if (config.instrumentCode) {
+    coins.add(config.instrumentCode.replace(/-usd$/i, "").replace(/-perp$/i, "").toUpperCase());
+  }
+
+  return coins.size > 0 ? [...coins] : [...DEFAULT_HYPERLIQUID_ASSET_MATRIX];
+}
+
 function resetInstrumentForStream(
   config: ResolvedExchangeStreamConfig
 ): string | null {
@@ -2335,6 +2617,7 @@ function resolveStreamConfig(
 ): ResolvedExchangeStreamConfig {
   const source = normalizeSource(config.source);
   const sourceExchange = normalizeSourceExchange(config.source_exchange, config.exchangeCode);
+  const transport = normalizeTransport(config.transport ?? env.INGEST_TRANSPORT);
   const configuredWeight = Number(config.weight);
   const weight =
     Number.isFinite(configuredWeight) && configuredWeight > 0
@@ -2347,13 +2630,31 @@ function resolveStreamConfig(
     id: config.id || `${source.toLowerCase()}-${sourceExchange}-${index}`,
     source,
     source_exchange: sourceExchange,
-    streamUrl: requireString(config.streamUrl, "STREAM_URL"),
+    transport,
+    streamUrl: requireString(
+      transport === "grpc"
+        ? config.grpcEndpoint ?? env.RPC_GRPC_ENDPOINT ?? config.streamUrl
+        : config.streamUrl,
+      transport === "grpc" ? "RPC_GRPC_ENDPOINT" : "STREAM_URL"
+    ),
     snapshotUrl: config.snapshotUrl,
     clusterUrls: config.clusterUrls,
     subscription: config.subscription,
     subscriptions: config.subscriptions,
     authHeader: config.authHeader ?? DEFAULT_AUTH_HEADER,
     apiKeyEnv: config.apiKeyEnv,
+    grpcEndpoint: config.grpcEndpoint ?? env.RPC_GRPC_ENDPOINT,
+    grpcService: config.grpcService ?? env.RPC_GRPC_SERVICE,
+    grpcStreamMethod: config.grpcStreamMethod ?? env.RPC_GRPC_STREAM_METHOD,
+    grpcPingMethod: config.grpcPingMethod ?? env.RPC_GRPC_PING_METHOD,
+    grpcSubscribeType: config.grpcSubscribeType ?? env.RPC_GRPC_SUBSCRIBE_TYPE,
+    grpcUpdateType: config.grpcUpdateType ?? env.RPC_GRPC_UPDATE_TYPE,
+    grpcPingRequestType:
+      config.grpcPingRequestType ?? env.RPC_GRPC_PING_REQUEST_TYPE,
+    grpcPingResponseType:
+      config.grpcPingResponseType ?? env.RPC_GRPC_PING_RESPONSE_TYPE,
+    grpcStreamTypes:
+      config.grpcStreamTypes ?? parseCsvList(env.RPC_GRPC_STREAM_TYPES, ["TRADES", "BOOK_UPDATES"]),
     weight,
     instrumentCode: config.instrumentCode?.toLowerCase(),
     exchangeCode: (config.exchangeCode ?? sourceExchange).toLowerCase(),
@@ -2368,6 +2669,23 @@ function resolveStreamConfig(
 
 function assertIngestEnv(env: Env, config: ResolvedExchangeStreamConfig): void {
   requireString(config.streamUrl, "STREAM_URL");
+
+  if (config.transport === "grpc") {
+    requireString(config.grpcEndpoint ?? config.streamUrl, "RPC_GRPC_ENDPOINT");
+    requireString(config.grpcService ?? env.RPC_GRPC_SERVICE, "RPC_GRPC_SERVICE");
+    requireString(
+      config.grpcStreamMethod ?? env.RPC_GRPC_STREAM_METHOD,
+      "RPC_GRPC_STREAM_METHOD"
+    );
+    requireString(
+      config.grpcSubscribeType ?? env.RPC_GRPC_SUBSCRIBE_TYPE,
+      "RPC_GRPC_SUBSCRIBE_TYPE"
+    );
+    requireString(
+      config.grpcUpdateType ?? env.RPC_GRPC_UPDATE_TYPE,
+      "RPC_GRPC_UPDATE_TYPE"
+    );
+  }
 
   if (config.apiKeyEnv) {
     requireString(readEnvSecret(env, config.apiKeyEnv), config.apiKeyEnv);
