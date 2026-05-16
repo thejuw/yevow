@@ -390,9 +390,46 @@ export interface TradeHistoryEntry {
   createdAt: string;
 }
 
+export interface PaperPnlAsset {
+  asset: string;
+  tradeCount: number;
+  buyCount: number;
+  sellCount: number;
+  buySize: number;
+  sellSize: number;
+  buyNotional: number;
+  sellNotional: number;
+  netQuantity: number;
+  cashPnl: number;
+  grossNotional: number;
+  realizedPnl: number;
+  totalEv: number;
+  totalFees: number;
+  firstSeen: string | null;
+  lastSeen: string | null;
+}
+
+export interface PaperPnlSummary {
+  windowHours: number;
+  mode: "SHADOW_MARK_TO_MARKET";
+  assets: PaperPnlAsset[];
+  totals: {
+    tradeCount: number;
+    buyCount: number;
+    sellCount: number;
+    grossNotional: number;
+    cashPnl: number;
+    realizedPnl: number;
+    totalEv: number;
+    totalFees: number;
+  };
+  generatedAt: string;
+}
+
 export interface TradeHistoryResponse {
   ok: boolean;
   data: TradeHistoryEntry[];
+  paperPnl?: PaperPnlSummary;
   pagination: {
     page: number;
     limit: number;

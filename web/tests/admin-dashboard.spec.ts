@@ -8,6 +8,7 @@ test.describe("Grand Command admin dashboard", () => {
     await loginToDashboard(page);
 
     await expect(page.getByText(/SYSTEM IS OPERATING IN SHADOW MODE/)).toBeVisible();
+    await expect(page.getByText("Paper MTM").first()).toBeVisible();
     await expect(page.getByRole("button", { name: /\[ AUTONOMOUS MODE \]/ })).toBeVisible();
 
     await page.getByRole("button", { name: /\[ AUTONOMOUS MODE \]/ }).click();
@@ -114,7 +115,67 @@ async function installApiMock(page: Page): Promise<{
       await route.fulfill({
         json: {
           ok: true,
-          data: [],
+          data: [
+            {
+              tradeId: "ghost-1",
+              orderId: "ghost-order-1",
+              signalId: "sig-1",
+              venue: "hyperliquid",
+              asset: "BTC",
+              side: "BUY",
+              orderType: "LIMIT",
+              price: 100,
+              size: 1,
+              notional: 100,
+              evAtExecution: 0.12,
+              slippageBps: 0,
+              resultingPnl: 0,
+              primaryDriver: "CROUPIER",
+              fees: 0,
+              status: "GHOST_FILL",
+              exchangeTradeId: "ghost-1",
+              rawExecution: {},
+              agentName: "CROUPIER",
+              traceId: "trace-1",
+              executedAt: now,
+              createdAt: now
+            }
+          ],
+          paperPnl: {
+            windowHours: 24,
+            mode: "SHADOW_MARK_TO_MARKET",
+            assets: [
+              {
+                asset: "BTC",
+                tradeCount: 1,
+                buyCount: 1,
+                sellCount: 0,
+                buySize: 1,
+                sellSize: 0,
+                buyNotional: 100,
+                sellNotional: 0,
+                netQuantity: 1,
+                cashPnl: -100,
+                grossNotional: 100,
+                realizedPnl: 0,
+                totalEv: 0.12,
+                totalFees: 0,
+                firstSeen: now,
+                lastSeen: now
+              }
+            ],
+            totals: {
+              tradeCount: 1,
+              buyCount: 1,
+              sellCount: 0,
+              grossNotional: 100,
+              cashPnl: -100,
+              realizedPnl: 0,
+              totalEv: 0.12,
+              totalFees: 0
+            },
+            generatedAt: now
+          },
           pagination: { page: 1, limit: 50, total: 0, pageCount: 0, hasNextPage: false, hasPreviousPage: false },
           filters: { statusMode: "ALL" }
         }
@@ -215,8 +276,8 @@ function baseState(config: ReturnType<typeof baseConfig>) {
     macroBias: { direction: "NEUTRAL", intensity: 0, confidence: 0, reason: "test" },
     temporaryOverride: null,
     assetMatrix: {
-      "btc-usd": { instrumentCode: "btc-usd", coin: "BTC", active: true, selectedByMoltworker: true, capitalAllocationPct: 0.25 },
-      "eth-usd": { instrumentCode: "eth-usd", coin: "ETH", active: true, selectedByMoltworker: true, capitalAllocationPct: 0.25 }
+      "btc-usd": { instrumentCode: "btc-usd", coin: "BTC", active: true, selectedByMoltworker: true, capitalAllocationPct: 0.25, midPrice: 101 },
+      "eth-usd": { instrumentCode: "eth-usd", coin: "ETH", active: true, selectedByMoltworker: true, capitalAllocationPct: 0.25, midPrice: 2500 }
     },
     profilerStates: {},
     microstructure: { bestBid: 100, bestAsk: 101, midPrice: 100.5, spreadBps: 10, weightedImbalance: 0.1, depthLevels: 20, timeToBookMs: 1, updatedAt: now },

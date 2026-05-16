@@ -4819,8 +4819,7 @@ export class TradingEngine {
     };
     const slippagePoint = this.recordSlippage(report, nextOrder);
     const portfolio =
-      (report.status === "FILLED" || report.status === "PARTIAL_FILL") &&
-      fillIncrementSize > 0
+      isPortfolioFillStatus(report.status) && fillIncrementSize > 0
         ? this.applyFillToPortfolio(
             nextOrder,
             fillIncrementSize,
@@ -4912,7 +4911,9 @@ export class TradingEngine {
       evAtExecution: matchedIntent?.expectedValue ?? 0,
       slippageBps: slippagePoint.slippageBps,
       resultingPnl:
-        status === "FILLED" || status === "PARTIAL" ? resultingPnl : 0,
+        status === "FILLED" || status === "PARTIAL" || status === "GHOST_FILL"
+          ? resultingPnl
+          : 0,
       primaryDriver,
       fees: report.fees ?? 0,
       status,
@@ -9246,12 +9247,16 @@ function mapManagedStatusToTradeStatus(
   }
 }
 
+function isPortfolioFillStatus(status: ManagedOrder["status"]): boolean {
+  return status === "FILLED" || status === "PARTIAL_FILL" || status === "GHOST_FILL";
+}
+
 function executionReportSize(
   report: ExecutionReport,
   order: ManagedOrder,
   status: TradeExecution["status"]
 ): number {
-  if (status === "FILLED" || status === "PARTIAL") {
+  if (status === "FILLED" || status === "PARTIAL" || status === "GHOST_FILL") {
     return (
       report.fillIncrementSize ??
       report.filledSize ??

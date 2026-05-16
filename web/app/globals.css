@@ -1077,9 +1077,54 @@ output {
 
 .trade-summary {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
   gap: 8px;
   margin-bottom: 10px;
+}
+
+.paper-pnl-grid {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.paper-pnl-row {
+  min-height: 34px;
+  display: grid;
+  grid-template-columns:
+    minmax(56px, 0.65fr)
+    minmax(94px, 1fr)
+    minmax(78px, 0.9fr)
+    minmax(94px, 0.95fr)
+    minmax(74px, 0.75fr);
+  gap: 8px;
+  align-items: center;
+  padding: 7px 9px;
+  border: 1px solid var(--line-cold);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.025);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+}
+
+.paper-pnl-row strong {
+  color: var(--text);
+}
+
+.paper-pnl-row span,
+.paper-pnl-row code {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.paper-pnl-row.positive span:nth-child(2),
+.paper-pnl-row.positive code {
+  color: var(--green);
+}
+
+.paper-pnl-row.negative span:nth-child(2),
+.paper-pnl-row.negative code {
+  color: var(--red);
 }
 
 .trade-table {
@@ -1109,7 +1154,8 @@ output {
 }
 
 .trade-row.filled code,
-.trade-row.partial code {
+.trade-row.partial code,
+.trade-row.ghost_fill code {
   color: var(--green);
 }
 

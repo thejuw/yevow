@@ -108,6 +108,22 @@ interface TradeHistoryRow {
   trace_id: string | null;
 }
 
+interface PaperPnlAggregateRow {
+  asset: string;
+  trade_count: number;
+  buy_count: number;
+  sell_count: number;
+  buy_size: number | null;
+  sell_size: number | null;
+  buy_notional: number | null;
+  sell_notional: number | null;
+  total_ev: number | null;
+  total_fees: number | null;
+  realized_pnl: number | null;
+  first_seen: string | null;
+  last_seen: string | null;
+}
+
 interface AgentTraceRow {
   decision_id: string;
   signal_id: string;
@@ -1497,22 +1513,116 @@ async function readTradeHistory(env: Env, url: URL): Promise<Response> {
     ORDER BY t.executed_at DESC, t.created_at DESC
     LIMIT ? OFFSET ?`;
   const countQuery = `SELECT COUNT(*) AS total ${fromSql} ${whereSql}`;
-  const [rows, count] = await Promise.all([
+  const [rows, count, paperPnl] = await Promise.all([
     env.TRADING_DB.prepare(dataQuery)
       .bind(...filters.bindings, limit, offset)
       .all<TradeHistoryRow>(),
     env.TRADING_DB.prepare(countQuery)
       .bind(...filters.bindings)
-      .first<{ total: number }>()
+      .first<{ total: number }>(),
+    readPaperPnlSummary(env)
   ]);
   const total = Number(count?.total ?? 0);
 
   return json({
     ok: true,
     data: (rows.results ?? []).map(formatTradeRow),
+    paperPnl,
     pagination: pagination(page, limit, total),
     filters: filters.publicFilters
   });
+}
+
+async function readPaperPnlSummary(env: Env): Promise<JsonRecord> {
+  const windowHours = 24;
+  const rows = await env.TRADING_DB.prepare(
+    `SELECT
+       asset,
+       COUNT(*) AS trade_count,
+       SUM(CASE WHEN side = 'BUY' THEN 1 ELSE 0 END) AS buy_count,
+       SUM(CASE WHEN side = 'SELL' THEN 1 ELSE 0 END) AS sell_count,
+       SUM(CASE WHEN side = 'BUY' THEN size ELSE 0 END) AS buy_size,
+       SUM(CASE WHEN side = 'SELL' THEN size ELSE 0 END) AS sell_size,
+       SUM(CASE WHEN side = 'BUY' THEN notional ELSE 0 END) AS buy_notional,
+       SUM(CASE WHEN side = 'SELL' THEN notional ELSE 0 END) AS sell_notional,
+       SUM(ev_at_execution) AS total_ev,
+       SUM(fees) AS total_fees,
+       SUM(resulting_pnl) AS realized_pnl,
+       MIN(executed_at) AS first_seen,
+       MAX(executed_at) AS last_seen
+     FROM trades
+     WHERE status = 'GHOST_FILL'
+       AND executed_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-24 hours')
+     GROUP BY asset
+     ORDER BY asset`
+  ).all<PaperPnlAggregateRow>();
+  const assets = (rows.results ?? []).map((row) => {
+    const buySize = row.buy_size ?? 0;
+    const sellSize = row.sell_size ?? 0;
+    const buyNotional = row.buy_notional ?? 0;
+    const sellNotional = row.sell_notional ?? 0;
+    const netQuantity = buySize - sellSize;
+    const cashPnl = sellNotional - buyNotional;
+    const grossNotional = buyNotional + sellNotional;
+
+    return {
+      asset: row.asset,
+      tradeCount: row.trade_count,
+      buyCount: row.buy_count,
+      sellCount: row.sell_count,
+      buySize: round(buySize, 8),
+      sellSize: round(sellSize, 8),
+      buyNotional: round(buyNotional, 8),
+      sellNotional: round(sellNotional, 8),
+      netQuantity: round(netQuantity, 8),
+      cashPnl: round(cashPnl, 8),
+      grossNotional: round(grossNotional, 8),
+      realizedPnl: round(row.realized_pnl ?? 0, 8),
+      totalEv: round(row.total_ev ?? 0, 8),
+      totalFees: round(row.total_fees ?? 0, 8),
+      firstSeen: row.first_seen,
+      lastSeen: row.last_seen
+    };
+  });
+  const totals = assets.reduce(
+    (summary, asset) => ({
+      tradeCount: summary.tradeCount + Number(asset.tradeCount ?? 0),
+      buyCount: summary.buyCount + Number(asset.buyCount ?? 0),
+      sellCount: summary.sellCount + Number(asset.sellCount ?? 0),
+      grossNotional: summary.grossNotional + Number(asset.grossNotional ?? 0),
+      cashPnl: summary.cashPnl + Number(asset.cashPnl ?? 0),
+      realizedPnl: summary.realizedPnl + Number(asset.realizedPnl ?? 0),
+      totalEv: summary.totalEv + Number(asset.totalEv ?? 0),
+      totalFees: summary.totalFees + Number(asset.totalFees ?? 0)
+    }),
+    {
+      tradeCount: 0,
+      buyCount: 0,
+      sellCount: 0,
+      grossNotional: 0,
+      cashPnl: 0,
+      realizedPnl: 0,
+      totalEv: 0,
+      totalFees: 0
+    }
+  );
+
+  return {
+    windowHours,
+    mode: "SHADOW_MARK_TO_MARKET",
+    assets,
+    totals: {
+      tradeCount: totals.tradeCount,
+      buyCount: totals.buyCount,
+      sellCount: totals.sellCount,
+      grossNotional: round(totals.grossNotional, 8),
+      cashPnl: round(totals.cashPnl, 8),
+      realizedPnl: round(totals.realizedPnl, 8),
+      totalEv: round(totals.totalEv, 8),
+      totalFees: round(totals.totalFees, 8)
+    },
+    generatedAt: new Date().toISOString()
+  };
 }
 
 async function readAgentTrace(env: Env, url: URL): Promise<Response> {
@@ -1606,7 +1716,7 @@ async function readAgentTrace(env: Env, url: URL): Promise<Response> {
 async function readAttribution(env: Env, url: URL): Promise<Response> {
   const limit = clampInteger(url.searchParams.get("limit"), 1_000, 1, 10_000);
   const dateRange = parseDateRange(url);
-  const where: string[] = ["t.status IN ('FILLED', 'PARTIAL')"];
+  const where: string[] = ["t.status IN ('FILLED', 'PARTIAL', 'GHOST_FILL')"];
   const bindings: string[] = [];
 
   if (dateRange.from) {
@@ -1632,6 +1742,7 @@ async function readAttribution(env: Env, url: URL): Promise<Response> {
        t.notional,
        t.ev_at_execution,
        t.slippage_bps,
+       t.resulting_pnl,
        t.fees,
        t.status,
        t.exchange_trade_id,

@@ -154,11 +154,13 @@ async function executeIntent(
   if (isShadowMode(env)) {
     const observedAt = new Date().toISOString();
     const audit = buildSignedTradeIntentAudit(intent, exchangeRequest, observedAt);
-    const report = buildGhostExecutionReport(intent, audit);
+    const estimatedFees = estimateShadowFees(env, intent);
+    const report = buildGhostExecutionReport(intent, audit, estimatedFees);
     const trade = buildGhostTradeExecution(
       intent,
       audit,
-      intent.source_exchange ?? resolveAdapter(env)
+      intent.source_exchange ?? resolveAdapter(env),
+      estimatedFees
     );
 
     logger.recordExecution(trade);
@@ -169,6 +171,7 @@ async function executeIntent(
       orderType: intent.orderType,
       expectedSlippageBps: intent.maxSlippageBps,
       exactTimestamp: observedAt,
+      estimatedFees,
       signingLatencyMs: exchangeRequest.signingLatencyMs
     });
     ctx.waitUntil(forwardReport(env, report));
@@ -1361,6 +1364,24 @@ function isBinanceOrderTestMode(env: Env): boolean {
 
 function isExchangeOrderTestMode(env: Env): boolean {
   return env.EXCHANGE_ORDER_TEST_MODE !== "false";
+}
+
+function estimateShadowFees(env: Env, intent: TradeIntent): number {
+  const size = intent.approvedSize ?? intent.requestedSize;
+  const feeBps = Number(env.EXCHANGE_FEE_BPS ?? 0);
+
+  if (
+    !Number.isFinite(intent.expectedPrice) ||
+    !Number.isFinite(size) ||
+    intent.expectedPrice <= 0 ||
+    size <= 0 ||
+    !Number.isFinite(feeBps) ||
+    feeBps <= 0
+  ) {
+    return 0;
+  }
+
+  return Number((intent.expectedPrice * size * feeBps / 10_000).toFixed(8));
 }
 
 function configureRuntimeRateLimits(env: Env): void {

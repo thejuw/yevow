@@ -111,19 +111,23 @@ export function buildSignedTradeIntentAudit(
 
 export function buildGhostExecutionReport(
   intent: TradeIntent,
-  audit: SignedTradeIntentAudit
+  audit: SignedTradeIntentAudit,
+  fees = 0
 ): ExecutionReport {
+  const size = intent.approvedSize ?? intent.requestedSize;
+
   return {
     clientId: intent.intentId,
     exchangeOrderId: `ghost-${intent.intentId}`,
     instrumentCode: intent.instrumentCode,
     side: intent.action,
-    orderSize: intent.approvedSize ?? intent.requestedSize,
+    orderSize: size,
     status: "GHOST_FILL",
-    filledSize: 0,
+    filledSize: size,
+    fillIncrementSize: size,
     achievedPrice: intent.expectedPrice,
     expectedPrice: intent.expectedPrice,
-    fees: 0,
+    fees,
     latencyMs: 0,
     reason: "SHADOW_MODE_NO_EXCHANGE_POST",
     rawStatus: "GHOST_FILL",
@@ -134,7 +138,8 @@ export function buildGhostExecutionReport(
 export function buildGhostTradeExecution(
   intent: TradeIntent,
   audit: SignedTradeIntentAudit,
-  venue: string
+  venue: string,
+  fees = 0
 ): TradeExecution {
   const size = intent.approvedSize ?? intent.requestedSize;
 
@@ -152,7 +157,7 @@ export function buildGhostTradeExecution(
     slippageBps: intent.maxSlippageBps,
     resultingPnl: 0,
     primaryDriver: "EXECUTIONER",
-    fees: 0,
+    fees,
     status: "GHOST_FILL",
     exchangeTradeId: `ghost-${intent.intentId}`,
     metadata: {

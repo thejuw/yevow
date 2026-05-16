@@ -63,6 +63,7 @@ import type {
   JsonRecord,
   LiquidationHeatmapState,
   MacroBiasDirection,
+  PaperPnlAsset,
   TradeHistoryEntry,
   TradeHistoryResponse,
   TraceResponse
@@ -78,6 +79,24 @@ interface MoltworkerDraft {
   governanceMode: GovernanceMode;
   manualSkepticism: number;
   maxSkepticism: number;
+}
+
+interface PaperPnlDisplay {
+  windowHours: number;
+  tradeCount: number;
+  paperMtm: number | null;
+  returnBps: number | null;
+  realizedPnl: number;
+  totalEv: number;
+  totalFees: number;
+  grossNotional: number;
+  assets: Array<
+    PaperPnlAsset & {
+      midPrice: number | null;
+      markToMarketPnl: number | null;
+      returnBps: number | null;
+    }
+  >;
 }
 
 const currency = new Intl.NumberFormat("en-US", {
@@ -278,6 +297,10 @@ export default function CommandCenterPage() {
     [attribution]
   );
   const tradeSummary = useMemo(() => summarizeTrades(tradeHistory?.data ?? []), [tradeHistory]);
+  const paperPnl = useMemo(
+    () => summarizePaperPnl(tradeHistory?.paperPnl, engineState),
+    [engineState, tradeHistory?.paperPnl]
+  );
   const operatorMode = useMemo<"OBSERVE" | "PAPER" | "LIVE">(() => {
     if (engineState?.mode === "LIVE") {
       return "LIVE";
@@ -752,11 +775,12 @@ export default function CommandCenterPage() {
             ))}
           </div>
           <div className="bridge-metrics">
-            <Metric label="Realized Alpha" value={currency.format(realizedAlpha)} />
+            <Metric label="Paper MTM" value={formatNullableCurrency(paperPnl.paperMtm)} />
+            <Metric label="Paper Return" value={formatBps(paperPnl.returnBps)} />
             <Metric label="κ Regime" value={compact.format(pulse?.regimeCoefficient ?? engineState?.oracle.skepticismMultiplier ?? 0)} />
             <Metric label="Bias Power" value={compact.format((macroBias?.intensity ?? 0) * (macroBias?.confidence ?? 0))} />
+            <Metric label="Realized Alpha" value={currency.format(realizedAlpha)} />
             <Metric label="Effective Gov" value={engineState?.cachedConfig.ORACLE_GOVERNANCE_MODE ?? "HYBRID"} />
-            <Metric label="Baseline Gov" value={config?.ORACLE_GOVERNANCE_MODE ?? "HYBRID"} />
           </div>
         </section>
 
@@ -1134,10 +1158,28 @@ export default function CommandCenterPage() {
           </div>
           <div className="trade-summary">
             <Metric label="Executions" value={compact.format(tradeSummary.count)} />
-            <Metric label="Filled" value={compact.format(tradeSummary.filled)} />
-            <Metric label="Realized PnL" value={currency.format(tradeSummary.pnl)} />
-            <Metric label="Fees" value={currency.format(tradeSummary.fees)} />
+            <Metric label="Ghost Fills" value={compact.format(paperPnl.tradeCount || tradeSummary.filled)} />
+            <Metric label="Paper MTM" value={formatNullableCurrency(paperPnl.paperMtm)} />
+            <Metric label="Expected EV" value={currency.format(paperPnl.totalEv)} />
+            <Metric label="Gross Notional" value={currency.format(paperPnl.grossNotional)} />
+            <Metric label="Fees" value={currency.format(paperPnl.totalFees || tradeSummary.fees)} />
           </div>
+          {paperPnl.assets.length > 0 ? (
+            <div className="paper-pnl-grid" aria-label="Paper mark-to-market by asset">
+              {paperPnl.assets.map((asset) => (
+                <div
+                  className={asset.markToMarketPnl !== null && asset.markToMarketPnl < 0 ? "paper-pnl-row negative" : "paper-pnl-row positive"}
+                  key={asset.asset}
+                >
+                  <strong>{asset.asset}</strong>
+                  <span>{formatNullableCurrency(asset.markToMarketPnl)}</span>
+                  <span>Net {compact.format(asset.netQuantity)}</span>
+                  <span>{asset.midPrice === null ? "mark n/a" : currency.format(asset.midPrice)}</span>
+                  <code>{formatBps(asset.returnBps)}</code>
+                </div>
+              ))}
+            </div>
+          ) : null}
           <div className="trade-table">
             {(tradeHistory?.data ?? []).length > 0 ? (
               (tradeHistory?.data ?? []).map((trade) => (
@@ -1379,12 +1421,128 @@ function summarizeTrades(trades: TradeHistoryEntry[]) {
   return trades.reduce(
     (summary, trade) => ({
       count: summary.count + 1,
-      filled: summary.filled + (trade.status === "FILLED" || trade.status === "PARTIAL" ? 1 : 0),
+      filled:
+        summary.filled +
+        (trade.status === "FILLED" || trade.status === "PARTIAL" || trade.status === "GHOST_FILL"
+          ? 1
+          : 0),
       pnl: summary.pnl + Number(trade.resultingPnl ?? 0),
       fees: summary.fees + Number(trade.fees ?? 0)
     }),
     { count: 0, filled: 0, pnl: 0, fees: 0 }
   );
+}
+
+function summarizePaperPnl(
+  summary: TradeHistoryResponse["paperPnl"] | undefined,
+  state: EngineState | null
+): PaperPnlDisplay {
+  const sourceAssets = summary?.assets ?? [];
+  let grossNotional = 0;
+  let totalEv = 0;
+  let totalFees = 0;
+  let realizedPnl = 0;
+  let markedPnl = 0;
+  let hasMarks = false;
+
+  const assets = sourceAssets.map((asset) => {
+    const midPrice = findAssetMarkPrice(asset.asset, state);
+    const gross = Number(asset.grossNotional ?? 0);
+    const fees = Number(asset.totalFees ?? 0);
+    const markToMarketPnl =
+      midPrice === null
+        ? null
+        : roundDisplay(Number(asset.cashPnl ?? 0) + Number(asset.netQuantity ?? 0) * midPrice - fees);
+    const returnBps =
+      markToMarketPnl === null || gross <= 0
+        ? null
+        : roundDisplay((markToMarketPnl / gross) * 10_000, 4);
+
+    grossNotional += gross;
+    totalEv += Number(asset.totalEv ?? 0);
+    totalFees += fees;
+    realizedPnl += Number(asset.realizedPnl ?? 0);
+    if (markToMarketPnl !== null) {
+      markedPnl += markToMarketPnl;
+      hasMarks = true;
+    }
+
+    return {
+      ...asset,
+      midPrice,
+      markToMarketPnl,
+      returnBps
+    };
+  });
+
+  const totals = summary?.totals;
+  const totalGross = Number(totals?.grossNotional ?? grossNotional);
+  const paperMtm = hasMarks ? roundDisplay(markedPnl) : null;
+
+  return {
+    windowHours: Number(summary?.windowHours ?? 24),
+    tradeCount: Number(totals?.tradeCount ?? sourceAssets.reduce((count, asset) => count + Number(asset.tradeCount ?? 0), 0)),
+    paperMtm,
+    returnBps: paperMtm === null || totalGross <= 0 ? null : roundDisplay((paperMtm / totalGross) * 10_000, 4),
+    realizedPnl: roundDisplay(Number(totals?.realizedPnl ?? realizedPnl)),
+    totalEv: roundDisplay(Number(totals?.totalEv ?? totalEv)),
+    totalFees: roundDisplay(Number(totals?.totalFees ?? totalFees)),
+    grossNotional: roundDisplay(totalGross),
+    assets
+  };
+}
+
+function findAssetMarkPrice(asset: string, state: EngineState | null): number | null {
+  const matrix = state?.assetMatrix ?? {};
+  const normalizedAsset = asset.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const directCandidates = [
+    asset,
+    asset.toUpperCase(),
+    asset.toLowerCase(),
+    `${asset}-PERP`,
+    `${asset.toUpperCase()}-PERP`,
+    `${asset.toLowerCase()}-perp`,
+    `${asset}-USD`,
+    `${asset.toUpperCase()}-USD`,
+    `${asset.toLowerCase()}-usd`
+  ];
+
+  for (const candidate of directCandidates) {
+    const mark = numberOrNull(matrix[candidate]?.midPrice);
+    if (mark !== null) {
+      return mark;
+    }
+  }
+
+  for (const runtime of Object.values(matrix)) {
+    const coin = runtime.coin.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const instrument = runtime.instrumentCode.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (coin === normalizedAsset || instrument.startsWith(normalizedAsset)) {
+      const mark = numberOrNull(runtime.midPrice);
+      if (mark !== null) {
+        return mark;
+      }
+    }
+  }
+
+  return null;
+}
+
+function formatNullableCurrency(value: number | null): string {
+  return value === null ? "n/a" : currency.format(value);
+}
+
+function formatBps(value: number | null): string {
+  return value === null ? "n/a" : `${compact.format(value)} bps`;
+}
+
+function roundDisplay(value: number, precision = 8): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+
+  const scale = 10 ** precision;
+  return Math.round(value * scale) / scale;
 }
 
 function normalizeTradePayload(payload: unknown): TradeHistoryEntry {
