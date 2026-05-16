@@ -115,10 +115,83 @@ export interface ProfilerState {
   rollingWindow: number;
   alertThreshold: number;
   toxicityScore: number;
+  distanceToCascadePct: number | null;
+  cascadeShieldUntil: string | null;
+  cascadeClusterId: string | null;
+  cascadeSide: LiquidationSide | null;
   totalBucketsClosed: number;
   activeBucket: JsonRecord | null;
   buckets: JsonRecord[];
   updatedAt: string;
+}
+
+export type LiquidationSide = "LONG" | "SHORT" | "UNKNOWN";
+
+export interface LiquidationHeatmapLevel {
+  levelId: string;
+  instrumentCode: string;
+  source_exchange: string;
+  side: LiquidationSide;
+  priceStart: number;
+  priceEnd: number;
+  centerPrice: number;
+  estimatedNotionalUsd: number;
+  estimatedBaseSize: number;
+  walletCount: number;
+  eventCount: number;
+  confidence: number;
+  source: "CLEARINGHOUSE_STATE" | "USER_EVENT" | "SYNTHETIC";
+  updatedAt: string;
+}
+
+export interface LiquidationCascadeCluster extends LiquidationHeatmapLevel {
+  clusterId: string;
+  distanceFromMidPct: number | null;
+  distanceFromMidBps: number | null;
+  forcedFlowSide: "BUY" | "SELL" | "UNKNOWN";
+  isCascadeRisk: boolean;
+}
+
+export interface LiquidationEventRecord {
+  eventId: string;
+  instrumentCode: string | null;
+  side: LiquidationSide;
+  notionalUsd: number | null;
+  price: number | null;
+  liquidatedUser: string | null;
+  source: "USER_EVENT" | "LEDGER_EVENT" | "UNKNOWN";
+  observedAt: string;
+}
+
+export interface LiquidationHeatmapState {
+  schemaVersion: "liquidation-heatmap.v1";
+  instrumentCode: string | null;
+  source_exchange: string;
+  binSize: number;
+  clusterThresholdUsd: number;
+  cascadeDistancePct: number;
+  levels: LiquidationHeatmapLevel[];
+  clusters: LiquidationCascadeCluster[];
+  nearestCascade: LiquidationCascadeCluster | null;
+  recentEvents: LiquidationEventRecord[];
+  totalEstimatedNotionalUsd: number;
+  sampledWalletCount: number;
+  lastSampleAt: string | null;
+  updatedAt: string;
+}
+
+export interface OrderBookLevel {
+  price: number;
+  size: number;
+  updatedAt?: string;
+}
+
+export interface OrderBookSnapshot {
+  instrumentCode: string;
+  marketKey: string;
+  bids: OrderBookLevel[];
+  asks: OrderBookLevel[];
+  midPrice: number | null;
 }
 
 export interface EngineState {
@@ -151,6 +224,7 @@ export interface EngineState {
   staleTickCount: number;
   toxicityScore: number;
   current_inventory_delta: number;
+  liquidationHeatmap: LiquidationHeatmapState;
   cachedConfig: GlobalRiskConfig;
   macroBias: MacroBias;
   temporaryOverride: TemporaryGovernanceOverride | null;
@@ -325,6 +399,13 @@ export interface DashboardPulse {
   regimeCoefficient: number;
   macroBias: MacroBias;
   temporaryOverride: TemporaryGovernanceOverride | null;
+  liquidationHeatmap?: {
+    totalEstimatedNotionalUsd: number;
+    clusterCount: number;
+    nearestCascade: LiquidationCascadeCluster | null;
+    sampledWalletCount: number;
+    updatedAt: string;
+  };
   AgentLogicTrace: JsonRecord[];
   heartbeatAt: string;
 }

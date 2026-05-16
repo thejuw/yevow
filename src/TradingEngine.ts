@@ -12,6 +12,12 @@ import {
 } from "./agents/AnomalyDetector";
 import { CroupierAgent } from "./agents/CroupierAgent";
 import { HedgeAgent } from "./agents/HedgeAgent";
+import {
+  HeatmapAgent,
+  LIQUIDATION_HEATMAP_STORAGE_KEY,
+  defaultLiquidationHeatmapState,
+  parseLiquidationWallets
+} from "./agents/HeatmapAgent";
 import { JanitorAgent } from "./agents/JanitorAgent";
 import { OracleAgent, defaultOracleState } from "./agents/OracleAgent";
 import { PitBossAgent } from "./agents/PitBossAgent";
@@ -51,6 +57,7 @@ import type {
   JsonRecord,
   JsonValue,
   LatencyMetrics,
+  LiquidationHeatmapState,
   LiquidityWall,
   MacroBias,
   MarketDataSource,
@@ -133,6 +140,11 @@ const DEFAULT_RISK_AVERSION_FACTOR = 0.01;
 const DEFAULT_FUNDING_BIAS_THRESHOLD = 0.00001;
 const DEFAULT_FUNDING_INVENTORY_BIAS = 0;
 const DEFAULT_AMM_MIN_TICK_CHANGE = 0.00000001;
+const DEFAULT_HEATMAP_SAMPLE_INTERVAL_MS = 60_000;
+const DEFAULT_HEATMAP_PRICE_BIN_SIZE = 100;
+const DEFAULT_HEATMAP_CLUSTER_NOTIONAL_USD = 10_000_000;
+const DEFAULT_CASCADE_DISTANCE_PCT = 0.005;
+const DEFAULT_PREDATORY_ORDER_OFFSET_BPS = 2;
 const DEFAULT_WHALE_PRINT_Z_THRESHOLD = 5;
 const DEFAULT_QUOTE_HIBERNATE_MS = 3_000;
 const DEFAULT_VAR_CONFIDENCE_Z = 2.326;
@@ -358,6 +370,7 @@ export class TradingEngine {
   private readonly logger: Logger;
   private readonly notifier: Notifier;
   private readonly profilerAgent: ProfilerAgent;
+  private readonly heatmapAgent: HeatmapAgent;
   private readonly anomalyDetector: AnomalyDetector;
   private readonly sentimentAgent = new SentimentAgent();
   private readonly oracleAgent = new OracleAgent();
@@ -399,6 +412,7 @@ export class TradingEngine {
   private activeTemporaryOverride: TemporaryGovernanceOverride | null = null;
   private killSwitchLogged = false;
   private lastConfigRefreshAttemptAt = 0;
+  private lastHeatmapSampleAttemptAt = 0;
   private warmedColo: string | null = null;
   private warmedAt = 0;
   private storageWriteDisabledUntil = 0;
@@ -477,6 +491,22 @@ export class TradingEngine {
         60_000
       )
     });
+    this.heatmapAgent = new HeatmapAgent({
+      infoUrl: env.HL_INFO_URL ?? `${env.EXCHANGE_BASE_URL ?? "https://api.hyperliquid.xyz"}/info`,
+      wallets: parseLiquidationWallets(env.HL_LIQUIDATION_WALLETS),
+      coin: env.HL_ASSET ?? "BTC",
+      instrumentCode: `${(env.HL_ASSET ?? "BTC").toLowerCase()}-usd`,
+      sourceExchange: "hyperliquid",
+      binSize: readPositiveNumber(env.HL_HEATMAP_PRICE_BIN_SIZE, DEFAULT_HEATMAP_PRICE_BIN_SIZE),
+      clusterThresholdUsd: readPositiveNumber(
+        env.HL_HEATMAP_CLUSTER_NOTIONAL_USD,
+        DEFAULT_HEATMAP_CLUSTER_NOTIONAL_USD
+      ),
+      cascadeDistancePct: readPositiveNumber(
+        env.HL_CASCADE_DISTANCE_PCT,
+        DEFAULT_CASCADE_DISTANCE_PCT
+      )
+    });
     this.anomalyDetector = new AnomalyDetector({
       priceZThreshold: readPositiveNumber(
         env.ANOMALY_PRICE_Z_THRESHOLD,
@@ -544,6 +574,7 @@ export class TradingEngine {
       let persistedProcessingLatencySamples: number[] | undefined;
       let persistedDomWallHistory: LiquidityWall[] | undefined;
       let persistedProfilerState: ProfilerState | undefined;
+      let persistedHeatmapState: LiquidationHeatmapState | undefined;
       let persistedAnomalyState: AnomalyDetectorState | undefined;
       let persistedRateLimits: Record<string, RateLimitBucketSnapshot> | undefined;
       let kvRiskLimits: Partial<RiskLimits> | null = null;
@@ -557,6 +588,7 @@ export class TradingEngine {
           persistedProcessingLatencySamples,
           persistedDomWallHistory,
           persistedProfilerState,
+          persistedHeatmapState,
           persistedAnomalyState,
           persistedRateLimits,
           kvRiskLimits,
@@ -568,6 +600,7 @@ export class TradingEngine {
           this.state.storage.get<number[]>(PROCESSING_LATENCY_SAMPLES_KEY),
           this.state.storage.get<LiquidityWall[]>(DOM_WALL_HISTORY_KEY),
           this.state.storage.get<ProfilerState>(PROFILER_STATE_STORAGE_KEY),
+          this.state.storage.get<LiquidationHeatmapState>(LIQUIDATION_HEATMAP_STORAGE_KEY),
           this.state.storage.get<AnomalyDetectorState>(ANOMALY_DETECTOR_STORAGE_KEY),
           this.state.storage.get<Record<string, RateLimitBucketSnapshot>>(RATE_LIMIT_STATE_KEY),
           this.env.RISK_VAULT.get<Partial<RiskLimits>>(RISK_LIMITS_KEY, "json"),
@@ -595,6 +628,7 @@ export class TradingEngine {
       this.asks = hydratedBooks.asks;
       this.bookSync = hydratedBooks.sync;
       this.profilerAgent.hydrate(persistedProfilerState);
+      this.heatmapAgent.hydrate(persistedHeatmapState ?? baseState.liquidationHeatmap);
       this.anomalyDetector.hydrate(persistedAnomalyState);
       this.rateLimiter.hydrate(persistedRateLimits);
       this.oracleAgent.hydrate(baseState.oracle);
@@ -648,6 +682,7 @@ export class TradingEngine {
           baseState.inventory?.current_inventory_delta ??
           baseState.inventory?.netDelta ??
           0,
+        liquidationHeatmap: this.heatmapAgent.snapshot(),
         maxLatencyMs: this.maxLatencyMs,
         cachedConfig: this.cachedConfig,
         macroBias: this.macroBias,
@@ -707,6 +742,7 @@ export class TradingEngine {
   async alarm(): Promise<void> {
     await this.initialized;
     await this.refreshConfig("ALARM");
+    await this.refreshLiquidationHeatmap("ALARM");
     await this.drainExecutionQueue();
     await this.runJanitor("ALARM");
     this.maybeResumeQuotes(new Date().toISOString());
@@ -802,6 +838,13 @@ export class TradingEngine {
           undefined;
 
         return json(this.currentDomHeatmap(instrumentCode));
+      }
+
+      if (request.method === "GET" && url.pathname === "/liquidations/heatmap") {
+        return json({
+          ok: true,
+          heatmap: this.engineState.liquidationHeatmap
+        });
       }
 
       if (request.method === "POST" && url.pathname === "/book/snapshot") {
@@ -1049,6 +1092,7 @@ export class TradingEngine {
       staleTickCount: this.engineState.staleTickCount,
       toxicityScore: this.engineState.toxicityScore,
       current_inventory_delta: this.engineState.current_inventory_delta,
+      liquidationHeatmap: this.engineState.liquidationHeatmap,
       cachedConfig: this.engineState.cachedConfig,
       location: this.engineState.location,
       microstructure: this.engineState.microstructure,
@@ -1358,6 +1402,13 @@ export class TradingEngine {
       regimeCoefficient: this.engineState.oracle.skepticismMultiplier,
       macroBias: this.macroBias,
       temporaryOverride: this.activeTemporaryOverride,
+      liquidationHeatmap: {
+        totalEstimatedNotionalUsd: this.engineState.liquidationHeatmap.totalEstimatedNotionalUsd,
+        clusterCount: this.engineState.liquidationHeatmap.clusters.length,
+        nearestCascade: this.engineState.liquidationHeatmap.nearestCascade,
+        sampledWalletCount: this.engineState.liquidationHeatmap.sampledWalletCount,
+        updatedAt: this.engineState.liquidationHeatmap.updatedAt
+      },
       AgentLogicTrace: latestSignals,
       sparkline: this.latencyHistory.slice(-60).map((metric) => ({
         t: metric.brainTimestamp,
@@ -1450,6 +1501,15 @@ export class TradingEngine {
 
     if (channel === "activeassetctx" || channel === "alldexsassetctxs") {
       return this.handleHyperliquidAssetContext(raw, payload, wakeUpTimeMs);
+    }
+
+    if (
+      channel === "userevents" ||
+      channel === "usernonfundingledgerupdates" ||
+      channel === "events" ||
+      channel === "liquidation"
+    ) {
+      return this.handleHyperliquidLiquidationEvents(raw, payload);
     }
 
     return {
@@ -1694,6 +1754,55 @@ export class TradingEngine {
     return {
       ...result,
       processedCount: 1
+    };
+  }
+
+  private async handleHyperliquidLiquidationEvents(
+    raw: Record<string, unknown>,
+    payload: HyperliquidRawIngestPayload
+  ): Promise<TickIngestResult> {
+    const observedAt = nativeIso(payload.receivedAt) ?? new Date().toISOString();
+    const instrumentCode =
+      payload.instrumentCode?.toLowerCase() ??
+      this.engineState.microstructure.instrumentCode ??
+      `${(this.env.HL_ASSET ?? "BTC").toLowerCase()}-usd`;
+    const previousEventCount = this.engineState.liquidationHeatmap.recentEvents.length;
+    const heatmap = this.heatmapAgent.recordLiquidationEvent(raw, {
+      instrumentCode,
+      sourceExchange: payload.source_exchange ?? "hyperliquid",
+      midPrice: this.engineState.microstructure.midPrice,
+      observedAt
+    });
+    const nextEventCount = heatmap.recentEvents.length;
+
+    this.engineState = {
+      ...this.engineState,
+      liquidationHeatmap: heatmap,
+      heartbeatAt: observedAt,
+      updatedAt: observedAt
+    };
+
+    this.state.waitUntil(
+      this.safeStoragePut({
+        [ENGINE_STATE_KEY]: this.engineState,
+        [LIQUIDATION_HEATMAP_STORAGE_KEY]: heatmap
+      }, "LIQUIDATION_EVENT")
+    );
+
+    if (nextEventCount > previousEventCount) {
+      this.publish("LIQUIDATION_EVENT", {
+        instrumentCode,
+        clusterCount: heatmap.clusters.length,
+        nearestCascade: heatmap.nearestCascade,
+        totalEstimatedNotionalUsd: heatmap.totalEstimatedNotionalUsd,
+        observedAt
+      });
+    }
+
+    return {
+      accepted: true,
+      status: "FRESH",
+      processedCount: nextEventCount > previousEventCount ? 1 : 0
     };
   }
 
@@ -3043,7 +3152,8 @@ export class TradingEngine {
       spreadBps: book.spreadBps,
       weightedImbalance: book.weightedImbalance,
       liquidityWalls: domSnapshot.walls,
-      spoofingAlerts: domSnapshot.pulledWalls
+      spoofingAlerts: domSnapshot.pulledWalls,
+      liquidationHeatmap: this.engineState.liquidationHeatmap
     });
     const profilerLatencyMs = roundLatency(highResolutionNow() - profilerStartedAt);
 
@@ -3099,6 +3209,11 @@ export class TradingEngine {
         this.cachedConfig.FUNDING_INVENTORY_BIAS > 0
           ? this.cachedConfig.FUNDING_INVENTORY_BIAS
           : readPositiveNumber(this.env.FUNDING_INVENTORY_BIAS, DEFAULT_FUNDING_INVENTORY_BIAS),
+      liquidationHeatmap: this.engineState.liquidationHeatmap,
+      predatoryOrderOffsetBps: readPositiveNumber(
+        this.env.HL_PREDATORY_ORDER_OFFSET_BPS,
+        DEFAULT_PREDATORY_ORDER_OFFSET_BPS
+      ),
       macroBias: this.macroBias,
       observedAt: metrics.brainTimestamp
     });
@@ -3175,6 +3290,7 @@ export class TradingEngine {
         : this.engineState.orderMap,
       dom: domSnapshot,
       anomaly: anomalyResult.status,
+      liquidationHeatmap: this.engineState.liquidationHeatmap,
       toxicityScore: profilerResult.toxicityScore,
       agentHealth: profilerResult.processed
         ? touchAgentHealth(
@@ -3807,7 +3923,10 @@ export class TradingEngine {
         minEvThreshold: Number.NEGATIVE_INFINITY,
         maxSlippageBps: Math.max(1, this.engineState.microstructure.spreadBps ?? 1),
         confidence: Math.max(0, 1 - this.engineState.toxicityScore),
-        rationale: `AMM quote child order from signal ${quote.signalId}`,
+        rationale:
+          order.strategy === "LIQUIDATION_ABSORPTION"
+            ? `Post-only liquidation absorption quote from signal ${quote.signalId}; cluster ${order.clusterId ?? "unknown"}`
+            : `AMM quote child order from signal ${quote.signalId}`,
         createdAt: quote.createdAt
       };
     });
@@ -6050,6 +6169,79 @@ export class TradingEngine {
     await this.refreshConfig(source);
   }
 
+  private async refreshLiquidationHeatmap(source: "ALARM" | "ADMIN_SIGNAL"): Promise<void> {
+    const nowMs = Date.now();
+    const intervalMs = readPositiveInteger(
+      this.env.HL_HEATMAP_SAMPLE_INTERVAL_MS,
+      DEFAULT_HEATMAP_SAMPLE_INTERVAL_MS,
+      5_000,
+      3_600_000
+    );
+
+    if (
+      source === "ALARM" &&
+      nowMs - this.lastHeatmapSampleAttemptAt < intervalMs
+    ) {
+      return;
+    }
+
+    this.lastHeatmapSampleAttemptAt = nowMs;
+    const observedAt = new Date(nowMs).toISOString();
+    const heatmap = await this.heatmapAgent.sampleKnownWallets({
+      midPrices: this.currentHeatmapMidPrices(),
+      observedAt
+    });
+
+    this.engineState = {
+      ...this.engineState,
+      liquidationHeatmap: heatmap,
+      heartbeatAt: observedAt,
+      updatedAt: observedAt
+    };
+
+    await this.safeStoragePut({
+      [ENGINE_STATE_KEY]: this.engineState,
+      [LIQUIDATION_HEATMAP_STORAGE_KEY]: heatmap
+    }, "LIQUIDATION_HEATMAP_REFRESH");
+
+    this.publish("LIQUIDATION_HEATMAP_REFRESHED", {
+      source,
+      levelCount: heatmap.levels.length,
+      clusterCount: heatmap.clusters.length,
+      totalEstimatedNotionalUsd: heatmap.totalEstimatedNotionalUsd,
+      nearestCascade: heatmap.nearestCascade,
+      sampledWalletCount: heatmap.sampledWalletCount,
+      observedAt
+    });
+
+    if (heatmap.clusters.some((cluster) => cluster.isCascadeRisk)) {
+      this.logger.warn("LIQUIDATION_CASCADE_RISK", "Liquidation cluster inside cascade threshold", {
+        source,
+        totalEstimatedNotionalUsd: heatmap.totalEstimatedNotionalUsd,
+        clusterCount: heatmap.clusters.length,
+        nearestCascade: toJsonValue(heatmap.nearestCascade)
+      });
+    }
+  }
+
+  private currentHeatmapMidPrices(): Record<string, number | null> {
+    const midPrices: Record<string, number | null> = {};
+
+    for (const book of this.orderBook.values()) {
+      midPrices[book.instrumentCode] = book.midPrice;
+    }
+
+    if (
+      this.engineState.microstructure.instrumentCode &&
+      !(this.engineState.microstructure.instrumentCode in midPrices)
+    ) {
+      midPrices[this.engineState.microstructure.instrumentCode] =
+        this.engineState.microstructure.midPrice;
+    }
+
+    return midPrices;
+  }
+
   private async scheduleConfigRefresh(): Promise<void> {
     await this.safeSetAlarm(Date.now() + CONFIG_ALARM_INTERVAL_MS, "CONFIG_REFRESH_ALARM");
   }
@@ -6645,6 +6837,7 @@ function defaultEngineState(engineId: string): EngineState {
     staleTickCount: 0,
     toxicityScore: 0,
     current_inventory_delta: 0,
+    liquidationHeatmap: defaultLiquidationHeatmapState(),
     maxLatencyMs: DEFAULT_MAX_LATENCY_MS,
     cachedConfig: { ...defaultConfig },
     macroBias: neutralMacroBias(),
@@ -8327,7 +8520,9 @@ function quoteToTelemetry(quote: EngineState["quoteState"]["lastQuote"]): Record
           side: order.side,
           price: order.price,
           size: order.size,
-          postOnly: order.postOnly
+          postOnly: order.postOnly,
+          strategy: order.strategy ?? "AMM",
+          clusterId: order.clusterId ?? null
         })),
         createdAt: quote.createdAt
       }

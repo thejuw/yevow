@@ -1,4 +1,5 @@
 import { Logger } from "./Logger";
+import { parseLiquidationWallets } from "./agents/HeatmapAgent";
 import { Notifier } from "./utils/Notifier";
 import type {
   Env,
@@ -2196,7 +2197,7 @@ function loadStreamConfigs(env: Env): ResolvedExchangeStreamConfig[] {
       ? configured
       : defaultHyperliquidStreamConfig(env);
 
-  return rawConfigs
+  return withLiquidationWatchlistSubscriptions(rawConfigs, env)
     .filter((config) => config.enabled !== false)
     .map((config, index) => resolveStreamConfig(env, config, weights, index));
 }
@@ -2218,6 +2219,64 @@ function defaultHyperliquidStreamConfig(env: Env): ExchangeStreamConfig[] {
       exchangeCode: "hyperliquid"
     }
   ];
+}
+
+function withLiquidationWatchlistSubscriptions(
+  configs: ExchangeStreamConfig[],
+  env: Env
+): ExchangeStreamConfig[] {
+  const wallets = parseLiquidationWallets(env.HL_LIQUIDATION_WALLETS);
+
+  if (wallets.length === 0) {
+    return configs;
+  }
+
+  return configs.map((config) => {
+    if (config.source !== "HYPERLIQUID") {
+      return config;
+    }
+
+    const existing = new Set(
+      (config.subscriptions ?? [])
+        .filter((subscription): subscription is JsonRecord => typeof subscription !== "string")
+        .flatMap((subscription) => {
+          const payload = subscription.subscription;
+          return isRecord(payload) && typeof payload.user === "string"
+            ? [`${payload.type ?? ""}:${payload.user.toLowerCase()}`]
+            : [];
+        })
+    );
+    const liquidationSubscriptions = wallets.flatMap((wallet) => {
+      const userEventsKey = `userEvents:${wallet}`;
+      const ledgerKey = `userNonFundingLedgerUpdates:${wallet}`;
+      const additions: JsonRecord[] = [];
+
+      if (!existing.has(userEventsKey)) {
+        additions.push({
+          method: "subscribe",
+          subscription: { type: "userEvents", user: wallet }
+        });
+      }
+
+      if (!existing.has(ledgerKey)) {
+        additions.push({
+          method: "subscribe",
+          subscription: { type: "userNonFundingLedgerUpdates", user: wallet }
+        });
+      }
+
+      return additions;
+    });
+
+    if (liquidationSubscriptions.length === 0) {
+      return config;
+    }
+
+    return {
+      ...config,
+      subscriptions: [...(config.subscriptions ?? []), ...liquidationSubscriptions]
+    };
+  });
 }
 
 function resolveStreamConfig(

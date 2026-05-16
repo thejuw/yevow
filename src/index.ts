@@ -249,6 +249,15 @@ export default {
       return routeToEngine(request, env, topology);
     }
 
+    if (url.pathname === "/liquidations/heatmap") {
+      const auth = await authenticateAdmin(request, env, logger, topology, "READ");
+      if (auth instanceof Response) {
+        return auth;
+      }
+
+      return routeToEngine(request, env, topology);
+    }
+
     if (url.pathname === "/stream") {
       if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
         return json({ ok: false, error: "WebSocket upgrade required" }, 426);
@@ -304,6 +313,7 @@ export default {
         "GET /slippage (READ token)",
         "GET /book/snapshot (READ token)",
         "GET /dom/heatmap (READ token)",
+        "GET /liquidations/heatmap (READ token)",
         "GET /stream (READ token, WebSocket)",
         "POST /tick",
         "POST /hyperliquid/raw",
@@ -334,6 +344,7 @@ export default {
         "POST /admin/news/sentiment",
         "GET /admin/book/snapshot",
         "GET /admin/dom/heatmap",
+        "GET /admin/liquidations/heatmap",
         "GET /admin/stream",
         "GET /admin/logs"
       ]
@@ -471,6 +482,7 @@ async function handleAdminRequest(
         "POST /admin/news/sentiment",
         "GET /admin/book/snapshot",
         "GET /admin/dom/heatmap",
+        "GET /admin/liquidations/heatmap",
         "GET /admin/stream",
         "GET /admin/logs"
       ]
@@ -670,6 +682,14 @@ async function handleAdminRequest(
     }
 
     return routeToEngine(remapRequestPath(request, "/dom/heatmap"), env, topology);
+  }
+
+  if (url.pathname === "/admin/liquidations/heatmap") {
+    if (request.method !== "GET") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+
+    return routeToEngine(remapRequestPath(request, "/liquidations/heatmap"), env, topology);
   }
 
   if (url.pathname === "/admin/stream") {

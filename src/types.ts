@@ -30,6 +30,12 @@ export interface Env {
   HL_ORDER_EXPIRES_MS?: string;
   HL_REST_RATE_LIMIT_PER_MINUTE?: string;
   HL_REST_REFILL_PER_SECOND?: string;
+  HL_LIQUIDATION_WALLETS?: string;
+  HL_HEATMAP_SAMPLE_INTERVAL_MS?: string;
+  HL_HEATMAP_PRICE_BIN_SIZE?: string;
+  HL_HEATMAP_CLUSTER_NOTIONAL_USD?: string;
+  HL_CASCADE_DISTANCE_PCT?: string;
+  HL_PREDATORY_ORDER_OFFSET_BPS?: string;
   FUNDING_HORIZON_HOURS?: string;
   EXCHANGE_API_HOSTNAME?: string;
   GOLDEN_COLOS?: string;
@@ -291,6 +297,7 @@ export interface EngineState {
   staleTickCount: number;
   toxicityScore: number;
   current_inventory_delta: number;
+  liquidationHeatmap: LiquidationHeatmapState;
   maxLatencyMs: number;
   cachedConfig: GlobalRiskConfig;
   macroBias: MacroBias;
@@ -840,6 +847,10 @@ export interface ProfilerState {
   rollingWindow: number;
   alertThreshold: number;
   toxicityScore: number;
+  distanceToCascadePct: number | null;
+  cascadeShieldUntil: ISO8601 | null;
+  cascadeClusterId: string | null;
+  cascadeSide: LiquidationSide | null;
   activeBucket: ProfilerVolumeBucket | null;
   buckets: ProfilerVolumeBucket[];
   totalBucketsClosed: number;
@@ -852,6 +863,61 @@ export interface ProfilerState {
   tradeSizeM2: number;
   tradeSizeWindow: Array<{ size: number; observedAt: ISO8601 }>;
   quoteSuspendedUntil: ISO8601 | null;
+  updatedAt: ISO8601;
+}
+
+export type LiquidationSide = "LONG" | "SHORT" | "UNKNOWN";
+
+export interface LiquidationHeatmapLevel {
+  levelId: string;
+  instrumentCode: string;
+  source_exchange: string;
+  side: LiquidationSide;
+  priceStart: number;
+  priceEnd: number;
+  centerPrice: number;
+  estimatedNotionalUsd: number;
+  estimatedBaseSize: number;
+  walletCount: number;
+  eventCount: number;
+  confidence: number;
+  source: "CLEARINGHOUSE_STATE" | "USER_EVENT" | "SYNTHETIC";
+  updatedAt: ISO8601;
+}
+
+export interface LiquidationCascadeCluster extends LiquidationHeatmapLevel {
+  clusterId: string;
+  distanceFromMidPct: number | null;
+  distanceFromMidBps: number | null;
+  forcedFlowSide: "BUY" | "SELL" | "UNKNOWN";
+  isCascadeRisk: boolean;
+}
+
+export interface LiquidationEventRecord {
+  eventId: string;
+  instrumentCode: string | null;
+  side: LiquidationSide;
+  notionalUsd: number | null;
+  price: number | null;
+  liquidatedUser: string | null;
+  source: "USER_EVENT" | "LEDGER_EVENT" | "UNKNOWN";
+  observedAt: ISO8601;
+}
+
+export interface LiquidationHeatmapState {
+  schemaVersion: "liquidation-heatmap.v1";
+  instrumentCode: string | null;
+  source_exchange: string;
+  binSize: number;
+  clusterThresholdUsd: number;
+  cascadeDistancePct: number;
+  levels: LiquidationHeatmapLevel[];
+  clusters: LiquidationCascadeCluster[];
+  nearestCascade: LiquidationCascadeCluster | null;
+  recentEvents: LiquidationEventRecord[];
+  totalEstimatedNotionalUsd: number;
+  sampledWalletCount: number;
+  lastSampleAt: ISO8601 | null;
   updatedAt: ISO8601;
 }
 
@@ -1082,6 +1148,8 @@ export interface QuoteOrder {
   price: number;
   size: number;
   postOnly: boolean;
+  strategy?: "AMM" | "LIQUIDATION_ABSORPTION";
+  clusterId?: string;
 }
 
 export interface QuoteSignal {
@@ -1284,6 +1352,7 @@ export interface HealthReport {
   staleTickCount: number;
   toxicityScore: number;
   current_inventory_delta: number;
+  liquidationHeatmap: LiquidationHeatmapState;
   cachedConfig: GlobalRiskConfig;
   location: EngineLocation;
   microstructure: MicrostructureMetrics;

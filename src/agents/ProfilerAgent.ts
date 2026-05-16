@@ -1,6 +1,8 @@
 import type {
   AgentSignal,
   JsonRecord,
+  LiquidationCascadeCluster,
+  LiquidationHeatmapState,
   LiquidityWall,
   MarketTick,
   ProfilerState,
@@ -32,6 +34,7 @@ export interface ProfilerContext {
   weightedImbalance: number | null;
   liquidityWalls?: LiquidityWall[];
   spoofingAlerts?: LiquidityWall[];
+  liquidationHeatmap?: LiquidationHeatmapState | null;
 }
 
 export interface ProfilerEvaluation {
@@ -108,6 +111,22 @@ export class ProfilerAgent {
         typeof persisted.lastSpoofingWallId === "string"
           ? persisted.lastSpoofingWallId
           : null,
+      distanceToCascadePct:
+        typeof persisted.distanceToCascadePct === "number"
+          ? persisted.distanceToCascadePct
+          : null,
+      cascadeShieldUntil:
+        typeof persisted.cascadeShieldUntil === "string"
+          ? persisted.cascadeShieldUntil
+          : null,
+      cascadeClusterId:
+        typeof persisted.cascadeClusterId === "string"
+          ? persisted.cascadeClusterId
+          : null,
+      cascadeSide:
+        persisted.cascadeSide === "LONG" || persisted.cascadeSide === "SHORT"
+          ? persisted.cascadeSide
+          : null,
       tradeSizeCount: Math.max(0, Math.floor(persisted.tradeSizeCount ?? 0)),
       tradeSizeMean: positiveNumber(persisted.tradeSizeMean, 0),
       tradeSizeM2: Math.max(0, Number(persisted.tradeSizeM2 ?? 0)),
@@ -120,13 +139,17 @@ export class ProfilerAgent {
   }
 
   processTick(tick: MarketTick, context: ProfilerContext): ProfilerEvaluation {
+    const cascadeSignal = this.maybeCreateCascadeShieldSignal(tick, context);
     const spoofingSignal = this.maybeCreateSpoofingSignal(tick, context);
     const whaleSignal = this.detectWhalePrint(tick, context);
 
     if (!isOrderFlowTick(tick)) {
-      const signal = spoofingSignal ?? whaleSignal;
+      const signal = cascadeSignal ?? spoofingSignal ?? whaleSignal;
 
       if (signal) {
+        if (cascadeSignal) {
+          this.state.toxicityScore = 1;
+        }
         this.state.lastSignalId = signal.signalId;
         this.state.lastSpoofingWallId = context.spoofingAlerts?.[0]?.wallId ?? null;
         this.state.lastProcessedSequence = tick.sequence;
@@ -177,9 +200,10 @@ export class ProfilerAgent {
 
     this.state.lastProcessedSequence = tick.sequence;
     this.state.updatedAt = context.observedAt;
-    this.state.toxicityScore = this.calculateVpin();
+    this.state.toxicityScore = cascadeSignal ? 1 : this.calculateVpin();
 
     const signal =
+      cascadeSignal ??
       whaleSignal ??
       spoofingSignal ??
       (closedBuckets > 0 && this.shouldEmitAlert()
@@ -413,6 +437,70 @@ export class ProfilerAgent {
     };
   }
 
+  private maybeCreateCascadeShieldSignal(
+    tick: MarketTick,
+    context: ProfilerContext
+  ): AgentSignal | null {
+    const cluster = nearestCascadeCluster(
+      context.liquidationHeatmap,
+      tick.instrumentCode,
+      context.midPrice
+    );
+
+    this.state.distanceToCascadePct = cluster?.distanceFromMidPct ?? null;
+    this.state.cascadeClusterId = cluster?.clusterId ?? null;
+    this.state.cascadeSide = cluster?.side ?? null;
+
+    if (!cluster?.isCascadeRisk) {
+      return null;
+    }
+
+    const suspendedUntil = new Date(
+      Date.parse(context.observedAt) + this.quoteHibernateMs
+    ).toISOString();
+    this.state.cascadeShieldUntil = suspendedUntil;
+
+    return {
+      signalId: crypto.randomUUID(),
+      traceId: `${context.engineId}:profiler:cascade:${cluster.clusterId}:${tick.sequence}`,
+      sourceAgent: "PROFILER",
+      targetAgent: "CROUPIER",
+      instrumentCode: tick.instrumentCode,
+      action: "REDUCE",
+      confidence: 1,
+      horizonMs: this.quoteHibernateMs,
+      expectedValue: -1,
+      maxSlippageBps: 100,
+      rationale:
+        `Distance_To_Cascade ${formatPct(cluster.distanceFromMidPct)} near ${cluster.side} liquidation cluster ` +
+        `${formatUsd(cluster.estimatedNotionalUsd)}; force VPIN to maximum toxicity and pull vulnerable resting flow.`,
+      featureVector: compactJsonRecord({
+        signalType: "CASCADE_SHIELD",
+        distanceToCascadePct: cluster.distanceFromMidPct,
+        distanceToCascadeBps: cluster.distanceFromMidBps,
+        clusterId: cluster.clusterId,
+        liquidationSide: cluster.side,
+        forcedFlowSide: cluster.forcedFlowSide,
+        estimatedNotionalUsd: cluster.estimatedNotionalUsd,
+        thresholdUsd: context.liquidationHeatmap?.clusterThresholdUsd ?? null,
+        cascadeDistancePct: context.liquidationHeatmap?.cascadeDistancePct ?? null,
+        midPrice: context.midPrice,
+        suspendedUntil
+      }),
+      riskContext: compactJsonRecord({
+        recommendation: "PULL_OPPOSING_QUOTES_AND_ONLY_REST_BOUNDARY_LIQUIDITY",
+        toxicityScore: 1,
+        opposingSide:
+          cluster.forcedFlowSide === "BUY"
+            ? "ASK"
+            : cluster.forcedFlowSide === "SELL"
+              ? "BID"
+              : "UNKNOWN"
+      }),
+      createdAt: context.observedAt
+    };
+  }
+
   detectWhalePrint(tick: MarketTick, context: ProfilerContext): AgentSignal | null {
     if (!isOrderFlowTick(tick) || tick.size <= 0) {
       return null;
@@ -484,6 +572,10 @@ function defaultProfilerState(
     rollingWindow,
     alertThreshold,
     toxicityScore: 0,
+    distanceToCascadePct: null,
+    cascadeShieldUntil: null,
+    cascadeClusterId: null,
+    cascadeSide: null,
     activeBucket: null,
     buckets: [],
     totalBucketsClosed: 0,
@@ -591,6 +683,46 @@ function sanitizeTradeSizeWindow(
         .filter((item) => Number.isFinite(item.size) && typeof item.observedAt === "string")
         .slice(-10_000)
     : [];
+}
+
+function nearestCascadeCluster(
+  heatmap: LiquidationHeatmapState | null | undefined,
+  instrumentCode: string,
+  midPrice: number | null
+): LiquidationCascadeCluster | null {
+  const clusters = heatmap?.clusters ?? [];
+  const candidates = clusters.filter(
+    (cluster) =>
+      cluster.instrumentCode === instrumentCode &&
+      cluster.estimatedNotionalUsd >= (heatmap?.clusterThresholdUsd ?? 10_000_000)
+  );
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  if (midPrice === null || midPrice <= 0) {
+    return candidates[0] ?? null;
+  }
+
+  return [...candidates].sort(
+    (left, right) =>
+      Math.abs(left.centerPrice - midPrice) - Math.abs(right.centerPrice - midPrice)
+  )[0] ?? null;
+}
+
+function formatPct(value: number | null): string {
+  return value === null ? "n/a" : `${(value * 100).toFixed(3)}%`;
+}
+
+function formatUsd(value: number): string {
+  if (value >= 1_000_000_000) {
+    return `$${(value / 1_000_000_000).toFixed(2)}B`;
+  }
+  if (value >= 1_000_000) {
+    return `$${(value / 1_000_000).toFixed(2)}M`;
+  }
+  return `$${value.toFixed(0)}`;
 }
 
 function compactJsonRecord(value: Record<string, unknown>): JsonRecord {

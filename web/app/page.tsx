@@ -6,6 +6,7 @@ import {
   Brain,
   ChevronRight,
   CircleDot,
+  Flame,
   Gauge,
   KeyRound,
   LogOut,
@@ -52,6 +53,7 @@ import type {
   GlobalRiskConfig,
   GovernanceMode,
   JsonRecord,
+  LiquidationHeatmapState,
   MacroBiasDirection,
   TradeHistoryEntry,
   TradeHistoryResponse,
@@ -87,6 +89,7 @@ export default function CommandCenterPage() {
   const [status, setStatus] = useState<ConnectionStatus>("LOCKED");
   const [error, setError] = useState<string | null>(null);
   const [engineState, setEngineState] = useState<EngineState | null>(null);
+  const [orderBook, setOrderBook] = useState<JsonRecord | null>(null);
   const [config, setConfig] = useState<GlobalRiskConfig | null>(null);
   const [draftConfig, setDraftConfig] = useState<Partial<GlobalRiskConfig>>({});
   const [trace, setTrace] = useState<TraceResponse | null>(null);
@@ -135,6 +138,7 @@ export default function CommandCenterPage() {
     ]);
 
     setEngineState(stateResult.state);
+    setOrderBook(stateResult.orderBook ?? null);
     setConfig(configResult.config);
     if (!draftDirtyRef.current) {
       setDraftConfig(configResult.config);
@@ -301,6 +305,7 @@ export default function CommandCenterPage() {
     setStatus("LOCKED");
     setCommandStatus("Console locked.");
     setEngineState(null);
+    setOrderBook(null);
     setConfig(null);
     setDraftConfig({});
     setTrace(null);
@@ -473,6 +478,15 @@ export default function CommandCenterPage() {
   const drawdown = pulse?.active_drawdown ?? engineState?.riskMetrics.rollingDrawdownPct ?? 0;
   const imbalance = pulse?.current_imbalance ?? engineState?.microstructure.weightedImbalance ?? null;
   const regime = pulse?.regime ?? engineState?.oracle.regime ?? "UNKNOWN";
+  const liquidationHeatmap = engineState?.liquidationHeatmap ?? null;
+  const liquidationRows = useMemo(
+    () => liquidationHeatmapRows(liquidationHeatmap),
+    [liquidationHeatmap]
+  );
+  const ladder = useMemo(
+    () => topOrderBookLadder(orderBook, engineState?.microstructure.midPrice ?? null),
+    [orderBook, engineState?.microstructure.midPrice]
+  );
 
   if (!isUnlocked) {
     return (
@@ -632,6 +646,97 @@ export default function CommandCenterPage() {
           <Metric label="Jitter" value={`${compact.format(pulse?.jitter_ms ?? engineState?.executionProfile.jitterMs ?? 0)}ms`} />
           <Metric label="VPIN" value={compact.format(pulse?.toxicity_score ?? engineState?.toxicityScore ?? 0)} />
           <Metric label="Quotes" value={engineState?.quoteState.status ?? "n/a"} />
+        </section>
+
+        <section className="liquidation-panel glass">
+          <div className="panel-title">
+            <Flame size={17} />
+            <span>Liquidation Hunt Map</span>
+            <strong className="panel-pill">
+              {currency.format(liquidationHeatmap?.totalEstimatedNotionalUsd ?? 0)}
+            </strong>
+          </div>
+          <div className="hunt-grid">
+            <div className="ladder-card">
+              <div className="ladder-head">
+                <span>Order Book</span>
+                <code>{engineState?.microstructure.midPrice ? currency.format(engineState.microstructure.midPrice) : "mid n/a"}</code>
+              </div>
+              <div className="ladder-table asks">
+                {ladder.asks.map((level) => (
+                  <div className="ladder-row ask" key={`ask:${level.price}`}>
+                    <span>{currency.format(level.price)}</span>
+                    <strong>{compact.format(level.size)}</strong>
+                  </div>
+                ))}
+              </div>
+              <div className="midline">
+                <span>Spread</span>
+                <strong>{compact.format(engineState?.microstructure.spreadBps ?? 0)} bps</strong>
+              </div>
+              <div className="ladder-table bids">
+                {ladder.bids.map((level) => (
+                  <div className="ladder-row bid" key={`bid:${level.price}`}>
+                    <span>{currency.format(level.price)}</span>
+                    <strong>{compact.format(level.size)}</strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="heatmap-card">
+              <div className="heatmap-head">
+                <span>Leverage Cliffs</span>
+                <code>{liquidationHeatmap?.clusters.length ?? 0} clusters</code>
+              </div>
+              <div className="heatmap-stack">
+                {liquidationRows.length > 0 ? (
+                  liquidationRows.map((cluster) => (
+                    <div className={`heatmap-row ${cluster.side.toLowerCase()}`} key={cluster.clusterId}>
+                      <div className="heatmap-main">
+                        <strong>{currency.format(cluster.centerPrice)}</strong>
+                        <span>{cluster.side} · {cluster.distance}</span>
+                      </div>
+                      <div className="heat-bar">
+                        <i style={{ width: `${cluster.widthPct}%` }} />
+                      </div>
+                      <code>{currency.format(cluster.estimatedNotionalUsd)}</code>
+                    </div>
+                  ))
+                ) : (
+                  <div className="empty-row">NO WATCHLIST LIQUIDATION CLUSTERS</div>
+                )}
+              </div>
+            </div>
+
+            <div className="cascade-card">
+              <Metric
+                label="Cascade Distance"
+                value={
+                  liquidationHeatmap?.nearestCascade?.distanceFromMidBps === null ||
+                  liquidationHeatmap?.nearestCascade?.distanceFromMidBps === undefined
+                    ? "n/a"
+                    : `${compact.format(liquidationHeatmap.nearestCascade.distanceFromMidBps)} bps`
+                }
+              />
+              <Metric
+                label="Shield"
+                value={liquidationHeatmap?.nearestCascade?.isCascadeRisk ? "ARMED" : "CLEAR"}
+              />
+              <Metric
+                label="Watchlist"
+                value={compact.format(liquidationHeatmap?.sampledWalletCount ?? 0)}
+              />
+              <Metric
+                label="Updated"
+                value={
+                  liquidationHeatmap?.updatedAt
+                    ? formatClock(liquidationHeatmap.updatedAt)
+                    : "n/a"
+                }
+              />
+            </div>
+          </div>
         </section>
 
         <section className="mode-panel glass">
@@ -1135,6 +1240,67 @@ function normalizeTradePayload(payload: unknown): TradeHistoryEntry {
     executedAt: record.executedAt ?? new Date().toISOString(),
     createdAt: record.createdAt ?? new Date().toISOString()
   };
+}
+
+function liquidationHeatmapRows(heatmap: LiquidationHeatmapState | null) {
+  const clusters = (heatmap?.clusters ?? []).slice(0, 10);
+  const maxNotional = Math.max(
+    1,
+    ...clusters.map((cluster) => Number(cluster.estimatedNotionalUsd ?? 0))
+  );
+
+  return clusters.map((cluster) => ({
+    ...cluster,
+    distance:
+      cluster.distanceFromMidBps === null
+        ? "distance n/a"
+        : `${compact.format(cluster.distanceFromMidBps)} bps`,
+    widthPct: Math.max(
+      8,
+      Math.min(100, (Number(cluster.estimatedNotionalUsd ?? 0) / maxNotional) * 100)
+    )
+  }));
+}
+
+function topOrderBookLadder(orderBook: JsonRecord | null, midPrice: number | null) {
+  const snapshots = Object.values(orderBook ?? {})
+    .filter(isJsonRecord)
+    .map((value) => ({
+      bids: readBookLevels(value.bids),
+      asks: readBookLevels(value.asks),
+      midPrice: numberOrNull(value.midPrice)
+    }))
+    .filter((value) => value.bids.length > 0 || value.asks.length > 0);
+  const selected =
+    snapshots.find((snapshot) => snapshot.midPrice === midPrice) ??
+    snapshots[0] ??
+    { bids: [], asks: [] };
+
+  return {
+    bids: selected.bids.slice(0, 8),
+    asks: selected.asks.slice(0, 8).reverse()
+  };
+}
+
+function readBookLevels(value: unknown): Array<{ price: number; size: number }> {
+  return Array.isArray(value)
+    ? value
+        .filter(isJsonRecord)
+        .map((item) => ({
+          price: Number(item.price ?? 0),
+          size: Number(item.size ?? 0)
+        }))
+        .filter((item) => Number.isFinite(item.price) && Number.isFinite(item.size))
+    : [];
+}
+
+function numberOrNull(value: unknown): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isJsonRecord(value: unknown): value is JsonRecord {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function formatClock(value: string): string {

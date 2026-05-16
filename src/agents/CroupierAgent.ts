@@ -2,6 +2,8 @@ import type {
   InternalOrderBook,
   InventoryState,
   LeadLagMetrics,
+  LiquidationCascadeCluster,
+  LiquidationHeatmapState,
   MacroBias,
   OracleState,
   QuoteOrder,
@@ -38,6 +40,8 @@ export interface CroupierInput {
   riskAversionFactor?: number;
   fundingBiasThreshold?: number;
   fundingInventoryBias?: number;
+  liquidationHeatmap?: LiquidationHeatmapState | null;
+  predatoryOrderOffsetBps?: number;
   macroBias?: MacroBias;
   observedAt: string;
 }
@@ -264,7 +268,8 @@ class AMMEngine {
         side: "BID",
         price: round(bid, 8),
         size: quoteSize.bid,
-        postOnly: true
+        postOnly: true,
+        strategy: "AMM"
       });
     }
 
@@ -274,8 +279,14 @@ class AMMEngine {
         side: "ASK",
         price: round(ask, 8),
         size: quoteSize.ask,
-        postOnly: true
+        postOnly: true,
+        strategy: "AMM"
       });
+    }
+
+    const predatoryOrder = predatoryLiquidationOrder(input, quoteSize);
+    if (predatoryOrder) {
+      orders.push(predatoryOrder);
     }
 
     return {
@@ -418,6 +429,103 @@ function fundingInventoryTargetDelta(input: CroupierInput): number {
 
   // Positive funding means longs pay shorts, so the neutral target is nudged short.
   return fundingRateHourly > 0 ? -maxBias * scaled : maxBias * scaled;
+}
+
+function predatoryLiquidationOrder(
+  input: CroupierInput,
+  quoteSize: { bid: number; ask: number }
+): QuoteOrder | null {
+  const cluster = selectLiquidationCluster(input.liquidationHeatmap, input.book);
+
+  if (!cluster) {
+    return null;
+  }
+
+  const offsetBps = Math.max(0, finiteNumber(input.predatoryOrderOffsetBps, 2));
+  const offsetMultiplier = offsetBps / 10_000;
+
+  if (cluster.side === "LONG") {
+    if (input.inventory.stopBid) {
+      return null;
+    }
+
+    return {
+      clientOrderId: crypto.randomUUID(),
+      side: "BID",
+      price: round(Math.max(0, cluster.priceStart * (1 - offsetMultiplier)), 8),
+      size: predatorySize(input, cluster, quoteSize.bid),
+      postOnly: true,
+      strategy: "LIQUIDATION_ABSORPTION",
+      clusterId: cluster.clusterId
+    };
+  }
+
+  if (cluster.side === "SHORT") {
+    if (input.inventory.stopAsk) {
+      return null;
+    }
+
+    return {
+      clientOrderId: crypto.randomUUID(),
+      side: "ASK",
+      price: round(cluster.priceEnd * (1 + offsetMultiplier), 8),
+      size: predatorySize(input, cluster, quoteSize.ask),
+      postOnly: true,
+      strategy: "LIQUIDATION_ABSORPTION",
+      clusterId: cluster.clusterId
+    };
+  }
+
+  return null;
+}
+
+function selectLiquidationCluster(
+  heatmap: LiquidationHeatmapState | null | undefined,
+  book: InternalOrderBook
+): LiquidationCascadeCluster | null {
+  const mid = book.midPrice;
+
+  if (!heatmap || mid === null || mid <= 0) {
+    return null;
+  }
+
+  const maxDistancePct = Math.max(heatmap.cascadeDistancePct * 4, 0.02);
+  const candidates = heatmap.clusters
+    .filter((cluster) => cluster.instrumentCode === book.instrumentCode)
+    .filter((cluster) => cluster.estimatedNotionalUsd >= heatmap.clusterThresholdUsd)
+    .filter((cluster) => {
+      const distance = cluster.distanceFromMidPct ?? Math.abs(cluster.centerPrice - mid) / mid;
+      return distance <= maxDistancePct;
+    });
+
+  if (candidates.length === 0) {
+    return null;
+  }
+
+  return [...candidates].sort((left, right) => {
+    const leftDistance = left.distanceFromMidPct ?? Math.abs(left.centerPrice - mid) / mid;
+    const rightDistance = right.distanceFromMidPct ?? Math.abs(right.centerPrice - mid) / mid;
+    const leftScore = left.estimatedNotionalUsd / Math.max(leftDistance, 0.000001);
+    const rightScore = right.estimatedNotionalUsd / Math.max(rightDistance, 0.000001);
+    return rightScore - leftScore;
+  })[0] ?? null;
+}
+
+function predatorySize(
+  input: CroupierInput,
+  cluster: LiquidationCascadeCluster,
+  baseQuoteSize: number
+): number {
+  const clusterBase = cluster.centerPrice > 0
+    ? cluster.estimatedNotionalUsd / cluster.centerPrice
+    : cluster.estimatedBaseSize;
+  const boundedByCluster = Math.max(0.00000001, clusterBase * 0.0025);
+  const toxicityScale = Math.max(0.05, 1 - input.toxicityScore * 0.75);
+
+  return round(
+    Math.max(0.00000001, Math.min(baseQuoteSize * 1.5, boundedByCluster) * toxicityScale),
+    8
+  );
 }
 
 function estimateSlippageCost(

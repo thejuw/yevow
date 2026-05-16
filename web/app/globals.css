@@ -419,6 +419,20 @@ output {
   margin-left: auto;
 }
 
+.panel-pill {
+  margin-left: auto;
+  min-height: 26px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(215, 196, 139, 0.28);
+  border-radius: 7px;
+  padding: 4px 8px;
+  color: var(--text);
+  background: rgba(215, 196, 139, 0.08);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+}
+
 .bridge-panel {
   grid-column: span 5;
   grid-row: span 2;
@@ -433,6 +447,146 @@ output {
 
 .mode-panel {
   grid-column: span 7;
+}
+
+.liquidation-panel {
+  grid-column: 1 / -1;
+  grid-row: span 3;
+}
+
+.hunt-grid {
+  display: grid;
+  grid-template-columns: 1.1fr 1.5fr 0.9fr;
+  gap: 10px;
+}
+
+.ladder-card,
+.heatmap-card,
+.cascade-card {
+  min-width: 0;
+  border: 1px solid var(--line-cold);
+  border-radius: 7px;
+  padding: 10px;
+  background: rgba(6, 8, 11, 0.42);
+}
+
+.ladder-head,
+.heatmap-head,
+.midline {
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.ladder-head code,
+.heatmap-head code,
+.midline strong {
+  color: var(--text);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.ladder-table,
+.heatmap-stack,
+.cascade-card {
+  display: grid;
+  gap: 5px;
+}
+
+.ladder-row {
+  min-height: 24px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 84px;
+  gap: 8px;
+  align-items: center;
+  border-radius: 5px;
+  padding: 4px 7px;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+}
+
+.ladder-row.ask {
+  background: linear-gradient(90deg, rgba(255, 107, 107, 0.16), rgba(255, 107, 107, 0.03));
+}
+
+.ladder-row.bid {
+  background: linear-gradient(90deg, rgba(102, 227, 161, 0.16), rgba(102, 227, 161, 0.03));
+}
+
+.ladder-row span {
+  color: var(--text);
+}
+
+.ladder-row strong {
+  color: var(--muted);
+  text-align: right;
+}
+
+.midline {
+  margin: 8px 0;
+  border-top: 1px solid var(--line-cold);
+  border-bottom: 1px solid var(--line-cold);
+}
+
+.heatmap-row {
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: minmax(132px, 0.9fr) minmax(120px, 1fr) minmax(100px, 0.55fr);
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--line-cold);
+  border-radius: 7px;
+  padding: 8px;
+  font-family: "SFMono-Regular", Consolas, monospace;
+}
+
+.heatmap-main {
+  display: grid;
+  gap: 3px;
+}
+
+.heatmap-main strong {
+  color: var(--text);
+}
+
+.heatmap-main span,
+.heatmap-row code {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.heat-bar {
+  height: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.heat-bar i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.heatmap-row.long .heat-bar i {
+  background: linear-gradient(90deg, rgba(255, 107, 107, 0.2), rgba(255, 107, 107, 0.95));
+  box-shadow: 0 0 18px rgba(255, 107, 107, 0.42);
+}
+
+.heatmap-row.short .heat-bar i {
+  background: linear-gradient(90deg, rgba(102, 227, 161, 0.2), rgba(102, 227, 161, 0.95));
+  box-shadow: 0 0 18px rgba(102, 227, 161, 0.38);
+}
+
+.cascade-card {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .mode-grid {
@@ -821,8 +975,10 @@ output {
   }
 
   .market-strip,
+  .hunt-grid,
   .mode-panel,
   .bridge-panel,
+  .liquidation-panel,
   .matrix-panel,
   .moltworker-panel,
   .system-panel,
@@ -858,6 +1014,7 @@ output {
   }
 
   .market-strip,
+  .hunt-grid,
   .mode-grid,
   .mode-readout,
   .bridge-metrics,
@@ -866,6 +1023,8 @@ output {
     .settings-form.two-col,
     .settings-metrics,
     .param-grid,
+  .heatmap-row,
+  .cascade-card,
   .driver-row,
   .trade-row,
   .state-row,
