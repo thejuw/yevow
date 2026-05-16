@@ -1,4 +1,5 @@
 import { AuthManager } from "./AuthManager";
+import { calibrateGoldenColos, type ColoCalibrationOptions } from "./ColoCalibrator";
 import { ConfigManager } from "./ConfigManager";
 import { Governor } from "./Governor";
 import { Logger } from "./Logger";
@@ -312,6 +313,7 @@ export default {
         "GET /admin/state",
         "GET /admin/settings",
         "POST /admin/settings/notifications",
+        "GET|POST /admin/topology/calibrate",
         "GET /admin/performance",
         "GET /admin/metrics/performance",
         "GET /admin/slippage",
@@ -448,6 +450,7 @@ async function handleAdminRequest(
         "GET /admin/state",
         "GET /admin/settings",
         "POST /admin/settings/notifications",
+        "GET|POST /admin/topology/calibrate",
         "GET /admin/performance",
         "GET /admin/metrics/performance",
         "GET /admin/slippage",
@@ -516,6 +519,21 @@ async function handleAdminRequest(
     }
 
     return updateNotificationSettings(request, env, logger, topology, auth);
+  }
+
+  if (url.pathname === "/admin/topology/calibrate") {
+    if (request.method !== "GET" && request.method !== "POST") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+
+    return handleTopologyCalibration(
+      request,
+      env,
+      logger,
+      configManager,
+      topology,
+      auth
+    );
   }
 
   if (url.pathname === "/admin/performance") {
@@ -941,6 +959,95 @@ async function updateNotificationSettings(
       ...alerting,
       configured: alerting.channels.some((channel) => channel.configured)
     }
+  });
+}
+
+async function handleTopologyCalibration(
+  request: Request,
+  env: Env,
+  logger: Logger,
+  configManager: ConfigManager,
+  topology: EdgeTopology,
+  admin: AuthenticatedAdmin
+): Promise<Response> {
+  const url = new URL(request.url);
+  const body =
+    request.method === "POST"
+      ? ((await readJsonBody<ColoCalibrationOptions & { apply?: boolean }>(request)) ?? {})
+      : {};
+  const currentConfig = await configManager.fetchConfig();
+  const options: ColoCalibrationOptions = {
+    lookbackHours: numberOption(body.lookbackHours, url.searchParams.get("lookbackHours")),
+    minSamples: numberOption(body.minSamples, url.searchParams.get("minSamples")),
+    maxColos: numberOption(body.maxColos, url.searchParams.get("maxColos")),
+    minFreshRate: numberOption(body.minFreshRate, url.searchParams.get("minFreshRate")),
+    latencyThresholdMs: numberOption(
+      body.latencyThresholdMs,
+      url.searchParams.get("latencyThresholdMs")
+    ),
+    p90Multiplier: numberOption(body.p90Multiplier, url.searchParams.get("p90Multiplier")),
+    p95Multiplier: numberOption(body.p95Multiplier, url.searchParams.get("p95Multiplier")),
+    rowLimit: numberOption(body.rowLimit, url.searchParams.get("rowLimit"))
+  };
+  const report = await calibrateGoldenColos(env.TRADING_DB, currentConfig, options);
+  const reportTelemetry = JSON.parse(JSON.stringify(report)) as JsonRecord;
+  const apply =
+    request.method === "POST" &&
+    ((body as Record<string, unknown>).apply !== false);
+  const previousGoldenColos = currentConfig.GOLDEN_COLOS || env.GOLDEN_COLOS || "";
+  let nextConfig: GlobalRiskConfig | null = null;
+  let engineRefreshStatus: number | null = null;
+
+  if (apply && report.recommendedGoldenColos.length > 0) {
+    nextConfig = ConfigManager.mergeUpdate(
+      currentConfig,
+      {
+        config: {
+          GOLDEN_COLOS: report.recommendedGoldenColosCsv
+        }
+      },
+      `topology-calibrator:${admin.subject}`
+    );
+    await configManager.writeConfig(nextConfig);
+
+    const refreshResponse = await routeToEngine(
+      new Request(new URL("/admin/config", url), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ signal: "REFRESH_CONFIG" } satisfies AdminConfigUpdate)
+      }),
+      env,
+      topology
+    );
+    engineRefreshStatus = refreshResponse.status;
+
+    logger.warn("GOLDEN_COLOS_CALIBRATED", "Golden colo policy updated from telemetry", {
+      actor: admin.subject,
+      previousGoldenColos,
+      nextGoldenColos: nextConfig.GOLDEN_COLOS,
+      report: reportTelemetry,
+      colo: topology.colo,
+      placement: topology.placement
+    });
+  } else {
+    logger.info("GOLDEN_COLOS_CALIBRATION_REVIEWED", "Golden colo calibration report generated", {
+      actor: admin.subject,
+      applied: false,
+      previousGoldenColos,
+      recommendedGoldenColos: report.recommendedGoldenColosCsv,
+      report: reportTelemetry,
+      colo: topology.colo,
+      placement: topology.placement
+    });
+  }
+
+  return json({
+    ok: true,
+    applied: Boolean(nextConfig),
+    previousGoldenColos,
+    nextGoldenColos: nextConfig?.GOLDEN_COLOS ?? currentConfig.GOLDEN_COLOS,
+    engineRefreshStatus,
+    report
   });
 }
 
@@ -2131,6 +2238,15 @@ function finiteNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function numberOption(
+  bodyValue: unknown,
+  queryValue: string | null
+): number | undefined {
+  const candidate = bodyValue ?? queryValue;
+  const parsed = Number(candidate);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 function round(value: number, decimalPlaces: number): number {
   const scale = 10 ** decimalPlaces;
   return Math.round(value * scale) / scale;
@@ -2280,6 +2396,7 @@ function diffConfig(
     "MAX_INVENTORY_UNITS",
     "MAX_DRAWDOWN_PCT",
     "LATENCY_THRESHOLD_MS",
+    "GOLDEN_COLOS",
     "MIN_EV_THRESHOLD",
     "EXCHANGE_FEE_BPS",
     "KELLY_FRACTION",
@@ -2315,7 +2432,8 @@ function requiresHighImpactConfirmation(
     "MAX_DRAWDOWN_PCT",
     "KELLY_FRACTION",
     "MIN_EV_THRESHOLD",
-    "LATENCY_THRESHOLD_MS"
+    "LATENCY_THRESHOLD_MS",
+    "GOLDEN_COLOS"
   ]);
   const hasHighImpactChange = Object.keys(changedParameters).some((field) => highImpact.has(field));
   const updateRecord = update as Record<string, unknown>;
@@ -2336,6 +2454,7 @@ function hasRiskConfigMutation(update: AdminConfigUpdate): boolean {
       update.MAX_INVENTORY_UNITS !== undefined ||
       update.MAX_DRAWDOWN_PCT !== undefined ||
       update.LATENCY_THRESHOLD_MS !== undefined ||
+      update.GOLDEN_COLOS !== undefined ||
       update.MIN_EV_THRESHOLD !== undefined ||
       update.EXCHANGE_FEE_BPS !== undefined ||
       update.KELLY_FRACTION !== undefined ||
@@ -2404,6 +2523,7 @@ function configTelemetry(config: GlobalRiskConfig): Record<string, boolean | num
     MAX_INVENTORY_UNITS: config.MAX_INVENTORY_UNITS,
     MAX_DRAWDOWN_PCT: config.MAX_DRAWDOWN_PCT,
     LATENCY_THRESHOLD_MS: config.LATENCY_THRESHOLD_MS,
+    GOLDEN_COLOS: config.GOLDEN_COLOS,
     MIN_EV_THRESHOLD: config.MIN_EV_THRESHOLD,
     EXCHANGE_FEE_BPS: config.EXCHANGE_FEE_BPS,
     KELLY_FRACTION: config.KELLY_FRACTION,

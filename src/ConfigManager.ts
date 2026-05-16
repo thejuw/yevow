@@ -9,6 +9,7 @@ export const defaultConfig: GlobalRiskConfig = {
   MAX_INVENTORY_UNITS: 0,
   MAX_DRAWDOWN_PCT: 0,
   LATENCY_THRESHOLD_MS: 250,
+  GOLDEN_COLOS: "",
   MIN_EV_THRESHOLD: 0,
   EXCHANGE_FEE_BPS: 0,
   KELLY_FRACTION: 0.5,
@@ -98,6 +99,8 @@ function extractConfigUpdate(
     "LATENCY_THRESHOLD_MS" in update
       ? update.LATENCY_THRESHOLD_MS
       : nested.LATENCY_THRESHOLD_MS;
+  const goldenColos =
+    "GOLDEN_COLOS" in update ? update.GOLDEN_COLOS : nested.GOLDEN_COLOS;
   const minEvThreshold =
     "MIN_EV_THRESHOLD" in update
       ? update.MIN_EV_THRESHOLD
@@ -153,6 +156,9 @@ function extractConfigUpdate(
   if (latencyThresholdMs !== undefined) {
     direct.LATENCY_THRESHOLD_MS = latencyThresholdMs;
   }
+  if (goldenColos !== undefined) {
+    direct.GOLDEN_COLOS = goldenColos;
+  }
   if (minEvThreshold !== undefined) {
     direct.MIN_EV_THRESHOLD = minEvThreshold;
   }
@@ -195,6 +201,7 @@ function normalizeConfig(value: Partial<GlobalRiskConfig>): GlobalRiskConfig {
       value.LATENCY_THRESHOLD_MS,
       defaultConfig.LATENCY_THRESHOLD_MS
     ),
+    GOLDEN_COLOS: normalizeColoCsv(value.GOLDEN_COLOS),
     MIN_EV_THRESHOLD: finiteNumber(value.MIN_EV_THRESHOLD, defaultConfig.MIN_EV_THRESHOLD),
     EXCHANGE_FEE_BPS: nonNegativeNumber(value.EXCHANGE_FEE_BPS),
     KELLY_FRACTION: boundedNumber(value.KELLY_FRACTION, 0, 1, defaultConfig.KELLY_FRACTION),
@@ -232,6 +239,19 @@ function normalizeGovernanceMode(value: unknown): GlobalRiskConfig["ORACLE_GOVER
   return value === "MANUAL" || value === "AUTONOMOUS" || value === "HYBRID"
     ? value
     : defaultConfig.ORACLE_GOVERNANCE_MODE;
+}
+
+function normalizeColoCsv(value: unknown): string {
+  if (typeof value !== "string") {
+    return defaultConfig.GOLDEN_COLOS;
+  }
+
+  return value
+    .split(",")
+    .map((colo) => colo.trim().toUpperCase())
+    .filter((colo) => /^[A-Z0-9]{3,4}$/.test(colo))
+    .filter((colo, index, colos) => colos.indexOf(colo) === index)
+    .join(",");
 }
 
 function nonNegativeNumber(value: unknown): number {

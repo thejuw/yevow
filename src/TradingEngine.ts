@@ -180,6 +180,10 @@ interface TickTelemetryAggregate {
   latestExchangeCode: string | null;
   latestSequence: number | null;
   latestStatus: string | null;
+  latestColo: string | null;
+  latestPlacement: string | null;
+  latestIsGoldenRegion: boolean | null;
+  latestLatencyRiskMultiplier: number | null;
   sumCpuTimeMs: number;
   sumTotalLatencyMs: number;
   sumWebsocketLatencyMs: number;
@@ -374,6 +378,7 @@ export class TradingEngine {
   private macroBias: MacroBias = neutralMacroBias();
   private activeTemporaryOverride: TemporaryGovernanceOverride | null = null;
   private killSwitchLogged = false;
+  private lastConfigRefreshAttemptAt = 0;
   private warmedColo: string | null = null;
   private warmedAt = 0;
   private storageWriteDisabledUntil = 0;
@@ -708,6 +713,7 @@ export class TradingEngine {
 
     try {
       if (request.method === "GET" && url.pathname === "/health") {
+        await this.refreshConfigIfDue("ALARM");
         return json(this.healthCheck());
       }
 
@@ -4804,6 +4810,11 @@ export class TradingEngine {
         volumeZScore: this.engineState.anomaly.volumeZScore,
         cancellationToExecutionRatio:
           this.engineState.anomaly.cancellationToExecutionRatio,
+        colo: this.engineState.location.colo,
+        placement: this.engineState.location.placement,
+        isGoldenRegion: this.engineState.location.isGoldenRegion,
+        latencyRiskMultiplier: this.engineState.location.latencyRiskMultiplier,
+        positionSizeMultiplier: this.engineState.location.positionSizeMultiplier,
         netDelta: this.engineState.inventory.netDelta,
       maxInventoryUnits: this.engineState.inventory.maxInventoryUnits,
       inventoryPenalty: this.engineState.inventory.inventoryPenalty,
@@ -5082,6 +5093,10 @@ export class TradingEngine {
         latestExchangeCode: null,
         latestSequence: null,
         latestStatus: null,
+        latestColo: null,
+        latestPlacement: null,
+        latestIsGoldenRegion: null,
+        latestLatencyRiskMultiplier: null,
         sumCpuTimeMs: 0,
         sumTotalLatencyMs: 0,
         sumWebsocketLatencyMs: 0,
@@ -5114,6 +5129,19 @@ export class TradingEngine {
         ? payload.sequence
         : current.latestSequence;
     current.latestStatus = status ?? current.latestStatus;
+    current.latestColo =
+      typeof payload.colo === "string" ? payload.colo : current.latestColo;
+    current.latestPlacement =
+      typeof payload.placement === "string"
+        ? payload.placement
+        : current.latestPlacement;
+    current.latestIsGoldenRegion =
+      typeof payload.isGoldenRegion === "boolean"
+        ? payload.isGoldenRegion
+        : current.latestIsGoldenRegion;
+    current.latestLatencyRiskMultiplier =
+      readTelemetryNumber(payload.latencyRiskMultiplier) ??
+      current.latestLatencyRiskMultiplier;
 
     if (cpuTimeMs !== null) {
       current.sumCpuTimeMs += cpuTimeMs;
@@ -5306,6 +5334,7 @@ export class TradingEngine {
       topology,
       previous,
       this.env,
+      this.cachedConfig,
       previous.observedLatencyMs
     );
 
@@ -5411,12 +5440,32 @@ export class TradingEngine {
       this.killSwitchLogged = false;
     }
 
+    const refreshedLocation = resolveEngineLocation(
+      {
+        colo: this.engineState.location.colo,
+        placement: this.engineState.location.placement,
+        country: this.engineState.location.country,
+        city: this.engineState.location.city,
+        region: this.engineState.location.region,
+        timezone: this.engineState.location.timezone,
+        latitude: this.engineState.location.latitude,
+        longitude: this.engineState.location.longitude,
+        requestId: crypto.randomUUID(),
+        observedAt: now
+      },
+      this.engineState.location,
+      this.env,
+      nextConfig,
+      this.engineState.location.observedLatencyMs
+    );
+
     this.engineState = {
       ...this.engineState,
       cachedConfig: nextConfig,
       macroBias: this.macroBias,
       temporaryOverride: this.activeTemporaryOverride,
       maxLatencyMs: nextConfig.LATENCY_THRESHOLD_MS,
+      location: refreshedLocation,
       risk: applyLocationRisk(
         {
           ...this.engineState.risk,
@@ -5427,7 +5476,7 @@ export class TradingEngine {
           updatedAt: now
         },
         nextConfig,
-        this.engineState.location,
+        refreshedLocation,
         now
       ),
       updatedAt: now
@@ -5442,11 +5491,23 @@ export class TradingEngine {
         maxPositionSize: nextConfig.MAX_POSITION_SIZE,
         maxDrawdownPct: nextConfig.MAX_DRAWDOWN_PCT,
         latencyThresholdMs: nextConfig.LATENCY_THRESHOLD_MS,
+        goldenColos: nextConfig.GOLDEN_COLOS,
         configVersion: nextConfig.version,
         macroBias: toJsonValue(this.macroBias),
         temporaryOverride: toJsonValue(this.activeTemporaryOverride)
       });
     }
+  }
+
+  private async refreshConfigIfDue(source: "ALARM" | "ADMIN_SIGNAL"): Promise<void> {
+    const now = Date.now();
+
+    if (now - this.lastConfigRefreshAttemptAt < CONFIG_ALARM_INTERVAL_MS) {
+      return;
+    }
+
+    this.lastConfigRefreshAttemptAt = now;
+    await this.refreshConfig(source);
   }
 
   private async scheduleConfigRefresh(): Promise<void> {
@@ -5688,10 +5749,11 @@ function resolveEngineLocation(
   topology: EdgeTopology,
   previous: EngineLocation,
   env: Env,
+  config: GlobalRiskConfig,
   observedLatencyMs: number | null
 ): EngineLocation {
   const colo = (topology.colo ?? previous.colo)?.toUpperCase() ?? null;
-  const goldenColos = parseColoSet(env.GOLDEN_COLOS);
+  const goldenColos = parseColoSet(config.GOLDEN_COLOS || env.GOLDEN_COLOS);
   const hasGoldenRegionPolicy = goldenColos.size > 0;
   const isGoldenRegion =
     !hasGoldenRegionPolicy || (colo !== null && goldenColos.has(colo));

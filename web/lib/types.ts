@@ -15,6 +15,7 @@ export interface GlobalRiskConfig {
   MAX_INVENTORY_UNITS: number;
   MAX_DRAWDOWN_PCT: number;
   LATENCY_THRESHOLD_MS: number;
+  GOLDEN_COLOS: string;
   MIN_EV_THRESHOLD: number;
   EXCHANGE_FEE_BPS: number;
   KELLY_FRACTION: number;

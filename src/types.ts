@@ -358,6 +358,7 @@ export interface GlobalRiskConfig {
   MAX_INVENTORY_UNITS: number;
   MAX_DRAWDOWN_PCT: number;
   LATENCY_THRESHOLD_MS: number;
+  GOLDEN_COLOS: string;
   MIN_EV_THRESHOLD: number;
   EXCHANGE_FEE_BPS: number;
   KELLY_FRACTION: number;
@@ -483,6 +484,7 @@ export type GlobalRiskConfigUpdate = Partial<
     | "MAX_INVENTORY_UNITS"
     | "MAX_DRAWDOWN_PCT"
     | "LATENCY_THRESHOLD_MS"
+    | "GOLDEN_COLOS"
     | "MIN_EV_THRESHOLD"
     | "EXCHANGE_FEE_BPS"
     | "KELLY_FRACTION"
@@ -1266,6 +1268,7 @@ export interface AdminConfigUpdate {
   MAX_INVENTORY_UNITS?: number;
   MAX_DRAWDOWN_PCT?: number;
   LATENCY_THRESHOLD_MS?: number;
+  GOLDEN_COLOS?: string;
   MIN_EV_THRESHOLD?: number;
   EXCHANGE_FEE_BPS?: number;
   KELLY_FRACTION?: number;
