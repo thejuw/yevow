@@ -1757,10 +1757,10 @@ async function readAttribution(env: Env, url: URL): Promise<Response> {
      FROM trades t
      LEFT JOIN agent_decisions d ON d.signal_id = t.signal_id
      WHERE ${where.join(" AND ")}
-     ORDER BY t.executed_at ASC, t.created_at ASC
+     ORDER BY t.executed_at DESC, t.created_at DESC
      LIMIT ?`
   ).bind(...bindings, limit).all<AttributionRow>();
-  const trades = (rows.results ?? []).map(formatAttributionTrade);
+  const trades = (rows.results ?? []).map(formatAttributionTrade).reverse();
   const byDriver = calculateAttributionByDriver(trades);
   const timeline = calculateAttributionTimeline(trades);
 
