@@ -18,11 +18,14 @@ export interface Env {
   CLOCK_SYNC_MAX_OFFSET_MS?: string;
   HL_WS_URL?: string;
   DWELLIR_API_KEY?: string;
+  DWELLIR_GRPC_URL?: string;
   DWELLIR_GRPC_ENDPOINT?: string;
   DWELLIR_GRPC_STREAMS?: string;
   DWELLIR_GRPC_START_TIMESTAMP_MS?: string;
   DWELLIR_GRPC_START_BLOCK_HEIGHT?: string;
+  DWELLIR_GRPC_FATAL_DROP_MS?: string;
   DWELLIR_MAX_PAYLOAD_BYTES?: string;
+  HL_GRPC_BACKOFF_BASE_MS?: string;
   RPC_GRPC_ENDPOINT?: string;
   RPC_GRPC_SERVICE?: string;
   RPC_GRPC_STREAM_METHOD?: string;
@@ -245,6 +248,7 @@ export interface ExchangeStreamHealth extends Omit<IngestHealth, "streams"> {
   packetLossPct?: number;
   sourceWeight: number;
   clockOffsetMs: number | null;
+  lastFatalDropAt?: ISO8601 | null;
 }
 
 export interface ExchangeStreamConfig {

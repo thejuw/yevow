@@ -456,6 +456,7 @@ export interface DashboardPulse {
   active_drawdown: number;
   current_imbalance: number | null;
   latency_ms: number;
+  exchange_to_receipt_ms?: number;
   jitter_ms: number;
   toxicity_score: number;
   regime: string;

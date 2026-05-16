@@ -1924,7 +1924,12 @@ function backendSettings(env: Env): JsonRecord {
     ingest: {
       nativeSource: "DWELLIR_HYPERLIQUID_GRPC",
       transport: env.INGEST_TRANSPORT ?? "grpc",
-      dwellirGrpcEndpoint: env.DWELLIR_GRPC_ENDPOINT ?? env.RPC_GRPC_ENDPOINT ?? null,
+      dwellirGrpcUrl: redactedEndpoint(
+        env.DWELLIR_GRPC_URL ?? env.DWELLIR_GRPC_ENDPOINT ?? env.RPC_GRPC_ENDPOINT
+      ),
+      dwellirGrpcPathConfigured: hasEndpointPath(
+        env.DWELLIR_GRPC_URL ?? env.DWELLIR_GRPC_ENDPOINT ?? env.RPC_GRPC_ENDPOINT
+      ),
       dwellirGrpcService: env.RPC_GRPC_SERVICE ?? null,
       dwellirGrpcStreams: env.DWELLIR_GRPC_STREAMS ?? env.RPC_GRPC_STREAM_TYPES ?? null,
       hyperliquidWsUrl: env.HL_WS_URL ?? null,
@@ -2895,6 +2900,32 @@ async function evaluateMoltworkerHeartbeat(env: Env): Promise<{
 
 function maskAddress(value: string): string {
   return value.length > 12 ? `${value.slice(0, 6)}...${value.slice(-4)}` : "configured";
+}
+
+function hasEndpointPath(value: string | undefined): boolean {
+  if (!value) {
+    return false;
+  }
+
+  try {
+    const url = new URL(value);
+    return url.pathname.replace(/\//g, "").length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function redactedEndpoint(value: string | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    const url = new URL(value);
+    return hasEndpointPath(value) ? `${url.origin}/<dwellir-route>` : url.origin;
+  } catch {
+    return "<invalid-endpoint>";
+  }
 }
 
 function base64ToBytes(value: string): Uint8Array {

@@ -35,7 +35,9 @@ const DWELLIR_GRPC_SERVICE = "hyperliquid_l1_gateway.v2.HyperliquidL1Gateway";
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000;
 const DEFAULT_WATCHDOG_TIMEOUT_MS = 5_000;
 const DEFAULT_BACKOFF_BASE_MS = 1_000;
+const DEFAULT_GRPC_BACKOFF_BASE_MS = 50;
 const DEFAULT_MAX_BACKOFF_MS = 30_000;
+const DEFAULT_GRPC_FATAL_DROP_MS = 200;
 const SNAPSHOT_SEQUENCE_FALLBACK_SEED = "snapshot";
 const DEFAULT_SOURCE_WEIGHT = 1;
 const DEFAULT_CLOCK_SYNC_ALPHA = 0.1;
@@ -75,6 +77,8 @@ type ResolvedExchangeStreamConfig = Required<
     heartbeatIntervalMs: number;
     watchdogTimeoutMs: number;
     maxBackoffMs: number;
+    backoffBaseMs: number;
+    grpcFatalDropMs: number;
   };
 
 interface EngineTickResponse {
@@ -441,6 +445,7 @@ class ExchangeStreamController {
   private blackoutStartedAt: string | null = null;
   private lastRecoveredAt: string | null = null;
   private lastRecoveryDurationMs: number | null = null;
+  private lastFatalDropAt: string | null = null;
   private lastError: string | null = null;
   private providerSequence: number | null = null;
   private awaitingProviderBridge = false;
@@ -475,7 +480,7 @@ class ExchangeStreamController {
       source_exchange: this.config.source_exchange,
       transport: this.config.transport,
       streamHost: hostnameOf(this.clusterPool.activeUrl()),
-      activeClusterUrl: this.clusterPool.activeUrl(),
+      activeClusterUrl: redactEndpoint(this.clusterPool.activeUrl()),
       heartbeatLatencyMs: this.clusterPool.activeHeartbeatLatencyMs(),
       packetLossPct: this.packetLossPct(),
       sourceWeight: this.config.weight,
@@ -493,7 +498,8 @@ class ExchangeStreamController {
       blackoutStartedAt: this.blackoutStartedAt,
       lastRecoveredAt: this.lastRecoveredAt,
       lastRecoveryDurationMs: this.lastRecoveryDurationMs,
-      lastError: this.lastError
+      lastError: this.lastError,
+      lastFatalDropAt: this.lastFatalDropAt
     };
   }
 
@@ -538,6 +544,9 @@ class ExchangeStreamController {
           backoffCounter: this.backoffCounter,
           error: this.lastError
         });
+        if (this.config.transport === "grpc") {
+          await this.emitGrpcFatalDropIfNeeded("GRPC_CONNECT_OR_STREAM_FAILURE");
+        }
       }
 
       if (this.stopped) {
@@ -552,7 +561,7 @@ class ExchangeStreamController {
       );
       const backoffMs = calculateBackoffMs(
         this.backoffCounter,
-        DEFAULT_BACKOFF_BASE_MS,
+        this.config.backoffBaseMs,
         maxBackoffMs
       );
 
@@ -721,8 +730,8 @@ class ExchangeStreamController {
             streamId: this.config.id,
             source: this.config.source,
             source_exchange: this.config.source_exchange,
-            previousClusterUrl,
-            nextClusterUrl,
+            previousClusterUrl: redactEndpoint(previousClusterUrl) ?? null,
+            nextClusterUrl: redactEndpoint(nextClusterUrl) ?? null,
             reason
           });
         }
@@ -957,8 +966,7 @@ class ExchangeStreamController {
   }
 
   private async connectDwellirGrpcOnce(): Promise<void> {
-    const endpoint =
-      this.config.grpcEndpoint ?? this.env.DWELLIR_GRPC_ENDPOINT ?? DWELLIR_GRPC_ENDPOINT;
+    const endpoint = resolveDwellirGrpcUrl(this.env, this.config);
     const apiKey = await this.resolveDwellirApiKey();
     const watchdogTimeoutMs = this.config.watchdogTimeoutMs;
 
@@ -993,6 +1001,7 @@ class ExchangeStreamController {
       sourceWeight: this.config.weight,
       connectionId: this.connectionId,
       streamHost: new URL(endpoint).host,
+      grpcPathConfigured: hasEndpointPath(endpoint),
       watchdogTimeoutMs,
       streams: [...streams],
       descriptor: client.descriptorInfo()
@@ -1059,6 +1068,10 @@ class ExchangeStreamController {
             watchdogTimeoutMs
           });
 
+          void this.emitGrpcFatalDropIfNeeded(
+            "DWELLIR_GRPC_WATCHDOG_TIMEOUT",
+            staleForMs
+          );
           fail("DWELLIR_GRPC_WATCHDOG_TIMEOUT");
         }, watchdogTimeoutMs);
       };
@@ -1680,6 +1693,93 @@ class ExchangeStreamController {
       closeSocket(this.socket, 1011, "SNAPSHOT_RESYNC_FAILED");
       this.markDisconnected("SNAPSHOT_RESYNC_FAILED");
       throw error;
+    }
+  }
+
+  private async emitGrpcFatalDropIfNeeded(
+    reason: string,
+    observedDisconnectedForMs = this.currentBlackoutDurationMs()
+  ): Promise<void> {
+    if (this.config.transport !== "grpc") {
+      return;
+    }
+
+    const disconnectedForMs = Math.max(0, observedDisconnectedForMs);
+    const thresholdMs = this.config.grpcFatalDropMs;
+
+    if (disconnectedForMs < thresholdMs) {
+      return;
+    }
+
+    const observedAt = new Date().toISOString();
+    if (
+      this.lastFatalDropAt &&
+      this.blackoutStartedAt &&
+      Date.parse(this.lastFatalDropAt) >= Date.parse(this.blackoutStartedAt)
+    ) {
+      return;
+    }
+
+    this.lastFatalDropAt = observedAt;
+    this.logger.error("GRPC_FATAL_DROP", "Dwellir gRPC stream blackout exceeded fatal threshold", {
+      streamId: this.config.id,
+      source: this.config.source,
+      source_exchange: this.config.source_exchange,
+      connectionId: this.connectionId,
+      reason,
+      disconnectedForMs,
+      thresholdMs
+    });
+    this.notifier.notify({
+      priority: "CRITICAL",
+      title: "Sovereign-Sigma gRPC fatal drop",
+      message: `${this.config.source_exchange} gRPC disconnected for ${disconnectedForMs}ms; forcing quote evacuation.`,
+      dedupeKey: `grpc-fatal-drop:${this.config.id}`,
+      metadata: {
+        streamId: this.config.id,
+        source: this.config.source,
+        source_exchange: this.config.source_exchange,
+        reason,
+        disconnectedForMs,
+        thresholdMs
+      }
+    });
+
+    try {
+      const engine = getTradingEngineStub(this.env);
+      const response = await engine.fetch(
+        new Request("https://trading-engine.internal/ingest/grpc-fatal-drop", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-source": "sovereign-sigma-ingest"
+          },
+          body: JSON.stringify({
+            streamId: this.config.id,
+            source: "DWELLIR_GRPC",
+            source_exchange: this.config.source_exchange,
+            connectionId: this.connectionId,
+            reason,
+            disconnectedForMs,
+            thresholdMs,
+            observedAt
+          })
+        })
+      );
+
+      if (!response.ok) {
+        this.logger.error("GRPC_FATAL_DROP_FORWARD_FAILED", "Engine rejected fatal gRPC drop signal", {
+          streamId: this.config.id,
+          status: response.status,
+          reason
+        });
+      }
+    } catch (error) {
+      this.logger.error("GRPC_FATAL_DROP_FORWARD_FAILED", "Failed to forward fatal gRPC drop signal", {
+        streamId: this.config.id,
+        reason,
+        error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
+      });
     }
   }
 
@@ -2638,8 +2738,7 @@ function defaultHyperliquidStreamConfig(env: Env): ExchangeStreamConfig[] {
   const coins = parseAssetList(env.HL_ASSETS ?? env.HL_ASSET).slice(0, 12);
   const activeCoins = coins.length > 0 ? coins : [...DEFAULT_HYPERLIQUID_ASSET_MATRIX];
   const transport = normalizeTransport(env.INGEST_TRANSPORT ?? "grpc");
-  const grpcEndpoint =
-    env.DWELLIR_GRPC_ENDPOINT ?? env.RPC_GRPC_ENDPOINT ?? DWELLIR_GRPC_ENDPOINT;
+  const grpcEndpoint = resolveDwellirGrpcUrl(env);
 
   return [
     {
@@ -2664,7 +2763,7 @@ function defaultHyperliquidStreamConfig(env: Env): ExchangeStreamConfig[] {
       grpcPingResponseType: env.RPC_GRPC_PING_RESPONSE_TYPE,
       grpcStreamTypes: parseCsvList(
         env.RPC_GRPC_STREAM_TYPES ?? env.DWELLIR_GRPC_STREAMS,
-        ["ORDERBOOK_SNAPSHOT", "FILLS", "BLOCK"]
+        ["ORDERBOOK_SNAPSHOT", "FILLS"]
       ),
       subscriptions: activeCoins.flatMap((coin) => [
         { method: "subscribe", subscription: { type: "l2Book", coin } },
@@ -2676,6 +2775,43 @@ function defaultHyperliquidStreamConfig(env: Env): ExchangeStreamConfig[] {
       exchangeCode: "hyperliquid"
     }
   ];
+}
+
+function resolveDwellirGrpcUrl(
+  env: Env,
+  config?: Pick<ExchangeStreamConfig, "grpcEndpoint" | "streamUrl"> | null
+): string {
+  return (
+    env.DWELLIR_GRPC_URL ??
+    config?.grpcEndpoint ??
+    config?.streamUrl ??
+    env.DWELLIR_GRPC_ENDPOINT ??
+    env.RPC_GRPC_ENDPOINT ??
+    DWELLIR_GRPC_ENDPOINT
+  );
+}
+
+function hasEndpointPath(endpoint: string): boolean {
+  try {
+    const url = new URL(endpoint);
+    return url.pathname.replace(/\//g, "").length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function redactEndpoint(endpoint: string | undefined): string | undefined {
+  if (!endpoint) {
+    return undefined;
+  }
+
+  try {
+    const url = new URL(endpoint);
+    const hasSecretPath = url.pathname.replace(/\//g, "").length > 0;
+    return hasSecretPath ? `${url.origin}/<dwellir-route>` : url.origin;
+  } catch {
+    return "<invalid-endpoint>";
+  }
 }
 
 function withLiquidationWatchlistSubscriptions(
@@ -2762,16 +2898,26 @@ function isDwellirGrpcConfig(config: ResolvedExchangeStreamConfig): boolean {
 function dwellirGrpcStreams(env: Env): Set<DwellirGrpcStreamKind> {
   const configured = parseCsvList(env.DWELLIR_GRPC_STREAMS, [
     "ORDERBOOK_SNAPSHOT",
-    "FILLS",
-    "BLOCK"
+    "FILLS"
   ]);
   const streams = new Set<DwellirGrpcStreamKind>();
 
   for (const entry of configured) {
     const normalized = entry.trim().toUpperCase();
-    if (normalized === "ORDERBOOK" || normalized === "ORDERBOOK_SNAPSHOT" || normalized === "SNAPSHOTS") {
+    if (
+      normalized === "ORDERBOOK" ||
+      normalized === "ORDERBOOK_SNAPSHOT" ||
+      normalized === "ORDERBOOK_UPDATE" ||
+      normalized === "BOOK_UPDATES" ||
+      normalized === "SNAPSHOTS"
+    ) {
       streams.add("ORDERBOOK_SNAPSHOT");
-    } else if (normalized === "FILL" || normalized === "FILLS" || normalized === "TRADES") {
+    } else if (
+      normalized === "FILL" ||
+      normalized === "FILLS" ||
+      normalized === "TRADE" ||
+      normalized === "TRADES"
+    ) {
       streams.add("FILLS");
     } else if (normalized === "BLOCK" || normalized === "BLOCKS") {
       streams.add("BLOCK");
@@ -3131,6 +3277,7 @@ function resolveStreamConfig(
   const source = normalizeSource(config.source);
   const sourceExchange = normalizeSourceExchange(config.source_exchange, config.exchangeCode);
   const transport = normalizeTransport(config.transport ?? env.INGEST_TRANSPORT);
+  const dwellirGrpcUrl = resolveDwellirGrpcUrl(env, config);
   const configuredWeight = Number(config.weight);
   const weight =
     Number.isFinite(configuredWeight) && configuredWeight > 0
@@ -3146,7 +3293,7 @@ function resolveStreamConfig(
     transport,
     streamUrl: requireString(
       transport === "grpc"
-        ? config.grpcEndpoint ?? env.RPC_GRPC_ENDPOINT ?? config.streamUrl
+        ? config.grpcEndpoint ?? dwellirGrpcUrl ?? config.streamUrl
         : config.streamUrl,
       transport === "grpc" ? "RPC_GRPC_ENDPOINT" : "STREAM_URL"
     ),
@@ -3156,7 +3303,7 @@ function resolveStreamConfig(
     subscriptions: config.subscriptions,
     authHeader: config.authHeader ?? DEFAULT_AUTH_HEADER,
     apiKeyEnv: config.apiKeyEnv,
-    grpcEndpoint: config.grpcEndpoint ?? env.RPC_GRPC_ENDPOINT,
+    grpcEndpoint: config.grpcEndpoint ?? dwellirGrpcUrl ?? env.RPC_GRPC_ENDPOINT,
     grpcService: config.grpcService ?? env.RPC_GRPC_SERVICE,
     grpcStreamMethod: config.grpcStreamMethod ?? env.RPC_GRPC_STREAM_METHOD,
     grpcPingMethod: config.grpcPingMethod ?? env.RPC_GRPC_PING_METHOD,
@@ -3167,7 +3314,11 @@ function resolveStreamConfig(
     grpcPingResponseType:
       config.grpcPingResponseType ?? env.RPC_GRPC_PING_RESPONSE_TYPE,
     grpcStreamTypes:
-      config.grpcStreamTypes ?? parseCsvList(env.RPC_GRPC_STREAM_TYPES, ["TRADES", "BOOK_UPDATES"]),
+      config.grpcStreamTypes ??
+      parseCsvList(env.RPC_GRPC_STREAM_TYPES ?? env.DWELLIR_GRPC_STREAMS, [
+        "ORDERBOOK_SNAPSHOT",
+        "FILLS"
+      ]),
     weight,
     instrumentCode: config.instrumentCode?.toLowerCase(),
     exchangeCode: (config.exchangeCode ?? sourceExchange).toLowerCase(),
@@ -3176,7 +3327,12 @@ function resolveStreamConfig(
       env.HL_WATCHDOG_TIMEOUT_MS ?? env.HL_STALE_AFTER_MS,
       DEFAULT_WATCHDOG_TIMEOUT_MS
     ),
-    maxBackoffMs: readNumber(env.HL_MAX_BACKOFF_MS, DEFAULT_MAX_BACKOFF_MS)
+    maxBackoffMs: readNumber(env.HL_MAX_BACKOFF_MS, DEFAULT_MAX_BACKOFF_MS),
+    backoffBaseMs: readNumber(
+      env.HL_GRPC_BACKOFF_BASE_MS,
+      transport === "grpc" ? DEFAULT_GRPC_BACKOFF_BASE_MS : DEFAULT_BACKOFF_BASE_MS
+    ),
+    grpcFatalDropMs: readNumber(env.DWELLIR_GRPC_FATAL_DROP_MS, DEFAULT_GRPC_FATAL_DROP_MS)
   };
 }
 

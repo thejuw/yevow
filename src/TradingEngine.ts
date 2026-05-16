@@ -298,6 +298,17 @@ interface HyperliquidRawIngestPayload {
   messages?: unknown[];
 }
 
+interface GrpcFatalDropPayload {
+  streamId?: string;
+  source?: string;
+  source_exchange?: string;
+  connectionId?: string | null;
+  reason?: string;
+  disconnectedForMs?: number;
+  thresholdMs?: number;
+  observedAt?: string;
+}
+
 interface EngineReplaySnapshot {
   engineState: EngineState;
   orderBooks: InternalOrderBook[];
@@ -1020,6 +1031,17 @@ export class TradingEngine {
         );
       }
 
+      if (request.method === "POST" && url.pathname === "/ingest/grpc-fatal-drop") {
+        const payload = await request.json<GrpcFatalDropPayload>();
+        const result = await this.handleGrpcFatalDrop(payload);
+        return json({
+          ok: true,
+          accepted: true,
+          status: result.status,
+          state: this.engineState
+        });
+      }
+
       if (request.method === "POST" && url.pathname === "/ticks") {
         const payload = await request.json<MarketTick[] | { ticks?: MarketTick[] }>();
         const ticks = Array.isArray(payload)
@@ -1695,6 +1717,7 @@ export class TradingEngine {
       rationale: signal.rationale,
       createdAt: signal.createdAt
     }));
+    const latestLatency = this.latencyHistory.at(-1) ?? null;
 
     return {
       schemaVersion: "admin.dashboard-pulse.v1",
@@ -1707,6 +1730,7 @@ export class TradingEngine {
       quote_state: this.engineState.quoteState.status,
       toxicity_score: this.engineState.toxicityScore,
       latency_ms: this.engineState.averageLatency,
+      exchange_to_receipt_ms: latestLatency?.networkLatencyMs ?? this.engineState.averageLatency,
       jitter_ms: this.engineState.executionProfile.jitterMs,
       regime: this.engineState.oracle.regime,
       regimeCoefficient: this.engineState.oracle.skepticismMultiplier,
@@ -2178,6 +2202,55 @@ export class TradingEngine {
       status: "FRESH",
       processedCount: nextEventCount > previousEventCount ? 1 : 0
     };
+  }
+
+  private async handleGrpcFatalDrop(
+    payload: GrpcFatalDropPayload
+  ): Promise<{ status: "GRPC_FATAL_DROP" }> {
+    const observedAt = nativeIso(payload.observedAt) ?? new Date().toISOString();
+    const disconnectedForMs = nativeNumber(payload.disconnectedForMs) ?? 0;
+    const thresholdMs = nativeNumber(payload.thresholdMs) ?? 200;
+    const reason = nativeString(payload.reason) ?? "GRPC_FATAL_DROP";
+
+    this.engineState = {
+      ...this.engineState,
+      quoteState: {
+        status: "SUSPENDED",
+        reason: "GRPC_FATAL_DROP",
+        suspendedUntil: null,
+        lastQuote: this.engineState.quoteState.lastQuote,
+        updatedAt: observedAt
+      },
+      heartbeatAt: observedAt,
+      updatedAt: observedAt
+    };
+    this.state.waitUntil(
+      this.persistHotStorageSnapshot({
+        [ENGINE_STATE_KEY]: this.engineState
+      }, "GRPC_FATAL_DROP")
+    );
+    this.logger.error("GRPC_FATAL_DROP", "Dwellir gRPC blackout forced quote evacuation", {
+      streamId: payload.streamId ?? null,
+      source: payload.source ?? "DWELLIR_GRPC",
+      source_exchange: payload.source_exchange ?? "hyperliquid",
+      connectionId: payload.connectionId ?? null,
+      reason,
+      disconnectedForMs,
+      thresholdMs,
+      observedAt
+    });
+    this.publish("GRPC_FATAL_DROP", {
+      streamId: payload.streamId ?? null,
+      source_exchange: payload.source_exchange ?? "hyperliquid",
+      reason,
+      disconnectedForMs,
+      thresholdMs,
+      action: "CANCEL_ALL_QUOTES",
+      observedAt
+    });
+    this.state.waitUntil(this.cancelAllQuotes("ALL", "GRPC_FATAL_DROP"));
+
+    return { status: "GRPC_FATAL_DROP" };
   }
 
   private quoteStateStalePull(

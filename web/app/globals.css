@@ -303,6 +303,13 @@ output {
   white-space: nowrap;
 }
 
+.dwellir-stream-state strong {
+  border-left: 1px solid rgba(102, 227, 161, 0.28);
+  padding-left: 8px;
+  color: #f1ffe7;
+  font-size: 12px;
+}
+
 .streaming {
   border-color: rgba(102, 227, 161, 0.45);
   color: var(--green);

@@ -538,6 +538,8 @@ export default function CommandCenterPage() {
   const drawdown = pulse?.active_drawdown ?? engineState?.riskMetrics.rollingDrawdownPct ?? 0;
   const imbalance = pulse?.current_imbalance ?? engineState?.microstructure.weightedImbalance ?? null;
   const regime = pulse?.regime ?? engineState?.oracle.regime ?? "UNKNOWN";
+  const dwellirReceiptLatencyMs =
+    pulse?.exchange_to_receipt_ms ?? pulse?.latency_ms ?? engineState?.averageLatency ?? 0;
   const liquidationHeatmap = engineState?.liquidationHeatmap ?? null;
   const liquidationRows = useMemo(
     () => liquidationHeatmapRows(liquidationHeatmap),
@@ -659,7 +661,8 @@ export default function CommandCenterPage() {
 
         <div className="dwellir-stream-state">
           <RadioTower size={14} />
-          <span>[ DWELLIR gRPC STREAM: ACTIVE ]</span>
+          <span>[ DWELLIR L1 gRPC: ACTIVE ]</span>
+          <strong>{compact.format(dwellirReceiptLatencyMs)}ms</strong>
         </div>
 
         {error ? (
@@ -734,7 +737,7 @@ export default function CommandCenterPage() {
           <Metric label="Drawdown" value={`${compact.format(drawdown * 100)}%`} icon={<Shield size={17} />} />
           <Metric label="Imbalance" value={imbalance === null ? "n/a" : compact.format(imbalance)} icon={<Zap size={17} />} />
           <Metric label="Regime" value={regime.replace("REGIME_", "")} icon={<RadioTower size={17} />} />
-          <Metric label="Native HL Latency" value={`${compact.format(pulse?.latency_ms ?? engineState?.averageLatency ?? 0)}ms`} />
+          <Metric label="Dwellir Receipt Δ" value={`${compact.format(dwellirReceiptLatencyMs)}ms`} />
           <Metric label="Jitter" value={`${compact.format(pulse?.jitter_ms ?? engineState?.executionProfile.jitterMs ?? 0)}ms`} />
           <Metric label="VPIN" value={compact.format(pulse?.toxicity_score ?? engineState?.toxicityScore ?? 0)} />
           <Metric label="Quotes" value={engineState?.quoteState.status ?? "n/a"} />
