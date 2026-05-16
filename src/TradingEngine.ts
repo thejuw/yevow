@@ -123,6 +123,8 @@ const PROCESSING_LATENCY_SAMPLES_KEY = "performance:processing-latency-samples";
 const DOM_WALL_HISTORY_KEY = "dom:wall-history";
 const RATE_LIMIT_STATE_KEY = "execution:rate-limits";
 const EXECUTION_QUEUE_KEY = "execution:deferred-queue";
+const PAPER_SESSION_STARTED_AT_KEY = "paper:session_started_at";
+const HOT_PATH_LOG_THROTTLE_MS = 60_000;
 const DEFAULT_JITTER_SAMPLE_WINDOW = 1_000;
 const DEFAULT_JITTER_COMPUTE_INTERVAL_TICKS = 50;
 const DEFAULT_JITTER_THRESHOLD_MS = 10;
@@ -434,6 +436,9 @@ export class TradingEngine {
   private paperExecutionWindowCount = 0;
   private paperExecutionWindowDropped = 0;
   private paperExecutionThrottleLoggedAtMs = 0;
+  private performanceSpikeLogAt = new Map<string, number>();
+  private rateLimitDeferralLogAt = 0;
+  private cancelAllLogAt = new Map<string, number>();
   private latencyHistory: LatencyMetrics[] = [];
   private processingLatencySamples: number[] = [];
   private domWallHistory: LiquidityWall[] = [];
@@ -2708,6 +2713,12 @@ export class TradingEngine {
       [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples
     }, "ADMIN_CONTROLLED_RECOVERY");
 
+    if (payload.resetPaperPortfolio) {
+      this.state.waitUntil(
+        this.env.CONFIG_STORE.put(PAPER_SESSION_STARTED_AT_KEY, observedAt)
+      );
+    }
+
     this.logger.warn("ADMIN_CONTROLLED_RECOVERY", "Admin controlled recovery applied", {
       reason,
       resetInstruments,
@@ -4178,7 +4189,10 @@ export class TradingEngine {
     await this.persistHotStorageSnapshot(writes, "HOT_PATH_TICK_SNAPSHOT");
     this.logger.recordMarketTick(tick);
 
-    if (oracleResult.bayesianTrace) {
+    if (
+      oracleResult.bayesianTrace &&
+      this.engineState.processedTicks % AGENT_SNAPSHOT_TICK_INTERVAL === 0
+    ) {
       this.logger.info("BAYESIAN_POSTERIOR_UPDATED", "Oracle posterior PDF updated", {
         instrumentCode: tick.instrumentCode,
         ...oracleResult.bayesianTrace
@@ -4928,12 +4942,16 @@ export class TradingEngine {
       Math.min(runAfterMs, Date.now() + CONFIG_ALARM_INTERVAL_MS),
       "EXECUTION_QUEUE_ALARM"
     );
-    this.logger.warn("EXECUTION_DEFERRED_BY_RATE_LIMIT", "Execution intent deferred by durable rate limiter", {
-      intentId: intent.intentId,
-      priority,
-      waitMs,
-      queuedCount: nextQueue.length
-    });
+    const now = Date.now();
+    if (now - this.rateLimitDeferralLogAt >= HOT_PATH_LOG_THROTTLE_MS) {
+      this.rateLimitDeferralLogAt = now;
+      this.logger.warn("EXECUTION_DEFERRED_BY_RATE_LIMIT", "Execution intent deferred by durable rate limiter", {
+        intentId: intent.intentId,
+        priority,
+        waitMs,
+        queuedCount: nextQueue.length
+      });
+    }
   }
 
   private async readExecutionQueue(reason: string): Promise<QueuedExecutionIntent[]> {
@@ -4975,6 +4993,14 @@ export class TradingEngine {
     if (!this.env.EXECUTIONER) {
       return;
     }
+
+    const dispatchKey = `${instrumentCode}:${reason}`;
+    const now = Date.now();
+    const previousDispatchAt = this.cancelAllLogAt.get(dispatchKey) ?? 0;
+    if (now - previousDispatchAt < HOT_PATH_LOG_THROTTLE_MS) {
+      return;
+    }
+    this.cancelAllLogAt.set(dispatchKey, now);
 
     const reservation = this.rateLimiter.reserve("default", "CANCEL");
     this.state.waitUntil(
@@ -6484,7 +6510,24 @@ export class TradingEngine {
   }
 
   private logPerformance(latencyMetrics: LatencyMetrics): void {
+    if (!this.shouldLogPerformanceSpike(latencyMetrics)) {
+      return;
+    }
+
     this.logger.logPerformance(latencyMetrics);
+  }
+
+  private shouldLogPerformanceSpike(latencyMetrics: LatencyMetrics): boolean {
+    const key = `${latencyMetrics.instrumentCode}:${latencyMetrics.status}`;
+    const now = Date.now();
+    const previous = this.performanceSpikeLogAt.get(key) ?? 0;
+
+    if (now - previous < HOT_PATH_LOG_THROTTLE_MS) {
+      return false;
+    }
+
+    this.performanceSpikeLogAt.set(key, now);
+    return true;
   }
 
   private triggerEmergencyPause(

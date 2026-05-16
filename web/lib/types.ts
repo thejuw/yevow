@@ -411,7 +411,8 @@ export interface PaperPnlAsset {
 
 export interface PaperPnlSummary {
   windowHours: number;
-  mode: "SHADOW_MARK_TO_MARKET";
+  mode: "SHADOW_MARK_TO_MARKET" | "SHADOW_CURRENT_SESSION";
+  sessionStartedAt?: string | null;
   assets: PaperPnlAsset[];
   totals: {
     tradeCount: number;

@@ -71,7 +71,7 @@ export async function readAttribution(apiBase: string, token: string): Promise<A
 export async function readTradeHistory(apiBase: string, token: string): Promise<TradeHistoryResponse> {
   return apiFetch<TradeHistoryResponse>(
     apiBase,
-    "/admin/history?status=ALL&limit=50",
+    "/admin/history?status=ALL&limit=250",
     token
   );
 }

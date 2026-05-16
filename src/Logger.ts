@@ -375,19 +375,6 @@ export class Logger {
       );
 
     this.enqueue(statement, "execution_quality");
-    this.writeLog("INFO", this.source, "Execution quality metric recorded", {
-      eventType: "EXECUTION_QUALITY",
-      correlationId: input.clientId,
-      clientId: input.clientId,
-      instrumentCode: input.instrumentCode,
-      Expected_Price: input.expectedPrice,
-      Achieved_Price: input.achievedPrice,
-      slippageBps: input.slippageBps,
-      implementationShortfall: input.implementationShortfall,
-      latencyMs: input.latencyMs,
-      fees: input.fees,
-      observedAt: input.observedAt
-    });
   }
 
   private withAuditContext(metadata: Record<string, unknown>): JsonRecord {

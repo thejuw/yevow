@@ -44,6 +44,7 @@ const DEFAULT_GRPC_FATAL_DROP_MS = 200;
 const DEFAULT_DWELLIR_GRPC_FILLS_WATCHDOG_TIMEOUT_MS = 60_000;
 const DEFAULT_DWELLIR_GRPC_START_LOOKBACK_MS = 1_000;
 const DEFAULT_DWELLIR_GRPC_FORWARD_MAX_AGE_MS = 5_000;
+const NORMAL_RECYCLE_LOG_THROTTLE_MS = 60_000;
 const SNAPSHOT_SEQUENCE_FALLBACK_SEED = "snapshot";
 const DEFAULT_SOURCE_WEIGHT = 1;
 const DEFAULT_CLOCK_SYNC_ALPHA = 0.1;
@@ -461,6 +462,7 @@ class ExchangeStreamController {
   private streamReady = false;
   private hasConnectedOnce = false;
   private preSnapshotBuffer: Array<string | ArrayBuffer> = [];
+  private normalRecycleLogAt = new Map<string, number>();
 
   constructor(
     private readonly env: Env,
@@ -588,7 +590,7 @@ class ExchangeStreamController {
       };
 
       if (this.isNormalProviderRecycle()) {
-        this.logger.info(
+        this.logNormalProviderRecycle(
           "STREAM_RECYCLE_RECONNECT",
           "Scheduling normal provider stream recycle",
           reconnectMetadata
@@ -662,7 +664,7 @@ class ExchangeStreamController {
     this.lastRecoveryDurationMs = blackoutDurationMs;
     this.lastError = null;
 
-    this.logger.info("STREAM_CONNECT", "Market stream connected", {
+    const connectMetadata = {
       streamId: this.config.id,
       source: this.config.source,
       source_exchange: this.config.source_exchange,
@@ -671,7 +673,16 @@ class ExchangeStreamController {
       streamHost: new URL(streamUrl).host,
       watchdogTimeoutMs,
       pingIntervalMs
-    });
+    };
+    if (this.isNormalProviderRecycle(previousDisconnectReason)) {
+      this.logNormalProviderRecycle(
+        "STREAM_CONNECT",
+        "Market stream connected after normal recycle",
+        connectMetadata
+      );
+    } else {
+      this.logger.info("STREAM_CONNECT", "Market stream connected", connectMetadata);
+    }
     this.clusterPool.recordHeartbeat(streamUrl, 0);
 
     return new Promise<void>((resolve, reject) => {
@@ -799,16 +810,20 @@ class ExchangeStreamController {
             await this.resetEngineBook(blackoutDurationMs, recoveredAt);
           } else {
             await this.registerEngineConnection("STREAM_RECYCLED_NO_RESET", recoveredAt);
-            this.logger.info("STREAM_RECOVERED_NO_RESET", "Provider stream recycled without book reset", {
-              streamId: this.config.id,
-              source: this.config.source,
-              source_exchange: this.config.source_exchange,
-              connectionId: this.connectionId,
-              attempts: this.attempts,
-              blackoutDurationMs,
-              recoveredAt,
-              previousDisconnectReason
-            });
+            this.logNormalProviderRecycle(
+              "STREAM_RECOVERED_NO_RESET",
+              "Provider stream recycled without book reset",
+              {
+                streamId: this.config.id,
+                source: this.config.source,
+                source_exchange: this.config.source_exchange,
+                connectionId: this.connectionId,
+                attempts: this.attempts,
+                blackoutDurationMs,
+                recoveredAt,
+                previousDisconnectReason
+              }
+            );
           }
           if (this.config.snapshotUrl) {
             await this.syncEngineSnapshot("STREAM_CONNECTED", recoveredAt);
@@ -1988,7 +2003,11 @@ class ExchangeStreamController {
     };
 
     if (this.isNormalProviderRecycle(reason)) {
-      this.logger.info("STREAM_RECYCLE", "Provider closed stream normally; fast recycle active", metadata);
+      this.logNormalProviderRecycle(
+        "STREAM_RECYCLE",
+        "Provider closed stream normally; fast recycle active",
+        metadata
+      );
       return;
     }
 
@@ -2026,6 +2045,22 @@ class ExchangeStreamController {
       this.config.id.startsWith("dwellir-hyperliquid-orderbook") &&
       reason === "CLOSE_1000"
     );
+  }
+
+  private logNormalProviderRecycle(
+    eventType: string,
+    message: string,
+    metadata: Record<string, unknown>
+  ): void {
+    const now = Date.now();
+    const previous = this.normalRecycleLogAt.get(eventType) ?? 0;
+
+    if (now - previous < NORMAL_RECYCLE_LOG_THROTTLE_MS) {
+      return;
+    }
+
+    this.normalRecycleLogAt.set(eventType, now);
+    this.logger.info(eventType, message, metadata as JsonRecord);
   }
 
   private startBlackout(startedAt: string = new Date().toISOString()): void {

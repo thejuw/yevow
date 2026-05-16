@@ -157,14 +157,6 @@ async function executeIntent(
 
     if (intent.postOnly && intent.orderType === "LIMIT") {
       const report = buildShadowRestingQuoteReport(intent, audit.exactTimestamp);
-      logger.info("SHADOW_POST_ONLY_QUOTE_OPEN", "Shadow Mode left post-only quote resting", {
-        intentId: intent.intentId,
-        instrumentCode: intent.instrumentCode,
-        source_exchange: intent.source_exchange ?? null,
-        expectedPrice: intent.expectedPrice,
-        size: intent.approvedSize ?? intent.requestedSize,
-        signingLatencyMs: exchangeRequest.signingLatencyMs
-      });
       ctx.waitUntil(forwardReport(env, report));
 
       return json({

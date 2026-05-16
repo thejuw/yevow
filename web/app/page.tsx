@@ -297,6 +297,7 @@ export default function CommandCenterPage() {
     [attribution]
   );
   const tradeSummary = useMemo(() => summarizeTrades(tradeHistory?.data ?? []), [tradeHistory]);
+  const totalExecutions = tradeHistory?.pagination.total ?? tradeSummary.count;
   const paperPnl = useMemo(
     () => summarizePaperPnl(tradeHistory?.paperPnl, engineState),
     [engineState, tradeHistory?.paperPnl]
@@ -1157,7 +1158,7 @@ export default function CommandCenterPage() {
             </button>
           </div>
           <div className="trade-summary">
-            <Metric label="Executions" value={compact.format(tradeSummary.count)} />
+            <Metric label="Executions" value={compact.format(totalExecutions)} />
             <Metric label="Ghost Fills" value={compact.format(paperPnl.tradeCount || tradeSummary.filled)} />
             <Metric label="Paper MTM" value={formatNullableCurrency(paperPnl.paperMtm)} />
             <Metric label="Expected EV" value={currency.format(paperPnl.totalEv)} />

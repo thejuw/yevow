@@ -30,6 +30,7 @@ const MAX_ADMIN_PAGE_SIZE = 500;
 const ENGINE_HEALTH_TIMEOUT_MS = 1_500;
 const MOLTWORKER_HEARTBEAT_KEY = "moltworker:heartbeat";
 const DEFAULT_MOLTWORKER_HEARTBEAT_MAX_AGE_MS = 300_000;
+const PAPER_SESSION_STARTED_AT_KEY = "paper:session_started_at";
 const LOG_LEVELS = ["DEBUG", "INFO", "WARN", "ERROR", "CRITICAL"] as const;
 const AGENT_NAMES = [
   "ORACLE",
@@ -1578,6 +1579,14 @@ async function readTradeHistory(env: Env, url: URL): Promise<Response> {
 
 async function readPaperPnlSummary(env: Env): Promise<JsonRecord> {
   const windowHours = 24;
+  const sessionStartedAt = await env.CONFIG_STORE.get(PAPER_SESSION_STARTED_AT_KEY);
+  const sessionCutoff =
+    sessionStartedAt && Number.isFinite(Date.parse(sessionStartedAt))
+      ? sessionStartedAt
+      : null;
+  const timeFilterSql = sessionCutoff
+    ? "AND executed_at >= ?"
+    : "AND executed_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-24 hours')";
   const rows = await env.TRADING_DB.prepare(
     `SELECT
        asset,
@@ -1595,10 +1604,10 @@ async function readPaperPnlSummary(env: Env): Promise<JsonRecord> {
        MAX(executed_at) AS last_seen
      FROM trades
      WHERE status = 'GHOST_FILL'
-       AND executed_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-24 hours')
+       ${timeFilterSql}
      GROUP BY asset
      ORDER BY asset`
-  ).all<PaperPnlAggregateRow>();
+  ).bind(...(sessionCutoff ? [sessionCutoff] : [])).all<PaperPnlAggregateRow>();
   const assets = (rows.results ?? []).map((row) => {
     const buySize = row.buy_size ?? 0;
     const sellSize = row.sell_size ?? 0;
@@ -1652,7 +1661,8 @@ async function readPaperPnlSummary(env: Env): Promise<JsonRecord> {
 
   return {
     windowHours,
-    mode: "SHADOW_MARK_TO_MARKET",
+    mode: sessionCutoff ? "SHADOW_CURRENT_SESSION" : "SHADOW_MARK_TO_MARKET",
+    sessionStartedAt: sessionCutoff,
     assets,
     totals: {
       tradeCount: totals.tradeCount,
