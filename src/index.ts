@@ -1743,6 +1743,7 @@ async function readAttribution(env: Env, url: URL): Promise<Response> {
        t.ev_at_execution,
        t.slippage_bps,
        t.resulting_pnl,
+       t.primary_driver,
        t.fees,
        t.status,
        t.exchange_trade_id,
