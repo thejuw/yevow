@@ -1,6 +1,10 @@
 import { Logger } from "./Logger";
 import { parseLiquidationWallets } from "./agents/HeatmapAgent";
 import { Notifier } from "./utils/Notifier";
+import {
+  durableObjectLocationOptions,
+  getTradingEngineStub
+} from "./utils/TradingEngineStub";
 import type {
   Env,
   ExchangeStreamConfig,
@@ -14,8 +18,7 @@ import type {
   OrderBookResetRequest
 } from "./types";
 
-const SINGLETON_ENGINE_NAME = "sovereign-sigma:singleton:trading-engine:v1";
-const SINGLETON_INGEST_COORDINATOR_NAME = "sovereign-sigma:singleton:ingest-coordinator:v1";
+const DEFAULT_INGEST_COORDINATOR_NAME = "sovereign-sigma:singleton:ingest-coordinator:v2:weur";
 const DEFAULT_AUTH_HEADER = "X-Api-Key";
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000;
 const DEFAULT_WATCHDOG_TIMEOUT_MS = 5_000;
@@ -155,8 +158,13 @@ function routeToIngestCoordinator(request: Request, env: Env): Promise<Response>
     `${url.pathname}${url.search}`,
     "https://sovereign-sigma-ingest-coordinator.internal"
   );
-  const id = env.INGEST_COORDINATOR.idFromName(SINGLETON_INGEST_COORDINATOR_NAME);
-  const coordinator = env.INGEST_COORDINATOR.get(id);
+  const coordinatorName =
+    env.INGEST_COORDINATOR_OBJECT_NAME?.trim() || DEFAULT_INGEST_COORDINATOR_NAME;
+  const id = env.INGEST_COORDINATOR.idFromName(coordinatorName);
+  const coordinator = env.INGEST_COORDINATOR.get(
+    id,
+    durableObjectLocationOptions(env.INGEST_COORDINATOR_LOCATION_HINT)
+  );
 
   return coordinator.fetch(new Request(coordinatorUrl, request));
 }
@@ -301,8 +309,7 @@ async function ingestNewsFeeds(env: Env, logger: Logger): Promise<void> {
 }
 
 async function forwardNewsItem(env: Env, item: NewsItem): Promise<void> {
-  const id = env.TRADING_ENGINE.idFromName(SINGLETON_ENGINE_NAME);
-  const engine = env.TRADING_ENGINE.get(id);
+  const engine = getTradingEngineStub(env);
 
   await engine.fetch(
     new Request("https://trading-engine.internal/news/sentiment", {
@@ -1130,8 +1137,7 @@ class ExchangeStreamController {
   }
 
   private async forwardSnapshot(snapshot: OrderBookSnapshot): Promise<void> {
-    const id = this.env.TRADING_ENGINE.idFromName(SINGLETON_ENGINE_NAME);
-    const engine = this.env.TRADING_ENGINE.get(id);
+    const engine = getTradingEngineStub(this.env);
     const response = await engine.fetch(
       new Request("https://trading-engine.internal/book/snapshot", {
         method: "POST",
@@ -1153,8 +1159,7 @@ class ExchangeStreamController {
   }
 
   private async forwardTicks(ticks: MarketTick[]): Promise<void> {
-    const id = this.env.TRADING_ENGINE.idFromName(SINGLETON_ENGINE_NAME);
-    const engine = this.env.TRADING_ENGINE.get(id);
+    const engine = getTradingEngineStub(this.env);
     const response = await engine.fetch(
       new Request("https://trading-engine.internal/ticks", {
         method: "POST",
@@ -1187,8 +1192,7 @@ class ExchangeStreamController {
       return;
     }
 
-    const id = this.env.TRADING_ENGINE.idFromName(SINGLETON_ENGINE_NAME);
-    const engine = this.env.TRADING_ENGINE.get(id);
+    const engine = getTradingEngineStub(this.env);
     const response = await engine.fetch(
       new Request("https://trading-engine.internal/hyperliquid/raw", {
         method: "POST",
@@ -1256,11 +1260,11 @@ class ExchangeStreamController {
     blackoutDurationMs: number,
     recoveredAt: string
   ): Promise<void> {
-    const id = this.env.TRADING_ENGINE.idFromName(SINGLETON_ENGINE_NAME);
-    const engine = this.env.TRADING_ENGINE.get(id);
+    const engine = getTradingEngineStub(this.env);
     const payload: OrderBookResetRequest = {
       source: "INGEST_WORKER",
       reason: this.blackoutStartedAt ? "STREAM_RECONNECTED" : "STREAM_CONNECTED",
+      streamId: this.config.id,
       instrumentCode: resetInstrumentForStream(this.config),
       source_exchange: this.config.source_exchange,
       connectionId: this.connectionId,

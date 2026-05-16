@@ -91,6 +91,7 @@ const CONFIG_KEY = "engine:config";
 const DEFAULT_MAX_LATENCY_MS = 250;
 const DEFAULT_NATIVE_HL_MAX_LATENCY_MS = 150;
 const DEFAULT_HARD_STALE_DROP_MS = 1_000;
+const DEFAULT_HL_BOOK_TIMESTAMP_MAX_DRIFT_MS = 100;
 const DEFAULT_HL_SEQUENCE_GAP_MS = 5_000;
 const PERFORMANCE_HISTORY_LIMIT = 100;
 const CONFIG_ALARM_INTERVAL_MS = 5_000;
@@ -168,6 +169,7 @@ interface TickIngestResult {
     | "ANOMALY_PAUSE"
     | "DESYNC"
     | "DUPLICATE_OR_OUT_OF_ORDER"
+    | "IGNORED"
     | "STALE_DROPPED"
     | "BOOK_NOT_READY";
   reason?: string;
@@ -401,6 +403,7 @@ export class TradingEngine {
   private bids = new Map<string, SortedBookSide>();
   private asks = new Map<string, SortedBookSide>();
   private bookSync = new Map<string, BookSyncState>();
+  private activeIngestConnections = new Map<string, string>();
   private readonly adminSockets = new Set<WebSocket>();
   private signals: AgentSignal[] = [];
   private latestAgentSignals = new Map<AgentName, AgentSignal>();
@@ -1744,6 +1747,15 @@ export class TradingEngine {
     payload: HyperliquidRawIngestPayload,
     wakeUpTimeMs: number | null
   ): Promise<TickIngestResult> {
+    if (!this.isActiveIngestConnection(payload)) {
+      return {
+        accepted: false,
+        status: "IGNORED",
+        reason: "STALE_INGEST_CONNECTION",
+        processedCount: 0
+      };
+    }
+
     const messages = Array.isArray(payload.messages)
       ? payload.messages
       : [payload.raw ?? payload];
@@ -1764,6 +1776,49 @@ export class TradingEngine {
       ...(terminalResult ?? { accepted: true, status: "FRESH" as const }),
       processedCount
     };
+  }
+
+  private ingestConnectionKey(
+    sourceExchange: string | null | undefined,
+    streamId?: string | null
+  ): string {
+    return `${normalizeSourceExchange(sourceExchange ?? "hyperliquid")}:${streamId ?? "default"}`;
+  }
+
+  private isActiveIngestConnection(payload: HyperliquidRawIngestPayload): boolean {
+    if (!payload.connectionId) {
+      return true;
+    }
+
+    const key = this.ingestConnectionKey(payload.source_exchange, payload.streamId);
+    const fallbackKey = this.ingestConnectionKey(payload.source_exchange, null);
+    const activeConnection =
+      this.activeIngestConnections.get(key) ?? this.activeIngestConnections.get(fallbackKey);
+
+    return !activeConnection || activeConnection === payload.connectionId;
+  }
+
+  private resolveHyperliquidBookTimestamp(
+    rawExchangeTimestamp: string | null,
+    receivedAt: string
+  ): string {
+    if (!rawExchangeTimestamp) {
+      return receivedAt;
+    }
+
+    const rawMs = Date.parse(rawExchangeTimestamp);
+    const receivedMs = Date.parse(receivedAt);
+
+    if (!Number.isFinite(rawMs) || !Number.isFinite(receivedMs)) {
+      return receivedAt;
+    }
+
+    const maxDriftMs = readPositiveNumber(
+      this.env.HL_BOOK_TIMESTAMP_MAX_DRIFT_MS,
+      DEFAULT_HL_BOOK_TIMESTAMP_MAX_DRIFT_MS
+    );
+
+    return receivedMs - rawMs > maxDriftMs ? receivedAt : rawExchangeTimestamp;
   }
 
   private enqueueHyperliquidRawMessage(
@@ -1849,7 +1904,11 @@ export class TradingEngine {
       payload.source_exchange ?? "hyperliquid"
     );
     const sourceWeight = normalizeSourceWeight(payload.sourceWeight);
-    const exchangeTimestamp = nativeExchangeTimestamp(data.time ?? data.timestamp) ?? receivedAt;
+    const rawExchangeTimestamp = nativeExchangeTimestamp(data.time ?? data.timestamp);
+    const exchangeTimestamp = this.resolveHyperliquidBookTimestamp(
+      rawExchangeTimestamp,
+      receivedAt
+    );
     const explicitSequenceValue = data.sequence ?? data.seq;
     const explicitSequence = Number(explicitSequenceValue);
     const hasExplicitSequence =
@@ -2198,6 +2257,10 @@ export class TradingEngine {
     const resetSourceExchange = payload.source_exchange
       ? normalizeSourceExchange(payload.source_exchange)
       : null;
+    const resetStreamId =
+      typeof payload.streamId === "string" && payload.streamId.length > 0
+        ? payload.streamId
+        : null;
     const resetMarketKey =
       resetInstrument && resetSourceExchange
         ? buildMarketKey(resetSourceExchange, resetInstrument)
@@ -2246,6 +2309,16 @@ export class TradingEngine {
 
     if (source === "INGEST_WORKER") {
       this.resetLatencyBaseline(now, `ORDER_BOOK_RESET:${reason}`);
+      if (payload.connectionId) {
+        this.activeIngestConnections.set(
+          this.ingestConnectionKey(resetSourceExchange, resetStreamId),
+          payload.connectionId
+        );
+        this.activeIngestConnections.set(
+          this.ingestConnectionKey(resetSourceExchange, null),
+          payload.connectionId
+        );
+      }
     }
 
     const writes: Record<string, unknown> = {
@@ -2260,6 +2333,7 @@ export class TradingEngine {
     this.logger.warn("ORDER_BOOK_RESET", "Internal order book purged after stream recovery", {
       reason,
       source,
+      streamId: resetStreamId,
       instrumentCode: resetInstrument,
       source_exchange: resetSourceExchange,
       marketKey: resetMarketKey,
@@ -2272,6 +2346,7 @@ export class TradingEngine {
     this.publish("ORDER_BOOK_RESET", {
       reason,
       source,
+      streamId: resetStreamId,
       instrumentCode: resetInstrument,
       source_exchange: resetSourceExchange,
       marketKey: resetMarketKey,
@@ -3184,22 +3259,26 @@ export class TradingEngine {
 
     if (
       !options.shadowReplay &&
-      this.engineState.averageLatency > hardStaleDropMs * 5 &&
+      this.engineState.averageLatency > hardStaleDropMs &&
       metrics.totalLatencyMs <= hardStaleDropMs
     ) {
       this.resetLatencyBaseline(metrics.brainTimestamp, "FRESH_SAMPLE_AFTER_BACKLOG");
     }
 
-    this.updateLatencyAverage(metrics.totalLatencyMs);
+    metrics.maxLatencyMs = this.maxLatencyMs;
+    metrics.status =
+      !options.shadowReplay && metrics.totalLatencyMs > this.maxLatencyMs ? "STALE" : "FRESH";
+
+    if (metrics.status === "FRESH") {
+      this.updateLatencyAverage(metrics.totalLatencyMs);
+    }
+
     this.applyLocationLatency(metrics.totalLatencyMs, metrics.brainTimestamp);
 
     metrics.averageLatencyMs = this.engineState.averageLatency;
     metrics.sampleCount = this.engineState.latencySampleCount;
-    metrics.maxLatencyMs = this.maxLatencyMs;
     metrics.latencyRiskMultiplier = this.engineState.location.latencyRiskMultiplier;
     metrics.positionSizeMultiplier = this.engineState.location.positionSizeMultiplier;
-    metrics.status =
-      !options.shadowReplay && metrics.totalLatencyMs > this.maxLatencyMs ? "STALE" : "FRESH";
 
     this.latencyHistory = [...this.latencyHistory, metrics].slice(
       -PERFORMANCE_HISTORY_LIMIT

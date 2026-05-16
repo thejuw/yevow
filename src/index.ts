@@ -10,6 +10,7 @@ import {
 import { TradingEngine } from "./TradingEngine";
 import { Notifier, type AlertPriority } from "./utils/Notifier";
 import { SignatureEngine } from "./utils/SignatureEngine";
+import { getTradingEngineStub, tradingEngineObjectName } from "./utils/TradingEngineStub";
 import type { AdminScope, AuthClaims } from "./AuthManager";
 import type {
   AdminConfigUpdate,
@@ -23,7 +24,6 @@ import type {
 
 export { TradingEngine };
 
-const SINGLETON_ENGINE_NAME = "sovereign-sigma:singleton:trading-engine:v1";
 const TOPOLOGY_HEADER_PREFIX = "x-sovereign-topology-";
 const DEFAULT_ADMIN_PAGE_SIZE = 100;
 const MAX_ADMIN_PAGE_SIZE = 500;
@@ -304,7 +304,7 @@ export default {
     return json({
       ok: true,
       service: "sovereign-sigma-core",
-      singleton: SINGLETON_ENGINE_NAME,
+      singleton: tradingEngineObjectName(env),
       topology,
       routes: [
         "GET /health",
@@ -1266,8 +1266,7 @@ async function routeToEngine(
     timeoutResponse?: Response;
   } = {}
 ): Promise<Response> {
-  const id = env.TRADING_ENGINE.idFromName(SINGLETON_ENGINE_NAME);
-  const engine = env.TRADING_ENGINE.get(id);
+  const engine = getTradingEngineStub(env);
   const controller = options.timeoutMs ? new AbortController() : null;
   const timeout =
     controller && options.timeoutMs

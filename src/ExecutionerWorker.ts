@@ -2,9 +2,9 @@ import { ConfigManager } from "./ConfigManager";
 import { Logger } from "./Logger";
 import { RateLimiter } from "./utils/RateLimiter";
 import { SignatureEngine } from "./utils/SignatureEngine";
+import { getTradingEngineStub } from "./utils/TradingEngineStub";
 import type { Env, ExchangeOpenOrder, ExecutionReport, JsonRecord, TradeIntent } from "./types";
 
-const SINGLETON_ENGINE_NAME = "sovereign-sigma:singleton:trading-engine:v1";
 const BINANCE_US_BASE_URL = "https://api.binance.us";
 const HYPERLIQUID_BASE_URL = "https://api.hyperliquid.xyz";
 const DEFAULT_RECV_WINDOW_MS = 5_000;
@@ -628,8 +628,7 @@ async function fetchBookSnapshot(
   asks?: Array<{ price: number; size: number }>;
 } | null> {
   try {
-    const id = env.TRADING_ENGINE.idFromName(SINGLETON_ENGINE_NAME);
-    const engine = env.TRADING_ENGINE.get(id);
+    const engine = getTradingEngineStub(env);
     const response = await engine.fetch(
       new Request(
         `https://trading-engine.internal/book/snapshot?instrumentCode=${encodeURIComponent(instrumentCode)}`
@@ -1567,8 +1566,7 @@ function extractHyperliquidExecution(body: Record<string, unknown> | null): {
 }
 
 async function forwardReport(env: Env, report: ExecutionReport): Promise<void> {
-  const id = env.TRADING_ENGINE.idFromName(SINGLETON_ENGINE_NAME);
-  const engine = env.TRADING_ENGINE.get(id);
+  const engine = getTradingEngineStub(env);
   await engine.fetch(
     new Request("https://trading-engine.internal/execution/report", {
       method: "POST",

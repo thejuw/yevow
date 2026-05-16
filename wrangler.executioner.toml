@@ -27,6 +27,8 @@ preview_id = "3d69fe3608404e049791ce81142dab8e"
 mode = "smart"
 
 [vars]
+ENGINE_OBJECT_NAME = "sovereign-sigma:singleton:trading-engine:v2:weur"
+ENGINE_LOCATION_HINT = "weur"
 EXCHANGE_ADAPTER = "hyperliquid"
 EXCHANGE_BASE_URL = "https://api.hyperliquid.xyz"
 HL_INFO_URL = "https://api.hyperliquid.xyz/info"

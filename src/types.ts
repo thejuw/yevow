@@ -6,6 +6,10 @@ export interface Env {
   RISK_VAULT: KVNamespace;
   AI?: Ai;
   EXECUTIONER?: Fetcher;
+  ENGINE_OBJECT_NAME?: string;
+  ENGINE_LOCATION_HINT?: string;
+  INGEST_COORDINATOR_OBJECT_NAME?: string;
+  INGEST_COORDINATOR_LOCATION_HINT?: string;
   MARKET_STREAMS?: string;
   EXCHANGE_WEIGHTS?: string;
   CLOCK_SYNC_ALPHA?: string;
@@ -16,6 +20,7 @@ export interface Env {
   HL_WATCHDOG_TIMEOUT_MS?: string;
   HL_MAX_BACKOFF_MS?: string;
   HL_STALE_AFTER_MS?: string;
+  HL_BOOK_TIMESTAMP_MAX_DRIFT_MS?: string;
   HL_SEQUENCE_GAP_MS?: string;
   HL_INFO_URL?: string;
   HL_EXCHANGE_URL?: string;
@@ -241,6 +246,7 @@ export interface ExchangeStreamConfig {
 export interface OrderBookResetRequest {
   source: "INGEST_WORKER" | "ADMIN" | "SYSTEM";
   reason: string;
+  streamId?: string | null;
   instrumentCode?: string | null;
   source_exchange?: string | null;
   connectionId?: string | null;
