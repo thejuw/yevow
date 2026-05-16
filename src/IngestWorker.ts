@@ -1309,6 +1309,19 @@ class ExchangeStreamController {
     );
 
     if (rawMessages.length === 0) {
+      const malformedReason = classifyDwellirMalformedPayload(update);
+      if (malformedReason) {
+        this.ticksDropped += 1;
+        this.logger.warn("DWELLIR_GRPC_PAYLOAD_DROPPED", "Dropped malformed Dwellir gRPC payload", {
+          streamId: this.config.id,
+          source: this.config.source,
+          source_exchange: this.config.source_exchange,
+          connectionId: this.connectionId,
+          kind: update.kind,
+          reason: malformedReason,
+          payloadBytes: update.data.byteLength
+        });
+      }
       return;
     }
 
@@ -2998,6 +3011,42 @@ function dwellirPayloadToHyperliquidRawMessages(
   return [];
 }
 
+function classifyDwellirMalformedPayload(update: DwellirGrpcPayload): string | null {
+  if (update.kind === "BLOCK") {
+    return null;
+  }
+
+  const text = new TextDecoder().decode(update.data);
+  const decoded = parseJson<unknown>(text);
+
+  if (decoded === null) {
+    return "INVALID_DWELLIR_PROTO_JSON_PAYLOAD";
+  }
+
+  if (update.kind === "FILLS") {
+    const hasFillContainer =
+      Array.isArray(decoded) ||
+      (isRecord(decoded) &&
+        (Array.isArray(decoded.data) ||
+          Array.isArray(decoded.fills) ||
+          Array.isArray(decoded.events) ||
+          typeof decoded.channel === "string"));
+    return hasFillContainer ? null : "UNSUPPORTED_DWELLIR_FILLS_PAYLOAD";
+  }
+
+  if (update.kind === "ORDERBOOK_SNAPSHOT") {
+    const hasBookContainer =
+      isRecord(decoded) &&
+      (Array.isArray(decoded.data) ||
+        Array.isArray(decoded.levels) ||
+        Array.isArray(decoded.bids) ||
+        typeof decoded.channel === "string");
+    return hasBookContainer ? null : "UNSUPPORTED_DWELLIR_ORDERBOOK_PAYLOAD";
+  }
+
+  return null;
+}
+
 function dwellirOrderbookSnapshotMessagesFromBytes(
   bytes: Uint8Array,
   coins: string[],
@@ -4040,3 +4089,8 @@ function json(body: unknown, status = 200): Response {
     }
   });
 }
+
+export const __test__ = {
+  classifyDwellirMalformedPayload,
+  dwellirPayloadToHyperliquidRawMessages
+};

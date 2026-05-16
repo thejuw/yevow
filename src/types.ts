@@ -139,6 +139,7 @@ export interface Env {
   NEWS_FEEDS?: string;
   JANITOR_LOG_RETENTION_DAYS?: string;
   MOLTWORKER_HEALTH_URL?: string;
+  SHADOW_MODE?: string;
 }
 
 export type ISO8601 = string;
@@ -176,6 +177,7 @@ export type AgentAction =
   | "SUPERVISOR_ACTION";
 export type EngineMode = "PAPER" | "LIVE" | "HALTED";
 export type EngineStabilityStatus = "STABLE" | "UNSTABLE";
+export type CitadelOperationalStatus = "NOMINAL" | "WATCH" | "CRITICAL";
 export type HealthStatus = "GREEN" | "YELLOW" | "RED";
 export type GovernanceMode = "MANUAL" | "AUTONOMOUS" | "HYBRID";
 export type NotificationPriority = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
@@ -384,10 +386,19 @@ export interface EngineState {
   slippage: SlippageAnalytics;
   orderMap: Record<string, ManagedOrder>;
   executionProfile: ExecutionProfile;
+  citadel: CitadelState;
   dom: DomAnalysisSnapshot | null;
   anomaly: AnomalyStatus;
   heartbeatAt: ISO8601;
   updatedAt: ISO8601;
+}
+
+export interface CitadelState {
+  status: CitadelOperationalStatus;
+  reason: string | null;
+  shadowMode: boolean;
+  lastEvacuationAt: ISO8601 | null;
+  updatedAt: ISO8601 | null;
 }
 
 export interface GlobalRiskConfig {
@@ -876,7 +887,7 @@ export interface TradeExecution {
   resultingPnl: number;
   primaryDriver?: AgentName;
   fees?: number;
-  status: "ACCEPTED" | "FILLED" | "PARTIAL" | "REJECTED" | "CANCELLED";
+  status: "ACCEPTED" | "FILLED" | "PARTIAL" | "REJECTED" | "CANCELLED" | "GHOST_FILL";
   exchangeTradeId?: string;
   metadata?: JsonRecord;
   executedAt: ISO8601;
@@ -1132,6 +1143,7 @@ export type ManagedOrderStatus =
   | "OPEN"
   | "PARTIAL_FILL"
   | "FILLED"
+  | "GHOST_FILL"
   | "CANCELLED"
   | "REJECTED";
 

@@ -7,6 +7,8 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "proto:compile": "node scripts/compile-protos.mjs",
+    "test:engine": "vitest run",
+    "tune:parameters": "tsx scripts/tune_parameters.ts",
     "typecheck": "tsc --noEmit",
     "web:dev": "npm run dev --prefix web",
     "web:build": "npm run build --prefix web",
@@ -14,7 +16,9 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260511.1",
+    "tsx": "^4.22.0",
     "typescript": "^5.8.3",
+    "vitest": "^4.1.6",
     "wrangler": "^3.114.17"
   },
   "dependencies": {

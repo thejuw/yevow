@@ -47,7 +47,8 @@ const TRADE_STATUSES = [
   "FILLED",
   "PARTIAL",
   "REJECTED",
-  "CANCELLED"
+  "CANCELLED",
+  "GHOST_FILL"
 ] as const;
 
 interface CloudflareRequestMetadata {
@@ -1944,6 +1945,7 @@ function backendSettings(env: Env): JsonRecord {
       adapter: env.EXCHANGE_ADAPTER ?? null,
       baseUrl: env.EXCHANGE_BASE_URL ?? null,
       orderTestMode: env.EXCHANGE_ORDER_TEST_MODE ?? "true",
+      shadowMode: env.SHADOW_MODE ?? "false",
       recvWindowMs: stringNumber(env.EXCHANGE_RECV_WINDOW_MS),
       orderAckTimeoutMs: stringNumber(env.ORDER_ACK_TIMEOUT_MS),
       slippageGuardTicks: stringNumber(env.SLIPPAGE_GUARD_TICKS),

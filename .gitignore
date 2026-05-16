@@ -8,6 +8,8 @@ dist/
 *.tsbuildinfo
 web/.next/
 web/out/
+web/test-results/
+web/playwright-report/
 web/.env*.local
 .agents/
 skills-lock.json

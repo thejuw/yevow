@@ -9,6 +9,7 @@ export type AlertChannel = "DISCORD" | "TELEGRAM" | "GENERIC_WEBHOOK";
 export type TradeAlertMode = "ALL" | "FILLED_ONLY" | "NONE";
 export type ToxicityState = "NORMAL" | "CONTESTED" | "TOXIC" | "CRITICAL";
 export type ToxicityPressureSide = "BUY" | "SELL" | "NEUTRAL";
+export type CitadelOperationalStatus = "NOMINAL" | "WATCH" | "CRITICAL";
 
 export interface GlobalRiskConfig {
   TRADING_ENABLED: boolean;
@@ -311,6 +312,13 @@ export interface EngineState {
     agentLogicMs: number | null;
     wakeUpTimeMs: number | null;
   };
+  citadel?: {
+    status: CitadelOperationalStatus;
+    reason: string | null;
+    shadowMode: boolean;
+    lastEvacuationAt: string | null;
+    updatedAt: string | null;
+  };
   location: {
     colo: string | null;
     isGoldenRegion: boolean;
@@ -373,7 +381,7 @@ export interface TradeHistoryEntry {
   resultingPnl: number;
   primaryDriver: string | null;
   fees: number;
-  status: "ACCEPTED" | "FILLED" | "PARTIAL" | "REJECTED" | "CANCELLED";
+  status: "ACCEPTED" | "FILLED" | "PARTIAL" | "REJECTED" | "CANCELLED" | "GHOST_FILL";
   exchangeTradeId: string | null;
   rawExecution: JsonRecord;
   agentName: string | null;

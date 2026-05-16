@@ -33,6 +33,7 @@ import {
 } from "./utils/RateLimiter";
 import { planSmartOrderRoute } from "./utils/SOR";
 import { Notifier } from "./utils/Notifier";
+import { evaluateGrpcDrop, isShadowMode } from "./utils/CitadelProtocol";
 import type { PerformanceSnapshot } from "./Logger";
 import type {
   AdminConfigUpdate,
@@ -754,6 +755,11 @@ export class TradingEngine {
           this.processingLatencySamples.length,
           now
         ),
+        citadel: {
+          ...(baseState.citadel ?? defaultCitadelState(now)),
+          shadowMode: isShadowMode(this.env),
+          updatedAt: now
+        },
         dom: baseState.dom ?? null,
         anomaly: baseState.anomaly ?? this.anomalyDetector.status,
         heartbeatAt: now,
@@ -2241,14 +2247,40 @@ export class TradingEngine {
     const disconnectedForMs = nativeNumber(payload.disconnectedForMs) ?? 0;
     const thresholdMs = nativeNumber(payload.thresholdMs) ?? 200;
     const reason = nativeString(payload.reason) ?? "GRPC_FATAL_DROP";
+    const citadel = evaluateGrpcDrop({
+      disconnectedForMs,
+      thresholdMs,
+      reason,
+      observedAt
+    });
 
     this.engineState = {
       ...this.engineState,
+      agentHealth: touchAgentHealth(
+        this.engineState.agentHealth,
+        "EXECUTIONER",
+        citadel.status === "CRITICAL" ? "RED" : "YELLOW",
+        observedAt,
+        0,
+        reason
+      ),
       quoteState: {
         status: "SUSPENDED",
         reason: "GRPC_FATAL_DROP",
         suspendedUntil: null,
         lastQuote: this.engineState.quoteState.lastQuote,
+        updatedAt: observedAt
+      },
+      executionProfile: {
+        ...this.engineState.executionProfile,
+        status: "UNSTABLE",
+        updatedAt: observedAt
+      },
+      citadel: {
+        status: citadel.status,
+        reason,
+        shadowMode: isShadowMode(this.env),
+        lastEvacuationAt: citadel.shouldEvacuate ? observedAt : this.engineState.citadel.lastEvacuationAt,
         updatedAt: observedAt
       },
       heartbeatAt: observedAt,
@@ -2267,7 +2299,9 @@ export class TradingEngine {
       reason,
       disconnectedForMs,
       thresholdMs,
-      observedAt
+      observedAt,
+      citadelStatus: citadel.status,
+      evacuationAction: citadel.evacuationSignal.action
     });
     this.publish("GRPC_FATAL_DROP", {
       streamId: payload.streamId ?? null,
@@ -2275,10 +2309,13 @@ export class TradingEngine {
       reason,
       disconnectedForMs,
       thresholdMs,
-      action: "CANCEL_ALL_QUOTES",
+      action: citadel.evacuationSignal.action,
+      citadelStatus: citadel.status,
       observedAt
     });
-    this.state.waitUntil(this.cancelAllQuotes("ALL", "GRPC_FATAL_DROP"));
+    if (citadel.shouldEvacuate) {
+      this.state.waitUntil(this.cancelAllQuotes("ALL", "GRPC_FATAL_DROP"));
+    }
 
     return { status: "GRPC_FATAL_DROP" };
   }
@@ -7490,6 +7527,7 @@ function defaultEngineState(engineId: string): EngineState {
       DEFAULT_JITTER_COMPUTE_INTERVAL_TICKS,
       0
     ),
+    citadel: defaultCitadelState(now),
     dom: null,
     anomaly: defaultAnomalyStatus(),
     heartbeatAt: now,
@@ -7908,6 +7946,16 @@ function defaultQuoteState(): EngineState["quoteState"] {
     suspendedUntil: null,
     lastQuote: null,
     updatedAt: null
+  };
+}
+
+function defaultCitadelState(observedAt: string): EngineState["citadel"] {
+  return {
+    status: "NOMINAL",
+    reason: null,
+    shadowMode: false,
+    lastEvacuationAt: null,
+    updatedAt: observedAt
   };
 }
 

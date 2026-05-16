@@ -3,6 +3,12 @@ import { Logger } from "./Logger";
 import { RateLimiter } from "./utils/RateLimiter";
 import { SignatureEngine } from "./utils/SignatureEngine";
 import { getTradingEngineStub } from "./utils/TradingEngineStub";
+import {
+  buildGhostExecutionReport,
+  buildGhostTradeExecution,
+  buildSignedTradeIntentAudit,
+  isShadowMode
+} from "./utils/CitadelProtocol";
 import type { Env, ExchangeOpenOrder, ExecutionReport, JsonRecord, TradeIntent } from "./types";
 
 const BINANCE_US_BASE_URL = "https://api.binance.us";
@@ -56,7 +62,11 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === "/health") {
-      return json({ ok: true, service: "sovereign-sigma-executioner" });
+      return json({
+        ok: true,
+        service: "sovereign-sigma-executioner",
+        shadowMode: isShadowMode(env)
+      });
     }
 
     if (request.method === "POST" && url.pathname === "/execute") {
@@ -142,6 +152,37 @@ async function executeIntent(
     });
   }
 
+  if (isShadowMode(env)) {
+    const observedAt = new Date().toISOString();
+    const audit = buildSignedTradeIntentAudit(intent, exchangeRequest, observedAt);
+    const report = buildGhostExecutionReport(intent, audit);
+    const trade = buildGhostTradeExecution(
+      intent,
+      audit,
+      intent.source_exchange ?? resolveAdapter(env)
+    );
+
+    logger.recordExecution(trade);
+    logger.warn("SHADOW_TRADE_INTENT_GHOST_FILL", "Shadow Mode skipped live exchange POST", {
+      intentId: intent.intentId,
+      instrumentCode: intent.instrumentCode,
+      source_exchange: intent.source_exchange ?? null,
+      orderType: intent.orderType,
+      expectedSlippageBps: intent.maxSlippageBps,
+      exactTimestamp: observedAt,
+      signingLatencyMs: exchangeRequest.signingLatencyMs
+    });
+    ctx.waitUntil(forwardReport(env, report));
+
+    return json({
+      ok: true,
+      shadowMode: true,
+      status: "GHOST_FILL",
+      report,
+      signedTradeIntent: audit
+    });
+  }
+
   const startedAt = Date.now();
   let response: Response;
   let body: Record<string, unknown> | null;
@@ -219,6 +260,25 @@ async function cancelOrder(
 ): Promise<Response> {
   const payload = await request.json<{ orderId?: string; instrumentCode?: string; reason?: string }>();
   const orderId = requireString(payload.orderId, "orderId");
+
+  if (isShadowMode(env)) {
+    const observedAt = new Date().toISOString();
+    const report = cancelExecutionReport(
+      orderId,
+      payload.instrumentCode,
+      new Response(JSON.stringify({ status: "SHADOW_CANCEL_SKIPPED" }), { status: 200 }),
+      { status: "SHADOW_CANCEL_SKIPPED" }
+    );
+    ctx.waitUntil(forwardReport(env, { ...report, observedAt }));
+    logger.warn("SHADOW_CANCEL_SKIPPED", "Shadow Mode skipped exchange cancel POST", {
+      orderId,
+      instrumentCode: payload.instrumentCode ?? null,
+      reason: payload.reason ?? "CANCEL",
+      observedAt
+    });
+    return json({ ok: true, shadowMode: true, status: "SHADOW_CANCEL_SKIPPED", report });
+  }
+
   const response = await sendCancel(env, {
     order_id: orderId,
     instrument: payload.instrumentCode,
@@ -247,6 +307,23 @@ async function cancelAllOrders(
   logger: Logger
 ): Promise<Response> {
   const payload = await request.json<{ instrumentCode?: string; reason?: string }>();
+
+  if (isShadowMode(env)) {
+    const observedAt = new Date().toISOString();
+    logger.warn("SHADOW_CANCEL_ALL_SKIPPED", "Shadow Mode skipped exchange cancel-all POST", {
+      instrumentCode: payload.instrumentCode ?? "ALL",
+      reason: payload.reason ?? "CANCEL_ALL",
+      observedAt
+    });
+    ctx.waitUntil(Promise.resolve());
+    return json({
+      ok: true,
+      shadowMode: true,
+      status: "SHADOW_CANCEL_ALL_SKIPPED",
+      observedAt
+    });
+  }
+
   const response = await sendCancel(env, {
     instrument: payload.instrumentCode ?? "ALL",
     cancel_all: true,

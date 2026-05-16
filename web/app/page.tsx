@@ -29,6 +29,7 @@ import {
   readAlerts,
   readConfig,
   readDiagnostics,
+  readSettings,
   readState,
   readTradeHistory,
   readTrace,
@@ -43,13 +44,15 @@ import {
   PARAMETER_MATRIX,
   changedMoreThanTenPercent,
   flattenState,
-  parameterHelp
+  parameterHelp,
+  validateParameterDraft
 } from "@/lib/parameters";
 import type {
   AttributionResponse,
   AlertingResponse,
   AlertPriority,
   AlertTestResponse,
+  AdminSettingsResponse,
   DashboardPulse,
   DiagnosticCheck,
   DiagnosticsResponse,
@@ -101,6 +104,7 @@ export default function CommandCenterPage() {
   const [attribution, setAttribution] = useState<AttributionResponse | null>(null);
   const [tradeHistory, setTradeHistory] = useState<TradeHistoryResponse | null>(null);
   const [alerts, setAlerts] = useState<AlertingResponse | null>(null);
+  const [settings, setSettings] = useState<AdminSettingsResponse | null>(null);
   const [lastAlertTest, setLastAlertTest] = useState<AlertTestResponse | null>(null);
   const [pulse, setPulse] = useState<DashboardPulse | null>(null);
   const [logicFeed, setLogicFeed] = useState<JsonRecord[]>([]);
@@ -135,13 +139,14 @@ export default function CommandCenterPage() {
       return;
     }
 
-    const [stateResult, configResult, traceResult, attributionResult, historyResult, alertsResult] = await Promise.all([
+    const [stateResult, configResult, traceResult, attributionResult, historyResult, alertsResult, settingsResult] = await Promise.all([
       readState(apiBase, token),
       readConfig(apiBase, token),
       readTrace(apiBase, token),
       readAttribution(apiBase, token),
       readTradeHistory(apiBase, token),
-      readAlerts(apiBase, token)
+      readAlerts(apiBase, token),
+      readSettings(apiBase, token)
     ]);
 
     setEngineState(stateResult.state);
@@ -154,6 +159,7 @@ export default function CommandCenterPage() {
     setAttribution(attributionResult);
     setTradeHistory(historyResult);
     setAlerts(alertsResult);
+    setSettings(settingsResult);
   }, [apiBase, token]);
 
   const connectStream = useCallback(() => {
@@ -279,6 +285,14 @@ export default function CommandCenterPage() {
 
     return config?.TRADING_ENABLED ? "PAPER" : "OBSERVE";
   }, [config?.TRADING_ENABLED, engineState?.mode]);
+  const executionSettings = isJsonRecord(settings?.backend.execution)
+    ? settings.backend.execution
+    : null;
+  const shadowModeActive =
+    engineState?.citadel?.shadowMode === true ||
+    executionSettings?.shadowMode === true ||
+    String(executionSettings?.shadowMode ?? process.env.NEXT_PUBLIC_SHADOW_MODE ?? "false")
+      .toLowerCase() === "true";
 
   const stateRows = useMemo(
     () => flattenState(engineState ?? {}).filter(([key]) => !key.includes("posteriorPdf.points")),
@@ -319,6 +333,7 @@ export default function CommandCenterPage() {
     setAttribution(null);
     setTradeHistory(null);
     setAlerts(null);
+    setSettings(null);
     setLastAlertTest(null);
     setDiagnostics(null);
     setPulse(null);
@@ -335,6 +350,13 @@ export default function CommandCenterPage() {
 
   async function submitDraftConfig(force = false) {
     if (!config) {
+      return;
+    }
+
+    const validationErrors = validateParameterDraft(draftConfig);
+    if (validationErrors.length > 0) {
+      setError(validationErrors.join(" "));
+      setCommandStatus("Matrix validation blocked.");
       return;
     }
 
@@ -680,6 +702,12 @@ export default function CommandCenterPage() {
         ) : null}
       </section>
 
+      {shadowModeActive ? (
+        <section className="shadow-mode-banner" role="status" aria-live="polite">
+          [ WARNING: SYSTEM IS OPERATING IN SHADOW MODE. NO REAL TRADES ARE BEING EXECUTED. ]
+        </section>
+      ) : null}
+
       <section className="grand-grid">
         <section className="bridge-panel glass">
           <div className="panel-title">
@@ -865,7 +893,15 @@ export default function CommandCenterPage() {
           <div className="mode-readout">
             <span>Engine {engineState?.mode ?? "PAPER"}</span>
             <span>Kill {config?.TRADING_ENABLED ? "OPEN" : "CLOSED"}</span>
-            <span>{operatorMode === "LIVE" ? "REAL ORDERS" : operatorMode === "PAPER" ? "SIGNED TEST ORDERS" : "NO ORDERS"}</span>
+            <span>
+              {shadowModeActive
+                ? "GHOST FILLS"
+                : operatorMode === "LIVE"
+                  ? "REAL ORDERS"
+                  : operatorMode === "PAPER"
+                    ? "SIGNED TEST ORDERS"
+                    : "NO ORDERS"}
+            </span>
           </div>
         </section>
 
@@ -1272,6 +1308,8 @@ function ParameterControl({
       <strong>{param.label}<InfoBadge text={help} /></strong>
       <input
         type="number"
+        aria-label={param.label}
+        data-testid={`param-${String(param.key)}`}
         min={param.min}
         max={param.max}
         step={param.step}

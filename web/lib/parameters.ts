@@ -331,6 +331,38 @@ export function changedMoreThanTenPercent(
   });
 }
 
+export function validateParameterDraft(draft: Partial<GlobalRiskConfig>): string[] {
+  return PARAMETER_MATRIX.flatMap((param) => {
+    const value = draft[param.key];
+    if (value === undefined || value === null) {
+      return [];
+    }
+
+    if (param.kind === "number") {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) {
+        return [`${param.label} must be a finite number.`];
+      }
+      if (param.min !== undefined && numeric < param.min) {
+        return [`${param.label} must be greater than or equal to ${param.min}.`];
+      }
+      if (param.max !== undefined && numeric > param.max) {
+        return [`${param.label} must be less than or equal to ${param.max}.`];
+      }
+    }
+
+    if (
+      param.kind === "select" &&
+      param.options &&
+      !param.options.includes(String(value))
+    ) {
+      return [`${param.label} must be one of ${param.options.join(", ")}.`];
+    }
+
+    return [];
+  });
+}
+
 export function parameterHelp(param: ParameterDescriptor): string {
   return (
     param.help ??

@@ -310,6 +310,23 @@ output {
   font-size: 12px;
 }
 
+.shadow-mode-banner {
+  width: min(1920px, 100%);
+  margin: 12px auto 0;
+  padding: 13px 18px;
+  border: 1px solid rgba(255, 214, 102, 0.78);
+  border-radius: 7px;
+  background: linear-gradient(90deg, rgba(255, 214, 102, 0.24), rgba(255, 214, 102, 0.08));
+  color: #ffe8a3;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-align: center;
+  text-transform: uppercase;
+  box-shadow: 0 0 28px rgba(255, 214, 102, 0.18);
+}
+
 .streaming {
   border-color: rgba(102, 227, 161, 0.45);
   color: var(--green);
