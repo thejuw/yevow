@@ -22,6 +22,7 @@ export interface Env {
   DWELLIR_GRPC_ENDPOINT?: string;
   DWELLIR_ORDERBOOK_WS_URL?: string;
   DWELLIR_ORDERBOOK_WS_ENDPOINT?: string;
+  DWELLIR_ORDERBOOK_TRANSPORT?: string;
   DWELLIR_SUBSCRIPTION_TIER?: string;
   DWELLIR_ORDERBOOK_DEPTH?: string;
   DWELLIR_ENABLE_L4_BOOK?: string;
@@ -242,6 +243,7 @@ export interface MarketDataSubscriptionProfile {
   tier: MarketDataSubscriptionTier;
   readMode:
     | "DWELLIR_GRPC_FILLS_L2_BOOK_WS"
+    | "DWELLIR_GRPC_FILLS_L2_BOOK_GRPC"
     | "DWELLIR_GRPC_FILLS_L4_BOOK_WS"
     | "DWELLIR_ORDERBOOK_WS"
     | "PUBLIC_WS"

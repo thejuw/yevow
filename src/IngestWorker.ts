@@ -458,6 +458,7 @@ class ExchangeStreamController {
   private awaitingProviderBridge = false;
   private readonly hyperliquidBookLevels = new Map<string, HyperliquidBookLevelSet>();
   private streamReady = false;
+  private hasConnectedOnce = false;
   private preSnapshotBuffer: Array<string | ArrayBuffer> = [];
 
   constructor(
@@ -573,35 +574,40 @@ class ExchangeStreamController {
         maxBackoffMs
       );
 
-      this.logger.warn(
-        "STREAM_RECONNECT_ATTEMPT",
-        "Scheduling market stream reconnect",
-        {
-          streamId: this.config.id,
-          source: this.config.source,
-          source_exchange: this.config.source_exchange,
-          connectionId: this.connectionId,
-          attempts: this.attempts,
-          backoffCounter: this.backoffCounter,
-          backoffMs,
-          blackoutDurationMs: this.currentBlackoutDurationMs(),
-          maxBackoffMs
-        }
-      );
-      this.notifier.notify({
-        priority: "HIGH",
-        title: "Sovereign-Sigma stream reconnect",
-        message: `${this.config.source_exchange} reconnect attempt ${this.attempts}; blackout ${this.currentBlackoutDurationMs()}ms, retrying in ${backoffMs}ms.`,
-        dedupeKey: `stream-reconnect:${this.config.id}`,
-        metadata: {
-          streamId: this.config.id,
-          source: this.config.source,
-          source_exchange: this.config.source_exchange,
-          attempts: this.attempts,
-          backoffMs,
-          blackoutDurationMs: this.currentBlackoutDurationMs()
-        }
-      });
+      const reconnectMetadata = {
+        streamId: this.config.id,
+        source: this.config.source,
+        source_exchange: this.config.source_exchange,
+        connectionId: this.connectionId,
+        attempts: this.attempts,
+        backoffCounter: this.backoffCounter,
+        backoffMs,
+        blackoutDurationMs: this.currentBlackoutDurationMs(),
+        maxBackoffMs
+      };
+
+      if (this.isNormalProviderRecycle()) {
+        this.logger.info(
+          "STREAM_RECYCLE_RECONNECT",
+          "Scheduling normal provider stream recycle",
+          reconnectMetadata
+        );
+      } else {
+        this.logger.warn(
+          "STREAM_RECONNECT_ATTEMPT",
+          "Scheduling market stream reconnect",
+          reconnectMetadata
+        );
+        this.notifier.notify({
+          priority: "HIGH",
+          title: "Sovereign-Sigma stream reconnect",
+          message: `${this.config.source_exchange} reconnect attempt ${this.attempts}; blackout ${this.currentBlackoutDurationMs()}ms, retrying in ${backoffMs}ms.`,
+          dedupeKey: `stream-reconnect:${this.config.id}`,
+          metadata: {
+            ...reconnectMetadata
+          }
+        });
+      }
 
       await sleep(backoffMs);
     }
@@ -649,6 +655,7 @@ class ExchangeStreamController {
     this.backoffCounter = 0;
     const recoveredAt = new Date().toISOString();
     const blackoutDurationMs = this.currentBlackoutDurationMs(recoveredAt);
+    const previousDisconnectReason = this.lastError;
     this.lastMessageAt = recoveredAt;
     this.lastRecoveredAt = recoveredAt;
     this.lastRecoveryDurationMs = blackoutDurationMs;
@@ -787,12 +794,26 @@ class ExchangeStreamController {
 
       void (async () => {
         try {
-          await this.resetEngineBook(blackoutDurationMs, recoveredAt);
+          if (this.shouldResetBookOnConnect(blackoutDurationMs, previousDisconnectReason)) {
+            await this.resetEngineBook(blackoutDurationMs, recoveredAt);
+          } else {
+            this.logger.info("STREAM_RECOVERED_NO_RESET", "Provider stream recycled without book reset", {
+              streamId: this.config.id,
+              source: this.config.source,
+              source_exchange: this.config.source_exchange,
+              connectionId: this.connectionId,
+              attempts: this.attempts,
+              blackoutDurationMs,
+              recoveredAt,
+              previousDisconnectReason
+            });
+          }
           if (this.config.snapshotUrl) {
             await this.syncEngineSnapshot("STREAM_CONNECTED", recoveredAt);
           }
           this.blackoutStartedAt = null;
           this.streamReady = true;
+          this.hasConnectedOnce = true;
           this.sendSubscription(socket);
           await this.flushPreSnapshotBuffer();
         } catch (error) {
@@ -1899,7 +1920,7 @@ class ExchangeStreamController {
     this.socket = null;
     this.startBlackout(this.lastDisconnectAt);
 
-    this.logger.warn("STREAM_DISCONNECT", "Market stream disconnected", {
+    const metadata = {
       streamId: this.config.id,
       source: this.config.source,
       source_exchange: this.config.source_exchange,
@@ -1908,22 +1929,47 @@ class ExchangeStreamController {
       messagesReceived: this.messagesReceived,
       ticksForwarded: this.ticksForwarded,
       ticksDropped: this.ticksDropped
-    });
+    };
+
+    if (this.isNormalProviderRecycle(reason)) {
+      this.logger.info("STREAM_RECYCLE", "Provider closed stream normally; fast recycle active", metadata);
+      return;
+    }
+
+    this.logger.warn("STREAM_DISCONNECT", "Market stream disconnected", metadata);
     this.notifier.notify({
       priority: "HIGH",
       title: "Sovereign-Sigma stream disconnected",
       message: `${this.config.source_exchange} stream disconnected: ${reason}. Recovery state machine is active.`,
       dedupeKey: `stream-disconnect:${this.config.id}`,
-      metadata: {
-        streamId: this.config.id,
-        source: this.config.source,
-        source_exchange: this.config.source_exchange,
-        reason,
-        messagesReceived: this.messagesReceived,
-        ticksForwarded: this.ticksForwarded,
-        ticksDropped: this.ticksDropped
-      }
+      metadata
     });
+  }
+
+  private shouldResetBookOnConnect(
+    blackoutDurationMs: number,
+    previousDisconnectReason: string | null
+  ): boolean {
+    if (!this.hasConnectedOnce) {
+      return true;
+    }
+    if (!this.isNormalProviderRecycle(previousDisconnectReason)) {
+      return true;
+    }
+
+    return blackoutDurationMs > Math.max(
+      1_000,
+      readNumber(this.env.DWELLIR_GRPC_FATAL_DROP_MS, DEFAULT_GRPC_FATAL_DROP_MS)
+    );
+  }
+
+  private isNormalProviderRecycle(reason = this.lastError): boolean {
+    return (
+      this.config.source === "HYPERLIQUID" &&
+      this.config.transport === "websocket" &&
+      this.config.id.startsWith("dwellir-hyperliquid-orderbook") &&
+      reason === "CLOSE_1000"
+    );
   }
 
   private startBlackout(startedAt: string = new Date().toISOString()): void {
@@ -2850,6 +2896,23 @@ function augmentDwellirHyperliquidReadStreams(
   const coins = parseAssetList(env.HL_ASSETS ?? env.HL_ASSET);
   const activeCoins = coins.length > 0 ? coins : [...DEFAULT_HYPERLIQUID_ASSET_MATRIX];
   const subscriptionProfile = resolveDwellirSubscriptionProfile(env, activeCoins.length);
+  const orderbookTransport = dwellirOrderbookTransport(env);
+
+  if (orderbookTransport === "grpc") {
+    return configs.map((config) =>
+      isDwellirGrpcRawConfig(config, env)
+        ? {
+            ...config,
+            subscriptionProfile,
+            grpcStreamTypes: mergeGrpcStreamTypes(config.grpcStreamTypes, [
+              "ORDERBOOK_SNAPSHOT",
+              "FILLS"
+            ])
+          }
+        : config
+    );
+  }
+
   const orderbookUrl = resolveDwellirOrderbookWsUrl(env);
   const normalized = configs.map((config) =>
     isDwellirGrpcRawConfig(config, env)
@@ -2869,27 +2932,29 @@ function augmentDwellirHyperliquidReadStreams(
       : config
   );
 
-  return [
-    ...normalized,
-    {
-      id: "dwellir-hyperliquid-orderbook",
-      source: "HYPERLIQUID",
-      source_exchange: "hyperliquid",
-      transport: "websocket",
-      streamUrl: orderbookUrl,
-      weight: 1,
-      exchangeCode: "hyperliquid",
-      subscriptionProfile,
-      subscriptions: activeCoins.map((coin) => ({
+  const orderbookStreams = activeCoins.map((coin) => ({
+    id: `dwellir-hyperliquid-orderbook-${coin.toLowerCase()}`,
+    source: "HYPERLIQUID" as const,
+    source_exchange: "hyperliquid",
+    transport: "websocket" as const,
+    streamUrl: orderbookUrl,
+    weight: 1,
+    exchangeCode: "hyperliquid",
+    instrumentCode: `${coin.toLowerCase()}-usd`,
+    subscriptionProfile,
+    subscriptions: [
+      {
         method: "subscribe",
         subscription: {
           type: subscriptionProfile.l4BookEnabled ? "l4Book" : "l2Book",
           coin,
           nLevels: subscriptionProfile.bookDepth
         }
-      }))
-    }
-  ];
+      }
+    ]
+  }));
+
+  return [...normalized, ...orderbookStreams];
 }
 
 function defaultHyperliquidStreamConfig(env: Env): ExchangeStreamConfig[] {
@@ -2978,6 +3043,7 @@ function resolveDwellirSubscriptionProfile(
   assetCount: number
 ): MarketDataSubscriptionProfile {
   const tier = normalizeDwellirSubscriptionTier(env.DWELLIR_SUBSCRIPTION_TIER);
+  const orderbookTransport = dwellirOrderbookTransport(env);
   const maxBookDepth = tier === "PUBLIC" ? HYPERLIQUID_PUBLIC_L2_DEPTH_LIMIT : DWELLIR_MAX_L2_DEPTH_LIMIT;
   const bookDepth = readPositiveInteger(
     env.DWELLIR_ORDERBOOK_DEPTH,
@@ -2997,7 +3063,10 @@ function resolveDwellirSubscriptionProfile(
   return {
     provider: "DWELLIR",
     tier,
-    readMode: "DWELLIR_GRPC_FILLS_L2_BOOK_WS",
+    readMode:
+      orderbookTransport === "grpc"
+        ? "DWELLIR_GRPC_FILLS_L2_BOOK_GRPC"
+        : "DWELLIR_GRPC_FILLS_L2_BOOK_WS",
     bookDepth,
     maxBookDepth,
     l4BookEnabled,
@@ -3006,8 +3075,31 @@ function resolveDwellirSubscriptionProfile(
     normalMode: true,
     reason: l4Requested
       ? `Dwellir ${tier} detected; L4 requested but the hot path is L2-aggregate, so normal mode is maximized at ${bookDepth}/${maxBookDepth} L2 levels.`
-      : `Dwellir ${tier} detected; normal mode is maximized at ${bookDepth}/${maxBookDepth} L2 levels with gRPC fills plus order-book WebSocket.`
+      : orderbookTransport === "grpc"
+        ? `Dwellir ${tier} detected; normal mode is maximized at ${bookDepth}/${maxBookDepth} L2 levels with gRPC fills plus gRPC order-book snapshots.`
+        : `Dwellir ${tier} detected; normal mode is maximized at ${bookDepth}/${maxBookDepth} L2 levels with gRPC fills plus order-book WebSocket.`
   };
+}
+
+function dwellirOrderbookTransport(env: Env): "grpc" | "websocket" {
+  const normalized = normalizeString(env.DWELLIR_ORDERBOOK_TRANSPORT);
+  return normalized === "GRPC" ? "grpc" : "websocket";
+}
+
+function mergeGrpcStreamTypes(
+  current: string[] | undefined,
+  required: string[]
+): string[] {
+  const merged: string[] = [];
+
+  for (const entry of [...(current ?? []), ...required]) {
+    const normalized = entry.trim().toUpperCase();
+    if (normalized && !merged.includes(normalized)) {
+      merged.push(normalized);
+    }
+  }
+
+  return merged;
 }
 
 function normalizeDwellirSubscriptionTier(

@@ -50,6 +50,13 @@ interface HyperliquidAssetMeta {
   loadedAt: number;
 }
 
+interface HyperliquidOrderWire {
+  price: string;
+  size: string;
+  priceRounded: boolean;
+  sizeRounded: boolean;
+}
+
 const hyperliquidAssetCache = new Map<string, HyperliquidAssetMeta>();
 
 export default {
@@ -67,6 +74,10 @@ export default {
         service: "sovereign-sigma-executioner",
         shadowMode: isShadowMode(env)
       });
+    }
+
+    if (url.pathname === "/diagnostics") {
+      return executionerDiagnostics(env);
     }
 
     if (request.method === "POST" && url.pathname === "/execute") {
@@ -376,6 +387,90 @@ async function listOpenOrders(env: Env, logger: Logger): Promise<Response> {
   }
 }
 
+async function executionerDiagnostics(env: Env): Promise<Response> {
+  const startedAt = performance.now();
+  const adapter = resolveAdapter(env);
+  const diagnostics: JsonRecord = {
+    ok: true,
+    service: "sovereign-sigma-executioner",
+    observedAt: new Date().toISOString(),
+    adapter,
+    shadowMode: isShadowMode(env),
+    orderTestMode: isExchangeOrderTestMode(env)
+  };
+
+  if (adapter !== "hyperliquid") {
+    diagnostics.hyperliquidSecrets = {
+      ok: true,
+      detail: "Executioner is not configured for Hyperliquid; Hyperliquid signing secrets are not required.",
+      metadata: { adapter }
+    };
+    diagnostics.latencyMs = roundLatency(performance.now() - startedAt);
+    return json(diagnostics);
+  }
+
+  const [secret, address, accountAddress] = await Promise.all([
+    exchangeSecretWithSource(env, "HL_AGENT_SECRET"),
+    exchangeSecretWithSource(env, "HL_AGENT_ADDRESS"),
+    exchangeSecretWithSource(env, "HL_ACCOUNT_ADDRESS")
+  ]);
+
+  if (!secret.value || !address.value) {
+    diagnostics.ok = false;
+    diagnostics.hyperliquidSecrets = {
+      ok: false,
+      detail: "Hyperliquid execution secrets are missing on the executioner Worker.",
+      metadata: {
+        secretSource: secret.source,
+        addressSource: address.source,
+        accountAddressSource: accountAddress.source,
+        hasSecret: Boolean(secret.value),
+        hasAddress: Boolean(address.value),
+        hasAccountAddress: Boolean(accountAddress.value)
+      }
+    };
+    diagnostics.latencyMs = roundLatency(performance.now() - startedAt);
+    return json(diagnostics, 503);
+  }
+
+  try {
+    const derivedAddress = SignatureEngine.preloadHyperliquidAgentSecret(secret.value).address;
+    const configuredAddress = address.value.trim().toLowerCase();
+    const ok = derivedAddress === configuredAddress;
+
+    diagnostics.ok = ok;
+    diagnostics.hyperliquidSecrets = {
+      ok,
+      detail: ok
+        ? "Hyperliquid API agent private key derives the configured executioner agent address."
+        : "HL_AGENT_ADDRESS does not match the address derived from HL_AGENT_SECRET.",
+      metadata: {
+        secretSource: secret.source,
+        addressSource: address.source,
+        accountAddressSource: accountAddress.source,
+        hasAccountAddress: Boolean(accountAddress.value),
+        configuredAddress: maskAddress(configuredAddress),
+        derivedAddress: maskAddress(derivedAddress)
+      }
+    };
+    diagnostics.latencyMs = roundLatency(performance.now() - startedAt);
+    return json(diagnostics, ok ? 200 : 503);
+  } catch (error) {
+    diagnostics.ok = false;
+    diagnostics.hyperliquidSecrets = {
+      ok: false,
+      detail: error instanceof Error ? error.message : "HL_AGENT_SECRET_VALIDATION_FAILED",
+      metadata: {
+        secretSource: secret.source,
+        addressSource: address.source,
+        accountAddressSource: accountAddress.source
+      }
+    };
+    diagnostics.latencyMs = roundLatency(performance.now() - startedAt);
+    return json(diagnostics, 503);
+  }
+}
+
 async function getAccountBalance(env: Env, logger: Logger): Promise<Response> {
   if (resolveAdapter(env) === "binance-us") {
     return getBinanceAccountBalance(env, logger);
@@ -581,11 +676,12 @@ async function prepareHyperliquidOrderRequest(
     throw new Error("HL_AGENT_ADDRESS_SECRET_MISMATCH");
   }
 
+  const wire = hyperliquidOrderWire(expectedPrice, requestedSize, intent.action, asset);
   const order: JsonRecord = {
     a: asset.assetIndex,
     b: intent.action === "BUY",
-    p: hyperliquidWireNumber(expectedPrice),
-    s: hyperliquidWireNumber(requestedSize),
+    p: wire.price,
+    s: wire.size,
     r: isReduceOnlyIntent(intent),
     t: { limit: { tif } },
     c: hyperliquidCloid(intent.intentId)
@@ -633,6 +729,10 @@ async function prepareHyperliquidOrderRequest(
       side: intent.action,
       price: order.p,
       size: order.s,
+      originalPrice: expectedPrice,
+      originalSize: requestedSize,
+      priceRounded: wire.priceRounded,
+      sizeRounded: wire.sizeRounded,
       tif,
       reduceOnly: order.r,
       cloid: order.c,
@@ -1396,13 +1496,64 @@ function hyperliquidExpiresAfter(env: Env, nonce: number): number | null {
   return Number.isFinite(ttlMs) && ttlMs > 0 ? nonce + Math.round(ttlMs) : null;
 }
 
-function hyperliquidWireNumber(value: number): string {
-  const rounded = Number(value.toFixed(8));
-  if (Math.abs(rounded - value) >= 1e-12) {
-    throw new Error("HYPERLIQUID_WIRE_NUMBER_PRECISION_LOSS");
+function hyperliquidOrderWire(
+  price: number,
+  size: number,
+  side: "BUY" | "SELL",
+  asset: HyperliquidAssetMeta
+): HyperliquidOrderWire {
+  const priceDecimals = hyperliquidPriceDecimals(price, asset.szDecimals);
+  const snappedPrice =
+    side === "BUY"
+      ? floorToDecimalPlaces(price, priceDecimals)
+      : ceilToDecimalPlaces(price, priceDecimals);
+  const snappedSize = floorToDecimalPlaces(size, asset.szDecimals);
+
+  if (snappedPrice <= 0) {
+    throw new Error("HYPERLIQUID_PRICE_ROUNDED_TO_ZERO");
   }
-  const fixed = rounded.toFixed(8).replace(/\.?0+$/, "");
-  return fixed === "-0" || fixed.length === 0 ? "0" : fixed;
+  if (snappedSize <= 0) {
+    throw new Error("HYPERLIQUID_SIZE_ROUNDED_TO_ZERO");
+  }
+
+  return {
+    price: hyperliquidWireNumber(snappedPrice, priceDecimals),
+    size: hyperliquidWireNumber(snappedSize, asset.szDecimals),
+    priceRounded: Math.abs(snappedPrice - price) >= 1e-12,
+    sizeRounded: Math.abs(snappedSize - size) >= 1e-12
+  };
+}
+
+function hyperliquidPriceDecimals(value: number, szDecimals: number): number {
+  const maxDecimals = Math.max(0, 6 - Math.max(0, Math.trunc(szDecimals)));
+  const absolute = Math.abs(value);
+
+  if (!Number.isFinite(absolute) || absolute === 0 || Number.isInteger(absolute)) {
+    return 0;
+  }
+
+  const significantFigureDecimals = Math.max(
+    0,
+    5 - Math.floor(Math.log10(absolute)) - 1
+  );
+
+  return Math.min(maxDecimals, significantFigureDecimals);
+}
+
+function floorToDecimalPlaces(value: number, precision: number): number {
+  const scale = 10 ** Math.max(0, precision);
+  return Math.floor((value + Number.EPSILON) * scale) / scale;
+}
+
+function ceilToDecimalPlaces(value: number, precision: number): number {
+  const scale = 10 ** Math.max(0, precision);
+  return Math.ceil((value - Number.EPSILON) * scale) / scale;
+}
+
+function hyperliquidWireNumber(value: number, precision: number): string {
+  const fixed = value.toFixed(Math.max(0, Math.min(12, precision)));
+  const compact = fixed.includes(".") ? fixed.replace(/\.?0+$/, "") : fixed;
+  return compact === "-0" || compact.length === 0 ? "0" : compact;
 }
 
 function hyperliquidCloid(value: string): string {
@@ -1864,6 +2015,19 @@ async function exchangeSecret(env: Env, keyName: string): Promise<string | undef
   return value ?? undefined;
 }
 
+async function exchangeSecretWithSource(
+  env: Env,
+  keyName: string
+): Promise<{ source: "ENV" | "VAULT" | "MISSING"; value: string | null }> {
+  const direct = (env as unknown as Record<string, string | undefined>)[keyName];
+  if (direct) {
+    return { source: "ENV", value: direct };
+  }
+
+  const value = await readVaultSecret(env, keyName);
+  return value ? { source: "VAULT", value } : { source: "MISSING", value: null };
+}
+
 async function readVaultSecret(env: Env, keyName: string): Promise<string | null> {
   try {
     const encryptionSecret = env.VAULT_ENCRYPTION_SECRET ?? env.JWT_SECRET ?? env.ADMIN_JWT_SECRET;
@@ -1926,9 +2090,18 @@ function roundLatency(value: number): number {
   return Math.round(value * 1000) / 1000;
 }
 
+function maskAddress(value: string): string {
+  return value.length > 12 ? `${value.slice(0, 6)}...${value.slice(-4)}` : "configured";
+}
+
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { "content-type": "application/json;charset=UTF-8" }
   });
 }
+
+export const __test__ = {
+  hyperliquidOrderWire,
+  hyperliquidPriceDecimals
+};

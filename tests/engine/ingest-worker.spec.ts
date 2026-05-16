@@ -26,14 +26,17 @@ describe("IngestWorker poison payload isolation", () => {
     } as never);
 
     const grpc = configs.find((config) => config.transport === "grpc");
-    const book = configs.find((config) => config.id === "dwellir-hyperliquid-orderbook");
+    const book = configs.find((config) => config.id === "dwellir-hyperliquid-orderbook-btc");
+    const ethBook = configs.find((config) => config.id === "dwellir-hyperliquid-orderbook-eth");
 
     expect(grpc?.grpcStreamTypes).toEqual(["FILLS"]);
     expect(book?.transport).toBe("websocket");
+    expect(ethBook?.transport).toBe("websocket");
     expect(book?.streamUrl).toBe(
       "wss://api-hyperliquid-mainnet-orderbook.n.dwellir.com/test-route-token/ws"
     );
-    expect(book?.subscriptions).toHaveLength(2);
+    expect(book?.subscriptions).toHaveLength(1);
+    expect(ethBook?.subscriptions).toHaveLength(1);
     expect(book?.subscriptionProfile?.tier).toBe("ENTERPRISE");
     expect(book?.subscriptionProfile?.optimization).toBe("MAXIMIZED");
     expect(book?.subscriptionProfile?.bookDepth).toBe(100);
@@ -41,6 +44,36 @@ describe("IngestWorker poison payload isolation", () => {
       (book?.subscriptions?.[0] as { subscription?: { nLevels?: number } } | undefined)
         ?.subscription?.nLevels
     ).toBe(100);
+  });
+
+  it("keeps the order book on Dwellir gRPC when the transport is configured for gRPC", () => {
+    const configs = __test__.loadStreamConfigs({
+      DWELLIR_GRPC_URL: "https://api-hyperliquid-mainnet-grpc.n.dwellir.com/test-route-token",
+      DWELLIR_ORDERBOOK_TRANSPORT: "grpc",
+      INGEST_TRANSPORT: "grpc",
+      HL_ASSETS: "BTC,ETH",
+      MARKET_STREAMS: JSON.stringify([
+        {
+          id: "dwellir-hyperliquid-grpc-fills",
+          source: "HYPERLIQUID",
+          source_exchange: "hyperliquid",
+          transport: "grpc",
+          streamUrl: "https://api-hyperliquid-mainnet-grpc.n.dwellir.com",
+          grpcEndpoint: "https://api-hyperliquid-mainnet-grpc.n.dwellir.com",
+          grpcService: "hyperliquid_l1_gateway.v2.HyperliquidL1Gateway",
+          grpcStreamTypes: ["FILLS"],
+          subscriptions: [
+            { method: "subscribe", subscription: { type: "trades", coin: "BTC" } },
+            { method: "subscribe", subscription: { type: "trades", coin: "ETH" } }
+          ]
+        }
+      ])
+    } as never);
+
+    expect(configs).toHaveLength(1);
+    expect(configs[0]?.transport).toBe("grpc");
+    expect(configs[0]?.grpcStreamTypes).toEqual(["FILLS", "ORDERBOOK_SNAPSHOT"]);
+    expect(configs[0]?.subscriptionProfile?.readMode).toBe("DWELLIR_GRPC_FILLS_L2_BOOK_GRPC");
   });
 
   it("classifies malformed Dwellir protobuf payloads without throwing", () => {

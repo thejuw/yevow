@@ -937,11 +937,12 @@ async function readAdminSettings(
   configManager: ConfigManager
 ): Promise<Response> {
   const notifier = new Notifier(env, () => undefined);
-  const [config, alerting, vault, notifications] = await Promise.all([
+  const [config, alerting, vault, notifications, hyperliquidSecrets] = await Promise.all([
     configManager.fetchConfig(),
     notifier.statusAsync(),
     vaultStatus(env),
-    readNotificationSettings(env)
+    readNotificationSettings(env),
+    evaluateHyperliquidSecrets(env)
   ]);
 
   return json({
@@ -952,7 +953,14 @@ async function readAdminSettings(
       ...alerting,
       configured: alerting.channels.some((channel) => channel.configured)
     },
-    vault,
+    vault: {
+      ...vault,
+      executionerHyperliquid: {
+        ok: hyperliquidSecrets.ok,
+        detail: hyperliquidSecrets.detail,
+        metadata: hyperliquidSecrets.metadata
+      }
+    },
     backend: backendSettings(env)
   });
 }
@@ -1935,6 +1943,7 @@ function backendSettings(env: Env): JsonRecord {
       dwellirGrpcStreams: env.DWELLIR_GRPC_STREAMS ?? env.RPC_GRPC_STREAM_TYPES ?? null,
       dwellirSubscriptionTier: env.DWELLIR_SUBSCRIPTION_TIER ?? null,
       dwellirOrderbookDepth: stringNumber(env.DWELLIR_ORDERBOOK_DEPTH),
+      dwellirOrderbookTransport: env.DWELLIR_ORDERBOOK_TRANSPORT ?? "websocket",
       dwellirL4BookEnabled: env.DWELLIR_ENABLE_L4_BOOK ?? "false",
       hyperliquidWsUrl: env.HL_WS_URL ?? null,
       heartbeatIntervalMs: stringNumber(env.HL_HEARTBEAT_INTERVAL_MS),
@@ -2757,6 +2766,11 @@ async function evaluateHyperliquidSecrets(env: Env): Promise<{
   detail: string;
   metadata: JsonRecord;
 }> {
+  const executionerDiagnostic = await evaluateExecutionerHyperliquidSecrets(env);
+  if (executionerDiagnostic) {
+    return executionerDiagnostic;
+  }
+
   const [secret, address] = await Promise.all([
     readDiagnosticSecret(env, "HL_AGENT_SECRET"),
     readDiagnosticSecret(env, "HL_AGENT_ADDRESS")
@@ -2800,6 +2814,59 @@ async function evaluateHyperliquidSecrets(env: Env): Promise<{
         secretSource: secret.source,
         addressSource: address.source
       }
+    };
+  }
+}
+
+async function evaluateExecutionerHyperliquidSecrets(env: Env): Promise<{
+  ok: boolean;
+  detail: string;
+  metadata: JsonRecord;
+} | null> {
+  if (!env.EXECUTIONER) {
+    return null;
+  }
+
+  try {
+    const response = await env.EXECUTIONER.fetch(
+      new Request("https://executioner.internal/diagnostics", {
+        headers: { accept: "application/json" }
+      })
+    );
+    const body = await safeResponseJson(response);
+    const secretCheck = isJsonRecord(body?.hyperliquidSecrets)
+      ? body.hyperliquidSecrets
+      : null;
+
+    if (!secretCheck) {
+      return {
+        ok: false,
+        detail: `Executioner diagnostics returned HTTP ${response.status} without Hyperliquid secret status.`,
+        metadata: {
+          source: "EXECUTIONER",
+          status: response.status
+        }
+      };
+    }
+
+    const metadata = isJsonRecord(secretCheck.metadata) ? secretCheck.metadata : {};
+    return {
+      ok: Boolean(secretCheck.ok),
+      detail:
+        typeof secretCheck.detail === "string"
+          ? secretCheck.detail
+          : "Executioner Hyperliquid secret diagnostic completed.",
+      metadata: {
+        ...metadata,
+        source: "EXECUTIONER",
+        status: response.status
+      }
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      detail: error instanceof Error ? error.message : "EXECUTIONER_DIAGNOSTICS_FAILED",
+      metadata: { source: "EXECUTIONER" }
     };
   }
 }
