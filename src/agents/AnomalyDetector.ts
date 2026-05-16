@@ -554,7 +554,7 @@ function classifyTopOfBookEvent(
   currentBook: InternalOrderBook,
   tick: MarketTick
 ): { cancellations: number; executions: number } {
-  if (!previous) {
+  if (!previous || isBookSnapshotTick(tick)) {
     return { cancellations: 0, executions: 0 };
   }
 
@@ -586,6 +586,21 @@ function classifyTopOfBookEvent(
     cancellations: Number(askCancelled) + Number(bidCancelled),
     executions: Number(askExecuted) + Number(bidExecuted)
   };
+}
+
+function isBookSnapshotTick(tick: MarketTick): boolean {
+  const eventType = typeof tick.raw?.eventType === "string"
+    ? tick.raw.eventType.toLowerCase()
+    : "";
+  const nativeEventType = typeof tick.raw?.nativeEventType === "string"
+    ? tick.raw.nativeEventType.toLowerCase()
+    : "";
+
+  return (
+    eventType.includes("book-snapshot") ||
+    nativeEventType.includes("l2book") ||
+    tick.raw?.commodity === "ORDER_BOOK"
+  );
 }
 
 function topOfBookSnapshot(

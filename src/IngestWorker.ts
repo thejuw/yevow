@@ -31,6 +31,7 @@ const DEFAULT_INGEST_COORDINATOR_NAME = "sovereign-sigma:singleton:ingest-coordi
 const DEFAULT_AUTH_HEADER = "X-Api-Key";
 const DEFAULT_GRPC_AUTH_HEADER = "x-token";
 const DWELLIR_GRPC_ENDPOINT = "https://api-hyperliquid-mainnet-grpc.n.dwellir.com";
+const DWELLIR_ORDERBOOK_WS_ENDPOINT = "wss://api-hyperliquid-mainnet-orderbook.n.dwellir.com";
 const DWELLIR_GRPC_SERVICE = "hyperliquid_l1_gateway.v2.HyperliquidL1Gateway";
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000;
 const DEFAULT_WATCHDOG_TIMEOUT_MS = 5_000;
@@ -878,6 +879,7 @@ class ExchangeStreamController {
     this.clusterPool.recordHeartbeat(endpoint, 0);
 
     await this.resetEngineBook(blackoutDurationMs, recoveredAt);
+    this.blackoutStartedAt = null;
 
     return new Promise<void>((resolve, reject) => {
       let settled = false;
@@ -986,7 +988,7 @@ class ExchangeStreamController {
       startTimestampMs,
       startBlockHeight
     });
-    const streams = dwellirGrpcStreams(this.env);
+    const streams = dwellirGrpcStreams(this.env, this.config);
 
     this.status = "CONNECTED";
     this.streamReady = true;
@@ -1023,7 +1025,21 @@ class ExchangeStreamController {
     });
     this.clusterPool.recordHeartbeat(endpoint, 0);
 
-    await this.resetEngineBook(blackoutDurationMs, recoveredAt);
+    if (streams.has("ORDERBOOK_SNAPSHOT")) {
+      await this.resetEngineBook(blackoutDurationMs, recoveredAt);
+    } else {
+      this.logger.info("STREAM_RECOVERED", "Market stream recovered", {
+        streamId: this.config.id,
+        source: this.config.source,
+        source_exchange: this.config.source_exchange,
+        connectionId: this.connectionId,
+        attempts: this.attempts,
+        blackoutDurationMs,
+        recoveredAt,
+        recoveryReason: this.blackoutStartedAt ? "STREAM_RECONNECTED" : "STREAM_CONNECTED"
+      });
+    }
+    this.blackoutStartedAt = null;
 
     return new Promise<void>((resolve, reject) => {
       let settled = false;
@@ -2761,9 +2777,68 @@ function loadStreamConfigs(env: Env): ResolvedExchangeStreamConfig[] {
       ? configured
       : defaultHyperliquidStreamConfig(env);
 
-  return withLiquidationWatchlistSubscriptions(rawConfigs, env)
+  return withLiquidationWatchlistSubscriptions(
+    augmentDwellirHyperliquidReadStreams(rawConfigs, env),
+    env
+  )
     .filter((config) => config.enabled !== false)
     .map((config, index) => resolveStreamConfig(env, config, weights, index));
+}
+
+function augmentDwellirHyperliquidReadStreams(
+  configs: ExchangeStreamConfig[],
+  env: Env
+): ExchangeStreamConfig[] {
+  const hasDwellirGrpc = configs.some((config) => isDwellirGrpcRawConfig(config, env));
+  const hasHyperliquidBookSocket = configs.some(
+    (config) =>
+      normalizeSource(config.source) === "HYPERLIQUID" &&
+      normalizeTransport(config.transport) === "websocket" &&
+      (config.subscriptions ?? [config.subscription])
+        .filter(Boolean)
+        .some((subscription) => isL2BookSubscription(subscription))
+  );
+
+  if (!hasDwellirGrpc || hasHyperliquidBookSocket) {
+    return configs;
+  }
+
+  const coins = parseAssetList(env.HL_ASSETS ?? env.HL_ASSET);
+  const activeCoins = coins.length > 0 ? coins : [...DEFAULT_HYPERLIQUID_ASSET_MATRIX];
+  const orderbookUrl = resolveDwellirOrderbookWsUrl(env);
+  const normalized = configs.map((config) =>
+    isDwellirGrpcRawConfig(config, env)
+      ? (() => {
+          const grpcStreamTypes = (config.grpcStreamTypes ?? ["FILLS"]).filter(
+            (entry) => !isOrderbookStreamKind(entry)
+          );
+          return {
+            ...config,
+            // Dwellir's gRPC gateway is excellent for fills/blocks. The order-book
+            // server is the authoritative low-latency L2 feed, so keep gRPC off
+            // the book hot path to avoid snapshot-file churn resetting the engine.
+            grpcStreamTypes: grpcStreamTypes.length > 0 ? grpcStreamTypes : ["FILLS"]
+          };
+        })()
+      : config
+  );
+
+  return [
+    ...normalized,
+    {
+      id: "dwellir-hyperliquid-orderbook",
+      source: "HYPERLIQUID",
+      source_exchange: "hyperliquid",
+      transport: "websocket",
+      streamUrl: orderbookUrl,
+      weight: 1,
+      exchangeCode: "hyperliquid",
+      subscriptions: activeCoins.map((coin) => ({
+        method: "subscribe",
+        subscription: { type: "l2Book", coin, nLevels: 50 }
+      }))
+    }
+  ];
 }
 
 function defaultHyperliquidStreamConfig(env: Env): ExchangeStreamConfig[] {
@@ -2821,6 +2896,44 @@ function resolveDwellirGrpcUrl(
     env.RPC_GRPC_ENDPOINT ??
     DWELLIR_GRPC_ENDPOINT
   );
+}
+
+function resolveDwellirOrderbookWsUrl(env: Env): string {
+  const explicit = env.DWELLIR_ORDERBOOK_WS_URL?.trim();
+  if (explicit) {
+    return explicit;
+  }
+
+  const token =
+    env.DWELLIR_API_KEY?.trim() ??
+    env.RPC_AUTH_TOKEN?.trim() ??
+    dwellirRouteTokenFromUrl(env.DWELLIR_GRPC_URL) ??
+    dwellirRouteTokenFromUrl(env.RPC_GRPC_ENDPOINT) ??
+    dwellirRouteTokenFromUrl(env.DWELLIR_GRPC_ENDPOINT);
+
+  if (!token) {
+    return requireString(env.HL_WS_URL, "DWELLIR_ORDERBOOK_WS_URL");
+  }
+
+  const endpoint = (env.DWELLIR_ORDERBOOK_WS_ENDPOINT ?? DWELLIR_ORDERBOOK_WS_ENDPOINT).replace(
+    /\/+$/,
+    ""
+  );
+  return `${endpoint}/${token}/ws`;
+}
+
+function dwellirRouteTokenFromUrl(value: string | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    const url = new URL(value);
+    const token = url.pathname.split("/").filter(Boolean)[0];
+    return token && token.length > 0 ? token : null;
+  } catch {
+    return null;
+  }
 }
 
 function resolveDwellirStartTimestampMs(env: Env): number | null {
@@ -2948,11 +3061,53 @@ function isDwellirGrpcConfig(config: ResolvedExchangeStreamConfig): boolean {
   );
 }
 
-function dwellirGrpcStreams(env: Env): Set<DwellirGrpcStreamKind> {
-  const configured = parseCsvList(env.DWELLIR_GRPC_STREAMS, [
-    "ORDERBOOK_SNAPSHOT",
-    "FILLS"
-  ]);
+function isDwellirGrpcRawConfig(config: ExchangeStreamConfig, env: Env): boolean {
+  const transport = normalizeTransport(config.transport ?? env.INGEST_TRANSPORT);
+  if (transport !== "grpc" || normalizeSource(config.source) !== "HYPERLIQUID") {
+    return false;
+  }
+
+  const endpoint = config.grpcEndpoint ?? config.streamUrl ?? env.DWELLIR_GRPC_URL ?? env.RPC_GRPC_ENDPOINT;
+  return (
+    typeof endpoint === "string" &&
+    endpoint.includes("dwellir.com")
+  ) || (config.grpcService ?? env.RPC_GRPC_SERVICE ?? "").startsWith("hyperliquid_l1_gateway.");
+}
+
+function isOrderbookStreamKind(value: string): boolean {
+  const normalized = value.trim().toUpperCase();
+  return (
+    normalized === "ORDERBOOK" ||
+    normalized === "ORDERBOOK_SNAPSHOT" ||
+    normalized === "ORDERBOOK_UPDATE" ||
+    normalized === "BOOK_UPDATES" ||
+    normalized === "SNAPSHOTS"
+  );
+}
+
+function isL2BookSubscription(subscription: string | JsonRecord | undefined): boolean {
+  if (!subscription) {
+    return false;
+  }
+
+  if (typeof subscription === "string") {
+    return subscription.toLowerCase().includes("l2book");
+  }
+
+  const payload = subscription.subscription;
+  return isRecord(payload) && normalizeString(payload.type) === "L2BOOK";
+}
+
+function dwellirGrpcStreams(
+  env: Env,
+  config?: Pick<ResolvedExchangeStreamConfig, "grpcStreamTypes">
+): Set<DwellirGrpcStreamKind> {
+  const configured = config?.grpcStreamTypes?.length
+    ? config.grpcStreamTypes
+    : parseCsvList(env.DWELLIR_GRPC_STREAMS, [
+        "ORDERBOOK_SNAPSHOT",
+        "FILLS"
+      ]);
   const streams = new Set<DwellirGrpcStreamKind>();
 
   for (const entry of configured) {
@@ -4092,5 +4247,7 @@ function json(body: unknown, status = 200): Response {
 
 export const __test__ = {
   classifyDwellirMalformedPayload,
-  dwellirPayloadToHyperliquidRawMessages
+  dwellirPayloadToHyperliquidRawMessages,
+  loadStreamConfigs,
+  resolveDwellirOrderbookWsUrl
 };

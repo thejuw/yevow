@@ -108,18 +108,6 @@ async function executeIntent(
   const intent = await request.json<TradeIntent>();
   validateIntent(intent);
 
-  const preTrade = await validatePreTrade(env, intent);
-  if (!preTrade.ok) {
-    const report = rejectedReport(intent, preTrade.reason, preTrade.status);
-    ctx.waitUntil(forwardReport(env, report));
-    logger.warn("EXECUTION_PRE_TRADE_REJECTED", "Pre-trade execution guard rejected intent", {
-      intentId: intent.intentId,
-      reason: preTrade.reason,
-      status: preTrade.status
-    });
-    return json({ ok: false, report, error: preTrade.reason }, preTrade.status);
-  }
-
   const priority = intent.action === "SELL" && intent.orderType === "MARKET" ? "HEDGE" : "NEW";
   configureRuntimeRateLimits(env);
   const reservation = limiter.reserve(intent.source_exchange ?? "default", priority);
@@ -181,6 +169,18 @@ async function executeIntent(
       report,
       signedTradeIntent: audit
     });
+  }
+
+  const preTrade = await validatePreTrade(env, intent);
+  if (!preTrade.ok) {
+    const report = rejectedReport(intent, preTrade.reason, preTrade.status);
+    ctx.waitUntil(forwardReport(env, report));
+    logger.warn("EXECUTION_PRE_TRADE_REJECTED", "Pre-trade execution guard rejected intent", {
+      intentId: intent.intentId,
+      reason: preTrade.reason,
+      status: preTrade.status
+    });
+    return json({ ok: false, report, error: preTrade.reason }, preTrade.status);
   }
 
   const startedAt = Date.now();

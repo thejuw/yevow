@@ -20,6 +20,8 @@ export interface Env {
   DWELLIR_API_KEY?: string;
   DWELLIR_GRPC_URL?: string;
   DWELLIR_GRPC_ENDPOINT?: string;
+  DWELLIR_ORDERBOOK_WS_URL?: string;
+  DWELLIR_ORDERBOOK_WS_ENDPOINT?: string;
   DWELLIR_GRPC_STREAMS?: string;
   DWELLIR_GRPC_START_TIMESTAMP_MS?: string;
   DWELLIR_GRPC_START_BLOCK_HEIGHT?: string;
@@ -140,6 +142,7 @@ export interface Env {
   JANITOR_LOG_RETENTION_DAYS?: string;
   MOLTWORKER_HEALTH_URL?: string;
   SHADOW_MODE?: string;
+  PAPER_BANKROLL_USD?: string;
 }
 
 export type ISO8601 = string;

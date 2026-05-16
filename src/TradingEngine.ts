@@ -153,6 +153,7 @@ const DEFAULT_CASCADE_DISTANCE_PCT = 0.005;
 const DEFAULT_PREDATORY_ORDER_OFFSET_BPS = 2;
 const DEFAULT_WHALE_PRINT_Z_THRESHOLD = 5;
 const DEFAULT_QUOTE_HIBERNATE_MS = 3_000;
+const DEFAULT_PAPER_BANKROLL_USD = 5_000;
 const DEFAULT_VAR_CONFIDENCE_Z = 2.326;
 const TARGET_ASSET_MATRIX = [
   { coin: "BTC", instrumentCode: "btc-usd" },
@@ -691,14 +692,20 @@ export class TradingEngine {
         location,
         now
       );
-      this.engineState = {
-        ...baseState,
-        mode: kvConfig?.mode ?? baseState.mode,
-        bankroll: {
+      const bankroll = normalizePaperBankroll(
+        {
           ...baseState.bankroll,
           ...kvConfig?.bankroll,
           updatedAt: now
         },
+        this.env,
+        now
+      );
+
+      this.engineState = {
+        ...baseState,
+        mode: kvConfig?.mode ?? baseState.mode,
+        bankroll,
         agentHealth: {
           ...defaultEngineState(baseState.engineId).agentHealth,
           ...baseState.agentHealth
@@ -737,10 +744,7 @@ export class TradingEngine {
           readPositiveNumber(this.env.MAX_INVENTORY_UNITS, DEFAULT_MAX_INVENTORY_UNITS),
           readPositiveNumber(this.env.MAX_INVENTORY_DELTA, DEFAULT_MAX_INVENTORY_DELTA)
         ),
-        riskMetrics: baseState.riskMetrics ?? defaultRiskMetrics(
-          baseState.bankroll.equity,
-          now
-        ),
+        riskMetrics: baseState.riskMetrics ?? defaultRiskMetrics(bankroll.equity, now),
         quoteState: baseState.quoteState ?? defaultQuoteState(),
         lastTradeIntent: baseState.lastTradeIntent ?? null,
         hedge: baseState.hedge ?? defaultHedgeState(),
@@ -3294,6 +3298,45 @@ export class TradingEngine {
 
     if (
       !options.shadowReplay &&
+      isShadowMode(this.env) &&
+      this.cachedConfig.TRADING_ENABLED &&
+      this.engineState.mode === "HALTED"
+    ) {
+      const resumedAt = new Date().toISOString();
+      this.engineState = {
+        ...this.engineState,
+        mode: "PAPER",
+        bankroll: normalizePaperBankroll(this.engineState.bankroll, this.env, resumedAt),
+        risk: {
+          ...this.engineState.risk,
+          killSwitch: false,
+          updatedAt: resumedAt
+        },
+        quoteState: {
+          status: "ACTIVE",
+          reason: null,
+          suspendedUntil: null,
+          lastQuote: this.engineState.quoteState.lastQuote,
+          updatedAt: resumedAt
+        },
+        heartbeatAt: resumedAt,
+        updatedAt: resumedAt
+      };
+      this.killSwitchLogged = false;
+      this.logger.warn("SHADOW_MODE_AUTO_RESUME", "Shadow mode resumed paper trading after a stale halt", {
+        instrumentCode: tick.instrumentCode,
+        previousMode: "HALTED",
+        nextMode: "PAPER",
+        configVersion: this.cachedConfig.version
+      });
+      this.publish("RESUME_QUOTES", {
+        reason: "SHADOW_MODE_AUTO_RESUME",
+        observedAt: resumedAt
+      });
+    }
+
+    if (
+      !options.shadowReplay &&
       this.engineState.mode === "HALTED" &&
       this.cachedConfig.TRADING_ENABLED
     ) {
@@ -3628,7 +3671,8 @@ export class TradingEngine {
     if (
       anomalyResult.emergencyPause &&
       this.cachedConfig.TRADING_ENABLED &&
-      !options.shadowReplay
+      !options.shadowReplay &&
+      !isShadowMode(this.env)
     ) {
       const anomalyLogicMs = roundLatency(highResolutionNow() - anomalyLogicStartedAt);
 
@@ -7535,6 +7579,36 @@ function defaultEngineState(engineId: string): EngineState {
   };
 }
 
+function normalizePaperBankroll(
+  bankroll: EngineState["bankroll"],
+  env: Env,
+  observedAt: string
+): EngineState["bankroll"] {
+  const cash = Number(bankroll.cash);
+  const equity = Number(bankroll.equity);
+
+  if (
+    !isShadowMode(env) ||
+    (Number.isFinite(cash) && cash > 0) ||
+    (Number.isFinite(equity) && equity > 0)
+  ) {
+    return bankroll;
+  }
+
+  const paperBankroll = readPositiveNumber(
+    env.PAPER_BANKROLL_USD,
+    DEFAULT_PAPER_BANKROLL_USD
+  );
+
+  return {
+    ...bankroll,
+    cash: paperBankroll,
+    equity: paperBankroll,
+    realizedPnl: bankroll.realizedPnl ?? 0,
+    updatedAt: observedAt
+  };
+}
+
 function defaultEngineLocation(): EngineLocation {
   return {
     colo: null,
@@ -9103,6 +9177,8 @@ function mapManagedStatusToTradeStatus(
       return "FILLED";
     case "PARTIAL_FILL":
       return "PARTIAL";
+    case "GHOST_FILL":
+      return "GHOST_FILL";
     case "REJECTED":
       return "REJECTED";
     case "CANCELLED":

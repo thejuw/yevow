@@ -2,6 +2,40 @@ import { describe, expect, it } from "vitest";
 import { __test__ } from "../../src/IngestWorker";
 
 describe("IngestWorker poison payload isolation", () => {
+  it("splits Dwellir reads into gRPC fills and a dedicated order-book socket", () => {
+    const configs = __test__.loadStreamConfigs({
+      DWELLIR_GRPC_URL: "https://api-hyperliquid-mainnet-grpc.n.dwellir.com/test-route-token",
+      INGEST_TRANSPORT: "grpc",
+      HL_ASSETS: "BTC,ETH",
+      MARKET_STREAMS: JSON.stringify([
+        {
+          id: "dwellir-hyperliquid-grpc-fills",
+          source: "HYPERLIQUID",
+          source_exchange: "hyperliquid",
+          transport: "grpc",
+          streamUrl: "https://api-hyperliquid-mainnet-grpc.n.dwellir.com",
+          grpcEndpoint: "https://api-hyperliquid-mainnet-grpc.n.dwellir.com",
+          grpcService: "hyperliquid_l1_gateway.v2.HyperliquidL1Gateway",
+          grpcStreamTypes: ["ORDERBOOK_SNAPSHOT", "FILLS"],
+          subscriptions: [
+            { method: "subscribe", subscription: { type: "trades", coin: "BTC" } },
+            { method: "subscribe", subscription: { type: "trades", coin: "ETH" } }
+          ]
+        }
+      ])
+    } as never);
+
+    const grpc = configs.find((config) => config.transport === "grpc");
+    const book = configs.find((config) => config.id === "dwellir-hyperliquid-orderbook");
+
+    expect(grpc?.grpcStreamTypes).toEqual(["FILLS"]);
+    expect(book?.transport).toBe("websocket");
+    expect(book?.streamUrl).toBe(
+      "wss://api-hyperliquid-mainnet-orderbook.n.dwellir.com/test-route-token/ws"
+    );
+    expect(book?.subscriptions).toHaveLength(2);
+  });
+
   it("classifies malformed Dwellir protobuf payloads without throwing", () => {
     const update = {
       kind: "FILLS" as const,
