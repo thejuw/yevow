@@ -968,10 +968,11 @@ class ExchangeStreamController {
   private async connectDwellirGrpcOnce(): Promise<void> {
     const endpoint = resolveDwellirGrpcUrl(this.env, this.config);
     const apiKey = await this.resolveDwellirApiKey();
+    const routeTokenConfigured = hasEndpointPath(endpoint);
     const watchdogTimeoutMs = this.config.watchdogTimeoutMs;
 
-    if (!apiKey) {
-      throw new Error("DWELLIR_API_KEY_MISSING");
+    if (!apiKey && !routeTokenConfigured) {
+      throw new Error("DWELLIR_AUTH_MISSING");
     }
 
     const client = new DwellirHyperliquidGrpcClient({
@@ -1001,7 +1002,8 @@ class ExchangeStreamController {
       sourceWeight: this.config.weight,
       connectionId: this.connectionId,
       streamHost: new URL(endpoint).host,
-      grpcPathConfigured: hasEndpointPath(endpoint),
+      grpcPathConfigured: routeTokenConfigured,
+      authMode: apiKey ? "api-key" : "route-token",
       watchdogTimeoutMs,
       streams: [...streams],
       descriptor: client.descriptorInfo()

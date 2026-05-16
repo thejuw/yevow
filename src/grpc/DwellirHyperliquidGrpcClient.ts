@@ -12,7 +12,7 @@ export type DwellirGrpcStreamKind = "BLOCK" | "FILLS" | "ORDERBOOK_SNAPSHOT";
 
 export interface DwellirGrpcClientConfig {
   endpoint: string;
-  apiKey: string;
+  apiKey?: string | null;
   service: string;
   startTimestampMs?: number | null;
   startBlockHeight?: number | null;
@@ -197,13 +197,18 @@ export class DwellirHyperliquidGrpcClient {
   }
 
   private headers(): Headers {
-    return new Headers({
+    const headers = new Headers({
       "content-type": "application/grpc+proto",
       "grpc-accept-encoding": "identity",
       "te": "trailers",
-      "user-agent": "sovereign-sigma-ingest/dwellir-grpc",
-      "x-api-key": this.config.apiKey
+      "user-agent": "sovereign-sigma-ingest/dwellir-grpc"
     });
+
+    if (this.config.apiKey) {
+      headers.set("x-api-key", this.config.apiKey);
+    }
+
+    return headers;
   }
 
   private methodUrl(method: string): string {

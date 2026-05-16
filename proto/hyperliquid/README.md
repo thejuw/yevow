@@ -13,9 +13,9 @@ Hyperliquid L1 Gateway service definition.
 Dwellir runtime settings:
 
 - `INGEST_TRANSPORT=grpc`
-- `DWELLIR_GRPC_URL=https://api-hyperliquid-mainnet-grpc.n.dwellir.com`
+- `DWELLIR_GRPC_URL` as a Wrangler secret when Dwellir supplies a private UUID route
 - `DWELLIR_GRPC_ENDPOINT=https://api-hyperliquid-mainnet-grpc.n.dwellir.com` as a compatibility alias
-- `DWELLIR_API_KEY` as a Wrangler secret
+- `DWELLIR_API_KEY` as a Wrangler secret only when Dwellir supplies a separate API key
 - `RPC_GRPC_SERVICE=hyperliquid_l1_gateway.v2.HyperliquidL1Gateway`
 - `DWELLIR_GRPC_STREAMS=ORDERBOOK_SNAPSHOT,FILLS`
 - `HL_GRPC_BACKOFF_BASE_MS=50`

@@ -43,7 +43,6 @@ ENGINE_LOCATION_HINT = "weur"
 INGEST_COORDINATOR_OBJECT_NAME = "sovereign-sigma:singleton:ingest-coordinator:v2:weur"
 INGEST_COORDINATOR_LOCATION_HINT = "weur"
 INGEST_TRANSPORT = "grpc"
-DWELLIR_GRPC_URL = "https://api-hyperliquid-mainnet-grpc.n.dwellir.com"
 DWELLIR_GRPC_ENDPOINT = "https://api-hyperliquid-mainnet-grpc.n.dwellir.com"
 DWELLIR_GRPC_STREAMS = "ORDERBOOK_SNAPSHOT,FILLS"
 DWELLIR_GRPC_FATAL_DROP_MS = "200"
@@ -75,7 +74,8 @@ NEWS_FEEDS = "[]"
 # longer configured as a fallback.
 # Provision alerting credentials with:
 #   wrangler secret put INGESTOR_CONTROL_TOKEN -c wrangler.ingest.toml
-#   wrangler secret put DWELLIR_API_KEY -c wrangler.ingest.toml
+#   wrangler secret put DWELLIR_GRPC_URL -c wrangler.ingest.toml
+#   wrangler secret put DWELLIR_API_KEY -c wrangler.ingest.toml  # only if Dwellir supplies a separate API key
 #   wrangler secret put DISCORD_WEBHOOK_URL -c wrangler.ingest.toml
 #   wrangler secret put TELEGRAM_BOT_TOKEN -c wrangler.ingest.toml
 #   wrangler secret put TELEGRAM_CHAT_ID -c wrangler.ingest.toml
