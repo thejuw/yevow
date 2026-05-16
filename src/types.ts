@@ -24,6 +24,7 @@ export interface Env {
   HL_AGENT_ADDRESS?: string;
   HL_AGENT_SECRET?: string;
   HL_VAULT_ADDRESS?: string;
+  HL_HEDGE_SUBACCOUNT_ADDRESS?: string;
   HL_IS_MAINNET?: string;
   HL_DEFAULT_TIF?: string;
   HL_ORDER_EXPIRES_MS?: string;
@@ -73,6 +74,10 @@ export interface Env {
   KELLY_FRACTION?: string;
   MAX_POSITION_PCT?: string;
   MAX_INVENTORY_UNITS?: string;
+  MAX_INVENTORY_DELTA?: string;
+  DELTA_NORMALIZATION_WEIGHTS?: string;
+  FUNDING_BIAS_THRESHOLD?: string;
+  FUNDING_INVENTORY_BIAS?: string;
   RISK_AVERSION_FACTOR?: string;
   ORACLE_GOVERNANCE_MODE?: string;
   ORACLE_MANUAL_SKEPTICISM?: string;
@@ -285,6 +290,7 @@ export interface EngineState {
   latencySampleCount: number;
   staleTickCount: number;
   toxicityScore: number;
+  current_inventory_delta: number;
   maxLatencyMs: number;
   cachedConfig: GlobalRiskConfig;
   macroBias: MacroBias;
@@ -316,6 +322,7 @@ export interface GlobalRiskConfig {
   MAX_POSITION_SIZE: number;
   MAX_POSITION_PCT: number;
   MAX_INVENTORY_UNITS: number;
+  MAX_INVENTORY_DELTA: number;
   MAX_DRAWDOWN_PCT: number;
   LATENCY_THRESHOLD_MS: number;
   GOLDEN_COLOS: string;
@@ -323,6 +330,8 @@ export interface GlobalRiskConfig {
   EXCHANGE_FEE_BPS: number;
   KELLY_FRACTION: number;
   RISK_AVERSION_FACTOR: number;
+  FUNDING_BIAS_THRESHOLD: number;
+  FUNDING_INVENTORY_BIAS: number;
   QUOTE_HIBERNATE_MS: number;
   VAR_CONFIDENCE_Z: number;
   ORACLE_GOVERNANCE_MODE: GovernanceMode;
@@ -442,6 +451,7 @@ export type GlobalRiskConfigUpdate = Partial<
     | "MAX_POSITION_SIZE"
     | "MAX_POSITION_PCT"
     | "MAX_INVENTORY_UNITS"
+    | "MAX_INVENTORY_DELTA"
     | "MAX_DRAWDOWN_PCT"
     | "LATENCY_THRESHOLD_MS"
     | "GOLDEN_COLOS"
@@ -449,6 +459,8 @@ export type GlobalRiskConfigUpdate = Partial<
     | "EXCHANGE_FEE_BPS"
     | "KELLY_FRACTION"
     | "RISK_AVERSION_FACTOR"
+    | "FUNDING_BIAS_THRESHOLD"
+    | "FUNDING_INVENTORY_BIAS"
     | "QUOTE_HIBERNATE_MS"
     | "VAR_CONFIDENCE_Z"
     | "ORACLE_GOVERNANCE_MODE"
@@ -1059,6 +1071,8 @@ export interface TradeIntent {
   maxSlippageBps: number;
   confidence: number;
   rationale: string;
+  targetSubaccount?: string | null;
+  target_subaccount?: string | null;
   createdAt: ISO8601;
 }
 
@@ -1091,7 +1105,11 @@ export interface QuoteState {
 
 export interface InventoryState {
   netDelta: number;
+  current_inventory_delta: number;
+  baseAsset: string;
+  normalization: Record<string, number>;
   maxInventoryUnits: number;
+  maxInventoryDelta: number;
   inventoryPenalty: number;
   stopBid: boolean;
   stopAsk: boolean;
@@ -1153,6 +1171,8 @@ export interface ExchangeOpenOrder {
 
 export interface HedgeState {
   netDelta: number;
+  current_inventory_delta: number;
+  maxInventoryDelta: number;
   hedgeRequired: boolean;
   hedgeRatio: number;
   preferredVenue: string | null;
@@ -1226,6 +1246,7 @@ export interface AdminConfigUpdate {
   MAX_POSITION_SIZE?: number;
   MAX_POSITION_PCT?: number;
   MAX_INVENTORY_UNITS?: number;
+  MAX_INVENTORY_DELTA?: number;
   MAX_DRAWDOWN_PCT?: number;
   LATENCY_THRESHOLD_MS?: number;
   GOLDEN_COLOS?: string;
@@ -1233,6 +1254,8 @@ export interface AdminConfigUpdate {
   EXCHANGE_FEE_BPS?: number;
   KELLY_FRACTION?: number;
   RISK_AVERSION_FACTOR?: number;
+  FUNDING_BIAS_THRESHOLD?: number;
+  FUNDING_INVENTORY_BIAS?: number;
   QUOTE_HIBERNATE_MS?: number;
   VAR_CONFIDENCE_Z?: number;
   ORACLE_GOVERNANCE_MODE?: GovernanceMode;
@@ -1260,6 +1283,7 @@ export interface HealthReport {
   averageLatency: number;
   staleTickCount: number;
   toxicityScore: number;
+  current_inventory_delta: number;
   cachedConfig: GlobalRiskConfig;
   location: EngineLocation;
   microstructure: MicrostructureMetrics;
@@ -1268,6 +1292,7 @@ export interface HealthReport {
   sentiment: SentimentState;
   leadLag: LeadLagMetrics;
   inventory: InventoryState;
+  hedge: HedgeState;
   riskMetrics: RiskMetrics;
   quoteState: QuoteState;
   slippage: SlippageAnalytics;

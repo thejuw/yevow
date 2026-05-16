@@ -47,6 +47,7 @@ SLIPPAGE_GUARD_TICKS = "2"
 #   wrangler secret put HL_AGENT_ADDRESS -c wrangler.executioner.toml
 #   wrangler secret put HL_AGENT_SECRET -c wrangler.executioner.toml
 #   wrangler secret put HL_ACCOUNT_ADDRESS -c wrangler.executioner.toml
+#   wrangler secret put HL_HEDGE_SUBACCOUNT_ADDRESS -c wrangler.toml
 #
 # Keep EXCHANGE_ORDER_TEST_MODE="true" until the Hyperliquid API wallet is
 # approved, account reads pass, and signed test payloads have been reviewed.

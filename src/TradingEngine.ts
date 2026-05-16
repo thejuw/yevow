@@ -47,6 +47,7 @@ import type {
   GlobalRiskConfig,
   HealthReport,
   InternalOrderBook,
+  InventoryState,
   JsonRecord,
   JsonValue,
   LatencyMetrics,
@@ -127,7 +128,10 @@ const DEFAULT_EXCHANGE_FEE_BPS = 5;
 const DEFAULT_MIN_EV_THRESHOLD = 0;
 const DEFAULT_MAX_POSITION_PCT = 0.05;
 const DEFAULT_MAX_INVENTORY_UNITS = 5;
+const DEFAULT_MAX_INVENTORY_DELTA = 1;
 const DEFAULT_RISK_AVERSION_FACTOR = 0.01;
+const DEFAULT_FUNDING_BIAS_THRESHOLD = 0.00001;
+const DEFAULT_FUNDING_INVENTORY_BIAS = 0;
 const DEFAULT_AMM_MIN_TICK_CHANGE = 0.00000001;
 const DEFAULT_WHALE_PRINT_Z_THRESHOLD = 5;
 const DEFAULT_QUOTE_HIBERNATE_MS = 3_000;
@@ -639,6 +643,11 @@ export class TradingEngine {
         latencySampleCount: baseState.latencySampleCount ?? 0,
         staleTickCount: baseState.staleTickCount ?? 0,
         toxicityScore: baseState.toxicityScore ?? this.profilerAgent.toxicityScore,
+        current_inventory_delta:
+          baseState.current_inventory_delta ??
+          baseState.inventory?.current_inventory_delta ??
+          baseState.inventory?.netDelta ??
+          0,
         maxLatencyMs: this.maxLatencyMs,
         cachedConfig: this.cachedConfig,
         macroBias: this.macroBias,
@@ -652,10 +661,11 @@ export class TradingEngine {
         oracle: baseState.oracle ?? defaultOracleState(),
         sentiment: baseState.sentiment ?? defaultSentimentState(),
         leadLag: baseState.leadLag ?? defaultLeadLagMetrics(),
-        inventory: baseState.inventory ?? defaultInventoryState(readPositiveNumber(
-          this.env.MAX_INVENTORY_UNITS,
-          DEFAULT_MAX_INVENTORY_UNITS
-        )),
+        inventory: normalizeInventoryState(
+          baseState.inventory,
+          readPositiveNumber(this.env.MAX_INVENTORY_UNITS, DEFAULT_MAX_INVENTORY_UNITS),
+          readPositiveNumber(this.env.MAX_INVENTORY_DELTA, DEFAULT_MAX_INVENTORY_DELTA)
+        ),
         riskMetrics: baseState.riskMetrics ?? defaultRiskMetrics(
           baseState.bankroll.equity,
           now
@@ -729,7 +739,14 @@ export class TradingEngine {
 
     try {
       if (request.method === "GET" && url.pathname === "/health") {
-        await this.refreshConfigIfDue("ALARM");
+        this.state.waitUntil(
+          this.refreshConfigIfDue("ALARM").catch((error) => {
+            this.logger.error("CONFIG_REFRESH_FAILED", "Health-triggered config refresh failed", {
+              source: "HEALTH",
+              message: error instanceof Error ? error.message : "UNKNOWN_ERROR"
+            });
+          })
+        );
         return json(this.healthCheck());
       }
 
@@ -1031,6 +1048,7 @@ export class TradingEngine {
       averageLatency: this.engineState.averageLatency,
       staleTickCount: this.engineState.staleTickCount,
       toxicityScore: this.engineState.toxicityScore,
+      current_inventory_delta: this.engineState.current_inventory_delta,
       cachedConfig: this.engineState.cachedConfig,
       location: this.engineState.location,
       microstructure: this.engineState.microstructure,
@@ -1039,6 +1057,7 @@ export class TradingEngine {
       sentiment: this.engineState.sentiment,
       leadLag: this.engineState.leadLag,
       inventory: this.engineState.inventory,
+      hedge: this.engineState.hedge,
       riskMetrics: this.engineState.riskMetrics,
       quoteState: this.engineState.quoteState,
       slippage: this.engineState.slippage,
@@ -1528,7 +1547,7 @@ export class TradingEngine {
     if (totalLatencyMs > nativeMaxLatencyMs) {
       const book =
         bids.length > 0 || asks.length > 0
-          ? await this.applySnapshot(snapshot, { telemetry: false })
+          ? await this.applySnapshot(snapshot, { telemetry: false, persist: false })
           : undefined;
       if (book) {
         const syncState = this.bookSync.get(marketKey);
@@ -1608,7 +1627,7 @@ export class TradingEngine {
       };
     }
 
-    const book = await this.applySnapshot(snapshot);
+    const book = await this.applySnapshot(snapshot, { persist: false });
     const representativeTick = createNativeHyperliquidBookTick({
       payload,
       coin,
@@ -1842,7 +1861,7 @@ export class TradingEngine {
 
   private async applySnapshot(
     snapshot: OrderBookSnapshot,
-    options: { telemetry?: boolean } = {}
+    options: { telemetry?: boolean; persist?: boolean } = {}
   ): Promise<InternalOrderBook> {
     const updatedAt = new Date().toISOString();
     const instrumentCode = snapshot.instrumentCode.toLowerCase();
@@ -1914,11 +1933,13 @@ export class TradingEngine {
       updatedAt
     };
 
-    await this.safeStoragePut({
-      [ENGINE_STATE_KEY]: this.engineState,
-      [DOM_WALL_HISTORY_KEY]: this.domWallHistory,
-      [`${ORDER_BOOK_PREFIX}${marketKey}`]: book
-    }, "ORDER_BOOK_SNAPSHOT_APPLIED");
+    if (options.persist !== false) {
+      await this.safeStoragePut({
+        [ENGINE_STATE_KEY]: this.engineState,
+        [DOM_WALL_HISTORY_KEY]: this.domWallHistory,
+        [`${ORDER_BOOK_PREFIX}${marketKey}`]: book
+      }, "ORDER_BOOK_SNAPSHOT_APPLIED");
+    }
 
     const shouldEmitTelemetry =
       options.telemetry !== false &&
@@ -3051,7 +3072,9 @@ export class TradingEngine {
       positions: this.engineState.openPositions,
       books: [...this.orderBook.values()],
       leadLag,
-      threshold: Math.max(1, inventory.maxInventoryUnits * 0.25),
+      currentInventoryDelta: inventory.current_inventory_delta,
+      threshold: inventory.maxInventoryDelta,
+      targetSubaccount: normalizeOptionalAddress(this.env.HL_HEDGE_SUBACCOUNT_ADDRESS),
       observedAt: metrics.brainTimestamp
     });
     const croupierDecision = this.croupierAgent.evaluate({
@@ -3067,6 +3090,15 @@ export class TradingEngine {
       executionCostBufferBps: this.engineState.slippage.executionCostBufferBps,
       fundingRateHourly: this.currentFundingRate(book),
       fundingHorizonHours: readPositiveNumber(this.env.FUNDING_HORIZON_HOURS, 1),
+      riskAversionFactor: this.cachedConfig.RISK_AVERSION_FACTOR,
+      fundingBiasThreshold:
+        this.cachedConfig.FUNDING_BIAS_THRESHOLD > 0
+          ? this.cachedConfig.FUNDING_BIAS_THRESHOLD
+          : readPositiveNumber(this.env.FUNDING_BIAS_THRESHOLD, DEFAULT_FUNDING_BIAS_THRESHOLD),
+      fundingInventoryBias:
+        this.cachedConfig.FUNDING_INVENTORY_BIAS > 0
+          ? this.cachedConfig.FUNDING_INVENTORY_BIAS
+          : readPositiveNumber(this.env.FUNDING_INVENTORY_BIAS, DEFAULT_FUNDING_INVENTORY_BIAS),
       macroBias: this.macroBias,
       observedAt: metrics.brainTimestamp
     });
@@ -3077,7 +3109,7 @@ export class TradingEngine {
     const hedgePlan = this.prepareExecutionPlan(
       hedge.lastIntent,
       metrics.brainTimestamp,
-      { bypassQuoteSuspension: true }
+      { bypassQuoteSuspension: true, bypassPitBoss: hedge.hedgeRequired }
     );
     const executionPlans = [executionPlan, hedgePlan].filter(
       (plan): plan is NonNullable<typeof executionPlan> => plan !== null
@@ -3120,6 +3152,7 @@ export class TradingEngine {
       oracle: oracleResult.state,
       leadLag,
       inventory,
+      current_inventory_delta: inventory.current_inventory_delta,
       riskMetrics,
       risk: {
         ...this.engineState.risk,
@@ -3442,20 +3475,82 @@ export class TradingEngine {
       this.cachedConfig.MAX_INVENTORY_UNITS > 0
         ? this.cachedConfig.MAX_INVENTORY_UNITS
         : readPositiveNumber(this.env.MAX_INVENTORY_UNITS, DEFAULT_MAX_INVENTORY_UNITS);
+    const maxInventoryDelta =
+      this.cachedConfig.MAX_INVENTORY_DELTA > 0
+        ? this.cachedConfig.MAX_INVENTORY_DELTA
+        : readPositiveNumber(this.env.MAX_INVENTORY_DELTA, DEFAULT_MAX_INVENTORY_DELTA);
     const riskAversionFactor =
       this.cachedConfig.RISK_AVERSION_FACTOR > 0
         ? this.cachedConfig.RISK_AVERSION_FACTOR
         : readPositiveNumber(this.env.RISK_AVERSION_FACTOR, DEFAULT_RISK_AVERSION_FACTOR);
-    const inventoryPenalty = netDelta * riskAversionFactor;
+    const normalized = this.normalizeInventoryDelta(positions);
+    const inventoryPenalty = Math.abs(normalized.current_inventory_delta) * riskAversionFactor;
 
     return {
       netDelta,
+      current_inventory_delta: normalized.current_inventory_delta,
+      baseAsset: normalized.baseAsset,
+      normalization: normalized.normalization,
       maxInventoryUnits,
+      maxInventoryDelta,
       inventoryPenalty,
       stopBid: netDelta >= maxInventoryUnits,
       stopAsk: netDelta <= -maxInventoryUnits,
       updatedAt: observedAt
     };
+  }
+
+  private normalizeInventoryDelta(
+    positions: Record<string, Position>
+  ): Pick<InventoryState, "current_inventory_delta" | "baseAsset" | "normalization"> {
+    const baseAsset = "BTC";
+    const baseReferencePrice = this.referencePriceForBaseAsset(baseAsset);
+    const configuredWeights = parseDeltaNormalizationWeights(this.env.DELTA_NORMALIZATION_WEIGHTS);
+    const normalization: Record<string, number> = {};
+    let currentInventoryDelta = 0;
+
+    for (const position of Object.values(positions)) {
+      const signedQuantity = position.side === "LONG" ? position.quantity : -position.quantity;
+      const instrumentCode = position.instrumentCode.toLowerCase();
+      const markPrice = this.currentMarkPrice(instrumentCode, position.markPrice);
+      const configuredWeight = configuredWeights[instrumentCode];
+      const inferredWeight =
+        baseReferencePrice > 0 && markPrice > 0 ? markPrice / baseReferencePrice : 1;
+      const weight =
+        typeof configuredWeight === "number" && Number.isFinite(configuredWeight)
+          ? configuredWeight
+          : inferredWeight;
+
+      normalization[instrumentCode] = roundMetric(weight, 8);
+      currentInventoryDelta += signedQuantity * weight;
+    }
+
+    return {
+      current_inventory_delta: roundCrypto(currentInventoryDelta),
+      baseAsset,
+      normalization
+    };
+  }
+
+  private referencePriceForBaseAsset(baseAsset: string): number {
+    const normalizedBase = baseAsset.toLowerCase();
+    const directBook = [...this.orderBook.values()].find(
+      (book) => book.instrumentCode.split("-")[0] === normalizedBase && book.midPrice !== null
+    );
+
+    if (directBook?.midPrice) {
+      return directBook.midPrice;
+    }
+
+    const directPosition = this.engineState.openPositions[`${normalizedBase}-usd`];
+    if (directPosition?.markPrice) {
+      return directPosition.markPrice;
+    }
+
+    const microMid = this.engineState.microstructure.midPrice;
+    return typeof microMid === "number" && Number.isFinite(microMid) && microMid > 0
+      ? microMid
+      : 1;
   }
 
   private updatePortfolioRisk(
@@ -3516,7 +3611,7 @@ export class TradingEngine {
   private prepareExecutionPlan(
     intent: EngineState["lastTradeIntent"],
     observedAt: string,
-    options: { bypassQuoteSuspension?: boolean } = {}
+    options: { bypassQuoteSuspension?: boolean; bypassPitBoss?: boolean } = {}
   ):
     | {
         intent: NonNullable<EngineState["lastTradeIntent"]>;
@@ -3532,15 +3627,26 @@ export class TradingEngine {
       return null;
     }
 
-    const pitBossDecision = this.pitBossAgent.approve(
-      intent,
-      this.engineState,
-      this.cachedConfig,
-      this.cachedConfig.MAX_POSITION_PCT > 0
-        ? this.cachedConfig.MAX_POSITION_PCT
-        : readPositiveNumber(this.env.MAX_POSITION_PCT, DEFAULT_MAX_POSITION_PCT),
-      this.cachedConfig.KELLY_FRACTION
-    );
+    const pitBossDecision = options.bypassPitBoss
+      ? {
+          approved: true,
+          intent: {
+            ...intent,
+            approvedSize: intent.approvedSize ?? intent.requestedSize
+          },
+          kellyFraction: 0,
+          cappedFraction: 0,
+          reason: "APPROVED_HARD_HEDGE"
+        }
+      : this.pitBossAgent.approve(
+          intent,
+          this.engineState,
+          this.cachedConfig,
+          this.cachedConfig.MAX_POSITION_PCT > 0
+            ? this.cachedConfig.MAX_POSITION_PCT
+            : readPositiveNumber(this.env.MAX_POSITION_PCT, DEFAULT_MAX_POSITION_PCT),
+          this.cachedConfig.KELLY_FRACTION
+        );
 
     if (!pitBossDecision.approved) {
       return null;
@@ -3932,12 +4038,14 @@ export class TradingEngine {
       realizedPnlDelta,
       observedAt
     );
+    const inventory = this.calculateInventoryState(observedAt, portfolio.openPositions);
 
     this.engineState = {
       ...this.engineState,
       bankroll: portfolio.bankroll,
       openPositions: portfolio.openPositions,
-      inventory: this.calculateInventoryState(observedAt, portfolio.openPositions),
+      inventory,
+      current_inventory_delta: inventory.current_inventory_delta,
       orderMap,
       slippage: appendSlippagePoint(this.engineState.slippage, slippagePoint),
       updatedAt: observedAt,
@@ -6536,6 +6644,7 @@ function defaultEngineState(engineId: string): EngineState {
     latencySampleCount: 0,
     staleTickCount: 0,
     toxicityScore: 0,
+    current_inventory_delta: 0,
     maxLatencyMs: DEFAULT_MAX_LATENCY_MS,
     cachedConfig: { ...defaultConfig },
     macroBias: neutralMacroBias(),
@@ -6710,6 +6819,23 @@ function parseColoSet(value: string | undefined): Set<string> {
   );
 }
 
+function parseDeltaNormalizationWeights(value: string | undefined): Record<string, number> {
+  if (!value) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .map(([key, weight]) => [key.toLowerCase(), Number(weight)] as const)
+        .filter(([, weight]) => Number.isFinite(weight) && weight >= 0)
+    );
+  } catch {
+    return {};
+  }
+}
+
 function resolveRiskMultiplier(value: string | undefined): number {
   const parsed = Number(value);
 
@@ -6722,6 +6848,15 @@ function resolveRiskMultiplier(value: string | undefined): number {
 
 function normalizeTopologyHeader(value: string | null): string | null {
   return value && value.length > 0 ? value : null;
+}
+
+function normalizeOptionalAddress(value: string | undefined): string | null {
+  if (!value || value.trim() === "") {
+    return null;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  return /^0x[0-9a-f]{40}$/.test(normalized) ? normalized : null;
 }
 
 function inferSignalBias(signal: AgentSignal): "BULLISH" | "BEARISH" | "NEUTRAL" {
@@ -6889,14 +7024,50 @@ function defaultLeadLagMetrics(): EngineState["leadLag"] {
   };
 }
 
-function defaultInventoryState(maxInventoryUnits: number): EngineState["inventory"] {
+function defaultInventoryState(
+  maxInventoryUnits: number,
+  maxInventoryDelta = DEFAULT_MAX_INVENTORY_DELTA
+): EngineState["inventory"] {
   return {
     netDelta: 0,
+    current_inventory_delta: 0,
+    baseAsset: "BTC",
+    normalization: {},
     maxInventoryUnits,
+    maxInventoryDelta,
     inventoryPenalty: 0,
     stopBid: false,
     stopAsk: false,
     updatedAt: null
+  };
+}
+
+function normalizeInventoryState(
+  value: EngineState["inventory"] | undefined,
+  maxInventoryUnits: number,
+  maxInventoryDelta: number
+): EngineState["inventory"] {
+  const base = defaultInventoryState(maxInventoryUnits, maxInventoryDelta);
+
+  if (!value) {
+    return base;
+  }
+
+  return {
+    ...base,
+    ...value,
+    current_inventory_delta:
+      finiteNumber(value.current_inventory_delta) ?? finiteNumber(value.netDelta) ?? 0,
+    baseAsset:
+      typeof value.baseAsset === "string" && value.baseAsset.trim() !== ""
+        ? value.baseAsset
+        : "BTC",
+    normalization:
+      value.normalization && typeof value.normalization === "object"
+        ? value.normalization
+        : {},
+    maxInventoryUnits,
+    maxInventoryDelta
   };
 }
 
@@ -6923,6 +7094,8 @@ function defaultQuoteState(): EngineState["quoteState"] {
 function defaultHedgeState(): EngineState["hedge"] {
   return {
     netDelta: 0,
+    current_inventory_delta: 0,
+    maxInventoryDelta: DEFAULT_MAX_INVENTORY_DELTA,
     hedgeRequired: false,
     hedgeRatio: 0,
     preferredVenue: null,

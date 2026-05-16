@@ -13,6 +13,7 @@ export interface GlobalRiskConfig {
   MAX_POSITION_SIZE: number;
   MAX_POSITION_PCT: number;
   MAX_INVENTORY_UNITS: number;
+  MAX_INVENTORY_DELTA: number;
   MAX_DRAWDOWN_PCT: number;
   LATENCY_THRESHOLD_MS: number;
   GOLDEN_COLOS: string;
@@ -20,6 +21,8 @@ export interface GlobalRiskConfig {
   EXCHANGE_FEE_BPS: number;
   KELLY_FRACTION: number;
   RISK_AVERSION_FACTOR: number;
+  FUNDING_BIAS_THRESHOLD: number;
+  FUNDING_INVENTORY_BIAS: number;
   QUOTE_HIBERNATE_MS: number;
   VAR_CONFIDENCE_Z: number;
   ORACLE_GOVERNANCE_MODE: GovernanceMode;
@@ -147,6 +150,7 @@ export interface EngineState {
   averageLatency: number;
   staleTickCount: number;
   toxicityScore: number;
+  current_inventory_delta: number;
   cachedConfig: GlobalRiskConfig;
   macroBias: MacroBias;
   temporaryOverride: TemporaryGovernanceOverride | null;
@@ -163,7 +167,11 @@ export interface EngineState {
   oracle: OracleState;
   inventory: {
     netDelta: number;
+    current_inventory_delta: number;
+    baseAsset: string;
+    normalization: Record<string, number>;
     maxInventoryUnits: number;
+    maxInventoryDelta: number;
     inventoryPenalty: number;
     stopBid: boolean;
     stopAsk: boolean;

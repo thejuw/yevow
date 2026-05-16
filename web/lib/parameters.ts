@@ -69,11 +69,29 @@ export const PARAMETER_MATRIX: ParameterDescriptor[] = [
   },
   {
     key: "RISK_AVERSION_FACTOR",
-    label: "Risk λ",
+    label: "AS γ",
     group: "Croupier",
     kind: "number",
     min: 0,
     max: 1,
+    step: 0.0001
+  },
+  {
+    key: "FUNDING_BIAS_THRESHOLD",
+    label: "Funding Bias Trigger",
+    group: "Croupier",
+    kind: "number",
+    min: 0,
+    max: 0.01,
+    step: 0.000001
+  },
+  {
+    key: "FUNDING_INVENTORY_BIAS",
+    label: "Funding Target Δ",
+    group: "Croupier",
+    kind: "number",
+    min: 0,
+    max: 100,
     step: 0.0001
   },
   {
@@ -115,6 +133,15 @@ export const PARAMETER_MATRIX: ParameterDescriptor[] = [
   {
     key: "MAX_INVENTORY_UNITS",
     label: "Max Inventory",
+    group: "Pit Boss",
+    kind: "number",
+    min: 0,
+    max: 1000000,
+    step: 0.0001
+  },
+  {
+    key: "MAX_INVENTORY_DELTA",
+    label: "Max Δ BTC",
     group: "Pit Boss",
     kind: "number",
     min: 0,

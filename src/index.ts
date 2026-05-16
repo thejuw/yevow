@@ -26,6 +26,7 @@ const SINGLETON_ENGINE_NAME = "sovereign-sigma:singleton:trading-engine:v1";
 const TOPOLOGY_HEADER_PREFIX = "x-sovereign-topology-";
 const DEFAULT_ADMIN_PAGE_SIZE = 100;
 const MAX_ADMIN_PAGE_SIZE = 500;
+const ENGINE_HEALTH_TIMEOUT_MS = 1_500;
 const LOG_LEVELS = ["DEBUG", "INFO", "WARN", "ERROR", "CRITICAL"] as const;
 const AGENT_NAMES = [
   "ORACLE",
@@ -188,7 +189,10 @@ export default {
         topology.requestId
       );
 
-      return routeToEngine(request, env, topology);
+      return routeToEngine(request, env, topology, {
+        timeoutMs: ENGINE_HEALTH_TIMEOUT_MS,
+        timeoutResponse: gatewayHealthFallback(topology)
+      });
     }
 
     if (url.pathname === "/state") {
@@ -1131,13 +1135,37 @@ async function sendTestAlert(
 async function routeToEngine(
   request: Request,
   env: Env,
-  topology: EdgeTopology
+  topology: EdgeTopology,
+  options: {
+    timeoutMs?: number;
+    timeoutResponse?: Response;
+  } = {}
 ): Promise<Response> {
   const id = env.TRADING_ENGINE.idFromName(SINGLETON_ENGINE_NAME);
   const engine = env.TRADING_ENGINE.get(id);
-  const response = await engine.fetch(withTopologyHeaders(request, topology));
+  const controller = options.timeoutMs ? new AbortController() : null;
+  const timeout =
+    controller && options.timeoutMs
+      ? setTimeout(() => controller.abort("ENGINE_TIMEOUT"), options.timeoutMs)
+      : null;
 
-  return response.status === 101 ? response : withCors(response);
+  try {
+    const response = await engine.fetch(
+      withTopologyHeaders(request, topology, controller?.signal)
+    );
+
+    return response.status === 101 ? response : withCors(response);
+  } catch (error) {
+    if (controller?.signal.aborted && options.timeoutResponse) {
+      return withCors(options.timeoutResponse);
+    }
+
+    throw error;
+  } finally {
+    if (timeout !== null) {
+      clearTimeout(timeout);
+    }
+  }
 }
 
 async function authenticateAdmin(
@@ -2328,7 +2356,11 @@ function extractEdgeTopology(request: Request): EdgeTopology {
   };
 }
 
-function withTopologyHeaders(request: Request, topology: EdgeTopology): Request {
+function withTopologyHeaders(
+  request: Request,
+  topology: EdgeTopology,
+  signal?: AbortSignal
+): Request {
   const headers = new Headers(request.headers);
 
   setTopologyHeader(headers, "colo", topology.colo);
@@ -2342,7 +2374,7 @@ function withTopologyHeaders(request: Request, topology: EdgeTopology): Request 
   setTopologyHeader(headers, "request-id", topology.requestId);
   setTopologyHeader(headers, "observed-at", topology.observedAt);
 
-  return new Request(request, { headers });
+  return new Request(request, { headers, signal });
 }
 
 function setTopologyHeader(
@@ -2353,6 +2385,21 @@ function setTopologyHeader(
   if (value !== null) {
     headers.set(`${TOPOLOGY_HEADER_PREFIX}${key}`, value);
   }
+}
+
+function gatewayHealthFallback(topology: EdgeTopology): Response {
+  return json(
+    {
+      ok: false,
+      status: "ENGINE_HEALTH_TIMEOUT",
+      service: "sovereign-sigma-core",
+      message: "Trading engine health did not respond within the gateway timeout",
+      timeoutMs: ENGINE_HEALTH_TIMEOUT_MS,
+      topology,
+      observedAt: new Date().toISOString()
+    },
+    503
+  );
 }
 
 function topologyTelemetry(topology: EdgeTopology): JsonRecord {
@@ -2395,6 +2442,7 @@ function diffConfig(
     "MAX_POSITION_SIZE",
     "MAX_POSITION_PCT",
     "MAX_INVENTORY_UNITS",
+    "MAX_INVENTORY_DELTA",
     "MAX_DRAWDOWN_PCT",
     "LATENCY_THRESHOLD_MS",
     "GOLDEN_COLOS",
@@ -2402,6 +2450,8 @@ function diffConfig(
     "EXCHANGE_FEE_BPS",
     "KELLY_FRACTION",
     "RISK_AVERSION_FACTOR",
+    "FUNDING_BIAS_THRESHOLD",
+    "FUNDING_INVENTORY_BIAS",
     "QUOTE_HIBERNATE_MS",
     "VAR_CONFIDENCE_Z",
     "ORACLE_GOVERNANCE_MODE",
@@ -2430,6 +2480,7 @@ function requiresHighImpactConfirmation(
     "TRADING_ENABLED",
     "MAX_POSITION_SIZE",
     "MAX_POSITION_PCT",
+    "MAX_INVENTORY_DELTA",
     "MAX_DRAWDOWN_PCT",
     "KELLY_FRACTION",
     "MIN_EV_THRESHOLD",
@@ -2453,6 +2504,7 @@ function hasRiskConfigMutation(update: AdminConfigUpdate): boolean {
       update.MAX_POSITION_SIZE !== undefined ||
       update.MAX_POSITION_PCT !== undefined ||
       update.MAX_INVENTORY_UNITS !== undefined ||
+      update.MAX_INVENTORY_DELTA !== undefined ||
       update.MAX_DRAWDOWN_PCT !== undefined ||
       update.LATENCY_THRESHOLD_MS !== undefined ||
       update.GOLDEN_COLOS !== undefined ||
@@ -2460,6 +2512,8 @@ function hasRiskConfigMutation(update: AdminConfigUpdate): boolean {
       update.EXCHANGE_FEE_BPS !== undefined ||
       update.KELLY_FRACTION !== undefined ||
       update.RISK_AVERSION_FACTOR !== undefined ||
+      update.FUNDING_BIAS_THRESHOLD !== undefined ||
+      update.FUNDING_INVENTORY_BIAS !== undefined ||
       update.QUOTE_HIBERNATE_MS !== undefined ||
       update.VAR_CONFIDENCE_Z !== undefined ||
       update.ORACLE_GOVERNANCE_MODE !== undefined ||
@@ -2522,6 +2576,7 @@ function configTelemetry(config: GlobalRiskConfig): Record<string, boolean | num
     MAX_POSITION_SIZE: config.MAX_POSITION_SIZE,
     MAX_POSITION_PCT: config.MAX_POSITION_PCT,
     MAX_INVENTORY_UNITS: config.MAX_INVENTORY_UNITS,
+    MAX_INVENTORY_DELTA: config.MAX_INVENTORY_DELTA,
     MAX_DRAWDOWN_PCT: config.MAX_DRAWDOWN_PCT,
     LATENCY_THRESHOLD_MS: config.LATENCY_THRESHOLD_MS,
     GOLDEN_COLOS: config.GOLDEN_COLOS,
@@ -2529,6 +2584,8 @@ function configTelemetry(config: GlobalRiskConfig): Record<string, boolean | num
     EXCHANGE_FEE_BPS: config.EXCHANGE_FEE_BPS,
     KELLY_FRACTION: config.KELLY_FRACTION,
     RISK_AVERSION_FACTOR: config.RISK_AVERSION_FACTOR,
+    FUNDING_BIAS_THRESHOLD: config.FUNDING_BIAS_THRESHOLD,
+    FUNDING_INVENTORY_BIAS: config.FUNDING_INVENTORY_BIAS,
     QUOTE_HIBERNATE_MS: config.QUOTE_HIBERNATE_MS,
     VAR_CONFIDENCE_Z: config.VAR_CONFIDENCE_Z,
     ORACLE_GOVERNANCE_MODE: config.ORACLE_GOVERNANCE_MODE,

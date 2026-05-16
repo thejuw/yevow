@@ -357,6 +357,7 @@ function exchangePayload(
     size: intent.approvedSize ?? intent.requestedSize,
     post_only: intent.postOnly,
     time_in_force: intent.timeInForce,
+    target_subaccount: intent.targetSubaccount ?? intent.target_subaccount ?? null,
     reduce_only: intent.rationale.includes("hedge") || intent.rationale.includes("closeout"),
     slippage_bps: intent.maxSlippageBps
   };
@@ -488,7 +489,9 @@ async function prepareHyperliquidOrderRequest(
   const tif = hyperliquidTif(env, intent);
   const nonce = Date.now();
   const expiresAfter = hyperliquidExpiresAfter(env, nonce);
-  const vaultAddress = normalizeOptionalAddress(env.HL_VAULT_ADDRESS);
+  const vaultAddress = normalizeOptionalAddress(
+    intent.targetSubaccount ?? intent.target_subaccount ?? env.HL_VAULT_ADDRESS
+  );
   const agentSecret = requireString(
     await exchangeSecret(env, "HL_AGENT_SECRET"),
     "HL_AGENT_SECRET"
@@ -557,7 +560,8 @@ async function prepareHyperliquidOrderRequest(
       reduceOnly: order.r,
       cloid: order.c,
       testMode: isExchangeOrderTestMode(env),
-      agentAddress: derivedAgentAddress
+      agentAddress: derivedAgentAddress,
+      targetSubaccount: vaultAddress
     }
   };
 }
@@ -1329,7 +1333,7 @@ function normalizeHyperliquidCloid(value: string): string {
   return value.startsWith("0x") ? value : hyperliquidCloid(value);
 }
 
-function normalizeOptionalAddress(value: string | undefined): string | null {
+function normalizeOptionalAddress(value: string | null | undefined): string | null {
   if (!value || value.trim() === "") {
     return null;
   }

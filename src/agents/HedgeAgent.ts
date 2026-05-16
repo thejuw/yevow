@@ -12,23 +12,38 @@ export class HedgeAgent {
     books: InternalOrderBook[];
     leadLag: LeadLagMetrics;
     threshold: number;
+    currentInventoryDelta: number;
+    targetSubaccount: string | null;
     observedAt: string;
   }): HedgeState {
     const netDelta = Object.values(input.positions).reduce((sum, position) => {
       const signed = position.side === "LONG" ? position.quantity : -position.quantity;
       return sum + signed;
     }, 0);
-    const hedgeRequired = Math.abs(netDelta) > input.threshold;
+    const normalizedDelta = finiteNumber(input.currentInventoryDelta, netDelta);
+    const maxInventoryDelta = Math.max(0, finiteNumber(input.threshold, 0));
+    const hedgeRequired =
+      maxInventoryDelta > 0 && Math.abs(normalizedDelta) > maxInventoryDelta;
     const correlation = input.leadLag.correlation ?? 1;
     const hedgeRatio = Math.abs(correlation);
     const preferred = cheapestLiquidity(input.books, input.positions, netDelta);
     const lastIntent =
       hedgeRequired && preferred
-        ? hedgeIntent(netDelta, correlation, hedgeRatio, preferred, input.observedAt)
+        ? hedgeIntent(
+            normalizedDelta,
+            netDelta,
+            correlation,
+            hedgeRatio,
+            preferred,
+            input.targetSubaccount,
+            input.observedAt
+          )
         : null;
 
     return {
       netDelta,
+      current_inventory_delta: normalizedDelta,
+      maxInventoryDelta,
       hedgeRequired,
       hedgeRatio,
       preferredVenue: preferred?.source_exchange ?? null,
@@ -58,13 +73,15 @@ function cheapestLiquidity(
 }
 
 function hedgeIntent(
+  normalizedDelta: number,
   netDelta: number,
   correlation: number,
   hedgeRatio: number,
   book: InternalOrderBook,
+  targetSubaccount: string | null,
   observedAt: string
 ): TradeIntent {
-  const action = netDelta * correlation > 0 ? "SELL" : "BUY";
+  const action = normalizedDelta * correlation > 0 ? "SELL" : "BUY";
   const price =
     action === "SELL"
       ? book.bestBid ?? book.midPrice ?? 0
@@ -84,8 +101,8 @@ function hedgeIntent(
     timeInForce: "IOC",
     intendedPrice: price,
     expectedPrice: price,
-    requestedSize: Math.abs(netDelta) * hedgeRatio,
-    approvedSize: Math.abs(netDelta) * hedgeRatio,
+    requestedSize: Math.abs(normalizedDelta) * hedgeRatio,
+    approvedSize: Math.abs(normalizedDelta) * hedgeRatio,
     probabilityWin: 0.5,
     probabilityLoss: 0.5,
     profit: 0,
@@ -93,12 +110,20 @@ function hedgeIntent(
     executionCosts: 0,
     adverseSelectionCost: 0,
     expectedValue: 0,
-    minEvThreshold: 0,
+    minEvThreshold: Number.NEGATIVE_INFINITY,
     maxSlippageBps: Math.max(5, book.spreadBps ?? 5),
     confidence: Math.min(1, hedgeRatio),
-    rationale: "Automated signed-correlation delta hedge using secondary liquidity where available",
+    rationale:
+      "Hard hedge: MAX_INVENTORY_DELTA breached; route market hedge to designated Hyperliquid subaccount when configured",
+    targetSubaccount,
+    target_subaccount: targetSubaccount,
     createdAt: observedAt
   };
+}
+
+function finiteNumber(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 function liquidityScore(book: InternalOrderBook, side: "bids" | "asks"): number {

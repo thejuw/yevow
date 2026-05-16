@@ -7,6 +7,7 @@ export const defaultConfig: GlobalRiskConfig = {
   MAX_POSITION_SIZE: 0,
   MAX_POSITION_PCT: 0,
   MAX_INVENTORY_UNITS: 0,
+  MAX_INVENTORY_DELTA: 1,
   MAX_DRAWDOWN_PCT: 0,
   LATENCY_THRESHOLD_MS: 250,
   GOLDEN_COLOS: "",
@@ -14,6 +15,8 @@ export const defaultConfig: GlobalRiskConfig = {
   EXCHANGE_FEE_BPS: 0,
   KELLY_FRACTION: 0.5,
   RISK_AVERSION_FACTOR: 0.01,
+  FUNDING_BIAS_THRESHOLD: 0.00001,
+  FUNDING_INVENTORY_BIAS: 0.25,
   QUOTE_HIBERNATE_MS: 3_000,
   VAR_CONFIDENCE_Z: 2.326,
   ORACLE_GOVERNANCE_MODE: "HYBRID",
@@ -91,6 +94,10 @@ function extractConfigUpdate(
     "MAX_INVENTORY_UNITS" in update
       ? update.MAX_INVENTORY_UNITS
       : nested.MAX_INVENTORY_UNITS;
+  const maxInventoryDelta =
+    "MAX_INVENTORY_DELTA" in update
+      ? update.MAX_INVENTORY_DELTA
+      : nested.MAX_INVENTORY_DELTA;
   const maxDrawdownPct =
     "MAX_DRAWDOWN_PCT" in update
       ? update.MAX_DRAWDOWN_PCT
@@ -117,6 +124,14 @@ function extractConfigUpdate(
     "RISK_AVERSION_FACTOR" in update
       ? update.RISK_AVERSION_FACTOR
       : nested.RISK_AVERSION_FACTOR;
+  const fundingBiasThreshold =
+    "FUNDING_BIAS_THRESHOLD" in update
+      ? update.FUNDING_BIAS_THRESHOLD
+      : nested.FUNDING_BIAS_THRESHOLD;
+  const fundingInventoryBias =
+    "FUNDING_INVENTORY_BIAS" in update
+      ? update.FUNDING_INVENTORY_BIAS
+      : nested.FUNDING_INVENTORY_BIAS;
   const quoteHibernateMs =
     "QUOTE_HIBERNATE_MS" in update
       ? update.QUOTE_HIBERNATE_MS
@@ -150,6 +165,9 @@ function extractConfigUpdate(
   if (maxInventoryUnits !== undefined) {
     direct.MAX_INVENTORY_UNITS = maxInventoryUnits;
   }
+  if (maxInventoryDelta !== undefined) {
+    direct.MAX_INVENTORY_DELTA = maxInventoryDelta;
+  }
   if (maxDrawdownPct !== undefined) {
     direct.MAX_DRAWDOWN_PCT = maxDrawdownPct;
   }
@@ -170,6 +188,12 @@ function extractConfigUpdate(
   }
   if (riskAversionFactor !== undefined) {
     direct.RISK_AVERSION_FACTOR = riskAversionFactor;
+  }
+  if (fundingBiasThreshold !== undefined) {
+    direct.FUNDING_BIAS_THRESHOLD = fundingBiasThreshold;
+  }
+  if (fundingInventoryBias !== undefined) {
+    direct.FUNDING_INVENTORY_BIAS = fundingInventoryBias;
   }
   if (quoteHibernateMs !== undefined) {
     direct.QUOTE_HIBERNATE_MS = quoteHibernateMs;
@@ -196,6 +220,10 @@ function normalizeConfig(value: Partial<GlobalRiskConfig>): GlobalRiskConfig {
     MAX_POSITION_SIZE: nonNegativeNumber(value.MAX_POSITION_SIZE),
     MAX_POSITION_PCT: boundedNumber(value.MAX_POSITION_PCT, 0, 1, defaultConfig.MAX_POSITION_PCT),
     MAX_INVENTORY_UNITS: nonNegativeNumber(value.MAX_INVENTORY_UNITS),
+    MAX_INVENTORY_DELTA: nonNegativeNumberWithFallback(
+      value.MAX_INVENTORY_DELTA,
+      defaultConfig.MAX_INVENTORY_DELTA
+    ),
     MAX_DRAWDOWN_PCT: nonNegativeNumber(value.MAX_DRAWDOWN_PCT),
     LATENCY_THRESHOLD_MS: positiveInteger(
       value.LATENCY_THRESHOLD_MS,
@@ -208,6 +236,14 @@ function normalizeConfig(value: Partial<GlobalRiskConfig>): GlobalRiskConfig {
     RISK_AVERSION_FACTOR: positiveNumber(
       value.RISK_AVERSION_FACTOR,
       defaultConfig.RISK_AVERSION_FACTOR
+    ),
+    FUNDING_BIAS_THRESHOLD: nonNegativeNumberWithFallback(
+      value.FUNDING_BIAS_THRESHOLD,
+      defaultConfig.FUNDING_BIAS_THRESHOLD
+    ),
+    FUNDING_INVENTORY_BIAS: nonNegativeNumberWithFallback(
+      value.FUNDING_INVENTORY_BIAS,
+      defaultConfig.FUNDING_INVENTORY_BIAS
     ),
     QUOTE_HIBERNATE_MS: positiveInteger(
       value.QUOTE_HIBERNATE_MS,
@@ -257,6 +293,11 @@ function normalizeColoCsv(value: unknown): string {
 function nonNegativeNumber(value: unknown): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+function nonNegativeNumberWithFallback(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 function finiteNumber(value: unknown, fallback: number): number {

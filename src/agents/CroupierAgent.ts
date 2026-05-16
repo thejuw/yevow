@@ -35,6 +35,9 @@ export interface CroupierInput {
   executionCostBufferBps?: number;
   fundingRateHourly?: number;
   fundingHorizonHours?: number;
+  riskAversionFactor?: number;
+  fundingBiasThreshold?: number;
+  fundingInventoryBias?: number;
   macroBias?: MacroBias;
   observedAt: string;
 }
@@ -81,7 +84,12 @@ export class CroupierAgent {
     const quote = this.amm.quote(input, adverseSelectionCost);
     const intent = pullAllQuotes
       ? null
-      : this.createIntent(input, minEvThreshold, adverseSelectionCost);
+      : this.createIntent(
+          input,
+          minEvThreshold,
+          adverseSelectionCost,
+          quote?.reservationPrice ?? null
+        );
 
     return {
       intent: intent && intent.expectedValue > intent.minEvThreshold ? intent : null,
@@ -100,7 +108,8 @@ export class CroupierAgent {
   private createIntent(
     input: CroupierInput,
     minEvThreshold: number,
-    adverseSelectionCost: number
+    adverseSelectionCost: number,
+    reservationPrice: number | null
   ): TradeIntent | null {
     const mid = input.book.midPrice;
 
@@ -144,7 +153,10 @@ export class CroupierAgent {
       fundingRateHourly,
       fundingHorizonHours
     );
-    const inventoryPenalty = Math.abs(input.inventory.netDelta) * this.riskAversionFactor;
+    const riskAversionFactor = finiteNumber(input.riskAversionFactor, this.riskAversionFactor);
+    const inventoryPenalty =
+      Math.abs(input.inventory.current_inventory_delta ?? input.inventory.netDelta) *
+      riskAversionFactor;
     const leadLagBoost = input.leadLag.executable ? Math.max(0, input.leadLag.expectedValue ?? 0) : 0;
     const macroBiasEv = mid * 0.0005 * macroScore;
     const executionCosts =
@@ -169,8 +181,8 @@ export class CroupierAgent {
       orderType: "LIMIT",
       postOnly: true,
       timeInForce: "GTC",
-      intendedPrice: input.book.midPrice ?? input.book.bestBid ?? input.book.bestAsk ?? 0,
-      expectedPrice: input.book.midPrice ?? input.book.bestBid ?? input.book.bestAsk ?? 0,
+      intendedPrice: reservationPrice ?? input.book.midPrice ?? input.book.bestBid ?? input.book.bestAsk ?? 0,
+      expectedPrice: reservationPrice ?? input.book.midPrice ?? input.book.bestBid ?? input.book.bestAsk ?? 0,
       requestedSize,
       approvedSize: null,
       probabilityWin,
@@ -184,8 +196,9 @@ export class CroupierAgent {
       maxSlippageBps: Math.max(5, input.book.spreadBps ?? 5),
       confidence: Math.min(1, Math.max(0, Math.abs(input.book.weightedImbalance ?? 0))),
       rationale:
-        `Croupier EV calculation with toxicity, sentiment, inventory, slippage, funding, lead-lag and macro bias inputs. ` +
+        `Croupier EV calculation with toxicity, sentiment, AS reservation price, inventory, slippage, funding, lead-lag and macro bias inputs. ` +
         `fundingHourly=${round(fundingRateHourly, 8)} fundingCarry=${round(fundingCarryCost, 8)} ` +
+        `reservation=${round(reservationPrice ?? mid, 8)} gamma=${round(riskAversionFactor, 8)} ` +
         `macroBias=${input.macroBias?.direction ?? "NEUTRAL"} score=${round(macroScore, 4)}`,
       createdAt: input.observedAt
     };
@@ -215,16 +228,22 @@ class AMMEngine {
     }
 
     this.lastQuoteMid = mid;
-    const horizon = Math.max(0.1, 1 - input.toxicityScore * 0.5);
     const variance = input.oracle.volatility ** 2;
+    const riskAversionFactor = finiteNumber(
+      input.riskAversionFactor,
+      this.riskAversionFactor
+    );
     const topDepth =
       input.book.bids.slice(0, 5).reduce((sum, level) => sum + level.size, 0) +
       input.book.asks.slice(0, 5).reduce((sum, level) => sum + level.size, 0);
     const arrivalIntensity =
       Math.log1p(topDepth) / Math.max(1, input.book.spreadBps ?? 1);
     const liquidityTightening = 1 / Math.sqrt(1 + arrivalIntensity);
-    const reservationPrice =
-      mid - input.inventory.netDelta * this.riskAversionFactor * variance * horizon;
+    const fundingTargetDelta = fundingInventoryTargetDelta(input);
+    const currentDelta =
+      input.inventory.current_inventory_delta ?? input.inventory.netDelta;
+    const inventoryDisplacement = currentDelta - fundingTargetDelta;
+    const reservationPrice = mid - inventoryDisplacement * riskAversionFactor * variance;
     const halfSpread =
       Math.max(input.book.spread ?? mid * 0.0001, mid * input.oracle.volatility * 0.25) *
         liquidityTightening +
@@ -234,10 +253,8 @@ class AMMEngine {
     const toxicSellPressure = Math.max(0, -imbalance) * input.toxicityScore;
     const bidHalfSpread = halfSpread * (1 + toxicSellPressure);
     const askHalfSpread = halfSpread * (1 + toxicBuyPressure);
-    const inventoryAdjustment =
-      input.inventory.netDelta * this.riskAversionFactor * Math.max(input.book.spread ?? 0, 0);
-    const bid = reservationPrice - bidHalfSpread - inventoryAdjustment;
-    const ask = reservationPrice + askHalfSpread - inventoryAdjustment;
+    const bid = reservationPrice - bidHalfSpread;
+    const ask = reservationPrice + askHalfSpread;
     const quoteSize = calculateQuoteSize(input);
     const orders: QuoteOrder[] = [];
 
@@ -377,6 +394,30 @@ function calculateQuoteSize(input: CroupierInput): { bid: number; ask: number } 
     bid: round(Math.max(0.00000001, Math.min(bidRoom, Math.max(0.00000001, bidDepth * 0.02)) * toxicityScale), 8),
     ask: round(Math.max(0.00000001, Math.min(askRoom, Math.max(0.00000001, askDepth * 0.02)) * toxicityScale), 8)
   };
+}
+
+function fundingInventoryTargetDelta(input: CroupierInput): number {
+  const fundingRateHourly = finiteNumber(input.fundingRateHourly, 0);
+  const threshold = Math.max(0, finiteNumber(input.fundingBiasThreshold, 0.00001));
+  const configuredBias = Math.max(0, finiteNumber(input.fundingInventoryBias, 0));
+
+  if (threshold === 0 || Math.abs(fundingRateHourly) < threshold) {
+    return 0;
+  }
+
+  const maxBias =
+    configuredBias > 0
+      ? configuredBias
+      : Math.max(0, input.inventory.maxInventoryDelta * 0.25);
+
+  if (maxBias <= 0) {
+    return 0;
+  }
+
+  const scaled = Math.min(1, Math.abs(fundingRateHourly) / Math.max(threshold, 1e-12));
+
+  // Positive funding means longs pay shorts, so the neutral target is nudged short.
+  return fundingRateHourly > 0 ? -maxBias * scaled : maxBias * scaled;
 }
 
 function estimateSlippageCost(

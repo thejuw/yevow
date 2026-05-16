@@ -19,7 +19,7 @@ The API token should be scoped to this Cloudflare account and allow:
 - D1: Edit
 - Cloudflare Pages: Edit
 
-Do not add exchange, JWT, admin, Kaiko, Telegram, Discord, or vault secrets to GitHub unless a workflow explicitly needs them. Those runtime secrets should stay in Cloudflare Worker Secrets.
+Do not add exchange, JWT, admin, Hyperliquid, Telegram, Discord, or vault secrets to GitHub unless a workflow explicitly needs them. Those runtime secrets should stay in Cloudflare Worker Secrets.
 
 ## Optional GitHub Environment
 
@@ -70,7 +70,7 @@ Provision Worker runtime secrets with Wrangler from a trusted local machine:
 ```bash
 npx wrangler secret put JWT_SECRET
 npx wrangler secret put ADMIN_PASSWORD
-npx wrangler secret put KAIKO_API_KEY
+npx wrangler secret put HL_HEDGE_SUBACCOUNT_ADDRESS
 npx wrangler secret put EXCHANGE_API_KEY -c wrangler.executioner.toml
 npx wrangler secret put EXCHANGE_API_SECRET -c wrangler.executioner.toml
 ```
