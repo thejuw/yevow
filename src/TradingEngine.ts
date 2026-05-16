@@ -63,6 +63,7 @@ import type {
   LiquidityWall,
   MacroBias,
   MarketDataSource,
+  MarketTransport,
   MarketTick,
   ManagedOrder,
   MicrostructureMetrics,
@@ -90,6 +91,7 @@ const RISK_LIMITS_KEY = "risk:limits";
 const CONFIG_KEY = "engine:config";
 const DEFAULT_MAX_LATENCY_MS = 250;
 const DEFAULT_NATIVE_HL_MAX_LATENCY_MS = 150;
+const DEFAULT_DWELLIR_NATIVE_HL_MAX_LATENCY_MS = 2_500;
 const DEFAULT_HARD_STALE_DROP_MS = 1_000;
 const DEFAULT_HL_BOOK_TIMESTAMP_MAX_DRIFT_MS = 100;
 const DEFAULT_HL_SEQUENCE_GAP_MS = 5_000;
@@ -844,7 +846,35 @@ export class TradingEngine {
 
       if (request.method === "POST" && url.pathname === "/maintenance/reset-latency") {
         const observedAt = new Date().toISOString();
+        const shouldClearQuoteSuspension =
+          this.engineState.quoteState.status === "SUSPENDED" &&
+          (
+            this.engineState.quoteState.reason === "HARD_STALE_DROP" ||
+            this.engineState.quoteState.reason === "NATIVE_HL_LATENCY" ||
+            this.engineState.quoteState.reason === "GRPC_FATAL_DROP" ||
+            this.engineState.quoteState.reason === "STALE_DATA_KILL_SWITCH"
+          );
         this.resetLatencyBaseline(observedAt, "ADMIN_MAINTENANCE");
+        this.engineState = {
+          ...this.engineState,
+          staleTickCount: 0,
+          quoteState: shouldClearQuoteSuspension
+            ? {
+                ...this.engineState.quoteState,
+                status: "ACTIVE",
+                reason: null,
+                suspendedUntil: null,
+                updatedAt: observedAt
+              }
+            : this.engineState.quoteState,
+          updatedAt: observedAt
+        };
+        if (shouldClearQuoteSuspension) {
+          this.publish("RESUME_QUOTES", {
+            reason: "ADMIN_RESET_LATENCY",
+            observedAt
+          });
+        }
         await this.safeStoragePut({
           [ENGINE_STATE_KEY]: this.engineState,
           [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
@@ -2000,7 +2030,7 @@ export class TradingEngine {
       parseTimestampMs(brainTimestamp, "brain_timestamp") -
         parseTimestampMs(exchangeTimestamp, "exchange_timestamp")
     );
-    const nativeMaxLatencyMs = this.resolveNativeHyperliquidMaxLatencyMs();
+    const nativeMaxLatencyMs = this.resolveNativeHyperliquidMaxLatencyMs(payload.transport);
 
     if (totalLatencyMs > nativeMaxLatencyMs) {
       const book =
@@ -3260,7 +3290,7 @@ export class TradingEngine {
     this.lastTickTimestamp = tick.receivedAt;
 
     const metrics = this.calculateLatency(tick);
-    const hardStaleDropMs = this.resolveNativeHyperliquidMaxLatencyMs();
+    const hardStaleDropMs = this.resolveNativeHyperliquidMaxLatencyMs(tick.transport);
     const isHardStale =
       !options.shadowReplay && metrics.totalLatencyMs > hardStaleDropMs;
 
@@ -3374,7 +3404,9 @@ export class TradingEngine {
         quoteState: {
           status: "SUSPENDED",
           reason: "STALE_DATA_KILL_SWITCH",
-          suspendedUntil: null,
+          suspendedUntil: new Date(
+            Date.parse(metrics.brainTimestamp) + this.resolveQuoteHibernateMs()
+          ).toISOString(),
           lastQuote: this.engineState.quoteState.lastQuote,
           updatedAt: metrics.brainTimestamp
         },
@@ -5708,7 +5740,14 @@ export class TradingEngine {
     });
   }
 
-  private resolveNativeHyperliquidMaxLatencyMs(): number {
+  private resolveNativeHyperliquidMaxLatencyMs(transport?: MarketTransport): number {
+    if (transport === "grpc") {
+      return readPositiveNumber(
+        this.env.DWELLIR_MAX_LATENCY_MS ?? this.env.HL_STALE_AFTER_MS,
+        DEFAULT_DWELLIR_NATIVE_HL_MAX_LATENCY_MS
+      );
+    }
+
     return readPositiveNumber(
       this.env.HL_STALE_AFTER_MS,
       Math.min(this.maxLatencyMs, DEFAULT_NATIVE_HL_MAX_LATENCY_MS)

@@ -38,6 +38,8 @@ const DEFAULT_BACKOFF_BASE_MS = 1_000;
 const DEFAULT_GRPC_BACKOFF_BASE_MS = 50;
 const DEFAULT_MAX_BACKOFF_MS = 30_000;
 const DEFAULT_GRPC_FATAL_DROP_MS = 200;
+const DEFAULT_DWELLIR_GRPC_START_LOOKBACK_MS = 1_000;
+const DEFAULT_DWELLIR_GRPC_FORWARD_MAX_AGE_MS = 5_000;
 const SNAPSHOT_SEQUENCE_FALLBACK_SEED = "snapshot";
 const DEFAULT_SOURCE_WEIGHT = 1;
 const DEFAULT_CLOCK_SYNC_ALPHA = 0.1;
@@ -970,6 +972,8 @@ class ExchangeStreamController {
     const apiKey = await this.resolveDwellirApiKey();
     const routeTokenConfigured = hasEndpointPath(endpoint);
     const watchdogTimeoutMs = this.config.watchdogTimeoutMs;
+    const startTimestampMs = resolveDwellirStartTimestampMs(this.env);
+    const startBlockHeight = readOptionalNumber(this.env.DWELLIR_GRPC_START_BLOCK_HEIGHT);
 
     if (!apiKey && !routeTokenConfigured) {
       throw new Error("DWELLIR_AUTH_MISSING");
@@ -979,8 +983,8 @@ class ExchangeStreamController {
       endpoint,
       apiKey,
       service: this.config.grpcService ?? DWELLIR_GRPC_SERVICE,
-      startTimestampMs: readOptionalNumber(this.env.DWELLIR_GRPC_START_TIMESTAMP_MS),
-      startBlockHeight: readOptionalNumber(this.env.DWELLIR_GRPC_START_BLOCK_HEIGHT)
+      startTimestampMs,
+      startBlockHeight
     });
     const streams = dwellirGrpcStreams(this.env);
 
@@ -1005,6 +1009,15 @@ class ExchangeStreamController {
       grpcPathConfigured: routeTokenConfigured,
       authMode: apiKey ? "api-key" : "route-token",
       watchdogTimeoutMs,
+      startTimestampMs,
+      startBlockHeight,
+      startLookbackMs:
+        this.env.DWELLIR_GRPC_START_TIMESTAMP_MS || this.env.DWELLIR_GRPC_START_BLOCK_HEIGHT
+          ? null
+          : readNumber(
+              this.env.DWELLIR_GRPC_START_LOOKBACK_MS,
+              DEFAULT_DWELLIR_GRPC_START_LOOKBACK_MS
+            ),
       streams: [...streams],
       descriptor: client.descriptorInfo()
     });
@@ -1288,7 +1301,11 @@ class ExchangeStreamController {
     const rawMessages = dwellirPayloadToHyperliquidRawMessages(
       update,
       this.config,
-      streamCoins(this.config)
+      streamCoins(this.config),
+      readNumber(
+        this.env.DWELLIR_GRPC_FORWARD_MAX_AGE_MS,
+        DEFAULT_DWELLIR_GRPC_FORWARD_MAX_AGE_MS
+      )
     );
 
     if (rawMessages.length === 0) {
@@ -2793,6 +2810,27 @@ function resolveDwellirGrpcUrl(
   );
 }
 
+function resolveDwellirStartTimestampMs(env: Env): number | null {
+  const explicitTimestamp = readOptionalNumber(env.DWELLIR_GRPC_START_TIMESTAMP_MS);
+  if (explicitTimestamp !== null) {
+    return explicitTimestamp;
+  }
+
+  if (readOptionalNumber(env.DWELLIR_GRPC_START_BLOCK_HEIGHT) !== null) {
+    return null;
+  }
+
+  const lookbackMs = Math.min(
+    60_000,
+    readNumber(
+      env.DWELLIR_GRPC_START_LOOKBACK_MS,
+      DEFAULT_DWELLIR_GRPC_START_LOOKBACK_MS
+    )
+  );
+
+  return Math.max(1, Date.now() - lookbackMs);
+}
+
 function hasEndpointPath(endpoint: string): boolean {
   try {
     const url = new URL(endpoint);
@@ -2932,7 +2970,8 @@ function dwellirGrpcStreams(env: Env): Set<DwellirGrpcStreamKind> {
 function dwellirPayloadToHyperliquidRawMessages(
   update: DwellirGrpcPayload,
   config: ResolvedExchangeStreamConfig,
-  coins: string[]
+  coins: string[],
+  maxAgeMs: number
 ): Record<string, unknown>[] {
   if (update.kind === "BLOCK") {
     return [];
@@ -2942,7 +2981,8 @@ function dwellirPayloadToHyperliquidRawMessages(
     return dwellirOrderbookSnapshotMessagesFromBytes(
       update.data,
       coins,
-      update.receivedAt
+      update.receivedAt,
+      maxAgeMs
     );
   }
 
@@ -2952,7 +2992,7 @@ function dwellirPayloadToHyperliquidRawMessages(
   }
 
   if (update.kind === "FILLS") {
-    return dwellirFillMessages(decoded, config, coins);
+    return dwellirFillMessages(decoded, config, coins, update.receivedAt, maxAgeMs);
   }
 
   return [];
@@ -2961,12 +3001,17 @@ function dwellirPayloadToHyperliquidRawMessages(
 function dwellirOrderbookSnapshotMessagesFromBytes(
   bytes: Uint8Array,
   coins: string[],
-  receivedAt: string
+  receivedAt: string,
+  maxAgeMs: number
 ): Record<string, unknown>[] {
   const text = new TextDecoder().decode(bytes);
   const timestamp = extractDwellirTopLevelField(text, "timestamp") ?? receivedAt;
   const block = extractDwellirTopLevelField(text, "block");
   const messages: Record<string, unknown>[] = [];
+
+  if (!isDwellirPacketFresh(timestamp, receivedAt, maxAgeMs)) {
+    return [];
+  }
 
   for (const coin of coins) {
     const tupleJson = extractDwellirMarketTupleJson(text, coin.toUpperCase());
@@ -3004,7 +3049,7 @@ function dwellirOrderbookSnapshotMessagesFromBytes(
   const decoded = parseJson<unknown>(text);
   return decoded === null
     ? []
-    : dwellirOrderbookSnapshotMessages(decoded, coins, receivedAt);
+    : dwellirOrderbookSnapshotMessages(decoded, coins, receivedAt, maxAgeMs);
 }
 
 function extractDwellirMarketTupleJson(text: string, coin: string): string | null {
@@ -3081,7 +3126,8 @@ function extractDwellirTopLevelField(text: string, field: string): string | numb
 function dwellirOrderbookSnapshotMessages(
   decoded: unknown,
   coins: string[],
-  receivedAt: string
+  receivedAt: string,
+  maxAgeMs: number
 ): Record<string, unknown>[] {
   if (isRecord(decoded) && typeof decoded.channel === "string") {
     return [decoded];
@@ -3092,6 +3138,10 @@ function dwellirOrderbookSnapshotMessages(
     const messages: Record<string, unknown>[] = [];
     const timestamp = decoded.timestamp ?? receivedAt;
     const block = decoded.block;
+
+    if (!isDwellirPacketFresh(timestamp, receivedAt, maxAgeMs)) {
+      return [];
+    }
 
     for (const market of decoded.data) {
       if (!Array.isArray(market) || typeof market[0] !== "string" || !Array.isArray(market[1])) {
@@ -3135,7 +3185,9 @@ function dwellirOrderbookSnapshotMessages(
 function dwellirFillMessages(
   decoded: unknown,
   config: ResolvedExchangeStreamConfig,
-  coins: string[]
+  coins: string[],
+  receivedAt: string,
+  maxAgeMs: number
 ): Record<string, unknown>[] {
   if (isRecord(decoded) && typeof decoded.channel === "string") {
     return [decoded];
@@ -3172,6 +3224,10 @@ function dwellirFillMessages(
       continue;
     }
 
+    if (!isDwellirPacketFresh(fill.time ?? fill.timestamp, receivedAt, maxAgeMs)) {
+      continue;
+    }
+
     const tradeId = stringifyOrNull(fill.tid ?? fill.id ?? fill.hash ?? fill.oid) ??
       `${normalizedCoin}:${fill.time ?? fill.timestamp ?? ""}:${fill.px ?? fill.price ?? fill.limitPx ?? ""}:${fill.sz ?? fill.size ?? ""}`;
     const normalized: Record<string, unknown> = {
@@ -3205,6 +3261,26 @@ function dwellirFillMessages(
   ));
 
   return normalized.length > 0 ? [{ channel: "trades", data: normalized }] : [];
+}
+
+function isDwellirPacketFresh(
+  timestampValue: unknown,
+  receivedAt: string,
+  maxAgeMs: number
+): boolean {
+  const exchangeTimestamp = coerceExchangeTime(timestampValue);
+  if (!exchangeTimestamp) {
+    return true;
+  }
+
+  const exchangeMs = Date.parse(exchangeTimestamp);
+  const receivedMs = Date.parse(receivedAt);
+
+  if (!Number.isFinite(exchangeMs) || !Number.isFinite(receivedMs)) {
+    return true;
+  }
+
+  return Math.max(0, receivedMs - exchangeMs) <= maxAgeMs;
 }
 
 function aggregateDwellirOrders(value: unknown, receivedAt: string): Array<{ px: string; sz: string; n: number; updatedAt: string }> {
