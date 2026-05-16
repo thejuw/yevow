@@ -1,8 +1,5 @@
-import * as protobuf from "protobufjs";
 import { appendGrpcChunk, assertGrpcOk, encodeGrpcFrame } from "./GrpcFrame";
 import {
-  hasHyperliquidGrpcDescriptor,
-  hyperliquidGrpcDescriptor,
   hyperliquidGrpcGeneratedAt,
   hyperliquidGrpcProtoFiles
 } from "../types/grpc/hyperliquid";
@@ -26,34 +23,8 @@ export interface DwellirGrpcPayload {
 
 type DwellirUpdateHandler = (update: DwellirGrpcPayload) => Promise<void> | void;
 
-const POSITION_TYPE = "hyperliquid_l1_gateway.v2.Position";
-const TIMESTAMP_TYPE = "hyperliquid_l1_gateway.v2.Timestamp";
-const BLOCK_TYPE = "hyperliquid_l1_gateway.v2.Block";
-const FILLS_TYPE = "hyperliquid_l1_gateway.v2.BlockFills";
-const ORDERBOOK_TYPE = "hyperliquid_l1_gateway.v2.OrderBookSnapshot";
-
 export class DwellirHyperliquidGrpcClient {
-  private readonly root: protobuf.Root;
-  private readonly positionType: protobuf.Type;
-  private readonly timestampType: protobuf.Type;
-  private readonly blockType: protobuf.Type;
-  private readonly fillsType: protobuf.Type;
-  private readonly orderbookType: protobuf.Type;
-
-  constructor(private readonly config: DwellirGrpcClientConfig) {
-    if (!hasHyperliquidGrpcDescriptor()) {
-      throw new Error("DWELLIR_GRPC_PROTO_DESCRIPTOR_MISSING");
-    }
-
-    this.root = protobuf.Root.fromJSON(
-      hyperliquidGrpcDescriptor as protobuf.INamespace
-    );
-    this.positionType = this.lookupType(POSITION_TYPE);
-    this.timestampType = this.lookupType(TIMESTAMP_TYPE);
-    this.blockType = this.lookupType(BLOCK_TYPE);
-    this.fillsType = this.lookupType(FILLS_TYPE);
-    this.orderbookType = this.lookupType(ORDERBOOK_TYPE);
-  }
+  constructor(private readonly config: DwellirGrpcClientConfig) {}
 
   descriptorInfo(): JsonRecord {
     return {
@@ -72,7 +43,6 @@ export class DwellirHyperliquidGrpcClient {
     return this.streamServerMethod(
       "StreamOrderbookSnapshots",
       this.positionMessage(),
-      this.orderbookType,
       "ORDERBOOK_SNAPSHOT",
       onUpdate,
       signal
@@ -83,7 +53,6 @@ export class DwellirHyperliquidGrpcClient {
     return this.streamServerMethod(
       "StreamFills",
       this.positionMessage(),
-      this.fillsType,
       "FILLS",
       onUpdate,
       signal
@@ -94,7 +63,6 @@ export class DwellirHyperliquidGrpcClient {
     return this.streamServerMethod(
       "StreamBlocks",
       this.positionMessage(),
-      this.blockType,
       "BLOCK",
       onUpdate,
       signal
@@ -105,9 +73,7 @@ export class DwellirHyperliquidGrpcClient {
     timestampMs: number,
     signal?: AbortSignal
   ): Promise<DwellirGrpcPayload> {
-    const request = this.timestampType.encode(
-      this.timestampType.fromObject({ timestampMs })
-    ).finish();
+    const request = encodeInt64Message(1, Math.floor(timestampMs));
     const response = await fetch(this.methodUrl("GetOrderBookSnapshot"), {
       method: "POST",
       headers: this.headers(),
@@ -121,18 +87,16 @@ export class DwellirHyperliquidGrpcClient {
     }
 
     const frame = await readFirstGrpcFrame(response.body);
-    const message = this.orderbookType.decode(frame);
     return {
       kind: "ORDERBOOK_SNAPSHOT",
       receivedAt: new Date().toISOString(),
-      data: readDataBytes(message)
+      data: readDataField(frame)
     };
   }
 
   private async streamServerMethod(
     method: string,
     requestPayload: Uint8Array,
-    responseType: protobuf.Type,
     kind: DwellirGrpcStreamKind,
     onUpdate: DwellirUpdateHandler,
     signal?: AbortSignal
@@ -166,34 +130,33 @@ export class DwellirHyperliquidGrpcClient {
           throw new Error("DWELLIR_GRPC_COMPRESSED_FRAME_UNSUPPORTED");
         }
 
-        const message = responseType.decode(frame.payload);
         await onUpdate({
           kind,
           receivedAt: new Date().toISOString(),
-          data: readDataBytes(message)
+          data: readDataField(frame.payload)
         });
       }
     }
   }
 
   private positionMessage(): Uint8Array {
-    const position: Record<string, number> = {};
-
     if (
       typeof this.config.startTimestampMs === "number" &&
       Number.isFinite(this.config.startTimestampMs) &&
       this.config.startTimestampMs > 0
     ) {
-      position.timestampMs = Math.floor(this.config.startTimestampMs);
-    } else if (
+      return encodeInt64Message(1, Math.floor(this.config.startTimestampMs));
+    }
+
+    if (
       typeof this.config.startBlockHeight === "number" &&
       Number.isFinite(this.config.startBlockHeight) &&
       this.config.startBlockHeight > 0
     ) {
-      position.blockHeight = Math.floor(this.config.startBlockHeight);
+      return encodeInt64Message(2, Math.floor(this.config.startBlockHeight));
     }
 
-    return this.positionType.encode(this.positionType.fromObject(position)).finish();
+    return new Uint8Array(0);
   }
 
   private headers(): Headers {
@@ -218,13 +181,6 @@ export class DwellirHyperliquidGrpcClient {
     return `${base}/${this.config.service}/${method}`;
   }
 
-  private lookupType(typeName: string): protobuf.Type {
-    const lookup = this.root.lookup(typeName);
-    if (!(lookup instanceof protobuf.Type)) {
-      throw new Error(`DWELLIR_GRPC_TYPE_NOT_FOUND:${typeName}`);
-    }
-    return lookup;
-  }
 }
 
 async function readFirstGrpcFrame(body: ReadableStream<Uint8Array>): Promise<Uint8Array> {
@@ -252,20 +208,108 @@ async function readFirstGrpcFrame(body: ReadableStream<Uint8Array>): Promise<Uin
   throw new Error("DWELLIR_GRPC_EMPTY_RESPONSE");
 }
 
-function readDataBytes(message: protobuf.Message<object>): Uint8Array {
-  const data = (message as protobuf.Message<object> & { data?: unknown }).data;
-
-  if (data instanceof Uint8Array) {
-    return data;
+function encodeInt64Message(fieldNumber: number, value: number): Uint8Array {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    return new Uint8Array(0);
   }
 
-  if (Array.isArray(data)) {
-    return new Uint8Array(data);
-  }
+  return concatWireParts([
+    encodeVarint((fieldNumber << 3) | 0),
+    encodeVarint(value)
+  ]);
+}
 
-  if (typeof data === "string") {
-    return new TextEncoder().encode(data);
+function readDataField(message: Uint8Array): Uint8Array {
+  let offset = 0;
+
+  while (offset < message.byteLength) {
+    const tag = readVarint(message, offset);
+    offset = tag.nextOffset;
+    const fieldNumber = Number(tag.value >> 3n);
+    const wireType = Number(tag.value & 7n);
+
+    if (fieldNumber === 1 && wireType === 2) {
+      const length = readVarint(message, offset);
+      offset = length.nextOffset;
+      const end = offset + Number(length.value);
+      if (end > message.byteLength) {
+        throw new Error("DWELLIR_GRPC_DATA_BYTES_TRUNCATED");
+      }
+      return message.slice(offset, end);
+    }
+
+    offset = skipField(message, offset, wireType);
   }
 
   throw new Error("DWELLIR_GRPC_DATA_BYTES_MISSING");
+}
+
+function skipField(message: Uint8Array, offset: number, wireType: number): number {
+  switch (wireType) {
+    case 0:
+      return readVarint(message, offset).nextOffset;
+    case 1:
+      return offset + 8;
+    case 2: {
+      const length = readVarint(message, offset);
+      return length.nextOffset + Number(length.value);
+    }
+    case 5:
+      return offset + 4;
+    default:
+      throw new Error(`DWELLIR_GRPC_UNSUPPORTED_WIRE_TYPE_${wireType}`);
+  }
+}
+
+function readVarint(
+  bytes: Uint8Array,
+  offset: number
+): { value: bigint; nextOffset: number } {
+  let value = 0n;
+  let shift = 0n;
+
+  for (let index = offset; index < bytes.byteLength; index += 1) {
+    const byte = bytes[index];
+    value |= BigInt(byte & 0x7f) << shift;
+
+    if ((byte & 0x80) === 0) {
+      return { value, nextOffset: index + 1 };
+    }
+
+    shift += 7n;
+    if (shift > 63n) {
+      throw new Error("DWELLIR_GRPC_VARINT_TOO_LONG");
+    }
+  }
+
+  throw new Error("DWELLIR_GRPC_TRUNCATED_VARINT");
+}
+
+function encodeVarint(value: number): Uint8Array {
+  let remaining = BigInt(value);
+  const bytes: number[] = [];
+
+  do {
+    let byte = Number(remaining & 0x7fn);
+    remaining >>= 7n;
+    if (remaining !== 0n) {
+      byte |= 0x80;
+    }
+    bytes.push(byte);
+  } while (remaining !== 0n);
+
+  return new Uint8Array(bytes);
+}
+
+function concatWireParts(parts: Uint8Array[]): Uint8Array {
+  const total = parts.reduce((sum, part) => sum + part.byteLength, 0);
+  const output = new Uint8Array(total);
+  let offset = 0;
+
+  for (const part of parts) {
+    output.set(part, offset);
+    offset += part.byteLength;
+  }
+
+  return output;
 }
