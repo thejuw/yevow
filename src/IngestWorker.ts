@@ -41,6 +41,7 @@ const DEFAULT_BACKOFF_BASE_MS = 1_000;
 const DEFAULT_GRPC_BACKOFF_BASE_MS = 50;
 const DEFAULT_MAX_BACKOFF_MS = 30_000;
 const DEFAULT_GRPC_FATAL_DROP_MS = 200;
+const DEFAULT_DWELLIR_GRPC_FILLS_WATCHDOG_TIMEOUT_MS = 60_000;
 const DEFAULT_DWELLIR_GRPC_START_LOOKBACK_MS = 1_000;
 const DEFAULT_DWELLIR_GRPC_FORWARD_MAX_AGE_MS = 5_000;
 const SNAPSHOT_SEQUENCE_FALLBACK_SEED = "snapshot";
@@ -1000,7 +1001,16 @@ class ExchangeStreamController {
     const endpoint = resolveDwellirGrpcUrl(this.env, this.config);
     const apiKey = await this.resolveDwellirApiKey();
     const routeTokenConfigured = hasEndpointPath(endpoint);
-    const watchdogTimeoutMs = this.config.watchdogTimeoutMs;
+    const streams = dwellirGrpcStreams(this.env, this.config);
+    const watchdogTimeoutMs = dwellirGrpcWatchdogTimeoutMs(
+      this.env,
+      this.config,
+      streams
+    );
+    const emitFatalDropOnWatchdog = shouldEmitDwellirGrpcFatalDrop(
+      streams,
+      this.env
+    );
     const startTimestampMs = resolveDwellirStartTimestampMs(this.env);
     const startBlockHeight = readOptionalNumber(this.env.DWELLIR_GRPC_START_BLOCK_HEIGHT);
 
@@ -1015,8 +1025,6 @@ class ExchangeStreamController {
       startTimestampMs,
       startBlockHeight
     });
-    const streams = dwellirGrpcStreams(this.env, this.config);
-
     this.status = "CONNECTED";
     this.streamReady = true;
     this.preSnapshotBuffer = [];
@@ -1038,6 +1046,7 @@ class ExchangeStreamController {
       grpcPathConfigured: routeTokenConfigured,
       authMode: apiKey ? "api-key" : "route-token",
       watchdogTimeoutMs,
+      emitFatalDropOnWatchdog,
       startTimestampMs,
       startBlockHeight,
       startLookbackMs:
@@ -1126,10 +1135,26 @@ class ExchangeStreamController {
             watchdogTimeoutMs
           });
 
-          void this.emitGrpcFatalDropIfNeeded(
-            "DWELLIR_GRPC_WATCHDOG_TIMEOUT",
-            staleForMs
-          );
+          if (emitFatalDropOnWatchdog) {
+            void this.emitGrpcFatalDropIfNeeded(
+              "DWELLIR_GRPC_WATCHDOG_TIMEOUT",
+              staleForMs
+            );
+          } else {
+            this.logger.info(
+              "DWELLIR_GRPC_FILLS_IDLE_RECYCLE",
+              "Dwellir fills stream idle watchdog recycled without quote evacuation",
+              {
+                streamId: this.config.id,
+                source: this.config.source,
+                source_exchange: this.config.source_exchange,
+                connectionId: this.connectionId,
+                staleForMs,
+                watchdogTimeoutMs,
+                streams: [...streams]
+              }
+            );
+          }
           fail("DWELLIR_GRPC_WATCHDOG_TIMEOUT");
         }, watchdogTimeoutMs);
       };
@@ -3363,6 +3388,39 @@ function dwellirGrpcStreams(
   }
 
   return streams.size > 0 ? streams : new Set(["ORDERBOOK_SNAPSHOT", "FILLS"]);
+}
+
+function dwellirGrpcWatchdogTimeoutMs(
+  env: Env,
+  config: Pick<ResolvedExchangeStreamConfig, "watchdogTimeoutMs">,
+  streams: Set<DwellirGrpcStreamKind>
+): number {
+  if (streams.has("ORDERBOOK_SNAPSHOT") || streams.has("BLOCK")) {
+    return config.watchdogTimeoutMs;
+  }
+
+  if (streams.has("FILLS")) {
+    return Math.max(
+      config.watchdogTimeoutMs,
+      readNumber(
+        env.DWELLIR_GRPC_FILLS_WATCHDOG_TIMEOUT_MS,
+        DEFAULT_DWELLIR_GRPC_FILLS_WATCHDOG_TIMEOUT_MS
+      )
+    );
+  }
+
+  return config.watchdogTimeoutMs;
+}
+
+function shouldEmitDwellirGrpcFatalDrop(
+  streams: Set<DwellirGrpcStreamKind>,
+  env: Env
+): boolean {
+  if (streams.has("ORDERBOOK_SNAPSHOT") || streams.has("BLOCK")) {
+    return true;
+  }
+
+  return booleanEnv(env.DWELLIR_GRPC_FATAL_ON_FILLS_ONLY);
 }
 
 function dwellirPayloadToHyperliquidRawMessages(

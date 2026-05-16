@@ -154,6 +154,28 @@ async function executeIntent(
   if (isShadowMode(env)) {
     const observedAt = new Date().toISOString();
     const audit = buildSignedTradeIntentAudit(intent, exchangeRequest, observedAt);
+
+    if (intent.postOnly && intent.orderType === "LIMIT") {
+      const report = buildShadowRestingQuoteReport(intent, audit.exactTimestamp);
+      logger.info("SHADOW_POST_ONLY_QUOTE_OPEN", "Shadow Mode left post-only quote resting", {
+        intentId: intent.intentId,
+        instrumentCode: intent.instrumentCode,
+        source_exchange: intent.source_exchange ?? null,
+        expectedPrice: intent.expectedPrice,
+        size: intent.approvedSize ?? intent.requestedSize,
+        signingLatencyMs: exchangeRequest.signingLatencyMs
+      });
+      ctx.waitUntil(forwardReport(env, report));
+
+      return json({
+        ok: true,
+        shadowMode: true,
+        status: "OPEN",
+        report,
+        signedTradeIntent: audit
+      });
+    }
+
     const estimatedFees = estimateShadowFees(env, intent);
     const report = buildGhostExecutionReport(intent, audit, estimatedFees);
     const trade = buildGhostTradeExecution(
@@ -1382,6 +1404,31 @@ function estimateShadowFees(env: Env, intent: TradeIntent): number {
   }
 
   return Number((intent.expectedPrice * size * feeBps / 10_000).toFixed(8));
+}
+
+function buildShadowRestingQuoteReport(
+  intent: TradeIntent,
+  observedAt: string
+): ExecutionReport {
+  const size = intent.approvedSize ?? intent.requestedSize;
+
+  return {
+    clientId: intent.intentId,
+    exchangeOrderId: `shadow-open-${intent.intentId}`,
+    instrumentCode: intent.instrumentCode,
+    side: intent.action,
+    orderSize: size,
+    status: "OPEN",
+    filledSize: 0,
+    fillIncrementSize: 0,
+    achievedPrice: intent.expectedPrice,
+    expectedPrice: intent.expectedPrice,
+    fees: 0,
+    latencyMs: 0,
+    reason: "SHADOW_MODE_POST_ONLY_RESTING_QUOTE",
+    rawStatus: "OPEN",
+    observedAt
+  };
 }
 
 function configureRuntimeRateLimits(env: Env): void {
