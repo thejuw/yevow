@@ -2952,7 +2952,7 @@ function dwellirPayloadToHyperliquidRawMessages(
   }
 
   if (update.kind === "FILLS") {
-    return dwellirFillMessages(decoded, config);
+    return dwellirFillMessages(decoded, config, coins);
   }
 
   return [];
@@ -3134,12 +3134,14 @@ function dwellirOrderbookSnapshotMessages(
 
 function dwellirFillMessages(
   decoded: unknown,
-  config: ResolvedExchangeStreamConfig
+  config: ResolvedExchangeStreamConfig,
+  coins: string[]
 ): Record<string, unknown>[] {
   if (isRecord(decoded) && typeof decoded.channel === "string") {
     return [decoded];
   }
 
+  const targetCoins = new Set(coins.map((coin) => coin.toUpperCase()));
   const fills =
     Array.isArray(decoded)
       ? decoded
@@ -3147,12 +3149,33 @@ function dwellirFillMessages(
         ? decoded.data
         : isRecord(decoded) && Array.isArray(decoded.fills)
           ? decoded.fills
-          : [];
+          : isRecord(decoded) && Array.isArray(decoded.events)
+            ? decoded.events
+            : [];
+  const byTradeId = new Map<string, Record<string, unknown>>();
 
-  const normalized = fills
-    .filter(isRecord)
-    .map((fill) => ({
-      coin: fill.coin ?? config.instrumentCode?.replace(/-usd$/i, "").toUpperCase(),
+  for (const entry of fills) {
+    const fill =
+      Array.isArray(entry) && isRecord(entry[1])
+        ? entry[1]
+        : isRecord(entry)
+          ? entry
+          : null;
+
+    if (!fill) {
+      continue;
+    }
+
+    const coin = stringifyOrNull(fill.coin) ?? config.instrumentCode?.replace(/-usd$/i, "").toUpperCase();
+    const normalizedCoin = coin?.toUpperCase();
+    if (!normalizedCoin || (targetCoins.size > 0 && !targetCoins.has(normalizedCoin))) {
+      continue;
+    }
+
+    const tradeId = stringifyOrNull(fill.tid ?? fill.id ?? fill.hash ?? fill.oid) ??
+      `${normalizedCoin}:${fill.time ?? fill.timestamp ?? ""}:${fill.px ?? fill.price ?? fill.limitPx ?? ""}:${fill.sz ?? fill.size ?? ""}`;
+    const normalized: Record<string, unknown> = {
+      coin: normalizedCoin,
       px: fill.px ?? fill.price ?? fill.limitPx,
       sz: fill.sz ?? fill.size,
       side: fill.side,
@@ -3163,9 +3186,23 @@ function dwellirFillMessages(
             ? fill.side.toUpperCase() === "B" || fill.side.toLowerCase() === "buy"
             : undefined,
       time: fill.time ?? fill.timestamp,
-      tid: fill.tid ?? fill.id ?? fill.hash ?? fill.oid
-    }))
-    .filter((fill) => fill.coin && fill.px !== undefined && fill.sz !== undefined);
+      tid: fill.tid ?? fill.id ?? fill.hash ?? fill.oid,
+      hash: fill.hash,
+      crossed: fill.crossed,
+      liquidation: fill.liquidation ?? null
+    };
+    const existing = byTradeId.get(tradeId);
+
+    if (!existing || fill.crossed === true) {
+      byTradeId.set(tradeId, normalized);
+    }
+  }
+
+  const normalized = [...byTradeId.values()].filter((fill) => (
+    fill.coin &&
+    fill.px !== undefined &&
+    fill.sz !== undefined
+  ));
 
   return normalized.length > 0 ? [{ channel: "trades", data: normalized }] : [];
 }
