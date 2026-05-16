@@ -291,7 +291,7 @@ export class Logger {
         instrumentCode: latencyMetrics.instrumentCode,
         exchangeCode: latencyMetrics.exchangeCode,
         sequence: latencyMetrics.sequence,
-        kaikoTimestamp: latencyMetrics.kaikoTimestamp,
+        providerTimestamp: latencyMetrics.providerTimestamp,
         ingestTimestamp: latencyMetrics.ingestTimestamp,
         brainTimestamp: latencyMetrics.brainTimestamp,
         networkLatencyMs: latencyMetrics.networkLatencyMs,

@@ -628,7 +628,7 @@ export default function CommandCenterPage() {
           <Metric label="Drawdown" value={`${compact.format(drawdown * 100)}%`} icon={<Shield size={17} />} />
           <Metric label="Imbalance" value={imbalance === null ? "n/a" : compact.format(imbalance)} icon={<Zap size={17} />} />
           <Metric label="Regime" value={regime.replace("REGIME_", "")} icon={<RadioTower size={17} />} />
-          <Metric label="Latency" value={`${compact.format(pulse?.latency_ms ?? engineState?.averageLatency ?? 0)}ms`} />
+          <Metric label="Native HL Latency" value={`${compact.format(pulse?.latency_ms ?? engineState?.averageLatency ?? 0)}ms`} />
           <Metric label="Jitter" value={`${compact.format(pulse?.jitter_ms ?? engineState?.executionProfile.jitterMs ?? 0)}ms`} />
           <Metric label="VPIN" value={compact.format(pulse?.toxicity_score ?? engineState?.toxicityScore ?? 0)} />
           <Metric label="Quotes" value={engineState?.quoteState.status ?? "n/a"} />

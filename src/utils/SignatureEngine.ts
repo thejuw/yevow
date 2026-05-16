@@ -4,6 +4,7 @@ import { getBytes, keccak256, Signature, Wallet } from "ethers";
 type SignatureAlgorithm = "HMAC-SHA256" | "ED25519";
 
 const keyCache = new Map<string, CryptoKey>();
+const hyperliquidWalletCache = new Map<string, Wallet>();
 
 export interface HyperliquidSignature {
   r: string;
@@ -36,8 +37,7 @@ export class SignatureEngine {
     expiresAfter?: number | null;
     isMainnet?: boolean;
   }): Promise<HyperliquidSignature> {
-    const privateKey = normalizePrivateKey(input.secret);
-    const wallet = new Wallet(privateKey);
+    const wallet = hyperliquidWallet(input.secret);
     const connectionId = hyperliquidActionHash(
       input.action,
       input.vaultAddress ?? null,
@@ -71,9 +71,28 @@ export class SignatureEngine {
     };
   }
 
-  static hyperliquidAddressFromPrivateKey(secret: string): string {
-    return new Wallet(normalizePrivateKey(secret)).address.toLowerCase();
+  static preloadHyperliquidAgentSecret(secret: string): { address: string } {
+    return {
+      address: hyperliquidWallet(secret).address.toLowerCase()
+    };
   }
+
+  static hyperliquidAddressFromPrivateKey(secret: string): string {
+    return hyperliquidWallet(secret).address.toLowerCase();
+  }
+}
+
+function hyperliquidWallet(secret: string): Wallet {
+  const privateKey = normalizePrivateKey(secret);
+  const cached = hyperliquidWalletCache.get(privateKey);
+
+  if (cached) {
+    return cached;
+  }
+
+  const wallet = new Wallet(privateKey);
+  hyperliquidWalletCache.set(privateKey, wallet);
+  return wallet;
 }
 
 async function importHmacKey(secret: string): Promise<CryptoKey> {

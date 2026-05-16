@@ -79,7 +79,9 @@ const REPLAY_STATUS_KEY = "replay:status";
 const RISK_LIMITS_KEY = "risk:limits";
 const CONFIG_KEY = "engine:config";
 const DEFAULT_MAX_LATENCY_MS = 250;
+const DEFAULT_NATIVE_HL_MAX_LATENCY_MS = 150;
 const DEFAULT_HARD_STALE_DROP_MS = 1_000;
+const DEFAULT_HL_SEQUENCE_GAP_MS = 5_000;
 const PERFORMANCE_HISTORY_LIMIT = 100;
 const CONFIG_ALARM_INTERVAL_MS = 5_000;
 const CRYPTO_DECIMAL_PLACES = 8;
@@ -145,6 +147,7 @@ interface TickIngestResult {
     | "STALE_DROPPED"
     | "BOOK_NOT_READY";
   reason?: string;
+  processedCount?: number;
   metrics?: LatencyMetrics;
   book?: InternalOrderBook;
 }
@@ -253,6 +256,19 @@ interface ExecutionTraceInput {
 
 interface TickHandlingOptions {
   shadowReplay?: boolean;
+}
+
+interface HyperliquidRawIngestPayload {
+  streamId?: string;
+  source?: "HYPERLIQUID";
+  source_exchange?: string;
+  exchangeCode?: string;
+  instrumentCode?: string;
+  sourceWeight?: number;
+  connectionId?: string | null;
+  receivedAt?: string;
+  raw?: unknown;
+  messages?: unknown[];
 }
 
 interface EngineReplaySnapshot {
@@ -672,7 +688,7 @@ export class TradingEngine {
         engineId: this.engineState.engineId,
         mode: this.engineState.mode,
         riskConfigVersion: this.engineState.risk.configVersion,
-        hasKaikoApiKey: Boolean(this.env.KAIKO_API_KEY),
+        nativeFeed: "HYPERLIQUID",
         hasExchangeApiKey: Boolean(this.env.EXCHANGE_API_KEY)
       });
     });
@@ -881,7 +897,7 @@ export class TradingEngine {
         request.method === "POST" &&
         (url.pathname === "/tick" ||
           url.pathname === "/market/tick" ||
-          url.pathname === "/ingest/kaiko")
+          url.pathname === "/hyperliquid/tick")
       ) {
         const payload = await request.json<MarketTick>();
         const tick = assertMarketTick(payload);
@@ -897,6 +913,24 @@ export class TradingEngine {
             state: this.engineState
           },
           result.accepted ? 200 : 202
+        );
+      }
+
+      if (request.method === "POST" && url.pathname === "/hyperliquid/raw") {
+        const payload = await request.json<HyperliquidRawIngestPayload>();
+        const result = await this.handleHyperliquidRaw(payload, wakeUpTimeMs);
+        return json(
+          {
+            ok: result.accepted,
+            accepted: result.accepted,
+            processedCount: result.processedCount,
+            status: result.status,
+            reason: result.reason,
+            metrics: result.metrics ?? null,
+            book: result.book,
+            state: this.engineState
+          },
+          result.status === "DESYNC" ? 409 : result.accepted ? 200 : 202
         );
       }
 
@@ -1330,6 +1364,369 @@ export class TradingEngine {
     return job;
   }
 
+  private async handleHyperliquidRaw(
+    payload: HyperliquidRawIngestPayload,
+    wakeUpTimeMs: number | null
+  ): Promise<TickIngestResult> {
+    const messages = Array.isArray(payload.messages)
+      ? payload.messages
+      : [payload.raw ?? payload];
+    let processedCount = 0;
+    let terminalResult: TickIngestResult | null = null;
+
+    for (const raw of messages.slice(0, 250)) {
+      const result = await this.enqueueHyperliquidRawMessage(raw, payload, wakeUpTimeMs);
+      processedCount += result.processedCount ?? (result.accepted ? 1 : 0);
+      terminalResult = result;
+
+      if (result.status === "DESYNC" || result.status === "STALE") {
+        break;
+      }
+    }
+
+    return {
+      ...(terminalResult ?? { accepted: true, status: "FRESH" as const }),
+      processedCount
+    };
+  }
+
+  private enqueueHyperliquidRawMessage(
+    raw: unknown,
+    payload: HyperliquidRawIngestPayload,
+    wakeUpTimeMs: number | null
+  ): Promise<TickIngestResult> {
+    const job = this.ingestQueue.then(() =>
+      this.handleHyperliquidRawMessage(raw, payload, wakeUpTimeMs)
+    );
+    this.ingestQueue = job.then(
+      () => undefined,
+      () => undefined
+    );
+
+    return job;
+  }
+
+  private async handleHyperliquidRawMessage(
+    raw: unknown,
+    payload: HyperliquidRawIngestPayload,
+    wakeUpTimeMs: number | null
+  ): Promise<TickIngestResult> {
+    if (!isNativeRecord(raw)) {
+      throw new Error("INVALID_HYPERLIQUID_RAW_MESSAGE");
+    }
+
+    const channel = nativeString(raw.channel)?.toLowerCase();
+
+    if (channel === "subscriptionresponse" || channel === "pong") {
+      return { accepted: true, status: "FRESH", processedCount: 0 };
+    }
+
+    if (channel === "l2book") {
+      return this.handleHyperliquidL2Book(raw, payload, wakeUpTimeMs);
+    }
+
+    if (channel === "trades") {
+      return this.handleHyperliquidTrades(raw, payload, wakeUpTimeMs);
+    }
+
+    if (channel === "activeassetctx" || channel === "alldexsassetctxs") {
+      return this.handleHyperliquidAssetContext(raw, payload, wakeUpTimeMs);
+    }
+
+    return {
+      accepted: false,
+      status: "BOOK_NOT_READY",
+      reason: `IGNORED_HYPERLIQUID_CHANNEL_${channel ?? "UNKNOWN"}`,
+      processedCount: 0
+    };
+  }
+
+  private async handleHyperliquidL2Book(
+    raw: Record<string, unknown>,
+    payload: HyperliquidRawIngestPayload,
+    wakeUpTimeMs: number | null
+  ): Promise<TickIngestResult> {
+    const hotPathStartedAt = highResolutionNow();
+    const data = nativeObject(raw.data);
+
+    if (!data) {
+      throw new Error("INVALID_HYPERLIQUID_L2BOOK");
+    }
+
+    const receivedAt = nativeIso(payload.receivedAt) ?? new Date().toISOString();
+    const coin = requireNativeString(data.coin ?? payload.instrumentCode, "coin");
+    const instrumentCode = hyperliquidNativeInstrumentCode(
+      coin,
+      payload.instrumentCode
+    );
+    const exchangeCode = (payload.exchangeCode ?? "hyperliquid").toLowerCase();
+    const sourceExchange = normalizeSourceExchange(
+      payload.source_exchange ?? "hyperliquid"
+    );
+    const sourceWeight = normalizeSourceWeight(payload.sourceWeight);
+    const exchangeTimestamp = nativeExchangeTimestamp(data.time ?? data.timestamp) ?? receivedAt;
+    const sequence = nativeSequence(data.time ?? data.sequence ?? data.seq);
+    const marketKey = buildMarketKey(sourceExchange, instrumentCode);
+    const existingSync = this.bookSync.get(marketKey);
+    const gapMs = readPositiveNumber(this.env.HL_SEQUENCE_GAP_MS, DEFAULT_HL_SEQUENCE_GAP_MS);
+    const [bids, asks] = parseHyperliquidNativeLevels(data.levels, receivedAt);
+    const snapshot: OrderBookSnapshot = {
+      schemaVersion: "order-book.snapshot.v1",
+      source: "HYPERLIQUID",
+      source_exchange: sourceExchange,
+      exchangeCode,
+      instrumentCode,
+      marketKey,
+      sourceWeight,
+      sequence,
+      exchangeTimestamp,
+      receivedAt,
+      bids,
+      asks
+    };
+
+    if (existingSync?.lastSequence !== null && existingSync?.lastSequence !== undefined) {
+      if (sequence <= existingSync.lastSequence) {
+        return {
+          accepted: false,
+          status: "DUPLICATE_OR_OUT_OF_ORDER",
+          reason: "DUPLICATE_OR_OUT_OF_ORDER",
+          processedCount: 0
+        };
+      }
+
+      if (sequence - existingSync.lastSequence > gapMs) {
+        existingSync.lastDesyncAt = receivedAt;
+        existingSync.desyncReason = "HYPERLIQUID_SEQUENCE_GAP";
+        existingSync.isSynced = false;
+        this.logger.warn("ORDER_BOOK_DESYNC", "Hyperliquid native book sequence gap detected", {
+          instrumentCode,
+          exchangeCode,
+          source_exchange: sourceExchange,
+          previousSequence: existingSync.lastSequence,
+          sequence,
+          gapMs: sequence - existingSync.lastSequence,
+          maxGapMs: gapMs
+        });
+        return {
+          accepted: false,
+          status: "DESYNC",
+          reason: "HYPERLIQUID_SEQUENCE_GAP",
+          processedCount: 0
+        };
+      }
+    }
+
+    const brainTimestamp = new Date().toISOString();
+    const totalLatencyMs = Math.max(
+      0,
+      parseTimestampMs(brainTimestamp, "brain_timestamp") -
+        parseTimestampMs(exchangeTimestamp, "exchange_timestamp")
+    );
+    const nativeMaxLatencyMs = this.resolveNativeHyperliquidMaxLatencyMs();
+
+    if (totalLatencyMs > nativeMaxLatencyMs) {
+      const book =
+        bids.length > 0 || asks.length > 0
+          ? await this.applySnapshot(snapshot, { telemetry: false })
+          : undefined;
+      if (book) {
+        const syncState = this.bookSync.get(marketKey);
+        if (syncState) {
+          syncState.isSynced = false;
+          syncState.desyncReason = "NATIVE_HL_LATENCY";
+          syncState.lastDesyncAt = brainTimestamp;
+        }
+        const staleBook = {
+          ...book,
+          isSynced: false,
+          desyncReason: "NATIVE_HL_LATENCY"
+        };
+        this.orderBook.set(marketKey, staleBook);
+        this.engineState = {
+          ...this.engineState,
+          microstructure: {
+            ...this.engineState.microstructure,
+            isSynced: false
+          }
+        };
+      }
+      const metrics = nativeHyperliquidLatencyMetrics({
+        instrumentCode,
+        exchangeCode,
+        sourceExchange,
+        sourceWeight,
+        sequence,
+        exchangeTimestamp,
+        receivedAt,
+        brainTimestamp,
+        totalLatencyMs,
+        maxLatencyMs: nativeMaxLatencyMs,
+        averageLatencyMs: this.engineState.averageLatency,
+        sampleCount: this.engineState.latencySampleCount,
+        location: this.engineState.location
+      });
+      this.quoteStateStalePull(instrumentCode, sequence, metrics, brainTimestamp);
+      this.observeExecutionProfile(metrics, {
+        wakeUpTimeMs,
+        orderBookUpdateMs: null,
+        agentLogicMs: null,
+        hotPathStartedAt,
+        observedAt: brainTimestamp
+      });
+      if (this.cachedConfig.TRADING_ENABLED) {
+        this.state.waitUntil(this.cancelAllQuotes(instrumentCode, "NATIVE_HL_LATENCY"));
+      }
+      this.publishTickTelemetry(
+        createNativeHyperliquidBookTick({
+          payload,
+          coin,
+          instrumentCode,
+          exchangeCode,
+          sourceExchange,
+          sourceWeight,
+          sequence,
+          exchangeTimestamp,
+          receivedAt,
+          price: 0,
+          bestBid: undefined,
+          bestAsk: undefined,
+          rawEventType: "native-l2Book"
+        }),
+        metrics,
+        "STALE",
+        hotPathStartedAt
+      );
+
+      return {
+        accepted: false,
+        status: "STALE",
+        reason: "NATIVE_HL_LATENCY_EXCEEDED",
+        metrics,
+        book,
+        processedCount: 0
+      };
+    }
+
+    const book = await this.applySnapshot(snapshot);
+    const representativeTick = createNativeHyperliquidBookTick({
+      payload,
+      coin,
+      instrumentCode,
+      exchangeCode,
+      sourceExchange,
+      sourceWeight,
+      sequence,
+      exchangeTimestamp,
+      receivedAt,
+      price: book.midPrice ?? book.bestBid ?? book.bestAsk ?? 0,
+      bestBid: book.bestBid ?? undefined,
+      bestAsk: book.bestAsk ?? undefined,
+      rawEventType: "native-l2Book"
+    });
+    const result = await this.handleTick(representativeTick, wakeUpTimeMs);
+
+    return {
+      ...result,
+      book,
+      processedCount: 1
+    };
+  }
+
+  private async handleHyperliquidTrades(
+    raw: Record<string, unknown>,
+    payload: HyperliquidRawIngestPayload,
+    wakeUpTimeMs: number | null
+  ): Promise<TickIngestResult> {
+    const data = Array.isArray(raw.data) ? raw.data : [];
+    let processedCount = 0;
+    let terminalResult: TickIngestResult = {
+      accepted: true,
+      status: "FRESH",
+      processedCount: 0
+    };
+
+    for (const item of data.slice(0, 100)) {
+      if (!isNativeRecord(item)) {
+        continue;
+      }
+
+      const tick = createNativeHyperliquidTradeTick(item, payload);
+      terminalResult = await this.handleTick(tick, wakeUpTimeMs);
+      processedCount += 1;
+
+      if (terminalResult.status === "STALE" || terminalResult.status === "DESYNC") {
+        break;
+      }
+    }
+
+    return { ...terminalResult, processedCount };
+  }
+
+  private async handleHyperliquidAssetContext(
+    raw: Record<string, unknown>,
+    payload: HyperliquidRawIngestPayload,
+    wakeUpTimeMs: number | null
+  ): Promise<TickIngestResult> {
+    const data = nativeObject(raw.data) ?? raw;
+    const tick = createNativeHyperliquidFundingTick(data, payload);
+    const result = await this.handleTick(tick, wakeUpTimeMs);
+
+    return {
+      ...result,
+      processedCount: 1
+    };
+  }
+
+  private quoteStateStalePull(
+    instrumentCode: string,
+    sequence: number,
+    metrics: LatencyMetrics,
+    observedAt: string
+  ): void {
+    this.updateLatencyAverage(metrics.totalLatencyMs);
+    this.applyLocationLatency(metrics.totalLatencyMs, observedAt);
+    metrics.averageLatencyMs = this.engineState.averageLatency;
+    metrics.sampleCount = this.engineState.latencySampleCount;
+    metrics.latencyRiskMultiplier = this.engineState.location.latencyRiskMultiplier;
+    metrics.positionSizeMultiplier = this.engineState.location.positionSizeMultiplier;
+    this.latencyHistory = [...this.latencyHistory, metrics].slice(
+      -PERFORMANCE_HISTORY_LIMIT
+    );
+    this.engineState = {
+      ...this.engineState,
+      processedTicks: this.engineState.processedTicks + 1,
+      staleTickCount: this.engineState.staleTickCount + 1,
+      quoteState: {
+        status: "SUSPENDED",
+        reason: "NATIVE_HL_LATENCY",
+        suspendedUntil: null,
+        lastQuote: this.engineState.quoteState.lastQuote,
+        updatedAt: observedAt
+      },
+      heartbeatAt: observedAt,
+      updatedAt: observedAt
+    };
+    this.state.waitUntil(
+      this.persistHotStorageSnapshot({
+        [ENGINE_STATE_KEY]: this.engineState,
+        [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
+        [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples
+      }, "NATIVE_HL_LATENCY_PULL")
+    );
+    this.logPerformance(metrics);
+    this.publish("STALE_DATA_KILL_SWITCH", {
+      instrumentCode,
+      exchangeCode: "hyperliquid",
+      source_exchange: "hyperliquid",
+      sequence,
+      totalLatencyMs: metrics.totalLatencyMs,
+      maxLatencyMs: metrics.maxLatencyMs,
+      action: "PULL_CURRENT_QUOTES",
+      source: "NATIVE_HYPERLIQUID"
+    });
+  }
+
   private enqueueOrderBookReset(
     payload: Partial<OrderBookResetRequest>
   ): Promise<void> {
@@ -1443,7 +1840,10 @@ export class TradingEngine {
     });
   }
 
-  private async applySnapshot(snapshot: OrderBookSnapshot): Promise<InternalOrderBook> {
+  private async applySnapshot(
+    snapshot: OrderBookSnapshot,
+    options: { telemetry?: boolean } = {}
+  ): Promise<InternalOrderBook> {
     const updatedAt = new Date().toISOString();
     const instrumentCode = snapshot.instrumentCode.toLowerCase();
     const exchangeCode = snapshot.exchangeCode.toLowerCase();
@@ -1520,24 +1920,32 @@ export class TradingEngine {
       [`${ORDER_BOOK_PREFIX}${marketKey}`]: book
     }, "ORDER_BOOK_SNAPSHOT_APPLIED");
 
-    this.logger.info("ORDER_BOOK_SNAPSHOT_APPLIED", "Full order book snapshot applied", {
-      instrumentCode,
-      exchangeCode,
-      sequence: snapshot.sequence,
-      bidLevels: bidBook.size,
-      askLevels: askBook.size,
-      tickSize,
-      timeToBookMs
-    });
-    this.publish("ORDER_BOOK_SNAPSHOT_APPLIED", {
-      instrumentCode,
-      exchangeCode,
-      sequence: snapshot.sequence,
-      bidLevels: bidBook.size,
-      askLevels: askBook.size,
-      tickSize,
-      timeToBookMs
-    });
+    const shouldEmitTelemetry =
+      options.telemetry !== false &&
+      (snapshot.source === "ADMIN" ||
+        this.engineState.processedTicks <= 5 ||
+        this.engineState.processedTicks % AGENT_SNAPSHOT_TICK_INTERVAL === 0);
+
+    if (shouldEmitTelemetry) {
+      this.logger.info("ORDER_BOOK_SNAPSHOT_APPLIED", "Full order book snapshot applied", {
+        instrumentCode,
+        exchangeCode,
+        sequence: snapshot.sequence,
+        bidLevels: bidBook.size,
+        askLevels: askBook.size,
+        tickSize,
+        timeToBookMs
+      });
+      this.publish("ORDER_BOOK_SNAPSHOT_APPLIED", {
+        instrumentCode,
+        exchangeCode,
+        sequence: snapshot.sequence,
+        bidLevels: bidBook.size,
+        askLevels: askBook.size,
+        tickSize,
+        timeToBookMs
+      });
+    }
 
     return book;
   }
@@ -1567,7 +1975,7 @@ export class TradingEngine {
     const expectedSequence =
       syncState.lastSequence === null ? undefined : syncState.lastSequence + 1;
     const timeToBookMs = calculateTimeToBookMs(delta.exchangeTimestamp, updatedAt);
-    const enforceExactSequence = delta.source === "KAIKO";
+    const enforceExactSequence = delta.source === "HYPERLIQUID";
 
     if (enforceExactSequence && expectedSequence !== undefined && delta.sequence > expectedSequence) {
       await this.handleSequenceGap(delta, expectedSequence, timeToBookMs, updatedAt);
@@ -1581,7 +1989,7 @@ export class TradingEngine {
     }
 
     if (syncState.lastSequence !== null && delta.sequence <= syncState.lastSequence) {
-      if (delta.source === "KAIKO" || delta.sequence % 100 === 0) {
+      if (delta.source === "HYPERLIQUID" || delta.sequence % 100 === 0) {
         this.logger.warn("ORDER_BOOK_DELTA_IGNORED", "Ignored duplicate/out-of-order book delta", {
           instrumentCode,
           exchangeCode,
@@ -2259,17 +2667,14 @@ export class TradingEngine {
     this.lastTickTimestamp = tick.receivedAt;
 
     const metrics = this.calculateLatency(tick);
-    const hardStaleDropMs = readPositiveNumber(
-      this.env.KAIKO_STALE_AFTER_MS,
-      DEFAULT_HARD_STALE_DROP_MS
-    );
+    const hardStaleDropMs = this.resolveNativeHyperliquidMaxLatencyMs();
     const isHardStale =
       !options.shadowReplay && metrics.totalLatencyMs > hardStaleDropMs;
 
     if (isHardStale) {
       const nextStaleTickCount = this.engineState.staleTickCount + 1;
       metrics.status = "STALE";
-      metrics.maxLatencyMs = this.maxLatencyMs;
+      metrics.maxLatencyMs = hardStaleDropMs;
       metrics.averageLatencyMs = this.engineState.averageLatency;
       metrics.sampleCount = this.engineState.latencySampleCount;
 
@@ -2277,6 +2682,13 @@ export class TradingEngine {
         ...this.engineState,
         processedTicks: this.engineState.processedTicks + 1,
         staleTickCount: nextStaleTickCount,
+        quoteState: {
+          status: "SUSPENDED",
+          reason: "HARD_STALE_DROP",
+          suspendedUntil: null,
+          lastQuote: this.engineState.quoteState.lastQuote,
+          updatedAt: metrics.brainTimestamp
+        },
         heartbeatAt: metrics.brainTimestamp,
         updatedAt: metrics.brainTimestamp
       };
@@ -2302,6 +2714,20 @@ export class TradingEngine {
           processingLatencyMs: metrics.processingLatencyMs,
           hardStaleDropMs
         });
+      }
+      this.logPerformance(metrics);
+      this.publish("STALE_DATA_KILL_SWITCH", {
+        instrumentCode: tick.instrumentCode,
+        exchangeCode: tick.exchangeCode,
+        source_exchange: tick.source_exchange,
+        sequence: tick.sequence,
+        totalLatencyMs: metrics.totalLatencyMs,
+        maxLatencyMs: hardStaleDropMs,
+        action: "PULL_ALL_QUOTES",
+        source: "NATIVE_HYPERLIQUID"
+      });
+      if (this.cachedConfig.TRADING_ENABLED) {
+        this.state.waitUntil(this.cancelAllQuotes(tick.instrumentCode, "HARD_STALE_DROP"));
       }
 
       return {
@@ -2618,7 +3044,7 @@ export class TradingEngine {
         ORACLE_MAX_SKEPTICISM: this.cachedConfig.ORACLE_MAX_SKEPTICISM
       }
     });
-    const leadLag = this.updateLeadLagMetrics(tick, book, metrics.brainTimestamp);
+    const leadLag = this.engineState.leadLag;
     const inventory = this.calculateInventoryState(metrics.brainTimestamp);
     const riskMetrics = this.updatePortfolioRisk(oracleResult.state, metrics.brainTimestamp);
     const hedge = this.hedgeAgent.evaluate({
@@ -4448,9 +4874,8 @@ export class TradingEngine {
     const sourceTimestamp =
       tick.synchronizedExchangeTimestamp ??
       tick.providerTimestamp ??
-      tick.kaikoTimestamp ??
       tick.exchangeTimestamp;
-    const kaikoTimestamp = tick.kaikoTimestamp ?? sourceTimestamp;
+    const providerTimestamp = tick.providerTimestamp ?? sourceTimestamp;
     const sourceTime = parseTimestampMs(sourceTimestamp, "source_timestamp");
     const ingestTime = parseTimestampMs(tick.receivedAt, "ingest_timestamp");
     const brainTime = parseTimestampMs(brainTimestamp, "brain_timestamp");
@@ -4464,7 +4889,7 @@ export class TradingEngine {
       sourceExchange: tick.source_exchange,
       sourceWeight: tick.sourceWeight,
       sequence: tick.sequence,
-      kaikoTimestamp,
+      providerTimestamp,
       sourceTimestamp,
       ingestTimestamp: tick.receivedAt,
       brainTimestamp,
@@ -4518,6 +4943,13 @@ export class TradingEngine {
       reason,
       observedAt
     });
+  }
+
+  private resolveNativeHyperliquidMaxLatencyMs(): number {
+    return readPositiveNumber(
+      this.env.HL_STALE_AFTER_MS,
+      Math.min(this.maxLatencyMs, DEFAULT_NATIVE_HL_MAX_LATENCY_MS)
+    );
   }
 
   private observeExecutionProfile(
@@ -5608,6 +6040,441 @@ export class TradingEngine {
       killSwitch: this.engineState.risk.killSwitch
     });
   }
+}
+
+function isNativeRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function nativeObject(value: unknown): Record<string, unknown> | null {
+  return isNativeRecord(value) ? value : null;
+}
+
+function nativeString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+}
+
+function requireNativeString(value: unknown, field: string): string {
+  const parsed = nativeString(value);
+
+  if (!parsed) {
+    throw new Error(`MISSING_HYPERLIQUID_${field.toUpperCase()}`);
+  }
+
+  return parsed;
+}
+
+function nativeIso(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+}
+
+function nativeExchangeTimestamp(value: unknown): string | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return new Date(epochMillis(value)).toISOString();
+  }
+
+  if (typeof value === "string" && value.trim() !== "") {
+    const trimmed = value.trim();
+    const numeric = Number(trimmed);
+
+    if (Number.isFinite(numeric)) {
+      return new Date(epochMillis(numeric)).toISOString();
+    }
+
+    const parsed = Date.parse(trimmed);
+    return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+  }
+
+  return null;
+}
+
+function epochMillis(value: number): number {
+  return value > 1_000_000_000_000 ? value : value * 1_000;
+}
+
+function nativeSequence(value: unknown): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+
+  if (Number.isSafeInteger(parsed) && parsed >= 0) {
+    return parsed;
+  }
+
+  return nativeHashSequence(String(value ?? Date.now()));
+}
+
+function nativeHashSequence(value: string): number {
+  let hash = 2_166_136_261;
+
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16_777_619);
+  }
+
+  return hash >>> 0;
+}
+
+function hyperliquidNativeInstrumentCode(
+  coin: string,
+  fallback?: string | null
+): string {
+  const fallbackCode =
+    typeof fallback === "string" && fallback.trim() !== ""
+      ? normalizeNativeInstrumentCode(fallback)
+      : null;
+  const normalizedCoin = normalizeNativeCoin(coin);
+
+  if (fallbackCode) {
+    const [fallbackBase] = splitNativeInstrument(fallbackCode).baseAsset.split("-");
+    const coinBase = normalizedCoin.toLowerCase();
+
+    if (fallbackCode.includes(coinBase) || fallbackBase === coinBase) {
+      return fallbackCode;
+    }
+  }
+
+  return `${normalizedCoin.toLowerCase()}-usd`;
+}
+
+function normalizeNativeCoin(value: string): string {
+  return value
+    .trim()
+    .replace(/-perp$/i, "")
+    .replace(/-usd$/i, "")
+    .replace(/-usdc$/i, "")
+    .replace(/-usdt$/i, "")
+    .toUpperCase();
+}
+
+function normalizeNativeInstrumentCode(value: string): string {
+  return value
+    .trim()
+    .replace(/_/g, "-")
+    .replace(/\//g, "-")
+    .replace(/-perp$/i, "")
+    .toLowerCase();
+}
+
+function splitNativeInstrument(instrumentCode: string): {
+  baseAsset: string;
+  quoteAsset: string;
+} {
+  const normalized = normalizeNativeInstrumentCode(instrumentCode);
+  const [baseAsset, ...quoteParts] = normalized.split("-");
+
+  return {
+    baseAsset: baseAsset || "unknown",
+    quoteAsset: quoteParts.join("-") || "usd"
+  };
+}
+
+function parseHyperliquidNativeLevels(
+  levels: unknown,
+  receivedAt: string
+): [OrderBookSnapshotLevel[], OrderBookSnapshotLevel[]] {
+  if (Array.isArray(levels)) {
+    return [
+      nativeBookSideLevels(levels[0], receivedAt),
+      nativeBookSideLevels(levels[1], receivedAt)
+    ];
+  }
+
+  if (isNativeRecord(levels)) {
+    return [
+      nativeBookSideLevels(levels.bids ?? levels.bid, receivedAt),
+      nativeBookSideLevels(levels.asks ?? levels.ask, receivedAt)
+    ];
+  }
+
+  return [[], []];
+}
+
+function nativeBookSideLevels(
+  value: unknown,
+  receivedAt: string
+): OrderBookSnapshotLevel[] {
+  const rawLevels =
+    Array.isArray(value)
+      ? value
+      : isNativeRecord(value) && Array.isArray(value.levels)
+        ? value.levels
+        : [];
+  const levels: OrderBookSnapshotLevel[] = [];
+
+  for (const rawLevel of rawLevels) {
+    let price: number | null = null;
+    let size: number | null = null;
+
+    if (Array.isArray(rawLevel)) {
+      price = nativeNumber(rawLevel[0]);
+      size = nativeNumber(rawLevel[1]);
+    } else if (isNativeRecord(rawLevel)) {
+      price = nativeNumber(rawLevel.px ?? rawLevel.price ?? rawLevel.p);
+      size = nativeNumber(rawLevel.sz ?? rawLevel.size ?? rawLevel.s);
+    }
+
+    if (
+      price !== null &&
+      size !== null &&
+      Number.isFinite(price) &&
+      Number.isFinite(size) &&
+      price >= 0 &&
+      size >= 0
+    ) {
+      levels.push({ price, size, updatedAt: receivedAt });
+    }
+  }
+
+  return levels;
+}
+
+function nativeNumber(value: unknown): number | null {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function nativeSide(value: unknown): MarketTick["side"] {
+  const side = nativeString(value)?.toUpperCase();
+
+  if (side === "B" || side === "BUY" || side === "BID") {
+    return "buy";
+  }
+
+  if (side === "A" || side === "ASK" || side === "SELL") {
+    return "sell";
+  }
+
+  return "unknown";
+}
+
+function createNativeHyperliquidBookTick(input: {
+  payload: HyperliquidRawIngestPayload;
+  coin: string;
+  instrumentCode: string;
+  exchangeCode: string;
+  sourceExchange: string;
+  sourceWeight: number;
+  sequence: number;
+  exchangeTimestamp: string;
+  receivedAt: string;
+  price: number;
+  bestBid?: number;
+  bestAsk?: number;
+  rawEventType: string;
+}): MarketTick {
+  const instrument = splitNativeInstrument(input.instrumentCode);
+
+  return {
+    schemaVersion: "universal-tick.v1",
+    source: "HYPERLIQUID",
+    source_exchange: input.sourceExchange,
+    transport: "websocket",
+    exchangeCode: input.exchangeCode,
+    instrumentCode: input.instrumentCode,
+    baseAsset: instrument.baseAsset,
+    quoteAsset: instrument.quoteAsset,
+    price: input.price,
+    size: 0,
+    side: "unknown",
+    sequence: input.sequence,
+    providerTimestamp: input.exchangeTimestamp,
+    exchangeTimestamp: input.exchangeTimestamp,
+    synchronizedExchangeTimestamp: input.exchangeTimestamp,
+    clockOffsetMs: 0,
+    receivedAt: input.receivedAt,
+    sourceWeight: input.sourceWeight,
+    bestBid: input.bestBid,
+    bestAsk: input.bestAsk,
+    raw: toJsonValue({
+      eventType: "book-snapshot",
+      nativeEventType: input.rawEventType,
+      commodity: "ORDER_BOOK",
+      coin: input.coin,
+      streamId: input.payload.streamId ?? null,
+      connectionId: input.payload.connectionId ?? null
+    }) as JsonRecord
+  };
+}
+
+function createNativeHyperliquidTradeTick(
+  item: Record<string, unknown>,
+  payload: HyperliquidRawIngestPayload
+): MarketTick {
+  const receivedAt = nativeIso(payload.receivedAt) ?? new Date().toISOString();
+  const coin = requireNativeString(item.coin ?? payload.instrumentCode, "coin");
+  const instrumentCode = hyperliquidNativeInstrumentCode(
+    coin,
+    payload.instrumentCode
+  );
+  const exchangeCode = (payload.exchangeCode ?? "hyperliquid").toLowerCase();
+  const sourceExchange = normalizeSourceExchange(payload.source_exchange ?? "hyperliquid");
+  const sourceWeight = normalizeSourceWeight(payload.sourceWeight);
+  const price = nativeNumber(item.px ?? item.price ?? item.p);
+  const size = nativeNumber(item.sz ?? item.size ?? item.s);
+
+  if (price === null || price < 0) {
+    throw new Error("INVALID_HYPERLIQUID_TRADE_PRICE");
+  }
+
+  if (size === null || size < 0) {
+    throw new Error("INVALID_HYPERLIQUID_TRADE_SIZE");
+  }
+
+  const exchangeTimestamp =
+    nativeExchangeTimestamp(item.time ?? item.timestamp ?? item.T) ?? receivedAt;
+  const sequence = nativeSequence(
+    item.tid ??
+      item.id ??
+      item.hash ??
+      `${coin}:${exchangeTimestamp}:${price}:${size}:${item.side ?? ""}`
+  );
+  const instrument = splitNativeInstrument(instrumentCode);
+
+  return {
+    schemaVersion: "universal-tick.v1",
+    source: "HYPERLIQUID",
+    source_exchange: sourceExchange,
+    transport: "websocket",
+    exchangeCode,
+    instrumentCode,
+    baseAsset: instrument.baseAsset,
+    quoteAsset: instrument.quoteAsset,
+    price,
+    size,
+    side: nativeSide(item.side),
+    sequence,
+    providerTimestamp: exchangeTimestamp,
+    exchangeTimestamp,
+    synchronizedExchangeTimestamp: exchangeTimestamp,
+    clockOffsetMs: 0,
+    receivedAt,
+    sourceWeight,
+    raw: toJsonValue({
+      eventType: "trade",
+      commodity: "TRADE",
+      coin,
+      tradeId: item.tid ?? item.id ?? null,
+      tradeHash: item.hash ?? null,
+      aggressorSide: item.side ?? null,
+      streamId: payload.streamId ?? null,
+      connectionId: payload.connectionId ?? null
+    }) as JsonRecord
+  };
+}
+
+function createNativeHyperliquidFundingTick(
+  data: Record<string, unknown>,
+  payload: HyperliquidRawIngestPayload
+): MarketTick {
+  const ctx = nativeObject(data.ctx) ?? data;
+  const receivedAt = nativeIso(payload.receivedAt) ?? new Date().toISOString();
+  const coin = requireNativeString(data.coin ?? payload.instrumentCode, "coin");
+  const instrumentCode = hyperliquidNativeInstrumentCode(
+    coin,
+    payload.instrumentCode
+  );
+  const exchangeCode = (payload.exchangeCode ?? "hyperliquid").toLowerCase();
+  const sourceExchange = normalizeSourceExchange(payload.source_exchange ?? "hyperliquid");
+  const sourceWeight = normalizeSourceWeight(payload.sourceWeight);
+  const markPrice = nativeNumber(ctx.markPx ?? ctx.markPrice);
+  const oraclePrice = nativeNumber(ctx.oraclePx ?? ctx.oraclePrice);
+  const midPrice = nativeNumber(ctx.midPx ?? ctx.midPrice);
+  const price = midPrice ?? markPrice ?? oraclePrice ?? 0;
+  const exchangeTimestamp =
+    nativeExchangeTimestamp(data.time ?? data.timestamp ?? ctx.time) ?? receivedAt;
+  const fundingRateHourly = nativeNumber(ctx.funding ?? ctx.fundingRate) ?? 0;
+  const openInterest = nativeNumber(ctx.openInterest);
+  const sequence = nativeSequence(`${coin}:${exchangeTimestamp}:funding`);
+  const instrument = splitNativeInstrument(instrumentCode);
+
+  return {
+    schemaVersion: "universal-tick.v1",
+    source: "HYPERLIQUID",
+    source_exchange: sourceExchange,
+    transport: "websocket",
+    exchangeCode,
+    instrumentCode,
+    baseAsset: instrument.baseAsset,
+    quoteAsset: instrument.quoteAsset,
+    price,
+    size: 0,
+    side: "unknown",
+    sequence,
+    providerTimestamp: exchangeTimestamp,
+    exchangeTimestamp,
+    synchronizedExchangeTimestamp: exchangeTimestamp,
+    clockOffsetMs: 0,
+    receivedAt,
+    sourceWeight,
+    fundingRateHourly,
+    markPrice: markPrice ?? undefined,
+    oraclePrice: oraclePrice ?? undefined,
+    openInterest: openInterest ?? undefined,
+    raw: toJsonValue({
+      eventType: "funding",
+      commodity: "FUNDING",
+      coin,
+      fundingRateHourly,
+      markPrice,
+      oraclePrice,
+      openInterest,
+      premium: ctx.premium ?? null,
+      dayNtlVlm: ctx.dayNtlVlm ?? null,
+      streamId: payload.streamId ?? null,
+      connectionId: payload.connectionId ?? null
+    }) as JsonRecord
+  };
+}
+
+function nativeHyperliquidLatencyMetrics(input: {
+  instrumentCode: string;
+  exchangeCode: string;
+  sourceExchange: string;
+  sourceWeight: number;
+  sequence: number;
+  exchangeTimestamp: string;
+  receivedAt: string;
+  brainTimestamp: string;
+  totalLatencyMs: number;
+  maxLatencyMs: number;
+  averageLatencyMs: number;
+  sampleCount: number;
+  location: EngineLocation;
+}): LatencyMetrics {
+  const ingestMs = parseTimestampMs(input.receivedAt, "ingest_timestamp");
+  const sourceMs = parseTimestampMs(input.exchangeTimestamp, "provider_timestamp");
+  const brainMs = parseTimestampMs(input.brainTimestamp, "brain_timestamp");
+  const totalLatencyMs = roundLatency(Math.max(0, input.totalLatencyMs));
+
+  return {
+    instrumentCode: input.instrumentCode,
+    exchangeCode: input.exchangeCode,
+    source: "HYPERLIQUID",
+    sourceExchange: input.sourceExchange,
+    sourceWeight: input.sourceWeight,
+    sequence: input.sequence,
+    providerTimestamp: input.exchangeTimestamp,
+    sourceTimestamp: input.exchangeTimestamp,
+    ingestTimestamp: input.receivedAt,
+    brainTimestamp: input.brainTimestamp,
+    clockOffsetMs: 0,
+    networkLatencyMs: roundLatency(Math.max(0, ingestMs - sourceMs)),
+    processingLatencyMs: roundLatency(Math.max(0, brainMs - ingestMs)),
+    totalLatencyMs,
+    maxLatencyMs: input.maxLatencyMs,
+    averageLatencyMs: input.averageLatencyMs,
+    sampleCount: input.sampleCount,
+    status: totalLatencyMs > input.maxLatencyMs ? "STALE" : "FRESH",
+    colo: input.location.colo,
+    placement: input.location.placement,
+    latencyRiskMultiplier: input.location.latencyRiskMultiplier,
+    positionSizeMultiplier: input.location.positionSizeMultiplier,
+    timeToBookMs: null
+  };
 }
 
 function hasRuntimeConfigUpdate(update: AdminConfigUpdate): boolean {

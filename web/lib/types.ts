@@ -330,9 +330,10 @@ export interface DraftTransportSettings {
 }
 
 export type VaultKeyName =
-  | "KAIKO_API_KEY"
   | "EXCHANGE_API_KEY"
   | "EXCHANGE_API_SECRET"
+  | "HL_AGENT_ADDRESS"
+  | "HL_AGENT_SECRET"
   | "EXCHANGE_HMAC_SECRET"
   | "EXCHANGE_ED25519_PRIVATE_KEY"
   | "DISCORD_WEBHOOK_URL"

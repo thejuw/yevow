@@ -6,23 +6,16 @@ export interface Env {
   RISK_VAULT: KVNamespace;
   AI?: Ai;
   EXECUTIONER?: Fetcher;
-  KAIKO_STREAM_URL?: string;
-  KAIKO_STREAM_HOSTNAME?: string;
-  KAIKO_STREAM_SUBSCRIPTION?: string;
-  KAIKO_SNAPSHOT_URL?: string;
-  KAIKO_SNAPSHOT_AUTH_HEADER?: string;
-  KAIKO_SNAPSHOT_EXCHANGE?: string;
-  KAIKO_SNAPSHOT_INSTRUMENT?: string;
-  KAIKO_AUTH_HEADER?: string;
-  KAIKO_HEARTBEAT_INTERVAL_MS?: string;
-  KAIKO_STALE_AFTER_MS?: string;
-  KAIKO_MAX_BACKOFF_MS?: string;
-  KAIKO_WATCHDOG_TIMEOUT_MS?: string;
   MARKET_STREAMS?: string;
   EXCHANGE_WEIGHTS?: string;
   CLOCK_SYNC_ALPHA?: string;
   CLOCK_SYNC_MAX_OFFSET_MS?: string;
   HL_WS_URL?: string;
+  HL_HEARTBEAT_INTERVAL_MS?: string;
+  HL_WATCHDOG_TIMEOUT_MS?: string;
+  HL_MAX_BACKOFF_MS?: string;
+  HL_STALE_AFTER_MS?: string;
+  HL_SEQUENCE_GAP_MS?: string;
   HL_INFO_URL?: string;
   HL_EXCHANGE_URL?: string;
   HL_ASSET?: string;
@@ -60,7 +53,6 @@ export interface Env {
   ANOMALY_VOLUME_WINDOW_MS?: string;
   ANOMALY_TOP_OF_BOOK_WINDOW_MS?: string;
   INGESTOR_CONTROL_TOKEN?: string;
-  KAIKO_API_KEY?: string;
   JWT_SECRET?: string;
   ADMIN_JWT_SECRET?: string;
   ADMIN_PASSWORD?: string;
@@ -146,7 +138,6 @@ export type NotificationPriority = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 export type TradeAlertMode = "ALL" | "FILLED_ONLY" | "NONE";
 export type MarketTransport = "grpc" | "websocket";
 export type MarketDataSource =
-  | "KAIKO"
   | "BINANCE"
   | "HYPERLIQUID"
   | "COINBASE"
@@ -169,7 +160,6 @@ export interface UniversalTick {
   side: "buy" | "sell" | "unknown";
   sequence: number;
   providerTimestamp?: ISO8601;
-  kaikoTimestamp?: ISO8601;
   exchangeTimestamp: ISO8601;
   synchronizedExchangeTimestamp: ISO8601;
   clockOffsetMs: number;
@@ -186,36 +176,6 @@ export interface UniversalTick {
 }
 
 export type MarketTick = UniversalTick;
-
-export interface KaikoTimestamp {
-  value?: string;
-}
-
-export interface KaikoMarketUpdate {
-  additionalProperties?: Record<string, unknown> | null;
-  amount?: number | string;
-  class?: string;
-  code?: string;
-  commodity?: "SMUC_TRADE" | "SMUC_TOP_OF_BOOK" | string;
-  exchange?: string;
-  id?: string;
-  price?: number | string;
-  sequenceId?: string;
-  side?: "BUY" | "SELL" | "UNKNOWN" | string;
-  tsCollection?: KaikoTimestamp | string;
-  tsEvent?: string;
-  tsExchange?: KaikoTimestamp | string;
-  updateType?: "BEST_BID" | "BEST_ASK" | string;
-}
-
-export interface KaikoStreamEnvelope {
-  result?: KaikoMarketUpdate;
-  data?: KaikoMarketUpdate | KaikoMarketUpdate[];
-  type?: string;
-  event?: string;
-  channel?: string;
-  [key: string]: unknown;
-}
 
 export interface IngestHealth {
   ok: boolean;
@@ -665,7 +625,7 @@ export interface LatencyMetrics {
   sourceExchange: string;
   sourceWeight: number;
   sequence: number;
-  kaikoTimestamp: ISO8601;
+  providerTimestamp: ISO8601;
   sourceTimestamp: ISO8601;
   ingestTimestamp: ISO8601;
   brainTimestamp: ISO8601;

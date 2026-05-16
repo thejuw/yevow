@@ -495,7 +495,7 @@ async function prepareHyperliquidOrderRequest(
   );
   const agentAddress = await exchangeSecret(env, "HL_AGENT_ADDRESS");
   const derivedAgentAddress =
-    SignatureEngine.hyperliquidAddressFromPrivateKey(agentSecret);
+    SignatureEngine.preloadHyperliquidAgentSecret(agentSecret).address;
 
   if (agentAddress && agentAddress.toLowerCase() !== derivedAgentAddress) {
     throw new Error("HL_AGENT_ADDRESS_SECRET_MISMATCH");
@@ -878,6 +878,7 @@ async function prepareHyperliquidCancelRequest(
     await exchangeSecret(env, "HL_AGENT_SECRET"),
     "HL_AGENT_SECRET"
   );
+  SignatureEngine.preloadHyperliquidAgentSecret(agentSecret);
   const cancelWires = [];
 
   for (const cancel of cancels) {

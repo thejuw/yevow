@@ -6,8 +6,6 @@ import type {
   ExchangeStreamHealth,
   IngestHealth,
   JsonRecord,
-  KaikoMarketUpdate,
-  KaikoStreamEnvelope,
   MarketDataSource,
   MarketTick,
   OrderBookSnapshot,
@@ -210,122 +208,6 @@ export class IngestCoordinator {
       this.activeStreams
     );
   }
-}
-
-export function normalizeKaikoData(
-  raw: unknown,
-  config: Partial<ResolvedExchangeStreamConfig> = {},
-  clockSync = new ClockSyncTracker()
-): MarketTick {
-  const update = unwrapKaikoMarketUpdate(raw);
-  const instrumentCode = requireString(update.code, "code").toLowerCase();
-  const exchangeCode = (
-    update.exchange ??
-    config.exchangeCode ??
-    config.source_exchange
-  )?.toLowerCase();
-
-  if (!exchangeCode) {
-    throw new Error("MISSING_EXCHANGE");
-  }
-
-  const { baseAsset, quoteAsset } = splitInstrumentCode(instrumentCode);
-  const price = requireFiniteNumber(update.price, "price");
-  const size = requireFiniteNumber(update.amount, "amount");
-  const receivedAt = new Date().toISOString();
-  const providerTimestamp = coerceTimestamp(update.tsEvent);
-  const rawExchangeTimestamp =
-    coerceTimestamp(update.tsExchange) ??
-    coerceTimestamp(update.tsCollection) ??
-    providerTimestamp ??
-    receivedAt;
-  const synchronized = clockSync.observe(rawExchangeTimestamp, receivedAt);
-  const updateType = normalizeString(update.updateType);
-  const side = normalizeSide(update.side, updateType);
-
-  return {
-    schemaVersion: "universal-tick.v1",
-    source: config.source ?? "KAIKO",
-    source_exchange: normalizeSourceExchange(
-      config.source_exchange ?? exchangeCode,
-      exchangeCode
-    ),
-    transport: "websocket",
-    exchangeCode,
-    instrumentCode,
-    baseAsset,
-    quoteAsset,
-    price,
-    size,
-    side,
-    sequence: coerceSequence(update.sequenceId, update.additionalProperties),
-    providerTimestamp: providerTimestamp ?? rawExchangeTimestamp,
-    kaikoTimestamp: providerTimestamp ?? rawExchangeTimestamp,
-    exchangeTimestamp: rawExchangeTimestamp,
-    synchronizedExchangeTimestamp: synchronized.timestamp,
-    clockOffsetMs: synchronized.offsetMs,
-    receivedAt,
-    sourceWeight: normalizeWeight(config.weight),
-    bestBid: updateType === "BEST_BID" ? price : undefined,
-    bestAsk: updateType === "BEST_ASK" ? price : undefined,
-    raw: sanitizeKaikoMetadata(update)
-  };
-}
-
-export function normalizeKaikoSnapshot(
-  raw: unknown,
-  env: Env,
-  receivedAt: string = new Date().toISOString(),
-  config?: Partial<ResolvedExchangeStreamConfig>
-): OrderBookSnapshot {
-  const snapshot = unwrapKaikoSnapshot(raw);
-  const subscription =
-    typeof config?.subscription === "string"
-      ? config.subscription
-      : config?.subscription
-        ? JSON.stringify(config.subscription)
-        : env.KAIKO_STREAM_SUBSCRIPTION;
-  const instrumentCode = (
-    readStringField(snapshot, ["code", "instrumentCode", "instrument_code", "instrument"]) ??
-    config?.instrumentCode ??
-    env.KAIKO_SNAPSHOT_INSTRUMENT ??
-    inferSubscriptionField(subscription, "code")
-  )?.toLowerCase();
-  const exchangeCode = (
-    readStringField(snapshot, ["exchange", "exchangeCode", "exchange_code"]) ??
-    config?.exchangeCode ??
-    config?.source_exchange ??
-    env.KAIKO_SNAPSHOT_EXCHANGE ??
-    inferSubscriptionField(subscription, "exchange")
-  )?.toLowerCase();
-
-  if (!instrumentCode) {
-    throw new Error("MISSING_SNAPSHOT_INSTRUMENT");
-  }
-
-  if (!exchangeCode) {
-    throw new Error("MISSING_SNAPSHOT_EXCHANGE");
-  }
-
-  const exchangeTimestamp =
-    coerceTimestamp(readField(snapshot, ["tsExchange", "ts_exchange", "timestamp"])) ??
-    coerceTimestamp(readField(snapshot, ["tsEvent", "ts_event", "tsCollection"])) ??
-    receivedAt;
-
-  return {
-    schemaVersion: "order-book.snapshot.v1",
-    source: config?.source ?? "KAIKO",
-    source_exchange: normalizeSourceExchange(config?.source_exchange ?? exchangeCode, exchangeCode),
-    exchangeCode,
-    instrumentCode,
-    marketKey: buildMarketKey(config?.source_exchange ?? exchangeCode, instrumentCode),
-    sourceWeight: normalizeWeight(config?.weight),
-    sequence: coerceSnapshotSequence(snapshot),
-    exchangeTimestamp,
-    receivedAt,
-    bids: normalizeSnapshotLevels(readSnapshotLevels(snapshot, "bid"), receivedAt),
-    asks: normalizeSnapshotLevels(readSnapshotLevels(snapshot, "ask"), receivedAt)
-  };
 }
 
 function ensureStreams(
@@ -611,7 +493,7 @@ class ExchangeStreamController {
       } catch (error) {
         this.lastError = error instanceof Error ? error.message : "UNKNOWN_ERROR";
         this.startBlackout();
-        this.logger.error("STREAM_ERROR", "Kaiko stream connection failed", {
+        this.logger.error("STREAM_ERROR", "Market stream connection failed", {
           streamId: this.config.id,
           source: this.config.source,
           source_exchange: this.config.source_exchange,
@@ -640,7 +522,7 @@ class ExchangeStreamController {
 
       this.logger.warn(
         "STREAM_RECONNECT_ATTEMPT",
-        "Scheduling Kaiko stream reconnect",
+        "Scheduling market stream reconnect",
         {
           streamId: this.config.id,
           source: this.config.source,
@@ -950,6 +832,11 @@ class ExchangeStreamController {
       return;
     }
 
+    if (this.config.source === "HYPERLIQUID") {
+      await this.forwardHyperliquidRaw(raw, this.lastMessageAt ?? new Date().toISOString());
+      return;
+    }
+
     const events = extractMarketEvents(raw, this.config.source);
 
     const batch: MarketTick[] = [];
@@ -997,7 +884,7 @@ class ExchangeStreamController {
   }
 
   private shouldDropStaleTick(tick: MarketTick): boolean {
-    const maxAgeMs = readNumber(this.env.KAIKO_STALE_AFTER_MS, DEFAULT_STALE_TICK_DROP_MS);
+    const maxAgeMs = readNumber(this.env.HL_STALE_AFTER_MS, DEFAULT_STALE_TICK_DROP_MS);
     const exchangeMs = Date.parse(tick.synchronizedExchangeTimestamp ?? tick.exchangeTimestamp);
     const receivedMs = Date.parse(tick.receivedAt);
 
@@ -1064,10 +951,6 @@ class ExchangeStreamController {
   }
 
   private sequenceTick(tick: MarketTick): MarketTick {
-    if (tick.source === "KAIKO") {
-      return tick;
-    }
-
     this.syntheticSequence += 1;
 
     return {
@@ -1215,15 +1098,13 @@ class ExchangeStreamController {
 
   private async fetchSnapshot(receivedAt: string): Promise<OrderBookSnapshot> {
     const snapshotUrl = requireString(this.config.snapshotUrl, "SNAPSHOT_URL");
-    const authHeader =
-      this.env.KAIKO_SNAPSHOT_AUTH_HEADER ?? this.config.authHeader ?? DEFAULT_AUTH_HEADER;
     const apiKey = this.config.apiKeyEnv
       ? readEnvSecret(this.env, this.config.apiKeyEnv)
       : null;
     const headers: Record<string, string> = { accept: "application/json" };
 
     if (apiKey) {
-      headers[authHeader] = apiKey;
+      headers[this.config.authHeader] = apiKey;
     }
 
     const response = await fetch(snapshotUrl, { headers });
@@ -1232,14 +1113,13 @@ class ExchangeStreamController {
       throw new Error(`${this.config.source}_SNAPSHOT_FETCH_FAILED_${response.status}`);
     }
 
-    const snapshot = normalizeKaikoSnapshot(
+    const snapshot = normalizeRestOrderBookSnapshot(
       await response.json<unknown>(),
-      this.env,
       receivedAt,
       this.config
     );
 
-    return this.config.source === "KAIKO" || this.config.source === "BINANCE"
+    return this.config.source === "BINANCE"
       ? snapshot
       : {
           ...snapshot,
@@ -1297,6 +1177,50 @@ class ExchangeStreamController {
     }
 
     this.ticksForwarded += payload?.processedCount ?? ticks.length;
+    this.lastForwardAt = new Date().toISOString();
+  }
+
+  private async forwardHyperliquidRaw(raw: unknown, receivedAt: string): Promise<void> {
+    if (isHyperliquidControlMessage(raw)) {
+      return;
+    }
+
+    const id = this.env.TRADING_ENGINE.idFromName(SINGLETON_ENGINE_NAME);
+    const engine = this.env.TRADING_ENGINE.get(id);
+    const response = await engine.fetch(
+      new Request("https://trading-engine.internal/hyperliquid/raw", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-source": "sovereign-sigma-ingest"
+        },
+        body: JSON.stringify({
+          streamId: this.config.id,
+          source: "HYPERLIQUID",
+          source_exchange: this.config.source_exchange,
+          exchangeCode: this.config.exchangeCode,
+          instrumentCode: this.config.instrumentCode,
+          sourceWeight: this.config.weight,
+          connectionId: this.connectionId,
+          receivedAt,
+          raw
+        })
+      })
+    );
+    const payload = await readResponseJson<EngineTickResponse>(response);
+
+    if (payload?.status === "DESYNC" || response.status === 409) {
+      await this.recoverFromEngineDesync(payload?.reason ?? "DESYNC");
+      this.ticksForwarded += payload?.processedCount ?? 0;
+      this.lastForwardAt = new Date().toISOString();
+      return;
+    }
+
+    if (!response.ok) {
+      throw new Error(`ENGINE_RAW_FORWARD_FAILED_${response.status}`);
+    }
+
+    this.ticksForwarded += payload?.processedCount ?? 1;
     this.lastForwardAt = new Date().toISOString();
   }
 
@@ -1473,8 +1397,6 @@ function normalizeMarketData(
   clockSync: ClockSyncTracker
 ): MarketTick[] {
   switch (config.source) {
-    case "KAIKO":
-      return [normalizeKaikoData(raw, config, clockSync)];
     case "BINANCE":
       return normalizeBinanceData(raw, config, clockSync);
     case "HYPERLIQUID":
@@ -1484,6 +1406,53 @@ function normalizeMarketData(
     default:
       return [normalizeGenericExchangeData(raw, config, clockSync)];
   }
+}
+
+function normalizeRestOrderBookSnapshot(
+  raw: unknown,
+  receivedAt: string,
+  config: ResolvedExchangeStreamConfig
+): OrderBookSnapshot {
+  if (!isRecord(raw)) {
+    throw new Error("INVALID_REST_SNAPSHOT");
+  }
+
+  const instrumentCode = (
+    readStringField(raw, ["instrumentCode", "instrument_code", "instrument", "symbol"]) ??
+    config.instrumentCode
+  )?.toLowerCase();
+  const exchangeCode = (
+    readStringField(raw, ["exchange", "exchangeCode", "exchange_code"]) ??
+    config.exchangeCode ??
+    config.source_exchange
+  )?.toLowerCase();
+
+  if (!instrumentCode) {
+    throw new Error("MISSING_SNAPSHOT_INSTRUMENT");
+  }
+
+  if (!exchangeCode) {
+    throw new Error("MISSING_SNAPSHOT_EXCHANGE");
+  }
+
+  const exchangeTimestamp =
+    coerceTimestamp(readField(raw, ["timestamp", "time", "ts", "tsExchange"])) ??
+    receivedAt;
+
+  return {
+    schemaVersion: "order-book.snapshot.v1",
+    source: config.source,
+    source_exchange: normalizeSourceExchange(config.source_exchange, exchangeCode),
+    exchangeCode,
+    instrumentCode,
+    marketKey: buildMarketKey(config.source_exchange, instrumentCode),
+    sourceWeight: normalizeWeight(config.weight),
+    sequence: coerceSnapshotSequence(raw),
+    exchangeTimestamp,
+    receivedAt,
+    bids: normalizeSnapshotLevels(readSnapshotLevels(raw, "bid"), receivedAt),
+    asks: normalizeSnapshotLevels(readSnapshotLevels(raw, "ask"), receivedAt)
+  };
 }
 
 function normalizeHyperliquidData(
@@ -1918,34 +1887,6 @@ function normalizeGenericExchangeData(
   });
 }
 
-function unwrapKaikoMarketUpdate(raw: unknown): KaikoMarketUpdate {
-  if (!isRecord(raw)) {
-    throw new Error("INVALID_KAIKO_PAYLOAD");
-  }
-
-  if (isRecord(raw.result)) {
-    return raw.result as KaikoMarketUpdate;
-  }
-
-  return raw as KaikoMarketUpdate;
-}
-
-function extractKaikoEvents(envelope: KaikoStreamEnvelope): KaikoMarketUpdate[] {
-  if (Array.isArray(envelope.data)) {
-    return envelope.data;
-  }
-
-  if (envelope.data) {
-    return [envelope.data];
-  }
-
-  if (envelope.result) {
-    return [envelope.result];
-  }
-
-  return [envelope as KaikoMarketUpdate];
-}
-
 function extractMarketEvents(raw: unknown, source: MarketDataSource): unknown[] {
   if (Array.isArray(raw)) {
     return raw;
@@ -1953,10 +1894,6 @@ function extractMarketEvents(raw: unknown, source: MarketDataSource): unknown[] 
 
   if (!isRecord(raw)) {
     return [raw];
-  }
-
-  if (source === "KAIKO") {
-    return extractKaikoEvents(raw as KaikoStreamEnvelope);
   }
 
   if (source === "HYPERLIQUID") {
@@ -1984,26 +1921,6 @@ function extractMarketEvents(raw: unknown, source: MarketDataSource): unknown[] 
   }
 
   return [raw];
-}
-
-function unwrapKaikoSnapshot(raw: unknown): Record<string, unknown> {
-  if (!isRecord(raw)) {
-    throw new Error("INVALID_KAIKO_SNAPSHOT");
-  }
-
-  for (const key of ["result", "data", "snapshot", "book"]) {
-    const value = raw[key];
-
-    if (isRecord(value)) {
-      return value;
-    }
-
-    if (Array.isArray(value) && isRecord(value[0])) {
-      return value[0];
-    }
-  }
-
-  return raw;
 }
 
 function readSnapshotLevels(
@@ -2158,17 +2075,6 @@ function inferSubscriptionField(
   return typeof value === "string" && value.trim() !== "" ? value : null;
 }
 
-function sanitizeKaikoMetadata(update: KaikoMarketUpdate): JsonRecord {
-  return {
-    commodity: stringifyOrNull(update.commodity),
-    kaikoTradeId: stringifyOrNull(update.id),
-    sequenceId: stringifyOrNull(update.sequenceId),
-    updateType: stringifyOrNull(update.updateType),
-    tsCollection: stringifyOrNull(coerceTimestamp(update.tsCollection)),
-    tsEvent: stringifyOrNull(coerceTimestamp(update.tsEvent))
-  };
-}
-
 function normalizeSide(
   side: string | undefined,
   updateType: string | null
@@ -2257,6 +2163,15 @@ function isPong(raw: unknown): boolean {
   return eventType === "PONG" || eventType === "HEARTBEAT" || channel === "PONG";
 }
 
+function isHyperliquidControlMessage(raw: unknown): boolean {
+  if (!isRecord(raw)) {
+    return false;
+  }
+
+  const channel = normalizeString(raw.channel);
+  return channel === "SUBSCRIPTIONRESPONSE" || channel === "PONG";
+}
+
 function extractHeartbeatLatencyMs(raw: unknown): number {
   if (!isRecord(raw)) {
     return 0;
@@ -2279,35 +2194,28 @@ function loadStreamConfigs(env: Env): ResolvedExchangeStreamConfig[] {
   const rawConfigs =
     configured && Array.isArray(configured) && configured.length > 0
       ? configured
-      : defaultKaikoStreamConfig(env);
+      : defaultHyperliquidStreamConfig(env);
 
   return rawConfigs
     .filter((config) => config.enabled !== false)
     .map((config, index) => resolveStreamConfig(env, config, weights, index));
 }
 
-function defaultKaikoStreamConfig(env: Env): ExchangeStreamConfig[] {
-  if (!env.KAIKO_STREAM_URL) {
-    return [];
-  }
-
+function defaultHyperliquidStreamConfig(env: Env): ExchangeStreamConfig[] {
+  const coin = env.HL_ASSET ?? "BTC";
   return [
     {
-      id: "kaiko-primary",
-      source: "KAIKO",
-      source_exchange:
-        env.KAIKO_SNAPSHOT_EXCHANGE ??
-        inferSubscriptionField(env.KAIKO_STREAM_SUBSCRIPTION, "exchange") ??
-        "kaiko",
-      streamUrl: env.KAIKO_STREAM_URL,
-      snapshotUrl: env.KAIKO_SNAPSHOT_URL,
-      subscription: env.KAIKO_STREAM_SUBSCRIPTION,
-      authHeader: env.KAIKO_AUTH_HEADER ?? DEFAULT_AUTH_HEADER,
-      apiKeyEnv: "KAIKO_API_KEY",
-      instrumentCode:
-        env.KAIKO_SNAPSHOT_INSTRUMENT ??
-        inferSubscriptionField(env.KAIKO_STREAM_SUBSCRIPTION, "code") ??
-        undefined
+      id: `hyperliquid-${coin.toLowerCase()}-perp`,
+      source: "HYPERLIQUID",
+      source_exchange: "hyperliquid",
+      streamUrl: env.HL_WS_URL ?? "wss://api.hyperliquid.xyz/ws",
+      subscriptions: [
+        { method: "subscribe", subscription: { type: "l2Book", coin } },
+        { method: "subscribe", subscription: { type: "trades", coin } },
+        { method: "subscribe", subscription: { type: "activeAssetCtx", coin } }
+      ],
+      instrumentCode: `${coin.toLowerCase()}-usd`,
+      exchangeCode: "hyperliquid"
     }
   ];
 }
@@ -2342,15 +2250,12 @@ function resolveStreamConfig(
     weight,
     instrumentCode: config.instrumentCode?.toLowerCase(),
     exchangeCode: (config.exchangeCode ?? sourceExchange).toLowerCase(),
-    heartbeatIntervalMs: readNumber(
-      env.KAIKO_HEARTBEAT_INTERVAL_MS,
-      DEFAULT_HEARTBEAT_INTERVAL_MS
-    ),
+    heartbeatIntervalMs: readNumber(env.HL_HEARTBEAT_INTERVAL_MS, DEFAULT_HEARTBEAT_INTERVAL_MS),
     watchdogTimeoutMs: readNumber(
-      env.KAIKO_WATCHDOG_TIMEOUT_MS ?? env.KAIKO_STALE_AFTER_MS,
+      env.HL_WATCHDOG_TIMEOUT_MS ?? env.HL_STALE_AFTER_MS,
       DEFAULT_WATCHDOG_TIMEOUT_MS
     ),
-    maxBackoffMs: readNumber(env.KAIKO_MAX_BACKOFF_MS, DEFAULT_MAX_BACKOFF_MS)
+    maxBackoffMs: readNumber(env.HL_MAX_BACKOFF_MS, DEFAULT_MAX_BACKOFF_MS)
   };
 }
 
@@ -2544,7 +2449,6 @@ function normalizeSource(value: unknown): MarketDataSource {
   const source = normalizeString(value);
 
   switch (source) {
-    case "KAIKO":
     case "BINANCE":
     case "HYPERLIQUID":
     case "COINBASE":

@@ -262,7 +262,8 @@ export default {
       request.method === "POST" &&
       (url.pathname === "/tick" ||
         url.pathname === "/market/tick" ||
-        url.pathname === "/ingest/kaiko")
+        url.pathname === "/hyperliquid/tick" ||
+        url.pathname === "/hyperliquid/raw")
     ) {
       return routeToEngine(request, env, topology);
     }
@@ -301,7 +302,7 @@ export default {
         "GET /dom/heatmap (READ token)",
         "GET /stream (READ token, WebSocket)",
         "POST /tick",
-        "POST /ingest/kaiko",
+        "POST /hyperliquid/raw",
         "POST /market/tick",
         "GET /market/ws",
         "POST /agent/signal",
@@ -1727,9 +1728,10 @@ function calculateAttributionTimeline(trades: AttributionTrade[]): JsonRecord[] 
 
 async function vaultStatus(env: Env): Promise<JsonRecord> {
   const keys = [
-    "KAIKO_API_KEY",
     "EXCHANGE_API_KEY",
     "EXCHANGE_API_SECRET",
+    "HL_AGENT_ADDRESS",
+    "HL_AGENT_SECRET",
     "JWT_SECRET",
     "ADMIN_PASSWORD",
     "DISCORD_WEBHOOK_URL",
@@ -1768,15 +1770,13 @@ function backendSettings(env: Env): JsonRecord {
       aiBound: Boolean(env.AI)
     },
     ingest: {
-      kaikoStreamHostname: env.KAIKO_STREAM_HOSTNAME ?? null,
-      kaikoStreamUrlConfigured: Boolean(env.KAIKO_STREAM_URL),
-      kaikoSnapshotUrlConfigured: Boolean(env.KAIKO_SNAPSHOT_URL),
-      kaikoAuthHeader: env.KAIKO_AUTH_HEADER ?? null,
-      kaikoSnapshotAuthHeader: env.KAIKO_SNAPSHOT_AUTH_HEADER ?? null,
-      heartbeatIntervalMs: stringNumber(env.KAIKO_HEARTBEAT_INTERVAL_MS),
-      staleAfterMs: stringNumber(env.KAIKO_STALE_AFTER_MS),
-      watchdogTimeoutMs: stringNumber(env.KAIKO_WATCHDOG_TIMEOUT_MS),
-      maxBackoffMs: stringNumber(env.KAIKO_MAX_BACKOFF_MS),
+      nativeSource: "HYPERLIQUID",
+      hyperliquidWsUrl: env.HL_WS_URL ?? "wss://api.hyperliquid.xyz/ws",
+      heartbeatIntervalMs: stringNumber(env.HL_HEARTBEAT_INTERVAL_MS),
+      staleAfterMs: stringNumber(env.HL_STALE_AFTER_MS),
+      watchdogTimeoutMs: stringNumber(env.HL_WATCHDOG_TIMEOUT_MS),
+      maxBackoffMs: stringNumber(env.HL_MAX_BACKOFF_MS),
+      sequenceGapMs: stringNumber(env.HL_SEQUENCE_GAP_MS),
       marketStreams: parseJsonValue(env.MARKET_STREAMS)
     },
     execution: {
@@ -1828,9 +1828,10 @@ function backendSettings(env: Env): JsonRecord {
 function normalizeVaultKey(value: string | undefined): string | null {
   const normalized = value?.trim().toUpperCase();
   const allowed = new Set([
-    "KAIKO_API_KEY",
     "EXCHANGE_API_KEY",
     "EXCHANGE_API_SECRET",
+    "HL_AGENT_ADDRESS",
+    "HL_AGENT_SECRET",
     "EXCHANGE_HMAC_SECRET",
     "EXCHANGE_ED25519_PRIVATE_KEY",
     "DISCORD_WEBHOOK_URL",
@@ -1935,7 +1936,7 @@ function adminUiResponse(): Response {
     </section>
     <section>
       <h2>Credential Vault</h2>
-      <label>Key <select id="vaultKey"><option>KAIKO_API_KEY</option><option>EXCHANGE_API_KEY</option><option>EXCHANGE_API_SECRET</option></select></label>
+      <label>Key <select id="vaultKey"><option>HL_AGENT_ADDRESS</option><option>HL_AGENT_SECRET</option><option>EXCHANGE_API_KEY</option><option>EXCHANGE_API_SECRET</option></select></label>
       <label>Secret <input id="vaultSecret" type="password" /></label>
       <button onclick="rotateVault()">Rotate</button>
       <button onclick="testVault()">Test Connection</button>
