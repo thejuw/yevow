@@ -789,14 +789,9 @@ output {
 }
 
 .system-panel,
-.alert-panel,
 .efficacy-panel {
   order: 6;
   grid-column: span 4;
-}
-
-.alert-panel {
-  order: 7;
 }
 
 .efficacy-panel {
@@ -1060,7 +1055,6 @@ output {
 }
 
 .efficacy-grid,
-.alert-grid,
 .alert-attempts,
 .trade-table,
 .terminal-feed,
@@ -1366,7 +1360,6 @@ output {
   .matrix-panel,
   .moltworker-panel,
   .system-panel,
-  .alert-panel,
   .efficacy-panel,
   .trade-panel,
   .cctv-panel,

@@ -40,6 +40,7 @@ import {
 import type {
   AdminSettingsResponse,
   AlertPriority,
+  AlertTestResponse,
   GlobalRiskConfig,
   NotificationSettings,
   NotificationSettingsUpdate,
@@ -77,6 +78,7 @@ export default function SettingsPage() {
   const [settings, setSettings] = useState<AdminSettingsResponse | null>(null);
   const [riskDraft, setRiskDraft] = useState<Partial<GlobalRiskConfig>>({});
   const [notificationDraft, setNotificationDraft] = useState<NotificationSettingsUpdate>({});
+  const [lastAlertTest, setLastAlertTest] = useState<AlertTestResponse | null>(null);
   const [vaultKey, setVaultKey] = useState<VaultKeyName>("TELEGRAM_BOT_TOKEN");
   const [vaultSecret, setVaultSecret] = useState("");
   const [rotationReason, setRotationReason] = useState("settings-page-rotation");
@@ -156,6 +158,7 @@ export default function SettingsPage() {
     setSettings(null);
     setRiskDraft({});
     setNotificationDraft({});
+    setLastAlertTest(null);
     setCommandStatus("Settings console locked.");
   }
 
@@ -263,6 +266,7 @@ export default function SettingsPage() {
 
     try {
       const response = await sendTestAlert(apiBase, token, priority);
+      setLastAlertTest(response);
       setSettings((current) =>
         current
           ? {
@@ -533,6 +537,34 @@ export default function SettingsPage() {
               </div>
             ))}
           </div>
+          <div className="alert-summary">
+            <Metric
+              label="Configured"
+              value={settings?.alerting.configured ? "YES" : "NO"}
+            />
+            <Metric
+              label="Debounce"
+              value={`${compact.format(settings?.alerting.debounceMs ?? 0)}ms`}
+            />
+            <Metric
+              label="Last Delivery"
+              value={
+                lastAlertTest
+                  ? `${lastAlertTest.delivery.delivered}/${lastAlertTest.delivery.attempted}`
+                  : "n/a"
+              }
+            />
+          </div>
+          {lastAlertTest ? (
+            <div className="alert-attempts">
+              {lastAlertTest.delivery.attempts.map((attempt) => (
+                <div className={attempt.ok ? "ok" : "fail"} key={attempt.channel}>
+                  <code>{attempt.channel}</code>
+                  <span>{attempt.ok ? `HTTP ${attempt.status}` : attempt.error ?? "FAILED"}</span>
+                </div>
+              ))}
+            </div>
+          ) : null}
           <button className="primary-action full-action" onClick={() => void runAlertTest("HIGH")}>
             <Send size={16} />
             Send Test Alert

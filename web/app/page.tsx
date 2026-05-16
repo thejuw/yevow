@@ -2,7 +2,6 @@
 
 import {
   AlertTriangle,
-  BellRing,
   Brain,
   ChevronRight,
   CircleDot,
@@ -26,7 +25,6 @@ import {
   injectMoltworkerIntent,
   login,
   readAttribution,
-  readAlerts,
   readConfig,
   readDiagnostics,
   readSettings,
@@ -34,7 +32,6 @@ import {
   readTradeHistory,
   readTrace,
   resetLatencyBaseline,
-  sendTestAlert,
   toWebSocketUrl,
   updateConfig,
   updateTradingMode
@@ -49,9 +46,6 @@ import {
 } from "@/lib/parameters";
 import type {
   AttributionResponse,
-  AlertingResponse,
-  AlertPriority,
-  AlertTestResponse,
   AdminSettingsResponse,
   DashboardPulse,
   DiagnosticCheck,
@@ -134,9 +128,7 @@ export default function CommandCenterPage() {
   const [trace, setTrace] = useState<TraceResponse | null>(null);
   const [attribution, setAttribution] = useState<AttributionResponse | null>(null);
   const [tradeHistory, setTradeHistory] = useState<TradeHistoryResponse | null>(null);
-  const [alerts, setAlerts] = useState<AlertingResponse | null>(null);
   const [settings, setSettings] = useState<AdminSettingsResponse | null>(null);
-  const [lastAlertTest, setLastAlertTest] = useState<AlertTestResponse | null>(null);
   const [pulse, setPulse] = useState<DashboardPulse | null>(null);
   const [logicFeed, setLogicFeed] = useState<JsonRecord[]>([]);
   const [pendingFields, setPendingFields] = useState<string[]>([]);
@@ -145,7 +137,6 @@ export default function CommandCenterPage() {
   const [isApplyingMatrix, setIsApplyingMatrix] = useState(false);
   const [isClearingOverride, setIsClearingOverride] = useState(false);
   const [isResettingLatency, setIsResettingLatency] = useState(false);
-  const [isTestingAlert, setIsTestingAlert] = useState(false);
   const [isSwitchingMode, setIsSwitchingMode] = useState(false);
   const [isRunningDiagnostics, setIsRunningDiagnostics] = useState(false);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsResponse | null>(null);
@@ -170,13 +161,12 @@ export default function CommandCenterPage() {
       return;
     }
 
-    const [stateResult, configResult, traceResult, attributionResult, historyResult, alertsResult, settingsResult] = await Promise.all([
+    const [stateResult, configResult, traceResult, attributionResult, historyResult, settingsResult] = await Promise.all([
       readState(apiBase, token),
       readConfig(apiBase, token),
       readTrace(apiBase, token),
       readAttribution(apiBase, token),
       readTradeHistory(apiBase, token),
-      readAlerts(apiBase, token),
       readSettings(apiBase, token)
     ]);
 
@@ -189,7 +179,6 @@ export default function CommandCenterPage() {
     setTrace(traceResult);
     setAttribution(attributionResult);
     setTradeHistory(historyResult);
-    setAlerts(alertsResult);
     setSettings(settingsResult);
   }, [apiBase, token]);
 
@@ -384,9 +373,7 @@ export default function CommandCenterPage() {
     setTrace(null);
     setAttribution(null);
     setTradeHistory(null);
-    setAlerts(null);
     setSettings(null);
-    setLastAlertTest(null);
     setDiagnostics(null);
     setPulse(null);
     setLogicFeed([]);
@@ -551,28 +538,6 @@ export default function CommandCenterPage() {
       setCommandStatus("Latency reset failed.");
     } finally {
       setIsResettingLatency(false);
-    }
-  }
-
-  async function submitAlertTest(priority: AlertPriority = "HIGH") {
-    setError(null);
-    setCommandStatus("Testing alert route...");
-    setIsTestingAlert(true);
-
-    try {
-      const response = await sendTestAlert(apiBase, token, priority);
-      setLastAlertTest(response);
-      setAlerts({ ok: true, alerting: response.alerting });
-      setCommandStatus(
-        response.delivery.delivered > 0
-          ? `Alert delivered to ${response.delivery.delivered}/${response.delivery.attempted} channel(s).`
-          : "Alert route test found no configured delivery channel."
-      );
-    } catch (caught: unknown) {
-      setError(errorMessage(caught));
-      setCommandStatus("Alert test failed.");
-    } finally {
-      setIsTestingAlert(false);
     }
   }
 
@@ -1152,52 +1117,6 @@ export default function CommandCenterPage() {
           >
             {isResettingLatency ? "Resetting" : "Reset Latency Baseline"}
           </button>
-        </section>
-
-        <section className="alert-panel glass">
-          <div className="panel-title">
-            <BellRing size={17} />
-            <span>Alerting Channel</span>
-            <button disabled={!token || isTestingAlert} onClick={() => void submitAlertTest()}>
-              {isTestingAlert ? "Testing" : "Test Alert"}
-            </button>
-          </div>
-          <div className="alert-grid">
-            {(alerts?.alerting.channels ?? []).map((channel) => (
-              <div className={`channel-row ${channel.configured ? "configured" : "missing"}`} key={channel.channel}>
-                <strong>{channel.channel.replace("_", " ")}</strong>
-                <span>{channel.configured ? "ARMED" : "MISSING"}</span>
-              </div>
-            ))}
-          </div>
-          <div className="alert-summary">
-            <Metric
-              label="Configured"
-              value={alerts?.alerting.configured ? "YES" : "NO"}
-            />
-            <Metric
-              label="Debounce"
-              value={`${compact.format(alerts?.alerting.debounceMs ?? 0)}ms`}
-            />
-            <Metric
-              label="Last Delivery"
-              value={
-                lastAlertTest
-                  ? `${lastAlertTest.delivery.delivered}/${lastAlertTest.delivery.attempted}`
-                  : "n/a"
-              }
-            />
-          </div>
-          {lastAlertTest ? (
-            <div className="alert-attempts">
-              {lastAlertTest.delivery.attempts.map((attempt) => (
-                <div className={attempt.ok ? "ok" : "fail"} key={attempt.channel}>
-                  <code>{attempt.channel}</code>
-                  <span>{attempt.ok ? `HTTP ${attempt.status}` : attempt.error ?? "FAILED"}</span>
-                </div>
-              ))}
-            </div>
-          ) : null}
         </section>
 
         <section className="efficacy-panel glass">
