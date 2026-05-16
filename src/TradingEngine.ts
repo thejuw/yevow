@@ -154,6 +154,7 @@ const DEFAULT_PREDATORY_ORDER_OFFSET_BPS = 2;
 const DEFAULT_WHALE_PRINT_Z_THRESHOLD = 5;
 const DEFAULT_QUOTE_HIBERNATE_MS = 3_000;
 const DEFAULT_PAPER_BANKROLL_USD = 5_000;
+const DEFAULT_PAPER_MAX_GHOST_FILLS_PER_MINUTE = 90;
 const DEFAULT_VAR_CONFIDENCE_Z = 2.326;
 const TARGET_ASSET_MATRIX = [
   { coin: "BTC", instrumentCode: "btc-usd" },
@@ -428,6 +429,10 @@ export class TradingEngine {
   private eventTelemetryAggregates = new Map<string, EventTelemetryAggregate>();
   private telemetryFlushScheduled = false;
   private busSequence = 0;
+  private paperExecutionWindowStartedAtMs = Date.now();
+  private paperExecutionWindowCount = 0;
+  private paperExecutionWindowDropped = 0;
+  private paperExecutionThrottleLoggedAtMs = 0;
   private latencyHistory: LatencyMetrics[] = [];
   private processingLatencySamples: number[] = [];
   private domWallHistory: LiquidityWall[] = [];
@@ -4581,6 +4586,10 @@ export class TradingEngine {
       return;
     }
 
+    if (!this.reservePaperExecutionBudget(intent)) {
+      return;
+    }
+
     if (initialDelayMs > 0) {
       await wait(initialDelayMs);
     }
@@ -4612,6 +4621,53 @@ export class TradingEngine {
         error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
       });
     }
+  }
+
+  private reservePaperExecutionBudget(intent: TradeIntent): boolean {
+    if (!isShadowMode(this.env)) {
+      return true;
+    }
+
+    const now = Date.now();
+    const maxPerMinute = readPositiveInteger(
+      this.env.PAPER_MAX_GHOST_FILLS_PER_MINUTE,
+      DEFAULT_PAPER_MAX_GHOST_FILLS_PER_MINUTE,
+      1,
+      10_000
+    );
+
+    if (now - this.paperExecutionWindowStartedAtMs >= 60_000) {
+      this.paperExecutionWindowStartedAtMs = now;
+      this.paperExecutionWindowCount = 0;
+      this.paperExecutionWindowDropped = 0;
+    }
+
+    if (this.paperExecutionWindowCount < maxPerMinute) {
+      this.paperExecutionWindowCount += 1;
+      return true;
+    }
+
+    this.paperExecutionWindowDropped += 1;
+
+    if (now - this.paperExecutionThrottleLoggedAtMs >= 10_000) {
+      this.paperExecutionThrottleLoggedAtMs = now;
+      this.logger.warn("SHADOW_PAPER_CADENCE_THROTTLED", "Paper execution cadence capped", {
+        intentId: intent.intentId,
+        instrumentCode: intent.instrumentCode,
+        maxGhostFillsPerMinute: maxPerMinute,
+        windowDispatched: this.paperExecutionWindowCount,
+        windowDropped: this.paperExecutionWindowDropped,
+        windowStartedAt: new Date(this.paperExecutionWindowStartedAtMs).toISOString()
+      });
+      this.publish("SHADOW_PAPER_CADENCE_THROTTLED", {
+        instrumentCode: intent.instrumentCode,
+        maxGhostFillsPerMinute: maxPerMinute,
+        windowDispatched: this.paperExecutionWindowCount,
+        windowDropped: this.paperExecutionWindowDropped
+      });
+    }
+
+    return false;
   }
 
   private async enqueueExecutionIntent(

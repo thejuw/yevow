@@ -143,6 +143,7 @@ export interface Env {
   MOLTWORKER_HEALTH_URL?: string;
   SHADOW_MODE?: string;
   PAPER_BANKROLL_USD?: string;
+  PAPER_MAX_GHOST_FILLS_PER_MINUTE?: string;
 }
 
 export type ISO8601 = string;
