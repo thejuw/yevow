@@ -109,6 +109,18 @@ const compact = new Intl.NumberFormat("en-US", {
   maximumFractionDigits: 4
 });
 
+const RETIRED_DRIVER_NAMES = new Set(["HEDGE"]);
+const RETIRED_STATE_TOKENS = [
+  ".hedge",
+  ".agenthealth.hedge",
+  ".spreads",
+  "spreadmultiplier",
+  "reservationshiftbps",
+  "am_vpin_contested_spread_multiplier",
+  "am_vpin_toxic_spread_multiplier",
+  "hl_hedge_subaccount"
+];
+
 export default function CommandCenterPage() {
   const [apiBase, setApiBase] = useState(DEFAULT_API_BASE);
   const [password, setPassword] = useState("");
@@ -290,11 +302,17 @@ export default function CommandCenterPage() {
     };
   }, [token, refresh, connectStream]);
 
+  const visibleAttributionDrivers = useMemo(
+    () => (attribution?.byDriver ?? []).filter(isActiveAttributionDriver),
+    [attribution]
+  );
   const realizedAlpha = useMemo(
     () =>
-      attribution?.byDriver.reduce((sum, driver) => sum + Number(driver.cumulativePnl ?? 0), 0) ??
-      0,
-    [attribution]
+      visibleAttributionDrivers.reduce(
+        (sum, driver) => sum + Number(driver.cumulativePnl ?? 0),
+        0
+      ),
+    [visibleAttributionDrivers]
   );
   const tradeSummary = useMemo(() => summarizeTrades(tradeHistory?.data ?? []), [tradeHistory]);
   const totalOrderEvents = tradeHistory?.pagination.total ?? tradeSummary.count;
@@ -319,8 +337,16 @@ export default function CommandCenterPage() {
       .toLowerCase() === "true";
 
   const stateRows = useMemo(
-    () => flattenState(engineState ?? {}).filter(([key]) => !key.includes("posteriorPdf.points")),
+    () => flattenState(engineState ?? {}).filter(([key]) => isVisibleStateRow(key)),
     [engineState]
+  );
+  const visibleLogicFeed = useMemo(
+    () => logicFeed.filter(isVisibleLogicItem),
+    [logicFeed]
+  );
+  const visibleTerminalFeed = useMemo(
+    () => (trace?.terminalFeed ?? []).filter(isVisibleTerminalLine),
+    [trace?.terminalFeed]
   );
 
   async function handleLogin() {
@@ -920,7 +946,7 @@ export default function CommandCenterPage() {
             <span>Kill {config?.TRADING_ENABLED ? "OPEN" : "CLOSED"}</span>
             <span>
               {shadowModeActive
-                ? "GHOST FILLS"
+                ? "SHADOW QUOTES"
                 : operatorMode === "LIVE"
                   ? "REAL ORDERS"
                   : operatorMode === "PAPER"
@@ -1138,14 +1164,18 @@ export default function CommandCenterPage() {
             <span>Agent Efficacy</span>
           </div>
           <div className="efficacy-grid">
-            {(attribution?.byDriver ?? []).slice(0, 8).map((driver) => (
-              <div className="driver-row" key={driver.driver}>
-                <strong>{driver.driver}</strong>
-                <span>{currency.format(driver.cumulativePnl)}</span>
-                <span>SR {driver.sharpe === null ? "n/a" : compact.format(driver.sharpe)}</span>
-                <span>PF {driver.profitFactor === null ? "n/a" : compact.format(driver.profitFactor)}</span>
-              </div>
-            ))}
+            {visibleAttributionDrivers.length > 0 ? (
+              visibleAttributionDrivers.slice(0, 8).map((driver) => (
+                <div className="driver-row" key={driver.driver}>
+                  <strong>{displayDriverName(driver.driver)}</strong>
+                  <span>{currency.format(driver.cumulativePnl)}</span>
+                  <span>SR {driver.sharpe === null ? "n/a" : compact.format(driver.sharpe)}</span>
+                  <span>PF {driver.profitFactor === null ? "n/a" : compact.format(driver.profitFactor)}</span>
+                </div>
+              ))
+            ) : (
+              <div className="empty-row">NO ACTIVE AGENT ATTRIBUTION</div>
+            )}
           </div>
         </section>
 
@@ -1159,7 +1189,7 @@ export default function CommandCenterPage() {
           </div>
           <div className="trade-summary">
             <Metric label="Order Events" value={compact.format(totalOrderEvents)} />
-            <Metric label="Ghost Fills" value={compact.format(paperPnl.tradeCount || tradeSummary.filled)} />
+            <Metric label="Filled Events" value={compact.format(paperPnl.tradeCount || tradeSummary.filled)} />
             <Metric label="Paper MTM" value={formatNullableCurrency(paperPnl.paperMtm)} />
             <Metric label="Expected EV" value={currency.format(paperPnl.totalEv)} />
             <Metric label="Gross Notional" value={currency.format(paperPnl.grossNotional)} />
@@ -1192,7 +1222,7 @@ export default function CommandCenterPage() {
                   <span>{compact.format(trade.size)}</span>
                   <span>{currency.format(trade.price)}</span>
                   <span>{currency.format(trade.resultingPnl ?? 0)}</span>
-                  <code>{trade.primaryDriver ?? trade.agentName ?? "EXECUTIONER"}</code>
+                  <code>{displayDriverName(trade.primaryDriver ?? trade.agentName ?? "EXECUTIONER")}</code>
                 </div>
               ))
             ) : (
@@ -1207,13 +1237,13 @@ export default function CommandCenterPage() {
             <span>Agent CCTV</span>
           </div>
           <div className="terminal-feed">
-            {logicFeed.length > 0
-              ? logicFeed.map((item, index) => (
+            {visibleLogicFeed.length > 0
+              ? visibleLogicFeed.map((item, index) => (
                   <pre key={`${index}:${JSON.stringify(item).slice(0, 20)}`}>
                     {JSON.stringify(item, null, 2)}
                   </pre>
                 ))
-              : (trace?.terminalFeed ?? []).map((line) => <pre key={line}>{line}</pre>)}
+              : visibleTerminalFeed.map((line) => <pre key={line}>{line}</pre>)}
           </div>
         </section>
 
@@ -1416,6 +1446,42 @@ function RangeField({
       </div>
     </label>
   );
+}
+
+function isActiveAttributionDriver(driver: { driver: string }): boolean {
+  return !RETIRED_DRIVER_NAMES.has(driver.driver.trim().toUpperCase());
+}
+
+function displayDriverName(driver: string | null | undefined): string {
+  const normalized = driver?.trim().toUpperCase();
+
+  if (!normalized || RETIRED_DRIVER_NAMES.has(normalized)) {
+    return "EXECUTIONER";
+  }
+
+  return normalized;
+}
+
+function isVisibleStateRow(key: string): boolean {
+  const normalized = key.toLowerCase();
+
+  if (normalized.includes("posteriorpdf.points")) {
+    return false;
+  }
+
+  return !RETIRED_STATE_TOKENS.some((token) => normalized.includes(token));
+}
+
+function isVisibleLogicItem(item: JsonRecord): boolean {
+  const sourceAgent = String(item.sourceAgent ?? item.source_agent ?? "").toUpperCase();
+  const targetAgent = String(item.targetAgent ?? item.target_agent ?? "").toUpperCase();
+
+  return !RETIRED_DRIVER_NAMES.has(sourceAgent) && !RETIRED_DRIVER_NAMES.has(targetAgent);
+}
+
+function isVisibleTerminalLine(line: string): boolean {
+  const normalized = line.toUpperCase();
+  return ![...RETIRED_DRIVER_NAMES].some((driver) => normalized.includes(driver));
 }
 
 function summarizeTrades(trades: TradeHistoryEntry[]) {
