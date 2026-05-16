@@ -167,6 +167,26 @@ export async function updateConfig(
   });
 }
 
+export async function updateTradingMode(
+  apiBase: string,
+  token: string,
+  mode: "OBSERVE" | "PAPER" | "LIVE"
+): Promise<unknown> {
+  const live = mode === "LIVE";
+  return apiFetch(apiBase, "/admin/config", token, {
+    method: "POST",
+    body: JSON.stringify({
+      actor: "command-center",
+      confirmHighImpact: true,
+      confirmLive: live,
+      mode: live ? "LIVE" : "PAPER",
+      config: {
+        TRADING_ENABLED: mode !== "OBSERVE"
+      }
+    })
+  });
+}
+
 export async function injectMoltworkerIntent(
   apiBase: string,
   token: string,

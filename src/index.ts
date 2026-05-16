@@ -694,6 +694,36 @@ async function handleAdminConfig(
     typeof update.actor === "string" && update.actor.length > 0
       ? update.actor
       : admin.subject;
+  const requestedMode = normalizeEngineMode(update.mode);
+
+  if (update.mode && !requestedMode) {
+    return json({ ok: false, error: "INVALID_ENGINE_MODE" }, 400);
+  }
+
+  if (requestedMode === "LIVE" && env.EXCHANGE_ORDER_TEST_MODE !== "false") {
+    return json(
+      {
+        ok: false,
+        error: "LIVE_EXECUTION_LOCKED_BY_TEST_MODE",
+        message: "EXCHANGE_ORDER_TEST_MODE must be false before the gateway can enter LIVE mode."
+      },
+      409
+    );
+  }
+
+  if (
+    requestedMode === "LIVE" &&
+    !((update as Record<string, unknown>).confirmLive === true)
+  ) {
+    return json(
+      {
+        ok: false,
+        error: "LIVE_MODE_CONFIRMATION_REQUIRED"
+      },
+      409
+    );
+  }
+
   const governor = new Governor(env.CONFIG_STORE);
   const currentConfig = await configManager.fetchConfig();
   let nextConfig = currentConfig;
@@ -828,7 +858,10 @@ async function handleAdminConfig(
     new Request(new URL("/admin/config", url), {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ signal: "REFRESH_CONFIG" } satisfies AdminConfigUpdate)
+      body: JSON.stringify({
+        signal: "REFRESH_CONFIG",
+        ...(requestedMode ? { mode: requestedMode } : {})
+      } satisfies AdminConfigUpdate)
     }),
     env,
     topology
@@ -2008,6 +2041,14 @@ function normalizeEnum<T extends string>(
 
   const normalized = value.trim().toUpperCase();
   return allowed.includes(normalized as T) ? (normalized as T) : null;
+}
+
+function normalizeEngineMode(value: unknown): "PAPER" | "LIVE" | "HALTED" | null {
+  if (value !== "PAPER" && value !== "LIVE" && value !== "HALTED") {
+    return null;
+  }
+
+  return value;
 }
 
 function normalizeAsset(value: string | null): string | null {

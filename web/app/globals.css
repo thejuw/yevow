@@ -431,6 +431,56 @@ output {
   gap: 10px;
 }
 
+.mode-panel {
+  grid-column: span 7;
+}
+
+.mode-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.mode-grid button {
+  min-height: 42px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  text-transform: uppercase;
+  font-size: 12px;
+}
+
+.mode-grid .mode-active {
+  border-color: var(--green);
+  color: var(--green);
+  background: rgba(102, 227, 161, 0.12);
+}
+
+.mode-grid .mode-live {
+  border-color: rgba(255, 107, 107, 0.45);
+}
+
+.mode-grid .mode-live.mode-active {
+  color: #ffb1b1;
+  background: rgba(255, 107, 107, 0.14);
+}
+
+.mode-readout {
+  margin-top: 8px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  color: var(--muted);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+}
+
+.mode-readout span {
+  border: 1px solid var(--line-cold);
+  border-radius: 7px;
+  padding: 8px;
+  background: rgba(6, 8, 11, 0.38);
+  overflow-wrap: anywhere;
+}
+
 .matrix-panel {
   grid-column: span 8;
   grid-row: span 4;
@@ -771,6 +821,7 @@ output {
   }
 
   .market-strip,
+  .mode-panel,
   .bridge-panel,
   .matrix-panel,
   .moltworker-panel,
@@ -807,6 +858,8 @@ output {
   }
 
   .market-strip,
+  .mode-grid,
+  .mode-readout,
   .bridge-metrics,
     .trade-summary,
     .alert-summary,

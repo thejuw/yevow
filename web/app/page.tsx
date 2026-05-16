@@ -32,7 +32,8 @@ import {
   resetLatencyBaseline,
   sendTestAlert,
   toWebSocketUrl,
-  updateConfig
+  updateConfig,
+  updateTradingMode
 } from "@/lib/api";
 import {
   DEFAULT_TRANSPORT_SETTINGS,
@@ -102,6 +103,7 @@ export default function CommandCenterPage() {
   const [isClearingOverride, setIsClearingOverride] = useState(false);
   const [isResettingLatency, setIsResettingLatency] = useState(false);
   const [isTestingAlert, setIsTestingAlert] = useState(false);
+  const [isSwitchingMode, setIsSwitchingMode] = useState(false);
   const [transport, setTransport] = useState<DraftTransportSettings>(DEFAULT_TRANSPORT_SETTINGS);
   const [moltworker, setMoltworker] = useState<MoltworkerDraft>({
     direction: "RISK_OFF" as MacroBiasDirection,
@@ -259,6 +261,13 @@ export default function CommandCenterPage() {
     [attribution]
   );
   const tradeSummary = useMemo(() => summarizeTrades(tradeHistory?.data ?? []), [tradeHistory]);
+  const operatorMode = useMemo<"OBSERVE" | "PAPER" | "LIVE">(() => {
+    if (engineState?.mode === "LIVE") {
+      return "LIVE";
+    }
+
+    return config?.TRADING_ENABLED ? "PAPER" : "OBSERVE";
+  }, [config?.TRADING_ENABLED, engineState?.mode]);
 
   const stateRows = useMemo(
     () => flattenState(engineState ?? {}).filter(([key]) => !key.includes("posteriorPdf.points")),
@@ -342,6 +351,41 @@ export default function CommandCenterPage() {
       setCommandStatus("Matrix update failed.");
     } finally {
       setIsApplyingMatrix(false);
+    }
+  }
+
+  async function switchTradingMode(mode: "OBSERVE" | "PAPER" | "LIVE") {
+    if (!token) {
+      return;
+    }
+
+    if (
+      mode === "LIVE" &&
+      !window.confirm("LIVE mode can submit real exchange orders when execution test mode is disabled. Continue?")
+    ) {
+      return;
+    }
+
+    setError(null);
+    setIsSwitchingMode(true);
+    setCommandStatus(mode === "LIVE" ? "Requesting live mode..." : `Switching to ${mode.toLowerCase()} mode...`);
+
+    try {
+      await updateTradingMode(apiBase, token, mode);
+      draftDirtyRef.current = false;
+      await refresh();
+      setCommandStatus(
+        mode === "OBSERVE"
+          ? "Trading disabled. Engine remains in observation mode."
+          : mode === "PAPER"
+            ? "Paper trading enabled. Exchange execution remains test-mode locked."
+            : "Live trading enabled."
+      );
+    } catch (caught: unknown) {
+      setError(errorMessage(caught));
+      setCommandStatus(mode === "LIVE" ? "Live mode is locked by execution safeguards." : "Mode switch failed.");
+    } finally {
+      setIsSwitchingMode(false);
     }
   }
 
@@ -588,6 +632,41 @@ export default function CommandCenterPage() {
           <Metric label="Jitter" value={`${compact.format(pulse?.jitter_ms ?? engineState?.executionProfile.jitterMs ?? 0)}ms`} />
           <Metric label="VPIN" value={compact.format(pulse?.toxicity_score ?? engineState?.toxicityScore ?? 0)} />
           <Metric label="Quotes" value={engineState?.quoteState.status ?? "n/a"} />
+        </section>
+
+        <section className="mode-panel glass">
+          <div className="panel-title">
+            <CircleDot size={17} />
+            <span>Execution Mode</span>
+          </div>
+          <div className="mode-grid">
+            <button
+              className={operatorMode === "OBSERVE" ? "mode-active" : ""}
+              disabled={isSwitchingMode || !token}
+              onClick={() => void switchTradingMode("OBSERVE")}
+            >
+              Observe
+            </button>
+            <button
+              className={operatorMode === "PAPER" ? "mode-active" : ""}
+              disabled={isSwitchingMode || !token}
+              onClick={() => void switchTradingMode("PAPER")}
+            >
+              Paper
+            </button>
+            <button
+              className={operatorMode === "LIVE" ? "mode-live mode-active" : "mode-live"}
+              disabled={isSwitchingMode || !token}
+              onClick={() => void switchTradingMode("LIVE")}
+            >
+              Live
+            </button>
+          </div>
+          <div className="mode-readout">
+            <span>Engine {engineState?.mode ?? "PAPER"}</span>
+            <span>Kill {config?.TRADING_ENABLED ? "OPEN" : "CLOSED"}</span>
+            <span>{operatorMode === "LIVE" ? "REAL ORDERS" : operatorMode === "PAPER" ? "SIGNED TEST ORDERS" : "NO ORDERS"}</span>
+          </div>
         </section>
 
         <section className="matrix-panel glass">

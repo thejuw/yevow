@@ -5510,7 +5510,9 @@ export class TradingEngine {
     if (update.signal === "REFRESH_CONFIG" || update.config) {
       await this.refreshConfig("ADMIN_SIGNAL");
       await this.scheduleConfigRefresh();
-      return;
+      if (!hasRuntimeConfigUpdate(update)) {
+        return;
+      }
     }
 
     const now = new Date().toISOString();
@@ -5545,6 +5547,17 @@ export class TradingEngine {
       killSwitch: this.engineState.risk.killSwitch
     });
   }
+}
+
+function hasRuntimeConfigUpdate(update: AdminConfigUpdate): boolean {
+  return Boolean(
+    update.mode ||
+      update.bankroll ||
+      update.risk ||
+      update.maxLatencyMs !== undefined ||
+      update.MAX_LATENCY !== undefined ||
+      update.performance
+  );
 }
 
 function defaultEngineState(engineId: string): EngineState {
