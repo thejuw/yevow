@@ -8340,7 +8340,13 @@ function resolveEngineLocation(
   config: GlobalRiskConfig,
   observedLatencyMs: number | null
 ): EngineLocation {
-  const colo = (topology.colo ?? previous.colo)?.toUpperCase() ?? null;
+  const colo =
+    (
+      placementColo(topology.placement) ??
+      configuredPlacementColo(env.PLACEMENT_TARGET_COLO) ??
+      topology.colo ??
+      previous.colo
+    )?.toUpperCase() ?? null;
   const goldenColos = parseColoSet(config.GOLDEN_COLOS || env.GOLDEN_COLOS);
   const hasGoldenRegionPolicy = goldenColos.size > 0;
   const isGoldenRegion =
@@ -8370,6 +8376,16 @@ function resolveEngineLocation(
           ? "GOLDEN_REGION"
           : "NON_GOLDEN_REGION"
   };
+}
+
+function placementColo(placement: string | null): string | null {
+  const match = /^(?:remote|local)-([a-z0-9]{3,4})$/i.exec(placement ?? "");
+  return match?.[1]?.toUpperCase() ?? null;
+}
+
+function configuredPlacementColo(value: string | undefined): string | null {
+  const configured = value?.trim().toUpperCase();
+  return configured && /^[A-Z0-9]{3,4}$/.test(configured) ? configured : null;
 }
 
 function applyLocationRisk(

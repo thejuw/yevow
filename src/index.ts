@@ -2653,10 +2653,11 @@ function clampInteger(
 
 function extractEdgeTopology(request: Request): EdgeTopology {
   const cf = (request as Request & { cf?: CloudflareRequestMetadata }).cf;
+  const placement = nullableHeader(request.headers.get("cf-placement"));
 
   return {
-    colo: normalizeCfValue(cf?.colo),
-    placement: nullableHeader(request.headers.get("cf-placement")),
+    colo: placementColo(placement) ?? normalizeCfValue(cf?.colo),
+    placement,
     country: normalizeCfValue(cf?.country),
     city: normalizeCfValue(cf?.city),
     region: normalizeCfValue(cf?.region),
@@ -2666,6 +2667,11 @@ function extractEdgeTopology(request: Request): EdgeTopology {
     requestId: request.headers.get("cf-ray") ?? crypto.randomUUID(),
     observedAt: new Date().toISOString()
   };
+}
+
+function placementColo(placement: string | null): string | null {
+  const match = /^(?:remote|local)-([a-z0-9]{3,4})$/i.exec(placement ?? "");
+  return match?.[1]?.toUpperCase() ?? null;
 }
 
 function withTopologyHeaders(
@@ -3221,17 +3227,29 @@ async function evaluateMoltworkerHeartbeat(env: Env): Promise<{
       headers: { accept: "application/json,text/plain;q=0.9,*/*;q=0.1" }
     });
     const latencyMs = Math.round((performance.now() - startedAt) * 1000) / 1000;
+    const body = await safeResponseJson(response);
+    const lastRun = isJsonRecord(body?.lastRun) ? body.lastRun : null;
+    const lastRunMetadata = isJsonRecord(lastRun?.metadata) ? lastRun.metadata : null;
+    const runtime =
+      typeof lastRunMetadata?.runtime === "string" ? lastRunMetadata.runtime : null;
+    const source =
+      typeof lastRunMetadata?.source === "string" ? lastRunMetadata.source : null;
+    const supervisorOk = body?.ok !== false;
 
     return {
-      ok: response.ok,
-      status: response.ok ? "OPTIMAL" : "ANOMALY",
-      detail: response.ok
-        ? `Moltworker heartbeat responded in ${latencyMs}ms.`
+      ok: response.ok && supervisorOk,
+      status: response.ok && supervisorOk ? "OPTIMAL" : "ANOMALY",
+      detail: response.ok && supervisorOk
+        ? `Moltworker heartbeat responded in ${latencyMs}ms${runtime ? ` from ${runtime}` : ""}.`
         : `Moltworker heartbeat returned HTTP ${response.status}.`,
       metadata: {
         configured: true,
         status: response.status,
-        latencyMs
+        latencyMs,
+        supervisorStatus: typeof body?.status === "string" ? body.status : null,
+        runtime,
+        source,
+        observedAt: typeof lastRun?.observedAt === "string" ? lastRun.observedAt : null
       }
     };
   } catch (error) {

@@ -36,6 +36,18 @@ GitHub CI and manual Cloudflare deployment workflows live in `.github/workflows`
 See `docs/github-cloudflare-setup.md` for the GitHub Secrets, production environment, and deployment flow.
 
 Alerting setup and verification lives in `docs/alerting-setup.md`.
+Moltworker supervisor setup lives in `docs/moltworker-supervisor.md`.
+
+Cloudflare Pages deploys use `web/wrangler.toml` as the Pages-specific
+configuration source. The Command Center is a static Next.js export and uploads
+from `web/out`.
+
+## Tokyo Placement Policy
+
+The production Workers use Cloudflare placement hints toward AWS Tokyo
+(`aws:ap-northeast-1`) and create the stateful Durable Object singleton with an
+`apac` location hint. Runtime golden-colo policy treats Tokyo/Narita (`NRT`) as
+the preferred Cloudflare colo for Hyperliquid/Dwellir latency accounting.
 
 ## Safety Defaults
 

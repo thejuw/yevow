@@ -35,13 +35,14 @@ preview_id = "3d69fe3608404e049791ce81142dab8e"
 crons = ["*/1 * * * *"]
 
 [placement]
-mode = "smart"
+region = "aws:ap-northeast-1"
 
 [vars]
-ENGINE_OBJECT_NAME = "sovereign-sigma:singleton:trading-engine:v2:weur"
-ENGINE_LOCATION_HINT = "weur"
-INGEST_COORDINATOR_OBJECT_NAME = "sovereign-sigma:singleton:ingest-coordinator:v2:weur"
-INGEST_COORDINATOR_LOCATION_HINT = "weur"
+ENGINE_OBJECT_NAME = "sovereign-sigma:singleton:trading-engine:v3:apac-tokyo"
+ENGINE_LOCATION_HINT = "apac"
+PLACEMENT_TARGET_COLO = "NRT"
+INGEST_COORDINATOR_OBJECT_NAME = "sovereign-sigma:singleton:ingest-coordinator:v3:apac-tokyo"
+INGEST_COORDINATOR_LOCATION_HINT = "apac"
 INGEST_TRANSPORT = "grpc"
 DWELLIR_GRPC_ENDPOINT = "https://api-hyperliquid-mainnet-grpc.n.dwellir.com"
 DWELLIR_GRPC_STREAMS = "FILLS"

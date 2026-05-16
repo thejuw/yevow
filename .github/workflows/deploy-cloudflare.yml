@@ -75,6 +75,6 @@ jobs:
       - name: Deploy Command Center Pages
         if: ${{ inputs.target == 'all' || inputs.target == 'pages' }}
         run: >
-          npx wrangler pages deploy web/out
-          --project-name sovereign-sigma-command-center
+          npx wrangler pages deploy out
+          --cwd web
           --branch main

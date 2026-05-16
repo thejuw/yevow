@@ -9,6 +9,7 @@ export interface Env {
   EXECUTIONER?: Fetcher;
   ENGINE_OBJECT_NAME?: string;
   ENGINE_LOCATION_HINT?: string;
+  PLACEMENT_TARGET_COLO?: string;
   INGEST_COORDINATOR_OBJECT_NAME?: string;
   INGEST_COORDINATOR_LOCATION_HINT?: string;
   MARKET_STREAMS?: string;

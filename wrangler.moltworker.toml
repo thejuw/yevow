@@ -11,13 +11,14 @@ preview_id = "01652227040f4c59ab9256d0e251ba23"
 crons = ["*/1 * * * *"]
 
 [placement]
-mode = "smart"
+region = "aws:ap-northeast-1"
 
 [vars]
 MOLTWORKER_GATEWAY_URL = "https://api.yevow.co"
 MOLTWORKER_SUBJECT = "moltworker-supervisor"
 MOLTWORKER_MODE = "AUTONOMOUS"
 MOLTWORKER_STRATEGIC_INTENT = "Continuous external supervisor heartbeat and integrity watch."
+MOLTWORKER_RUNTIME = "cloudflare-worker-supervisor"
 MOLTWORKER_REQUEST_TIMEOUT_MS = "2500"
 MOLTWORKER_SUPERVISOR_MAX_AGE_MS = "180000"
 MOLTWORKER_HEARTBEAT_STATUS_TTL_SECONDS = "900"

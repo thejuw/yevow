@@ -39,17 +39,16 @@ binding = "EXECUTIONER"
 service = "sovereign-sigma-executioner"
 
 [placement]
-mode = "smart"
-# Placement hints are mutually exclusive with Smart Placement.
-# If Hyperliquid or the execution venue is single-homed and measured data proves Smart
-# Placement is underperforming, replace mode with exactly one of:
-#   region = "aws:us-east-1"
-#   host = "matching-engine.example.com:443"
-#   hostname = "api.exchange.example.com"
+# Tokyo target: Dwellir advertises Tokyo/Singapore order-book edges for
+# Hyperliquid, and the exchange write path is latency-sensitive. Cloudflare
+# maps this region hint to the lowest-latency Cloudflare data center near
+# AWS Tokyo rather than hard-pinning a specific colo.
+region = "aws:ap-northeast-1"
 
 [vars]
-ENGINE_OBJECT_NAME = "sovereign-sigma:singleton:trading-engine:v2:weur"
-ENGINE_LOCATION_HINT = "weur"
+ENGINE_OBJECT_NAME = "sovereign-sigma:singleton:trading-engine:v3:apac-tokyo"
+ENGINE_LOCATION_HINT = "apac"
+PLACEMENT_TARGET_COLO = "NRT"
 INGEST_TRANSPORT = "grpc"
 DWELLIR_GRPC_ENDPOINT = "https://api-hyperliquid-mainnet-grpc.n.dwellir.com"
 DWELLIR_GRPC_STREAMS = "FILLS"
@@ -76,7 +75,7 @@ HL_STALE_AFTER_MS = "150"
 HL_BOOK_TIMESTAMP_MAX_DRIFT_MS = "100"
 HL_SEQUENCE_GAP_MS = "5000"
 HL_ASSETS = "BTC,ETH,SOL"
-MOLTWORKER_HEALTH_URL = "https://sovereign-sigma-moltworker.woveyyevow.workers.dev/health"
+MOLTWORKER_HEALTH_URL = "https://api.yevow.co/moltworker/health"
 MOLTWORKER_HEARTBEAT_MAX_AGE_MS = "300000"
 MARKET_STREAMS = "[{\"id\":\"dwellir-hyperliquid-grpc-fills\",\"source\":\"HYPERLIQUID\",\"source_exchange\":\"hyperliquid\",\"transport\":\"grpc\",\"streamUrl\":\"https://api-hyperliquid-mainnet-grpc.n.dwellir.com\",\"grpcEndpoint\":\"https://api-hyperliquid-mainnet-grpc.n.dwellir.com\",\"grpcService\":\"hyperliquid_l1_gateway.v2.HyperliquidL1Gateway\",\"grpcStreamTypes\":[\"FILLS\"],\"weight\":1.0,\"exchangeCode\":\"hyperliquid\",\"subscriptions\":[{\"method\":\"subscribe\",\"subscription\":{\"type\":\"trades\",\"coin\":\"BTC\"}},{\"method\":\"subscribe\",\"subscription\":{\"type\":\"trades\",\"coin\":\"ETH\"}},{\"method\":\"subscribe\",\"subscription\":{\"type\":\"trades\",\"coin\":\"SOL\"}}]}]"
 EXCHANGE_WEIGHTS = "{\"hyperliquid\":1.0,\"binance\":0.75,\"binance-us\":0.75,\"cbse\":0.65,\"coinbase\":0.65}"
@@ -134,8 +133,9 @@ SLIPPAGE_GUARD_TICKS = "2"
 NOTIFIER_DEBOUNCE_MS = "60000"
 JANITOR_LOG_RETENTION_DAYS = "30"
 NEWS_FEEDS = "[]"
-# Derived from live tick-to-brain telemetry; CONFIG_STORE.GOLDEN_COLOS can override this.
-GOLDEN_COLOS = "BRU"
+# Tokyo Cloudflare colo policy. Cloudflare reports colo/placement using airport
+# codes; Tokyo commonly appears as NRT in cf-placement and CF-RAY metadata.
+GOLDEN_COLOS = "NRT"
 HIGH_LATENCY_COLO_RISK_MULTIPLIER = "0.50"
 ORDER_BOOK_TICK_SIZE_DEFAULT = "0.00000001"
 ORDER_BOOK_TICK_SIZES = "{\"btc-usd\":0.5,\"btc-usdt\":0.01,\"eth-usd\":0.1}"

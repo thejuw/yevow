@@ -1,6 +1,6 @@
 import type { Env } from "../types";
 
-const DEFAULT_ENGINE_OBJECT_NAME = "sovereign-sigma:singleton:trading-engine:v2:weur";
+const DEFAULT_ENGINE_OBJECT_NAME = "sovereign-sigma:singleton:trading-engine:v3:apac-tokyo";
 const LOCATION_HINTS = new Set([
   "wnam",
   "enam",

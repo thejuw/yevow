@@ -30,7 +30,7 @@ import type {
   OrderBookResetRequest
 } from "./types";
 
-const DEFAULT_INGEST_COORDINATOR_NAME = "sovereign-sigma:singleton:ingest-coordinator:v2:weur";
+const DEFAULT_INGEST_COORDINATOR_NAME = "sovereign-sigma:singleton:ingest-coordinator:v3:apac-tokyo";
 const DEFAULT_AUTH_HEADER = "X-Api-Key";
 const DEFAULT_GRPC_AUTH_HEADER = "x-token";
 const DWELLIR_GRPC_ENDPOINT = "https://api-hyperliquid-mainnet-grpc.n.dwellir.com";

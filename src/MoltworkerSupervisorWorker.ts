@@ -14,6 +14,8 @@ interface SupervisorEnv {
   MOLTWORKER_SUBJECT?: string;
   MOLTWORKER_MODE?: string;
   MOLTWORKER_STRATEGIC_INTENT?: string;
+  MOLTWORKER_RUNTIME?: string;
+  MOLTWORKER_SUPERVISOR_DIRECTORY?: string;
   MOLTWORKER_REQUEST_TIMEOUT_MS?: string;
   MOLTWORKER_SUPERVISOR_MAX_AGE_MS?: string;
   MOLTWORKER_HEARTBEAT_STATUS_TTL_SECONDS?: string;
@@ -159,6 +161,8 @@ async function runSupervisorLoop(
           "Continuous external supervisor heartbeat and integrity watch.",
         metadata: {
           source: "sovereign-sigma-moltworker",
+          runtime: env.MOLTWORKER_RUNTIME ?? "cloudflare-worker-supervisor",
+          supervisorDirectory: env.MOLTWORKER_SUPERVISOR_DIRECTORY ?? null,
           trigger,
           tokenExpiresIn: login.body.expiresIn ?? null
         }
