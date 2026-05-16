@@ -1,16 +1,18 @@
 :root {
-  --bg: #080a0d;
-  --panel: rgba(18, 22, 29, 0.78);
-  --panel-strong: rgba(23, 28, 36, 0.92);
-  --line: rgba(215, 196, 139, 0.2);
-  --line-cold: rgba(151, 170, 196, 0.18);
-  --text: #f4efe7;
-  --muted: #a9b2c0;
-  --gold: #d7c48b;
+  --bg: #07090c;
+  --panel: rgba(15, 18, 24, 0.82);
+  --panel-soft: rgba(12, 15, 20, 0.62);
+  --panel-strong: rgba(20, 24, 31, 0.96);
+  --line: rgba(215, 196, 139, 0.22);
+  --line-cold: rgba(150, 165, 188, 0.16);
+  --text: #f3eee6;
+  --muted: #98a4b3;
+  --muted-2: #667282;
+  --gold: #d8c68f;
   --green: #66e3a1;
   --red: #ff6b6b;
   --blue: #85bcff;
-  --shadow: 0 24px 80px rgba(0, 0, 0, 0.32);
+  --shadow: 0 18px 70px rgba(0, 0, 0, 0.34);
   color-scheme: dark;
 }
 
@@ -26,10 +28,12 @@ body {
 body {
   margin: 0;
   background:
-    linear-gradient(90deg, rgba(255, 255, 255, 0.024) 1px, transparent 1px),
-    linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px),
+    radial-gradient(circle at top left, rgba(216, 198, 143, 0.08), transparent 34rem),
+    radial-gradient(circle at 82% 12%, rgba(133, 188, 255, 0.08), transparent 26rem),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px),
+    linear-gradient(rgba(255, 255, 255, 0.014) 1px, transparent 1px),
     var(--bg);
-  background-size: 28px 28px;
+  background-size: auto, auto, 32px 32px, 32px 32px;
   color: var(--text);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   letter-spacing: 0;
@@ -44,15 +48,17 @@ select {
 button {
   min-height: 34px;
   border: 1px solid var(--line);
-  background: rgba(215, 196, 139, 0.14);
+  background: rgba(215, 196, 139, 0.1);
   color: var(--text);
   border-radius: 7px;
   padding: 7px 10px;
   cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
 }
 
 button:hover {
   border-color: var(--gold);
+  background: rgba(215, 196, 139, 0.16);
 }
 
 button:disabled {
@@ -65,7 +71,7 @@ select {
   width: 100%;
   min-height: 34px;
   border: 1px solid var(--line-cold);
-  background: rgba(6, 8, 11, 0.82);
+  background: rgba(5, 7, 10, 0.86);
   color: var(--text);
   border-radius: 7px;
   padding: 7px 9px;
@@ -102,7 +108,7 @@ output {
 .shell {
   min-height: 100vh;
   display: grid;
-  grid-template-columns: 312px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .login-shell {
@@ -140,22 +146,25 @@ output {
 }
 
 .command-rail {
-  min-height: 100vh;
-  padding: 18px;
-  border-right: 1px solid var(--line-cold);
-  background: rgba(8, 10, 13, 0.78);
-  backdrop-filter: blur(18px);
-  display: grid;
-  align-content: start;
-  gap: 16px;
+  min-height: auto;
+  padding: 12px 18px;
+  border-right: 0;
+  border-bottom: 1px solid var(--line-cold);
+  background: rgba(7, 9, 12, 0.86);
+  backdrop-filter: blur(22px);
+  display: flex;
+  align-items: center;
+  gap: 12px;
   position: sticky;
   top: 0;
+  z-index: 20;
 }
 
 .brand-lockup {
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 270px;
 }
 
 .sigil {
@@ -172,7 +181,7 @@ output {
 .brand-lockup h1 {
   margin: 0;
   font-family: "Bodoni 72", Didot, Georgia, serif;
-  font-size: 31px;
+  font-size: 28px;
   line-height: 1;
   letter-spacing: 0;
 }
@@ -184,7 +193,6 @@ output {
 }
 
 .auth-grid,
-.session-card,
 .transport-grid,
 .supervisor-grid {
   display: grid;
@@ -216,8 +224,17 @@ output {
 .session-card {
   border: 1px solid var(--line-cold);
   border-radius: 8px;
-  padding: 10px;
-  background: rgba(6, 8, 11, 0.42);
+  padding: 8px;
+  background: rgba(6, 8, 11, 0.34);
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) 112px max-content max-content;
+  align-items: end;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.session-card label {
+  gap: 4px;
 }
 
 .session-token {
@@ -225,7 +242,7 @@ output {
   gap: 4px;
   border: 1px solid rgba(102, 227, 161, 0.24);
   border-radius: 7px;
-  padding: 9px;
+  padding: 7px 9px;
   font-family: "SFMono-Regular", Consolas, monospace;
 }
 
@@ -263,6 +280,14 @@ output {
   font-size: 12px;
 }
 
+.command-rail > .system-state,
+.command-rail > .fault {
+  min-height: 40px;
+  max-width: 260px;
+  padding: 8px 10px;
+  background: rgba(6, 8, 11, 0.38);
+}
+
 .streaming {
   border-color: rgba(102, 227, 161, 0.45);
   color: var(--green);
@@ -275,11 +300,14 @@ output {
 }
 
 .grand-grid {
-  padding: 14px;
+  width: min(1920px, 100%);
+  margin: 0 auto;
+  padding: 16px 18px 24px;
   display: grid;
   grid-template-columns: repeat(12, minmax(0, 1fr));
-  grid-auto-rows: minmax(92px, auto);
-  gap: 12px;
+  grid-auto-flow: dense;
+  grid-auto-rows: minmax(74px, auto);
+  gap: 14px;
 }
 
 .settings-shell {
@@ -404,20 +432,26 @@ output {
   backdrop-filter: blur(16px);
   border-radius: 8px;
   box-shadow: var(--shadow);
-  padding: 14px;
+  padding: 13px;
   min-width: 0;
+}
+
+.glass:hover {
+  border-color: rgba(215, 196, 139, 0.24);
 }
 
 .panel-title {
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 34px;
-  color: var(--gold);
+  min-height: 32px;
+  color: #dacb9f;
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid rgba(150, 165, 188, 0.12);
 }
 
 .panel-title button {
@@ -439,23 +473,27 @@ output {
 }
 
 .bridge-panel {
-  grid-column: span 5;
+  order: 1;
+  grid-column: span 4;
   grid-row: span 2;
 }
 
 .market-strip {
-  grid-column: span 7;
+  order: 2;
+  grid-column: span 8;
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
 }
 
 .mode-panel {
-  grid-column: span 7;
+  order: 3;
+  grid-column: span 4;
 }
 
 .liquidation-panel {
-  grid-column: 1 / -1;
+  order: 9;
+  grid-column: span 8;
   grid-row: span 3;
 }
 
@@ -641,11 +679,13 @@ output {
 }
 
 .matrix-panel {
+  order: 4;
   grid-column: span 8;
   grid-row: span 4;
 }
 
 .moltworker-panel {
+  order: 5;
   grid-column: span 4;
   grid-row: span 3;
 }
@@ -653,33 +693,47 @@ output {
 .system-panel,
 .alert-panel,
 .efficacy-panel {
+  order: 6;
   grid-column: span 4;
 }
 
+.alert-panel {
+  order: 7;
+}
+
+.efficacy-panel {
+  order: 8;
+}
+
 .trade-panel {
+  order: 10;
   grid-column: span 7;
   grid-row: span 3;
 }
 
 .cctv-panel {
+  order: 11;
   grid-column: span 5;
   grid-row: span 4;
 }
 
 .state-panel {
+  order: 12;
   grid-column: span 7;
   grid-row: span 4;
 }
 
 .intent-hero {
-  min-height: 118px;
+  min-height: 112px;
   display: grid;
   align-content: center;
   gap: 8px;
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 14px;
-  background: rgba(215, 196, 139, 0.06);
+  background:
+    linear-gradient(135deg, rgba(215, 196, 139, 0.12), rgba(133, 188, 255, 0.04)),
+    rgba(6, 8, 11, 0.44);
 }
 
 .intent-hero span {
@@ -690,7 +744,7 @@ output {
 
 .intent-hero strong {
   font-family: "Bodoni 72", Didot, Georgia, serif;
-  font-size: 30px;
+  font-size: 28px;
   line-height: 1;
   letter-spacing: 0;
 }
@@ -703,13 +757,13 @@ output {
 
 .governance-switch {
   width: 100%;
-  min-height: 52px;
+  min-height: 48px;
   margin-top: 10px;
-  border: 2px solid var(--gold);
-  background: rgba(215, 196, 139, 0.08);
+  border: 1px solid rgba(215, 196, 139, 0.72);
+  background: rgba(215, 196, 139, 0.09);
   color: var(--gold);
   font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 800;
   letter-spacing: 0;
 }
@@ -724,7 +778,7 @@ output {
   margin-top: 10px;
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 7px;
+  gap: 8px;
   transition: opacity 160ms ease;
 }
 
@@ -733,21 +787,43 @@ output {
 }
 
 .asset-pill {
-  min-height: 32px;
+  min-height: 46px;
   display: grid;
-  place-items: center;
+  align-content: center;
+  gap: 4px;
   border: 1px solid var(--line-cold);
   border-radius: 7px;
   color: var(--muted);
-  background: rgba(6, 8, 11, 0.42);
+  background: rgba(6, 8, 11, 0.5);
   font-family: "SFMono-Regular", Consolas, monospace;
+  padding: 7px 8px;
+}
+
+.asset-pill strong,
+.asset-pill small {
+  display: block;
+  text-align: center;
+  line-height: 1;
+}
+
+.asset-pill strong {
   font-size: 12px;
+  color: inherit;
+}
+
+.asset-pill small {
+  color: var(--muted-2);
+  font-size: 10px;
 }
 
 .asset-pill.live {
   border-color: rgba(102, 227, 161, 0.48);
   color: var(--green);
-  background: rgba(102, 227, 161, 0.1);
+  background: rgba(102, 227, 161, 0.09);
+}
+
+.asset-pill.live small {
+  color: rgba(102, 227, 161, 0.74);
 }
 
 .bridge-metrics {
@@ -758,11 +834,11 @@ output {
 }
 
 .metric {
-  min-height: 72px;
-  padding: 10px;
+  min-height: 68px;
+  padding: 10px 11px;
   border: 1px solid var(--line-cold);
   border-radius: 7px;
-  background: rgba(6, 8, 11, 0.48);
+  background: var(--panel-soft);
   display: grid;
   align-content: space-between;
   gap: 6px;
@@ -780,23 +856,23 @@ output {
 
 .metric strong {
   font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 17px;
+  font-size: 16px;
   color: var(--text);
   overflow-wrap: anywhere;
 }
 
 .param-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
 }
 
 .param-control {
-  min-height: 88px;
+  min-height: 86px;
   border: 1px solid var(--line-cold);
   border-radius: 7px;
   padding: 9px;
-  background: rgba(6, 8, 11, 0.42);
+  background: rgba(6, 8, 11, 0.5);
   align-content: start;
 }
 
@@ -1121,9 +1197,20 @@ output {
   margin-top: 12px;
 }
 
-@media (max-width: 1280px) {
-  .shell {
-    grid-template-columns: 260px minmax(0, 1fr);
+@media (max-width: 1180px) {
+  .command-rail {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
+  .brand-lockup {
+    flex: 1 1 260px;
+  }
+
+  .session-card {
+    flex: 1 1 100%;
+    grid-template-columns: minmax(220px, 1fr) 112px repeat(2, max-content);
+    margin-left: 0;
   }
 
   .market-strip,
@@ -1161,8 +1248,13 @@ output {
     border-bottom: 1px solid var(--line-cold);
   }
 
+  .session-card {
+    grid-template-columns: 1fr;
+  }
+
   .grand-grid {
     grid-template-columns: 1fr;
+    padding: 12px;
   }
 
   .market-strip,

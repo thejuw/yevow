@@ -710,7 +710,8 @@ export default function CommandCenterPage() {
                 key={asset.instrumentCode}
                 title={`${asset.instrumentCode} allocation ${compact.format(asset.capitalAllocationPct * 100)}%`}
               >
-                {asset.selectedByMoltworker && asset.active ? "●" : "○"} {asset.coin}
+                <strong>{asset.selectedByMoltworker && asset.active ? "●" : "○"} {asset.coin}</strong>
+                <small>{compact.format(asset.capitalAllocationPct * 100)}%</small>
               </span>
             ))}
           </div>
