@@ -42,8 +42,15 @@ ENGINE_OBJECT_NAME = "sovereign-sigma:singleton:trading-engine:v2:weur"
 ENGINE_LOCATION_HINT = "weur"
 INGEST_COORDINATOR_OBJECT_NAME = "sovereign-sigma:singleton:ingest-coordinator:v2:weur"
 INGEST_COORDINATOR_LOCATION_HINT = "weur"
-INGEST_TRANSPORT = "websocket"
-HL_WS_URL = "wss://api.hyperliquid.xyz/ws"
+INGEST_TRANSPORT = "grpc"
+DWELLIR_GRPC_ENDPOINT = "https://api-hyperliquid-mainnet-grpc.n.dwellir.com"
+DWELLIR_GRPC_STREAMS = "ORDERBOOK_SNAPSHOT,FILLS,BLOCK"
+DWELLIR_MAX_PAYLOAD_BYTES = "160000000"
+RPC_GRPC_ENDPOINT = "https://api-hyperliquid-mainnet-grpc.n.dwellir.com"
+RPC_GRPC_SERVICE = "hyperliquid_l1_gateway.v2.HyperliquidL1Gateway"
+RPC_GRPC_STREAM_METHOD = "StreamOrderbookSnapshots"
+RPC_GRPC_SUBSCRIBE_TYPE = "hyperliquid_l1_gateway.v2.Position"
+RPC_GRPC_UPDATE_TYPE = "hyperliquid_l1_gateway.v2.OrderBookSnapshot"
 HL_HEARTBEAT_INTERVAL_MS = "15000"
 HL_WATCHDOG_TIMEOUT_MS = "5000"
 HL_MAX_BACKOFF_MS = "30000"
@@ -52,7 +59,7 @@ HL_BOOK_TIMESTAMP_MAX_DRIFT_MS = "100"
 HL_SEQUENCE_GAP_MS = "5000"
 HL_LIQUIDATION_WALLETS = "[]"
 HL_ASSETS = "BTC,ETH,HYPE,SOL"
-MARKET_STREAMS = "[{\"id\":\"hyperliquid-multi-perp\",\"source\":\"HYPERLIQUID\",\"source_exchange\":\"hyperliquid\",\"streamUrl\":\"wss://api.hyperliquid.xyz/ws\",\"weight\":1.0,\"exchangeCode\":\"hyperliquid\",\"subscriptions\":[{\"method\":\"subscribe\",\"subscription\":{\"type\":\"l2Book\",\"coin\":\"BTC\"}},{\"method\":\"subscribe\",\"subscription\":{\"type\":\"trades\",\"coin\":\"BTC\"}},{\"method\":\"subscribe\",\"subscription\":{\"type\":\"activeAssetCtx\",\"coin\":\"BTC\"}},{\"method\":\"subscribe\",\"subscription\":{\"type\":\"l2Book\",\"coin\":\"ETH\"}},{\"method\":\"subscribe\",\"subscription\":{\"type\":\"trades\",\"coin\":\"ETH\"}},{\"method\":\"subscribe\",\"subscription\":{\"type\":\"activeAssetCtx\",\"coin\":\"ETH\"}},{\"method\":\"subscribe\",\"subscription\":{\"type\":\"l2Book\",\"coin\":\"HYPE\"}},{\"method\":\"subscribe\",\"subscription\":{\"type\":\"trades\",\"coin\":\"HYPE\"}},{\"method\":\"subscribe\",\"subscription\":{\"type\":\"activeAssetCtx\",\"coin\":\"HYPE\"}},{\"method\":\"subscribe\",\"subscription\":{\"type\":\"l2Book\",\"coin\":\"SOL\"}},{\"method\":\"subscribe\",\"subscription\":{\"type\":\"trades\",\"coin\":\"SOL\"}},{\"method\":\"subscribe\",\"subscription\":{\"type\":\"activeAssetCtx\",\"coin\":\"SOL\"}}]}]"
+MARKET_STREAMS = "[{\"id\":\"dwellir-hyperliquid-grpc\",\"source\":\"HYPERLIQUID\",\"source_exchange\":\"hyperliquid\",\"transport\":\"grpc\",\"streamUrl\":\"https://api-hyperliquid-mainnet-grpc.n.dwellir.com\",\"grpcEndpoint\":\"https://api-hyperliquid-mainnet-grpc.n.dwellir.com\",\"grpcService\":\"hyperliquid_l1_gateway.v2.HyperliquidL1Gateway\",\"grpcStreamTypes\":[\"ORDERBOOK_SNAPSHOT\",\"FILLS\",\"BLOCK\"],\"weight\":1.0,\"exchangeCode\":\"hyperliquid\",\"subscriptions\":[{\"method\":\"subscribe\",\"subscription\":{\"type\":\"l2Book\",\"coin\":\"BTC\"}},{\"method\":\"subscribe\",\"subscription\":{\"type\":\"trades\",\"coin\":\"BTC\"}},{\"method\":\"subscribe\",\"subscription\":{\"type\":\"l2Book\",\"coin\":\"ETH\"}},{\"method\":\"subscribe\",\"subscription\":{\"type\":\"trades\",\"coin\":\"ETH\"}},{\"method\":\"subscribe\",\"subscription\":{\"type\":\"l2Book\",\"coin\":\"HYPE\"}},{\"method\":\"subscribe\",\"subscription\":{\"type\":\"trades\",\"coin\":\"HYPE\"}},{\"method\":\"subscribe\",\"subscription\":{\"type\":\"l2Book\",\"coin\":\"SOL\"}},{\"method\":\"subscribe\",\"subscription\":{\"type\":\"trades\",\"coin\":\"SOL\"}}]}]"
 EXCHANGE_WEIGHTS = "{\"hyperliquid\":1.0,\"binance\":0.75,\"binance-us\":0.75,\"cbse\":0.65,\"coinbase\":0.65}"
 CLOCK_SYNC_ALPHA = "0.10"
 CLOCK_SYNC_MAX_OFFSET_MS = "10000"
@@ -60,20 +67,12 @@ NOTIFIER_DEBOUNCE_MS = "60000"
 NEWS_FEEDS = "[]"
 
 # Secrets are intentionally excluded from source control/config values.
-# Phase 58 gRPC mode is intentionally opt-in until the provider-supplied
-# Hyperliquid proto descriptor is compiled with `npm run proto:compile`.
-# To enable it after provisioning:
-#   INGEST_TRANSPORT = "grpc"
-#   RPC_GRPC_ENDPOINT = "https://<provider-grpc-host>"
-#   RPC_GRPC_SERVICE = "<provider.package.Service>"
-#   RPC_GRPC_STREAM_METHOD = "StreamData"
-#   RPC_GRPC_SUBSCRIBE_TYPE = "<provider.package.SubscribeRequest>"
-#   RPC_GRPC_UPDATE_TYPE = "<provider.package.SubscribeUpdate>"
-#   RPC_GRPC_STREAM_TYPES = "TRADES,BOOK_UPDATES"
-#   RPC_AUTH_HEADER = "x-token"
+# Dwellir gRPC is the default ingest path. It fails closed unless the API key
+# is provisioned as a Worker secret; the public Hyperliquid WebSocket URL is no
+# longer configured as a fallback.
 # Provision alerting credentials with:
 #   wrangler secret put INGESTOR_CONTROL_TOKEN -c wrangler.ingest.toml
-#   wrangler secret put RPC_AUTH_TOKEN -c wrangler.ingest.toml
+#   wrangler secret put DWELLIR_API_KEY -c wrangler.ingest.toml
 #   wrangler secret put DISCORD_WEBHOOK_URL -c wrangler.ingest.toml
 #   wrangler secret put TELEGRAM_BOT_TOKEN -c wrangler.ingest.toml
 #   wrangler secret put TELEGRAM_CHAT_ID -c wrangler.ingest.toml

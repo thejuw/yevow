@@ -657,6 +657,11 @@ export default function CommandCenterPage() {
           <span>{status}</span>
         </div>
 
+        <div className="dwellir-stream-state">
+          <RadioTower size={14} />
+          <span>[ DWELLIR gRPC STREAM: ACTIVE ]</span>
+        </div>
+
         {error ? (
           <div className="fault">
             <AlertTriangle size={16} />

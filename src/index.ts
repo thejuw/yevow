@@ -1922,8 +1922,12 @@ function backendSettings(env: Env): JsonRecord {
       aiBound: Boolean(env.AI)
     },
     ingest: {
-      nativeSource: "HYPERLIQUID",
-      hyperliquidWsUrl: env.HL_WS_URL ?? "wss://api.hyperliquid.xyz/ws",
+      nativeSource: "DWELLIR_HYPERLIQUID_GRPC",
+      transport: env.INGEST_TRANSPORT ?? "grpc",
+      dwellirGrpcEndpoint: env.DWELLIR_GRPC_ENDPOINT ?? env.RPC_GRPC_ENDPOINT ?? null,
+      dwellirGrpcService: env.RPC_GRPC_SERVICE ?? null,
+      dwellirGrpcStreams: env.DWELLIR_GRPC_STREAMS ?? env.RPC_GRPC_STREAM_TYPES ?? null,
+      hyperliquidWsUrl: env.HL_WS_URL ?? null,
       heartbeatIntervalMs: stringNumber(env.HL_HEARTBEAT_INTERVAL_MS),
       staleAfterMs: stringNumber(env.HL_STALE_AFTER_MS),
       watchdogTimeoutMs: stringNumber(env.HL_WATCHDOG_TIMEOUT_MS),

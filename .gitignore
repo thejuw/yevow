@@ -9,3 +9,5 @@ dist/
 web/.next/
 web/out/
 web/.env*.local
+.agents/
+skills-lock.json

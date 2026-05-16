@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package hyperliquid_l1_gateway.v2;
+
+service HyperliquidL1Gateway {
+  rpc StreamBlocks(Position) returns (stream Block) {}
+  rpc StreamFills(Position) returns (stream BlockFills) {}
+  rpc StreamOrderbookSnapshots(Position) returns (stream OrderBookSnapshot) {}
+  rpc GetBlock(Position) returns (Block) {}
+  rpc GetFills(Position) returns (BlockFills) {}
+  rpc GetOrderBookSnapshot(Timestamp) returns (OrderBookSnapshot) {}
+}
+
+message Position {
+  oneof position {
+    int64 timestamp_ms = 1;
+    int64 block_height = 2;
+  }
+}
+
+message Timestamp {
+  int64 timestamp_ms = 1;
+}
+
+message Block {
+  bytes data = 1;
+}
+
+message OrderBookSnapshot {
+  bytes data = 1;
+}
+
+message BlockFills {
+  bytes data = 1;
+}

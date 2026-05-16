@@ -1,6 +1,11 @@
 import { Logger } from "./Logger";
 import { parseLiquidationWallets } from "./agents/HeatmapAgent";
 import {
+  DwellirHyperliquidGrpcClient,
+  type DwellirGrpcPayload,
+  type DwellirGrpcStreamKind
+} from "./grpc/DwellirHyperliquidGrpcClient";
+import {
   HyperliquidGrpcClient,
   type HyperliquidGrpcUpdate
 } from "./grpc/HyperliquidGrpcClient";
@@ -25,6 +30,8 @@ import type {
 const DEFAULT_INGEST_COORDINATOR_NAME = "sovereign-sigma:singleton:ingest-coordinator:v2:weur";
 const DEFAULT_AUTH_HEADER = "X-Api-Key";
 const DEFAULT_GRPC_AUTH_HEADER = "x-token";
+const DWELLIR_GRPC_ENDPOINT = "https://api-hyperliquid-mainnet-grpc.n.dwellir.com";
+const DWELLIR_GRPC_SERVICE = "hyperliquid_l1_gateway.v2.HyperliquidL1Gateway";
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000;
 const DEFAULT_WATCHDOG_TIMEOUT_MS = 5_000;
 const DEFAULT_BACKOFF_BASE_MS = 1_000;
@@ -785,6 +792,11 @@ class ExchangeStreamController {
   }
 
   private async connectGrpcOnce(): Promise<void> {
+    if (isDwellirGrpcConfig(this.config)) {
+      await this.connectDwellirGrpcOnce();
+      return;
+    }
+
     const endpoint = this.config.grpcEndpoint ?? this.clusterPool.activeUrl();
     const token = await this.resolveGrpcAuthToken();
     const heartbeatIntervalMs = this.config.heartbeatIntervalMs;
@@ -941,6 +953,137 @@ class ExchangeStreamController {
         )
         .then(() => finish())
         .catch((error) => fail("GRPC_STREAM_ERROR", error));
+    });
+  }
+
+  private async connectDwellirGrpcOnce(): Promise<void> {
+    const endpoint =
+      this.config.grpcEndpoint ?? this.env.DWELLIR_GRPC_ENDPOINT ?? DWELLIR_GRPC_ENDPOINT;
+    const apiKey = await this.resolveDwellirApiKey();
+    const watchdogTimeoutMs = this.config.watchdogTimeoutMs;
+
+    if (!apiKey) {
+      throw new Error("DWELLIR_API_KEY_MISSING");
+    }
+
+    const client = new DwellirHyperliquidGrpcClient({
+      endpoint,
+      apiKey,
+      service: this.config.grpcService ?? DWELLIR_GRPC_SERVICE,
+      startTimestampMs: readOptionalNumber(this.env.DWELLIR_GRPC_START_TIMESTAMP_MS),
+      startBlockHeight: readOptionalNumber(this.env.DWELLIR_GRPC_START_BLOCK_HEIGHT)
+    });
+    const streams = dwellirGrpcStreams(this.env);
+
+    this.status = "CONNECTED";
+    this.streamReady = true;
+    this.preSnapshotBuffer = [];
+    this.backoffCounter = 0;
+    const recoveredAt = new Date().toISOString();
+    const blackoutDurationMs = this.currentBlackoutDurationMs(recoveredAt);
+    this.lastMessageAt = recoveredAt;
+    this.lastRecoveredAt = recoveredAt;
+    this.lastRecoveryDurationMs = blackoutDurationMs;
+    this.lastError = null;
+
+    this.logger.info("DWELLIR_GRPC_STREAM_CONNECT", "Dwellir Hyperliquid gRPC stream connected", {
+      streamId: this.config.id,
+      source: this.config.source,
+      source_exchange: this.config.source_exchange,
+      sourceWeight: this.config.weight,
+      connectionId: this.connectionId,
+      streamHost: new URL(endpoint).host,
+      watchdogTimeoutMs,
+      streams: [...streams],
+      descriptor: client.descriptorInfo()
+    });
+    this.clusterPool.recordHeartbeat(endpoint, 0);
+
+    await this.resetEngineBook(blackoutDurationMs, recoveredAt);
+
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      let watchdog: ReturnType<typeof setTimeout> | null = null;
+      const controller = new AbortController();
+      this.grpcAbort = controller;
+
+      const cleanup = () => {
+        if (watchdog !== null) {
+          clearTimeout(watchdog);
+          watchdog = null;
+        }
+        controller.abort("DWELLIR_GRPC_STREAM_CLEANUP");
+        if (this.grpcAbort === controller) {
+          this.grpcAbort = null;
+        }
+      };
+
+      const finish = (error?: Error) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        cleanup();
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      };
+
+      const fail = (reason: string, error?: unknown) => {
+        this.markDisconnected(reason);
+        this.clusterPool.recordFailure(endpoint);
+        finish(
+          error instanceof Error
+            ? error
+            : new Error(error === undefined ? reason : `${reason}:${String(error)}`)
+        );
+      };
+
+      const resetWatchdog = () => {
+        if (watchdog !== null) {
+          clearTimeout(watchdog);
+        }
+        watchdog = setTimeout(() => {
+          const staleForMs = this.lastMessageAt
+            ? Date.now() - Date.parse(this.lastMessageAt)
+            : Number.POSITIVE_INFINITY;
+
+          this.logger.warn("STREAM_DISCONNECT", "Dwellir gRPC stream watchdog timeout", {
+            streamId: this.config.id,
+            source: this.config.source,
+            source_exchange: this.config.source_exchange,
+            connectionId: this.connectionId,
+            staleForMs,
+            watchdogTimeoutMs
+          });
+
+          fail("DWELLIR_GRPC_WATCHDOG_TIMEOUT");
+        }, watchdogTimeoutMs);
+      };
+
+      const onUpdate = async (update: DwellirGrpcPayload) => {
+        resetWatchdog();
+        await this.handleDwellirGrpcPayload(update);
+      };
+
+      resetWatchdog();
+
+      const streamTasks: Promise<void>[] = [];
+      if (streams.has("ORDERBOOK_SNAPSHOT")) {
+        streamTasks.push(client.streamOrderbookSnapshots(onUpdate, controller.signal));
+      }
+      if (streams.has("FILLS")) {
+        streamTasks.push(client.streamFills(onUpdate, controller.signal));
+      }
+      if (streams.has("BLOCK")) {
+        streamTasks.push(client.streamBlocks(onUpdate, controller.signal));
+      }
+
+      Promise.race(streamTasks.length > 0 ? streamTasks : [Promise.reject(new Error("DWELLIR_NO_STREAMS_CONFIGURED"))])
+        .then(() => finish())
+        .catch((error) => fail("DWELLIR_GRPC_STREAM_ERROR", error));
     });
   }
 
@@ -1106,6 +1249,40 @@ class ExchangeStreamController {
     }
 
     await this.processMessage(JSON.stringify(raw));
+  }
+
+  private async handleDwellirGrpcPayload(update: DwellirGrpcPayload): Promise<void> {
+    this.messagesReceived += 1;
+    this.lastMessageAt = update.receivedAt;
+
+    const maxBytes = readNumber(this.env.DWELLIR_MAX_PAYLOAD_BYTES, 160_000_000);
+    if (update.data.byteLength > maxBytes) {
+      this.ticksDropped += 1;
+      this.logger.warn("DWELLIR_GRPC_PAYLOAD_DROPPED", "Dropped oversized Dwellir gRPC payload", {
+        streamId: this.config.id,
+        source: this.config.source,
+        source_exchange: this.config.source_exchange,
+        connectionId: this.connectionId,
+        kind: update.kind,
+        payloadBytes: update.data.byteLength,
+        maxBytes
+      });
+      return;
+    }
+
+    const rawMessages = dwellirPayloadToHyperliquidRawMessages(
+      update,
+      this.config,
+      streamCoins(this.config)
+    );
+
+    if (rawMessages.length === 0) {
+      return;
+    }
+
+    for (const raw of rawMessages) {
+      await this.forwardHyperliquidRaw(raw, update.receivedAt, "grpc");
+    }
   }
 
   private shouldDropStaleTick(tick: MarketTick): boolean {
@@ -1403,7 +1580,11 @@ class ExchangeStreamController {
     this.lastForwardAt = new Date().toISOString();
   }
 
-  private async forwardHyperliquidRaw(raw: unknown, receivedAt: string): Promise<void> {
+  private async forwardHyperliquidRaw(
+    raw: unknown,
+    receivedAt: string,
+    transport: "websocket" | "grpc" = this.config.transport
+  ): Promise<void> {
     if (isHyperliquidControlMessage(raw)) {
       return;
     }
@@ -1423,6 +1604,7 @@ class ExchangeStreamController {
           exchangeCode: this.config.exchangeCode,
           instrumentCode: this.config.instrumentCode,
           sourceWeight: this.config.weight,
+          transport,
           connectionId: this.connectionId,
           receivedAt,
           raw
@@ -1457,6 +1639,22 @@ class ExchangeStreamController {
     const vaulted = await vault.get(key);
     const token = vaulted?.trim();
     return token && token.length > 0 ? token : null;
+  }
+
+  private async resolveDwellirApiKey(): Promise<string | null> {
+    const direct = this.env.DWELLIR_API_KEY?.trim();
+    if (direct) {
+      return direct;
+    }
+
+    const token = await this.resolveGrpcAuthToken();
+    if (token) {
+      return token;
+    }
+
+    const vaulted = await (this.env.SECRET_VAULT ?? this.env.RISK_VAULT).get("DWELLIR_API_KEY");
+    const key = vaulted?.trim();
+    return key && key.length > 0 ? key : null;
   }
 
   private async recoverFromEngineDesync(reason: string): Promise<void> {
@@ -2439,31 +2637,35 @@ function loadStreamConfigs(env: Env): ResolvedExchangeStreamConfig[] {
 function defaultHyperliquidStreamConfig(env: Env): ExchangeStreamConfig[] {
   const coins = parseAssetList(env.HL_ASSETS ?? env.HL_ASSET).slice(0, 12);
   const activeCoins = coins.length > 0 ? coins : [...DEFAULT_HYPERLIQUID_ASSET_MATRIX];
-  const transport = normalizeTransport(env.INGEST_TRANSPORT);
-  const grpcEndpoint = env.RPC_GRPC_ENDPOINT;
+  const transport = normalizeTransport(env.INGEST_TRANSPORT ?? "grpc");
+  const grpcEndpoint =
+    env.DWELLIR_GRPC_ENDPOINT ?? env.RPC_GRPC_ENDPOINT ?? DWELLIR_GRPC_ENDPOINT;
 
   return [
     {
       id:
         activeCoins.length === 1
           ? `hyperliquid-${activeCoins[0].toLowerCase()}-perp`
-          : "hyperliquid-multi-perp",
+          : "dwellir-hyperliquid-grpc",
       source: "HYPERLIQUID",
       source_exchange: "hyperliquid",
       transport,
       streamUrl:
         transport === "grpc"
           ? requireString(grpcEndpoint, "RPC_GRPC_ENDPOINT")
-          : env.HL_WS_URL ?? "wss://api.hyperliquid.xyz/ws",
+          : requireString(env.HL_WS_URL, "HL_WS_URL"),
       grpcEndpoint,
-      grpcService: env.RPC_GRPC_SERVICE,
-      grpcStreamMethod: env.RPC_GRPC_STREAM_METHOD,
+      grpcService: env.RPC_GRPC_SERVICE ?? DWELLIR_GRPC_SERVICE,
+      grpcStreamMethod: env.RPC_GRPC_STREAM_METHOD ?? "StreamOrderbookSnapshots",
       grpcPingMethod: env.RPC_GRPC_PING_METHOD,
-      grpcSubscribeType: env.RPC_GRPC_SUBSCRIBE_TYPE,
-      grpcUpdateType: env.RPC_GRPC_UPDATE_TYPE,
+      grpcSubscribeType: env.RPC_GRPC_SUBSCRIBE_TYPE ?? "hyperliquid_l1_gateway.v2.Position",
+      grpcUpdateType: env.RPC_GRPC_UPDATE_TYPE ?? "hyperliquid_l1_gateway.v2.OrderBookSnapshot",
       grpcPingRequestType: env.RPC_GRPC_PING_REQUEST_TYPE,
       grpcPingResponseType: env.RPC_GRPC_PING_RESPONSE_TYPE,
-      grpcStreamTypes: parseCsvList(env.RPC_GRPC_STREAM_TYPES, ["TRADES", "BOOK_UPDATES"]),
+      grpcStreamTypes: parseCsvList(
+        env.RPC_GRPC_STREAM_TYPES ?? env.DWELLIR_GRPC_STREAMS,
+        ["ORDERBOOK_SNAPSHOT", "FILLS", "BLOCK"]
+      ),
       subscriptions: activeCoins.flatMap((coin) => [
         { method: "subscribe", subscription: { type: "l2Book", coin } },
         { method: "subscribe", subscription: { type: "trades", coin } },
@@ -2547,6 +2749,317 @@ function parseAssetList(value: string | undefined): string[] {
         .filter((entry) => /^[A-Z0-9]+$/.test(entry))
     )
   ];
+}
+
+function isDwellirGrpcConfig(config: ResolvedExchangeStreamConfig): boolean {
+  return (
+    config.transport === "grpc" &&
+    ((config.grpcEndpoint ?? config.streamUrl).includes("dwellir.com") ||
+      (config.grpcService ?? "").startsWith("hyperliquid_l1_gateway."))
+  );
+}
+
+function dwellirGrpcStreams(env: Env): Set<DwellirGrpcStreamKind> {
+  const configured = parseCsvList(env.DWELLIR_GRPC_STREAMS, [
+    "ORDERBOOK_SNAPSHOT",
+    "FILLS",
+    "BLOCK"
+  ]);
+  const streams = new Set<DwellirGrpcStreamKind>();
+
+  for (const entry of configured) {
+    const normalized = entry.trim().toUpperCase();
+    if (normalized === "ORDERBOOK" || normalized === "ORDERBOOK_SNAPSHOT" || normalized === "SNAPSHOTS") {
+      streams.add("ORDERBOOK_SNAPSHOT");
+    } else if (normalized === "FILL" || normalized === "FILLS" || normalized === "TRADES") {
+      streams.add("FILLS");
+    } else if (normalized === "BLOCK" || normalized === "BLOCKS") {
+      streams.add("BLOCK");
+    }
+  }
+
+  return streams.size > 0 ? streams : new Set(["ORDERBOOK_SNAPSHOT", "FILLS"]);
+}
+
+function dwellirPayloadToHyperliquidRawMessages(
+  update: DwellirGrpcPayload,
+  config: ResolvedExchangeStreamConfig,
+  coins: string[]
+): Record<string, unknown>[] {
+  if (update.kind === "BLOCK") {
+    return [];
+  }
+
+  if (update.kind === "ORDERBOOK_SNAPSHOT") {
+    return dwellirOrderbookSnapshotMessagesFromBytes(
+      update.data,
+      coins,
+      update.receivedAt
+    );
+  }
+
+  const decoded = decodeDwellirJsonBytes(update.data);
+  if (decoded === null) {
+    return [];
+  }
+
+  if (update.kind === "FILLS") {
+    return dwellirFillMessages(decoded, config);
+  }
+
+  return [];
+}
+
+function dwellirOrderbookSnapshotMessagesFromBytes(
+  bytes: Uint8Array,
+  coins: string[],
+  receivedAt: string
+): Record<string, unknown>[] {
+  const text = new TextDecoder().decode(bytes);
+  const timestamp = extractDwellirTopLevelField(text, "timestamp") ?? receivedAt;
+  const block = extractDwellirTopLevelField(text, "block");
+  const messages: Record<string, unknown>[] = [];
+
+  for (const coin of coins) {
+    const tupleJson = extractDwellirMarketTupleJson(text, coin.toUpperCase());
+    if (!tupleJson) {
+      continue;
+    }
+
+    const market = parseJson<unknown[]>(tupleJson);
+    if (
+      !Array.isArray(market) ||
+      typeof market[0] !== "string" ||
+      !Array.isArray(market[1])
+    ) {
+      continue;
+    }
+
+    messages.push({
+      channel: "l2Book",
+      data: {
+        coin: market[0].toUpperCase(),
+        time: timestamp,
+        sequence: block,
+        levels: [
+          aggregateDwellirOrders(market[1][0], receivedAt),
+          aggregateDwellirOrders(market[1][1], receivedAt)
+        ]
+      }
+    });
+  }
+
+  if (messages.length > 0) {
+    return messages;
+  }
+
+  const decoded = parseJson<unknown>(text);
+  return decoded === null
+    ? []
+    : dwellirOrderbookSnapshotMessages(decoded, coins, receivedAt);
+}
+
+function extractDwellirMarketTupleJson(text: string, coin: string): string | null {
+  const compactNeedle = `["${coin}",`;
+  let start = text.indexOf(compactNeedle);
+
+  if (start < 0) {
+    const looseNeedle = `"${coin}"`;
+    const coinAt = text.indexOf(looseNeedle);
+    if (coinAt < 0) {
+      return null;
+    }
+    start = text.lastIndexOf("[", coinAt);
+  }
+
+  if (start < 0 || text[start] !== "[") {
+    return null;
+  }
+
+  return extractJsonArrayAt(text, start);
+}
+
+function extractJsonArrayAt(text: string, start: number): string | null {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = start; index < text.length; index += 1) {
+    const char = text[index];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === "\"") {
+      inString = true;
+      continue;
+    }
+
+    if (char === "[") {
+      depth += 1;
+    } else if (char === "]") {
+      depth -= 1;
+      if (depth === 0) {
+        return text.slice(start, index + 1);
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractDwellirTopLevelField(text: string, field: string): string | number | null {
+  const match = new RegExp(`"${field}"\\s*:\\s*("([^"]+)"|[0-9]+)`).exec(text.slice(0, 512));
+  if (!match) {
+    return null;
+  }
+
+  if (match[2] !== undefined) {
+    return match[2];
+  }
+
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function dwellirOrderbookSnapshotMessages(
+  decoded: unknown,
+  coins: string[],
+  receivedAt: string
+): Record<string, unknown>[] {
+  if (isRecord(decoded) && typeof decoded.channel === "string") {
+    return [decoded];
+  }
+
+  if (isRecord(decoded) && Array.isArray(decoded.data)) {
+    const targets = new Set(coins.map((coin) => coin.toUpperCase()));
+    const messages: Record<string, unknown>[] = [];
+    const timestamp = decoded.timestamp ?? receivedAt;
+    const block = decoded.block;
+
+    for (const market of decoded.data) {
+      if (!Array.isArray(market) || typeof market[0] !== "string" || !Array.isArray(market[1])) {
+        continue;
+      }
+
+      const coin = market[0].toUpperCase();
+      if (!targets.has(coin)) {
+        continue;
+      }
+
+      messages.push({
+        channel: "l2Book",
+        data: {
+          coin,
+          time: timestamp,
+          sequence: block,
+          levels: [
+            aggregateDwellirOrders(market[1][0], receivedAt),
+            aggregateDwellirOrders(market[1][1], receivedAt)
+          ]
+        }
+      });
+    }
+
+    return messages;
+  }
+
+  if (isRecord(decoded) && (Array.isArray(decoded.levels) || Array.isArray(decoded.bids))) {
+    return [
+      {
+        channel: "l2Book",
+        data: decoded
+      }
+    ];
+  }
+
+  return [];
+}
+
+function dwellirFillMessages(
+  decoded: unknown,
+  config: ResolvedExchangeStreamConfig
+): Record<string, unknown>[] {
+  if (isRecord(decoded) && typeof decoded.channel === "string") {
+    return [decoded];
+  }
+
+  const fills =
+    Array.isArray(decoded)
+      ? decoded
+      : isRecord(decoded) && Array.isArray(decoded.data)
+        ? decoded.data
+        : isRecord(decoded) && Array.isArray(decoded.fills)
+          ? decoded.fills
+          : [];
+
+  const normalized = fills
+    .filter(isRecord)
+    .map((fill) => ({
+      coin: fill.coin ?? config.instrumentCode?.replace(/-usd$/i, "").toUpperCase(),
+      px: fill.px ?? fill.price ?? fill.limitPx,
+      sz: fill.sz ?? fill.size,
+      side: fill.side,
+      isBuy:
+        typeof fill.isBuy === "boolean"
+          ? fill.isBuy
+          : typeof fill.side === "string"
+            ? fill.side.toUpperCase() === "B" || fill.side.toLowerCase() === "buy"
+            : undefined,
+      time: fill.time ?? fill.timestamp,
+      tid: fill.tid ?? fill.id ?? fill.hash ?? fill.oid
+    }))
+    .filter((fill) => fill.coin && fill.px !== undefined && fill.sz !== undefined);
+
+  return normalized.length > 0 ? [{ channel: "trades", data: normalized }] : [];
+}
+
+function aggregateDwellirOrders(value: unknown, receivedAt: string): Array<{ px: string; sz: string; n: number; updatedAt: string }> {
+  const orders = Array.isArray(value) ? value : [];
+  const byPrice = new Map<string, { size: number; count: number }>();
+
+  for (const order of orders) {
+    if (!isRecord(order)) {
+      continue;
+    }
+
+    const rawPrice = order.limitPx ?? order.px ?? order.price;
+    const rawSize = order.sz ?? order.size;
+    const price = typeof rawPrice === "string" ? rawPrice : String(rawPrice ?? "");
+    const size = Number(rawSize);
+
+    if (!price || !Number.isFinite(size) || size < 0) {
+      continue;
+    }
+
+    const current = byPrice.get(price) ?? { size: 0, count: 0 };
+    current.size += size;
+    current.count += 1;
+    byPrice.set(price, current);
+  }
+
+  return [...byPrice.entries()].map(([price, aggregate]) => ({
+    px: price,
+    sz: String(roundTo(aggregate.size, 8)),
+    n: aggregate.count,
+    updatedAt: receivedAt
+  }));
+}
+
+function decodeDwellirJsonBytes(bytes: Uint8Array): unknown | null {
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return null;
+  }
 }
 
 function parseCsvList(value: string | undefined, fallback: string[]): string[] {
@@ -3174,6 +3687,16 @@ function closeSocket(socket: WebSocket | null, code: number, reason: string): vo
 function readNumber(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function readOptionalNumber(value: string | undefined): number | null {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function roundTo(value: number, decimals: number): number {
+  const factor = 10 ** decimals;
+  return Math.round(value * factor) / factor;
 }
 
 function requireString(value: unknown, field: string): string {

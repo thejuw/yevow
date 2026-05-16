@@ -288,6 +288,7 @@ interface HyperliquidRawIngestPayload {
   streamId?: string;
   source?: "HYPERLIQUID";
   source_exchange?: string;
+  transport?: "websocket" | "grpc";
   exchangeCode?: string;
   instrumentCode?: string;
   sourceWeight?: number;
@@ -7081,7 +7082,7 @@ function createNativeHyperliquidBookTick(input: {
     schemaVersion: "universal-tick.v1",
     source: "HYPERLIQUID",
     source_exchange: input.sourceExchange,
-    transport: "websocket",
+    transport: input.payload.transport ?? "websocket",
     exchangeCode: input.exchangeCode,
     instrumentCode: input.instrumentCode,
     baseAsset: instrument.baseAsset,
@@ -7149,7 +7150,7 @@ function createNativeHyperliquidTradeTick(
     schemaVersion: "universal-tick.v1",
     source: "HYPERLIQUID",
     source_exchange: sourceExchange,
-    transport: "websocket",
+    transport: payload.transport ?? "websocket",
     exchangeCode,
     instrumentCode,
     baseAsset: instrument.baseAsset,
@@ -7207,7 +7208,7 @@ function createNativeHyperliquidFundingTick(
     schemaVersion: "universal-tick.v1",
     source: "HYPERLIQUID",
     source_exchange: sourceExchange,
-    transport: "websocket",
+    transport: payload.transport ?? "websocket",
     exchangeCode,
     instrumentCode,
     baseAsset: instrument.baseAsset,

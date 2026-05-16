@@ -17,6 +17,12 @@ export interface Env {
   CLOCK_SYNC_ALPHA?: string;
   CLOCK_SYNC_MAX_OFFSET_MS?: string;
   HL_WS_URL?: string;
+  DWELLIR_API_KEY?: string;
+  DWELLIR_GRPC_ENDPOINT?: string;
+  DWELLIR_GRPC_STREAMS?: string;
+  DWELLIR_GRPC_START_TIMESTAMP_MS?: string;
+  DWELLIR_GRPC_START_BLOCK_HEIGHT?: string;
+  DWELLIR_MAX_PAYLOAD_BYTES?: string;
   RPC_GRPC_ENDPOINT?: string;
   RPC_GRPC_SERVICE?: string;
   RPC_GRPC_STREAM_METHOD?: string;

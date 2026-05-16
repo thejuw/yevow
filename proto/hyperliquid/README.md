@@ -1,26 +1,23 @@
 # Hyperliquid gRPC Protobufs
 
-Place the provider-supplied Hyperliquid `.proto` files in this directory, then run:
+Place provider-supplied Hyperliquid `.proto` files in this directory, then run:
 
 ```sh
 npm run proto:compile
 ```
 
 The compiler emits `src/types/grpc/hyperliquid.ts`, which is bundled into the
-Cloudflare Worker. This repository does not fabricate an "official" Hyperliquid
-gRPC schema because Hyperliquid's public documentation exposes the native JSON
-WebSocket API, while gRPC access is provider-specific.
+Cloudflare Worker. `dwellir_l1_gateway.proto` is based on Dwellir's published
+Hyperliquid L1 Gateway service definition.
 
-Required runtime settings for gRPC mode:
+Dwellir runtime settings:
 
 - `INGEST_TRANSPORT=grpc`
-- `RPC_GRPC_ENDPOINT=https://<provider-host>/<optional-base-path>`
-- `RPC_AUTH_TOKEN` as a Wrangler secret
-- `RPC_GRPC_SERVICE`, for example `hyperliquid.Streaming`
-- `RPC_GRPC_STREAM_METHOD`, for example `StreamData`
-- `RPC_GRPC_SUBSCRIBE_TYPE`, for example `hyperliquid.SubscribeRequest`
-- `RPC_GRPC_UPDATE_TYPE`, for example `hyperliquid.SubscribeUpdate`
+- `DWELLIR_GRPC_ENDPOINT=https://api-hyperliquid-mainnet-grpc.n.dwellir.com`
+- `DWELLIR_API_KEY` as a Wrangler secret
+- `RPC_GRPC_SERVICE=hyperliquid_l1_gateway.v2.HyperliquidL1Gateway`
+- `DWELLIR_GRPC_STREAMS=ORDERBOOK_SNAPSHOT,FILLS,BLOCK`
 
-If the provider exposes a specialized binary order-book service such as
-`StreamL2Book`, add its proto here and configure a dedicated stream in
-`MARKET_STREAMS`.
+Note: Dwellir's documented gRPC payloads currently wrap Hyperliquid book/fill
+data as JSON-encoded `bytes`. The ingest worker only parses the target market
+tuples from order-book snapshots to avoid materializing the full snapshot.
