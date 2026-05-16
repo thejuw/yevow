@@ -260,9 +260,15 @@ class AMMEngine {
     const bid = reservationPrice - bidHalfSpread;
     const ask = reservationPrice + askHalfSpread;
     const quoteSize = calculateQuoteSize(input);
+    const liquidationCluster = selectLiquidationCluster(input.liquidationHeatmap, input.book);
+    const predatoryOrder = predatoryLiquidationOrder(input, quoteSize, liquidationCluster);
+    const boundaryOnly =
+      Boolean(predatoryOrder) &&
+      Boolean(liquidationCluster?.isCascadeRisk) &&
+      input.toxicityScore >= 0.99;
     const orders: QuoteOrder[] = [];
 
-    if (!input.inventory.stopBid) {
+    if (!boundaryOnly && !input.inventory.stopBid) {
       orders.push({
         clientOrderId: crypto.randomUUID(),
         side: "BID",
@@ -273,7 +279,7 @@ class AMMEngine {
       });
     }
 
-    if (!input.inventory.stopAsk) {
+    if (!boundaryOnly && !input.inventory.stopAsk) {
       orders.push({
         clientOrderId: crypto.randomUUID(),
         side: "ASK",
@@ -284,9 +290,12 @@ class AMMEngine {
       });
     }
 
-    const predatoryOrder = predatoryLiquidationOrder(input, quoteSize);
     if (predatoryOrder) {
       orders.push(predatoryOrder);
+    }
+
+    if (orders.length === 0) {
+      return null;
     }
 
     return {
@@ -433,10 +442,9 @@ function fundingInventoryTargetDelta(input: CroupierInput): number {
 
 function predatoryLiquidationOrder(
   input: CroupierInput,
-  quoteSize: { bid: number; ask: number }
+  quoteSize: { bid: number; ask: number },
+  cluster: LiquidationCascadeCluster | null
 ): QuoteOrder | null {
-  const cluster = selectLiquidationCluster(input.liquidationHeatmap, input.book);
-
   if (!cluster) {
     return null;
   }

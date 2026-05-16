@@ -3333,6 +3333,9 @@ export class TradingEngine {
       });
     }
 
+    const isCascadeShield =
+      profilerResult.signal?.featureVector.signalType === "CASCADE_SHIELD";
+
     if (croupierDecision.pullAllQuotes) {
       this.publish("PULL_ALL_QUOTES", {
         instrumentCode: tick.instrumentCode,
@@ -3349,7 +3352,14 @@ export class TradingEngine {
         croupierDecision.quote.signalId
       );
       if (!options.shadowReplay && this.cachedConfig.TRADING_ENABLED) {
-        this.state.waitUntil(this.dispatchQuote(croupierDecision.quote));
+        const quote = croupierDecision.quote;
+        this.state.waitUntil(
+          isCascadeShield
+            ? this.cancelAllQuotes(tick.instrumentCode, "CASCADE_SHIELD").then(() =>
+                this.dispatchQuote(quote)
+              )
+            : this.dispatchQuote(quote)
+        );
       }
     }
 
@@ -3386,9 +3396,11 @@ export class TradingEngine {
       this.publishProfilerAlert(profilerResult.signal, profilerResult.state);
       await this.acceptAgentSignal(profilerResult.signal, profilerLatencyMs);
       if (
-        profilerResult.signal.featureVector.signalType === "SUSPEND_QUOTES" &&
+        (profilerResult.signal.featureVector.signalType === "SUSPEND_QUOTES" ||
+          profilerResult.signal.featureVector.signalType === "CASCADE_SHIELD") &&
         !options.shadowReplay &&
-        this.cachedConfig.TRADING_ENABLED
+        this.cachedConfig.TRADING_ENABLED &&
+        !croupierDecision.quote
       ) {
         this.state.waitUntil(this.cancelAllQuotes(tick.instrumentCode, "PROFILER_ALERT"));
       }
