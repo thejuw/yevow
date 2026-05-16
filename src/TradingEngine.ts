@@ -33,6 +33,11 @@ import {
 import { planSmartOrderRoute } from "./utils/SOR";
 import { Notifier } from "./utils/Notifier";
 import { evaluateGrpcDrop, isShadowMode } from "./utils/CitadelProtocol";
+import {
+  GhostBook,
+  type GhostBookConfig,
+  type GhostBookObservation
+} from "./utils/GhostBook";
 import type { PerformanceSnapshot } from "./Logger";
 import type {
   AdminConfigUpdate,
@@ -79,6 +84,9 @@ import type {
   ProfilerState,
   ReplayResult,
   RiskLimits,
+  ShadowQueueDecision,
+  ShadowQueueFill,
+  ShadowQueueState,
   TemporaryGovernanceOverride,
   TradeExecution,
   TradeIntent
@@ -157,6 +165,12 @@ const DEFAULT_WHALE_PRINT_Z_THRESHOLD = 5;
 const DEFAULT_QUOTE_HIBERNATE_MS = 3_000;
 const DEFAULT_PAPER_BANKROLL_USD = 5_000;
 const DEFAULT_PAPER_MAX_GHOST_FILLS_PER_MINUTE = 90;
+const DEFAULT_SHADOW_VLO_CAPACITY = 2_048;
+const DEFAULT_SHADOW_VLO_DRIFT_TRADES = 3;
+const DEFAULT_SHADOW_VLO_QUEUE_DEPTH_MULTIPLIER = 1;
+const DEFAULT_SHADOW_VLO_BASE_SPREAD_BPS = 1;
+const DEFAULT_SHADOW_VLO_LATENCY_BUDGET_MS = 5;
+const DEFAULT_SHADOW_VLO_MIN_SIZE = 0.00000001;
 const DEFAULT_VAR_CONFIDENCE_Z = 2.326;
 const TARGET_ASSET_MATRIX = [
   { coin: "BTC", instrumentCode: "btc-usd" },
@@ -399,6 +413,7 @@ export class TradingEngine {
   private readonly governor: Governor;
   private readonly logger: Logger;
   private readonly notifier: Notifier;
+  private readonly ghostBook: GhostBook;
   private readonly profilerAgent: ProfilerAgent;
   private readonly profilerAgents = new Map<string, ProfilerAgent>();
   private readonly heatmapAgent: HeatmapAgent;
@@ -465,6 +480,7 @@ export class TradingEngine {
   ) {
     this.configManager = new ConfigManager(env.CONFIG_STORE);
     this.governor = new Governor(env.CONFIG_STORE);
+    this.ghostBook = new GhostBook(resolveGhostBookConfig(env));
     this.jitterSampleWindow = readPositiveInteger(
       env.JITTER_SAMPLE_WINDOW,
       DEFAULT_JITTER_SAMPLE_WINDOW,
@@ -668,6 +684,7 @@ export class TradingEngine {
       this.bids = hydratedBooks.bids;
       this.asks = hydratedBooks.asks;
       this.bookSync = hydratedBooks.sync;
+      this.ghostBook.hydrate(baseState.shadowQueue);
       this.hydrateProfilerAgents(persistedProfilerState, persistedProfilerStates);
       this.heatmapAgent.hydrate(persistedHeatmapState ?? baseState.liquidationHeatmap);
       this.anomalyDetector.hydrate(persistedAnomalyState);
@@ -755,6 +772,9 @@ export class TradingEngine {
         ),
         riskMetrics: baseState.riskMetrics ?? defaultRiskMetrics(bankroll.equity, now),
         quoteState: baseState.quoteState ?? defaultQuoteState(),
+        shadowQueue:
+          baseState.shadowQueue ??
+          this.ghostBook.snapshot(now),
         lastTradeIntent: baseState.lastTradeIntent ?? null,
         hedge: baseState.hedge ?? defaultHedgeState(),
         janitor: baseState.janitor ?? defaultJanitorState(),
@@ -1225,6 +1245,7 @@ export class TradingEngine {
       hedge: this.engineState.hedge,
       riskMetrics: this.engineState.riskMetrics,
       quoteState: this.engineState.quoteState,
+      shadowQueue: this.engineState.shadowQueue,
       slippage: this.engineState.slippage,
       executionProfile: this.engineState.executionProfile,
       dom: this.engineState.dom,
@@ -1293,6 +1314,7 @@ export class TradingEngine {
           heapRatio
         }
       },
+      shadowQueue: this.engineState.shadowQueue as unknown as JsonValue,
       assetMatrix: this.engineState.assetMatrix as unknown as JsonValue
     };
   }
@@ -1801,6 +1823,7 @@ export class TradingEngine {
       processed_ticks: this.engineState.processedTicks,
       mode: this.engineState.mode,
       quote_state: this.engineState.quoteState.status,
+      shadow_queue: this.engineState.shadowQueue,
       toxicity_score: this.engineState.toxicityScore,
       latency_ms: this.engineState.averageLatency,
       exchange_to_receipt_ms: latestLatency?.networkLatencyMs ?? this.engineState.averageLatency,
@@ -3902,6 +3925,12 @@ export class TradingEngine {
       }
     }
 
+    const shadowQueueState = this.processShadowQueueTick(
+      tick,
+      book,
+      metrics.brainTimestamp,
+      options
+    );
     const domSnapshot = this.getLiquidityWalls(
       tick.instrumentCode,
       metrics.brainTimestamp,
@@ -4112,6 +4141,7 @@ export class TradingEngine {
         updatedAt: metrics.brainTimestamp
       },
       quoteState,
+      shadowQueue: shadowQueueState,
       lastTradeIntent: executionPlan?.intent ?? croupierDecision.intent,
       hedge,
       orderMap: executionPlans.length > 0 && (this.cachedConfig.TRADING_ENABLED || options.shadowReplay)
@@ -4329,6 +4359,310 @@ export class TradingEngine {
     )?.hourlyRate;
 
     return typeof fallback === "number" && Number.isFinite(fallback) ? fallback : 0;
+  }
+
+  private processShadowQueueTick(
+    tick: MarketTick,
+    book: InternalOrderBook,
+    observedAt: string,
+    options: TickHandlingOptions
+  ): ShadowQueueState {
+    if (options.shadowReplay || !book.isSynced || book.midPrice === null || book.midPrice <= 0) {
+      return this.ghostBook.snapshot(observedAt);
+    }
+
+    let observation: GhostBookObservation | null = null;
+
+    if (isTradeTick(tick)) {
+      observation = this.ghostBook.observeTrade(tick, book, observedAt);
+
+      for (const fill of observation.fills) {
+        this.recordShadowQueueGhostFill(fill, tick, book, observedAt);
+      }
+
+      for (const decision of observation.decisions) {
+        const updatedDecision = this.handleShadowQueueDecision(decision, book, observedAt);
+        this.ghostBook.recordDecision(updatedDecision);
+      }
+    }
+
+    this.ghostBook.injectBbo(book, observedAt);
+    const snapshot = this.ghostBook.snapshot(observedAt);
+
+    return observation?.decisions.length
+      ? {
+          ...snapshot,
+          lastDecision: this.ghostBook.snapshot(observedAt).lastDecision
+        }
+      : snapshot;
+  }
+
+  private recordShadowQueueGhostFill(
+    fill: ShadowQueueFill,
+    tick: MarketTick,
+    book: InternalOrderBook,
+    observedAt: string
+  ): void {
+    const trade: TradeExecution = {
+      tradeId: `shadow-queue:${fill.fillId}:${Date.parse(observedAt) || observedAt}`,
+      orderId: fill.fillId,
+      signalId: fill.fillId,
+      venue: book.source_exchange,
+      asset: fill.instrumentCode,
+      side: fill.side,
+      orderType: "LIMIT",
+      price: fill.price,
+      size: fill.size,
+      evAtExecution: 0,
+      slippageBps: 0,
+      resultingPnl: 0,
+      primaryDriver: "PROFILER",
+      fees: 0,
+      status: "GHOST_FILL",
+      exchangeTradeId: fill.fillId,
+      metadata: toJsonValue({
+        schemaVersion: "shadow-queue.fill.v1",
+        queueAhead: fill.queueAhead,
+        p0MidPrice: fill.p0MidPrice,
+        tapePrice: tick.price,
+        tapeSize: tick.size,
+        tapeSide: tick.side,
+        fillTradeSequence: fill.fillTradeSequence,
+        marketKey: book.marketKey,
+        source_exchange: book.source_exchange,
+        virtualOnly: true
+      }) as JsonRecord,
+      executedAt: observedAt
+    };
+
+    this.logger.recordExecution(trade);
+    this.publish("SHADOW_QUEUE_GHOST_FILL", trade as unknown as Record<string, unknown>, fill.fillId);
+  }
+
+  private handleShadowQueueDecision(
+    decision: ShadowQueueDecision,
+    book: InternalOrderBook,
+    observedAt: string
+  ): ShadowQueueDecision {
+    if (decision.action === "NO_EDGE" || decision.dispatchSide === null) {
+      this.logger.info("SHADOW_QUEUE_NO_EDGE", "Virtual fill drift stayed inside one tick", {
+        decisionId: decision.decisionId,
+        fillId: decision.fillId,
+        instrumentCode: decision.instrumentCode,
+        microDrift: decision.microDrift,
+        tickThreshold: decision.tickThreshold,
+        driftTrades: decision.driftTrades
+      });
+      this.publish("SHADOW_QUEUE_NO_EDGE", decision as unknown as Record<string, unknown>, decision.decisionId);
+      return decision;
+    }
+
+    if (decision.decisionLatencyMs > this.engineState.shadowQueue.latencyBudgetMs) {
+      const suppressed = {
+        ...decision,
+        tradeIntentId: null,
+        reason: `${decision.reason} Suppressed because drift decision latency exceeded ${this.engineState.shadowQueue.latencyBudgetMs}ms.`
+      };
+      this.logger.warn("SHADOW_QUEUE_LATENCY_BREACH", "VLO matrix decision exceeded 5ms envelope", {
+        decisionId: decision.decisionId,
+        instrumentCode: decision.instrumentCode,
+        decisionLatencyMs: decision.decisionLatencyMs,
+        latencyBudgetMs: this.engineState.shadowQueue.latencyBudgetMs
+      });
+      this.publish("SHADOW_QUEUE_LATENCY_BREACH", suppressed as unknown as Record<string, unknown>, decision.decisionId);
+      return suppressed;
+    }
+
+    const intent = this.createShadowQueueTradeIntent(decision, book, observedAt);
+    const updatedDecision = {
+      ...decision,
+      tradeIntentId: intent?.intentId ?? null
+    };
+
+    this.logger.traceDecision({
+      decisionId: updatedDecision.decisionId,
+      signalId: updatedDecision.fillId,
+      traceId: `${this.engineState.engineId}:shadow-queue:${updatedDecision.fillId}`,
+      agentName: "PROFILER",
+      targetAgent: "EXECUTIONER",
+      instrumentCode: updatedDecision.instrumentCode,
+      action:
+        updatedDecision.action === "GREEN_LIGHT"
+          ? "EXECUTE"
+          : "SUPERVISOR_ACTION",
+      confidence: Math.min(1, Math.max(0, Math.abs(updatedDecision.microDrift) / Math.max(updatedDecision.tickThreshold, 1e-12))),
+      expectedValue: intent?.expectedValue ?? 0,
+      maxSlippageBps: intent?.maxSlippageBps ?? 0,
+      reasoning: updatedDecision.reason,
+      featureVector: toJsonValue({
+        schemaVersion: "shadow-queue.decision.v1",
+        light: updatedDecision.action,
+        originalSide: updatedDecision.originalSide,
+        dispatchSide: updatedDecision.dispatchSide,
+        p0MidPrice: updatedDecision.p0MidPrice,
+        pnMidPrice: updatedDecision.pnMidPrice,
+        microDrift: updatedDecision.microDrift,
+        driftTrades: updatedDecision.driftTrades,
+        tradeIntentId: updatedDecision.tradeIntentId
+      }) as JsonRecord,
+      riskSnapshot: toJsonValue({
+        quoteState: this.engineState.quoteState.status,
+        inventory: this.engineState.inventory,
+        cachedConfigVersion: this.cachedConfig.version
+      }) as JsonRecord,
+      rawSignal: updatedDecision as unknown as JsonRecord,
+      latencyMs: updatedDecision.decisionLatencyMs,
+      createdAt: observedAt
+    });
+
+    if (!intent) {
+      this.publish("SHADOW_QUEUE_SIGNAL_SUPPRESSED", updatedDecision as unknown as Record<string, unknown>, updatedDecision.decisionId);
+      return updatedDecision;
+    }
+
+    if (updatedDecision.action === "RED_LIGHT") {
+      this.publish("SHADOW_QUEUE_RED_LIGHT", updatedDecision as unknown as Record<string, unknown>, updatedDecision.decisionId);
+      if (this.cachedConfig.TRADING_ENABLED) {
+        this.state.waitUntil(this.cancelAllQuotes(book.instrumentCode, "SHADOW_QUEUE_RED_LIGHT"));
+      }
+    } else {
+      this.publish("SHADOW_QUEUE_GREEN_LIGHT", updatedDecision as unknown as Record<string, unknown>, updatedDecision.decisionId);
+    }
+
+    if (this.cachedConfig.TRADING_ENABLED) {
+      this.state.waitUntil(this.dispatchExecution(intent));
+    }
+
+    return updatedDecision;
+  }
+
+  private createShadowQueueTradeIntent(
+    decision: ShadowQueueDecision,
+    book: InternalOrderBook,
+    observedAt: string
+  ): TradeIntent | null {
+    const action = decision.dispatchSide;
+
+    if (!action || book.midPrice === null || book.midPrice <= 0) {
+      return null;
+    }
+
+    const price = this.shadowQueuePostOnlyPrice(action, book, decision.pnMidPrice);
+    const requestedSize = this.shadowQueueKellySize(action, price, book);
+
+    if (requestedSize <= 0) {
+      return null;
+    }
+
+    const expectedDriftValue = Math.abs(decision.microDrift) * requestedSize;
+    const feeCost = price * requestedSize * Math.max(0, this.cachedConfig.EXCHANGE_FEE_BPS) / 10_000;
+    const expectedValue = roundCrypto(expectedDriftValue - feeCost);
+
+    return {
+      schemaVersion: "trade-intent.v1",
+      intentId: `vlo-intent:${decision.decisionId}`,
+      traceId: `${this.engineState.engineId}:shadow-queue:${decision.fillId}`,
+      instrumentCode: book.instrumentCode,
+      marketKey: book.marketKey,
+      source_exchange: book.source_exchange,
+      direction: action === "BUY" ? "LONG" : "SHORT",
+      action,
+      orderType: "LIMIT",
+      postOnly: true,
+      timeInForce: "GTC",
+      intendedPrice: price,
+      expectedPrice: price,
+      requestedSize,
+      approvedSize: requestedSize,
+      probabilityWin: decision.action === "GREEN_LIGHT" ? 0.56 : 0.53,
+      probabilityLoss: decision.action === "GREEN_LIGHT" ? 0.44 : 0.47,
+      profit: expectedDriftValue,
+      loss: Math.max(expectedDriftValue, (book.spread ?? book.tickSize) * requestedSize),
+      executionCosts: feeCost,
+      adverseSelectionCost: decision.action === "RED_LIGHT" ? 0 : this.engineState.toxicityScore,
+      expectedValue,
+      minEvThreshold: Number.NEGATIVE_INFINITY,
+      maxSlippageBps: Math.max(1, book.spreadBps ?? this.engineState.shadowQueue.baseSpreadBps),
+      confidence: Math.min(1, Math.max(0.01, Math.abs(decision.microDrift) / Math.max(book.tickSize, 1e-12))),
+      rationale:
+        decision.action === "GREEN_LIGHT"
+          ? `VLO Green Light: post-fill drift confirmed ${decision.originalSide}; fractional Kelly post-only deployment.`
+          : `VLO Red Light: adverse post-fill drift inverted ${decision.originalSide}; AS skew bypassed for signal inversion.`,
+      createdAt: observedAt
+    };
+  }
+
+  private shadowQueuePostOnlyPrice(
+    action: "BUY" | "SELL",
+    book: InternalOrderBook,
+    pnMidPrice: number
+  ): number {
+    const tickSize = Math.max(book.tickSize, DEFAULT_ORDER_BOOK_TICK_SIZE);
+    const baseSpread = Math.max(
+      book.spread ?? 0,
+      pnMidPrice * this.engineState.shadowQueue.baseSpreadBps / 10_000,
+      tickSize
+    );
+
+    if (action === "BUY") {
+      const raw = Math.max(tickSize, pnMidPrice - baseSpread);
+      const bounded =
+        book.bestAsk !== null ? Math.min(raw, Math.max(tickSize, book.bestAsk - tickSize)) : raw;
+      return normalizePriceToTick(bounded, tickSize, "FLOOR");
+    }
+
+    const raw = pnMidPrice + baseSpread;
+    const bounded =
+      book.bestBid !== null ? Math.max(raw, book.bestBid + tickSize) : raw;
+    return normalizePriceToTick(bounded, tickSize, "CEIL");
+  }
+
+  private shadowQueueKellySize(
+    action: "BUY" | "SELL",
+    price: number,
+    book: InternalOrderBook
+  ): number {
+    if (!Number.isFinite(price) || price <= 0) {
+      return 0;
+    }
+
+    const equity = Math.max(0, this.engineState.bankroll.equity);
+    const maxPositionPct =
+      this.cachedConfig.MAX_POSITION_PCT > 0
+        ? this.cachedConfig.MAX_POSITION_PCT
+        : readPositiveNumber(this.env.MAX_POSITION_PCT, DEFAULT_MAX_POSITION_PCT);
+    const kellyFraction = Math.min(
+      1,
+      Math.max(
+        0,
+        this.cachedConfig.KELLY_FRACTION > 0
+          ? this.cachedConfig.KELLY_FRACTION
+          : readPositiveNumber(this.env.KELLY_FRACTION, 0.5)
+      )
+    );
+    const inventory = this.engineState.inventory;
+    const inventoryRoom =
+      action === "BUY"
+        ? Math.max(0, inventory.maxInventoryUnits - inventory.netDelta)
+        : Math.max(0, inventory.maxInventoryUnits + inventory.netDelta);
+    const levels = action === "BUY" ? book.bids : book.asks;
+    const depthCap = Math.max(
+      DEFAULT_SHADOW_VLO_MIN_SIZE,
+      (levels[0]?.size ?? 0) * 0.02
+    );
+    const riskBudgetUsd =
+      equity *
+      maxPositionPct *
+      kellyFraction *
+      this.engineState.location.positionSizeMultiplier;
+    const budgetSize = riskBudgetUsd > 0 ? riskBudgetUsd / price : 0;
+    const bounded = Math.min(
+      Math.max(0, budgetSize),
+      Math.max(0, inventoryRoom),
+      depthCap
+    );
+
+    return bounded > 0 ? roundCrypto(Math.max(DEFAULT_SHADOW_VLO_MIN_SIZE, bounded)) : 0;
   }
 
   private updateLeadLagMetrics(
@@ -7905,6 +8239,7 @@ function defaultEngineState(engineId: string): EngineState {
     inventory: defaultInventoryState(DEFAULT_MAX_INVENTORY_UNITS),
     riskMetrics: defaultRiskMetrics(0, now),
     quoteState: defaultQuoteState(),
+    shadowQueue: defaultShadowQueueState(null),
     lastTradeIntent: null,
     hedge: defaultHedgeState(),
     janitor: defaultJanitorState(),
@@ -8363,6 +8698,28 @@ function defaultQuoteState(): EngineState["quoteState"] {
     suspendedUntil: null,
     lastQuote: null,
     updatedAt: null
+  };
+}
+
+function defaultShadowQueueState(observedAt: string | null): ShadowQueueState {
+  return {
+    schemaVersion: "shadow-queue.v1",
+    capacity: DEFAULT_SHADOW_VLO_CAPACITY,
+    activeOrders: 0,
+    pendingDrifts: 0,
+    ghostFills: 0,
+    greenLights: 0,
+    redLights: 0,
+    noEdgeSignals: 0,
+    invertedSignals: 0,
+    confirmedSignals: 0,
+    driftTradeDelay: DEFAULT_SHADOW_VLO_DRIFT_TRADES,
+    latencyBudgetMs: DEFAULT_SHADOW_VLO_LATENCY_BUDGET_MS,
+    baseSpreadBps: DEFAULT_SHADOW_VLO_BASE_SPREAD_BPS,
+    queueDepthMultiplier: DEFAULT_SHADOW_VLO_QUEUE_DEPTH_MULTIPLIER,
+    lastFill: null,
+    lastDecision: null,
+    updatedAt: observedAt
   };
 }
 
@@ -9058,6 +9415,22 @@ function priceFromKey(key: number): number {
 
 function roundCrypto(value: number): number {
   return roundMetric(value, CRYPTO_DECIMAL_PLACES);
+}
+
+function normalizePriceToTick(
+  value: number,
+  tickSize: number,
+  mode: "FLOOR" | "CEIL"
+): number {
+  const normalizedTick = Number.isFinite(tickSize) && tickSize > 0
+    ? tickSize
+    : DEFAULT_ORDER_BOOK_TICK_SIZE;
+  const scaled =
+    mode === "FLOOR"
+      ? Math.floor(value / normalizedTick)
+      : Math.ceil(value / normalizedTick);
+
+  return roundCrypto(Math.max(normalizedTick, scaled * normalizedTick));
 }
 
 function roundMetric(value: number, decimalPlaces: number): number {
@@ -9857,6 +10230,41 @@ function readBoundedNumber(
   return Math.min(maximum, Math.max(minimum, parsed));
 }
 
+function resolveGhostBookConfig(env: Env): GhostBookConfig {
+  return {
+    capacity: readPositiveInteger(
+      env.SHADOW_VLO_CAPACITY,
+      DEFAULT_SHADOW_VLO_CAPACITY,
+      128,
+      16_384
+    ),
+    driftTradeDelay: readPositiveInteger(
+      env.SHADOW_VLO_DRIFT_TRADES,
+      DEFAULT_SHADOW_VLO_DRIFT_TRADES,
+      1,
+      100
+    ),
+    queueDepthMultiplier: readBoundedNumber(
+      env.SHADOW_VLO_QUEUE_DEPTH_MULTIPLIER,
+      DEFAULT_SHADOW_VLO_QUEUE_DEPTH_MULTIPLIER,
+      0,
+      10
+    ),
+    baseSpreadBps: readPositiveNumber(
+      env.SHADOW_VLO_BASE_SPREAD_BPS,
+      DEFAULT_SHADOW_VLO_BASE_SPREAD_BPS
+    ),
+    latencyBudgetMs: readPositiveNumber(
+      env.SHADOW_VLO_LATENCY_BUDGET_MS,
+      DEFAULT_SHADOW_VLO_LATENCY_BUDGET_MS
+    ),
+    minSize: readPositiveNumber(
+      env.SHADOW_VLO_MIN_SIZE,
+      DEFAULT_SHADOW_VLO_MIN_SIZE
+    )
+  };
+}
+
 function clampInteger(
   value: string | null,
   fallback: number,
@@ -10022,6 +10430,15 @@ function isInformationalTick(tick: MarketTick): boolean {
     commodity === "TRADE" ||
     commodity === "FUNDING"
   );
+}
+
+function isTradeTick(tick: MarketTick): boolean {
+  const eventType =
+    typeof tick.raw?.eventType === "string" ? tick.raw.eventType.toLowerCase() : "";
+  const commodity =
+    typeof tick.raw?.commodity === "string" ? tick.raw.commodity.toUpperCase() : "";
+
+  return eventType === "trade" || commodity === "TRADE";
 }
 
 function shouldAggregateBusTelemetry(type: string): boolean {

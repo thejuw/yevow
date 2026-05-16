@@ -167,6 +167,58 @@ export interface AssetRuntimeState {
   updatedAt: string | null;
 }
 
+export type ShadowQueueLight = "IDLE" | "GREEN_LIGHT" | "RED_LIGHT" | "NO_EDGE";
+
+export interface ShadowQueueFill {
+  fillId: string;
+  instrumentCode: string;
+  side: "BUY" | "SELL";
+  price: number;
+  size: number;
+  queueAhead: number;
+  p0MidPrice: number;
+  fillTradeSequence: number;
+  filledAt: string;
+}
+
+export interface ShadowQueueDecision {
+  decisionId: string;
+  fillId: string;
+  instrumentCode: string;
+  originalSide: "BUY" | "SELL";
+  action: ShadowQueueLight;
+  dispatchSide: "BUY" | "SELL" | null;
+  p0MidPrice: number;
+  pnMidPrice: number;
+  microDrift: number;
+  driftTrades: number;
+  tickThreshold: number;
+  decisionLatencyMs: number;
+  tradeIntentId: string | null;
+  reason: string;
+  decidedAt: string;
+}
+
+export interface ShadowQueueState {
+  schemaVersion: "shadow-queue.v1";
+  capacity: number;
+  activeOrders: number;
+  pendingDrifts: number;
+  ghostFills: number;
+  greenLights: number;
+  redLights: number;
+  noEdgeSignals: number;
+  invertedSignals: number;
+  confirmedSignals: number;
+  driftTradeDelay: number;
+  latencyBudgetMs: number;
+  baseSpreadBps: number;
+  queueDepthMultiplier: number;
+  lastFill: ShadowQueueFill | null;
+  lastDecision: ShadowQueueDecision | null;
+  updatedAt: string | null;
+}
+
 export type LiquidationSide = "LONG" | "SHORT" | "UNKNOWN";
 
 export interface LiquidationHeatmapLevel {
@@ -299,6 +351,7 @@ export interface EngineState {
     reason: string | null;
     suspendedUntil: string | null;
   };
+  shadowQueue?: ShadowQueueState;
   executionProfile: {
     status: "STABLE" | "UNSTABLE";
     jitterMs: number;
@@ -500,6 +553,7 @@ export interface DashboardPulse {
   latency_ms: number;
   exchange_to_receipt_ms?: number;
   jitter_ms: number;
+  shadow_queue?: ShadowQueueState;
   toxicity_score: number;
   regime: string;
   regimeCoefficient: number;

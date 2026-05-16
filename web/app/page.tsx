@@ -335,6 +335,8 @@ export default function CommandCenterPage() {
     executionSettings?.shadowMode === true ||
     String(executionSettings?.shadowMode ?? process.env.NEXT_PUBLIC_SHADOW_MODE ?? "false")
       .toLowerCase() === "true";
+  const shadowQueue = engineState?.shadowQueue ?? pulse?.shadow_queue ?? null;
+  const shadowQueueLight = shadowQueue?.lastDecision?.action ?? "IDLE";
 
   const stateRows = useMemo(
     () => flattenState(engineState ?? {}).filter(([key]) => isVisibleStateRow(key)),
@@ -820,6 +822,46 @@ export default function CommandCenterPage() {
           <Metric label="Jitter" value={`${compact.format(pulse?.jitter_ms ?? engineState?.executionProfile.jitterMs ?? 0)}ms`} />
           <Metric label="VPIN" value={compact.format(pulse?.toxicity_score ?? engineState?.toxicityScore ?? 0)} />
           <Metric label="Quotes" value={engineState?.quoteState.status ?? "n/a"} />
+        </section>
+
+        <section className="shadow-queue-panel glass">
+          <div className="panel-title">
+            <CircleDot size={17} />
+            <span>Shadow Queue Matrix</span>
+            <strong className={`shadow-light ${shadowQueueLight.toLowerCase()}`}>
+              {shadowQueueLight.replace("_", " ")}
+            </strong>
+          </div>
+          <div className="trade-summary">
+            <Metric label="VLO Active" value={compact.format(shadowQueue?.activeOrders ?? 0)} />
+            <Metric label="Pending Drift" value={compact.format(shadowQueue?.pendingDrifts ?? 0)} />
+            <Metric label="Tape Ghost Fills" value={compact.format(shadowQueue?.ghostFills ?? 0)} />
+            <Metric label="Green Lights" value={compact.format(shadowQueue?.greenLights ?? 0)} />
+            <Metric label="Red Lights" value={compact.format(shadowQueue?.redLights ?? 0)} />
+            <Metric label="Latency Budget" value={`${compact.format(shadowQueue?.latencyBudgetMs ?? 5)}ms`} />
+          </div>
+          <div className="shadow-queue-readout">
+            <span>
+              Last fill{" "}
+              <strong>
+                {shadowQueue?.lastFill
+                  ? `${shadowQueue.lastFill.side} ${shadowQueue.lastFill.instrumentCode} @ ${currency.format(shadowQueue.lastFill.price)}`
+                  : "none"}
+              </strong>
+            </span>
+            <span>
+              Drift{" "}
+              <strong>
+                {shadowQueue?.lastDecision
+                  ? `${compact.format(shadowQueue.lastDecision.microDrift)} over ${shadowQueue.lastDecision.driftTrades} trades`
+                  : "waiting"}
+              </strong>
+            </span>
+            <span>
+              Intent{" "}
+              <strong>{shadowQueue?.lastDecision?.tradeIntentId ? "DISPATCHED" : "n/a"}</strong>
+            </span>
+          </div>
         </section>
 
         <section className="liquidation-panel glass">
