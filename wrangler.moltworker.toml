@@ -1,0 +1,28 @@
+name = "sovereign-sigma-moltworker"
+main = "src/MoltworkerSupervisorWorker.ts"
+compatibility_date = "2025-04-01"
+
+[[kv_namespaces]]
+binding = "CONFIG_STORE"
+id = "49fe0b24ba1d40209e5d4fa849144dd2"
+preview_id = "01652227040f4c59ab9256d0e251ba23"
+
+[triggers]
+crons = ["*/1 * * * *"]
+
+[placement]
+mode = "smart"
+
+[vars]
+MOLTWORKER_GATEWAY_URL = "https://api.yevow.co"
+MOLTWORKER_SUBJECT = "moltworker-supervisor"
+MOLTWORKER_MODE = "AUTONOMOUS"
+MOLTWORKER_STRATEGIC_INTENT = "Continuous external supervisor heartbeat and integrity watch."
+MOLTWORKER_REQUEST_TIMEOUT_MS = "2500"
+MOLTWORKER_SUPERVISOR_MAX_AGE_MS = "180000"
+MOLTWORKER_HEARTBEAT_STATUS_TTL_SECONDS = "900"
+
+# Secrets are intentionally excluded from source control/config values.
+# Provision them with:
+#   wrangler secret put MOLTWORKER_ADMIN_PASSWORD -c wrangler.moltworker.toml
+#   wrangler secret put MOLTWORKER_RUN_TOKEN -c wrangler.moltworker.toml

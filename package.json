@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "deploy:moltworker": "wrangler deploy -c wrangler.moltworker.toml",
     "proto:compile": "node scripts/compile-protos.mjs",
     "test:engine": "vitest run",
     "tune:parameters": "tsx scripts/tune_parameters.ts",
