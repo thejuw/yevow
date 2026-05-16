@@ -30,8 +30,8 @@ export const defaultConfig: GlobalRiskConfig = {
   AM_VPIN_CRITICAL_THRESHOLD: 0.85,
   AM_VPIN_OBI_DEPTH: 5,
   AM_VPIN_CRITICAL_OBI: 0.8,
-  AM_VPIN_CONTESTED_SPREAD_MULTIPLIER: 1.5,
-  AM_VPIN_TOXIC_SPREAD_MULTIPLIER: 3,
+  AM_VPIN_CONTESTED_SPREAD_MULTIPLIER: 1,
+  AM_VPIN_TOXIC_SPREAD_MULTIPLIER: 1,
   AM_VPIN_QUOTE_HALT_MS: 60_000,
   updatedAt: "1970-01-01T00:00:00.000Z",
   updatedBy: "system-default",
@@ -340,14 +340,8 @@ function normalizeConfig(value: Partial<GlobalRiskConfig>): GlobalRiskConfig {
       1,
       defaultConfig.AM_VPIN_CRITICAL_OBI
     ),
-    AM_VPIN_CONTESTED_SPREAD_MULTIPLIER: positiveNumber(
-      value.AM_VPIN_CONTESTED_SPREAD_MULTIPLIER,
-      defaultConfig.AM_VPIN_CONTESTED_SPREAD_MULTIPLIER
-    ),
-    AM_VPIN_TOXIC_SPREAD_MULTIPLIER: positiveNumber(
-      value.AM_VPIN_TOXIC_SPREAD_MULTIPLIER,
-      defaultConfig.AM_VPIN_TOXIC_SPREAD_MULTIPLIER
-    ),
+    AM_VPIN_CONTESTED_SPREAD_MULTIPLIER: 1,
+    AM_VPIN_TOXIC_SPREAD_MULTIPLIER: 1,
     AM_VPIN_QUOTE_HALT_MS: positiveInteger(
       value.AM_VPIN_QUOTE_HALT_MS,
       defaultConfig.AM_VPIN_QUOTE_HALT_MS

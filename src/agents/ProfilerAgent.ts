@@ -27,8 +27,6 @@ const DEFAULT_NORMAL_THRESHOLD = 0.65;
 const DEFAULT_TOXIC_THRESHOLD = 0.75;
 const DEFAULT_CRITICAL_THRESHOLD = 0.85;
 const DEFAULT_CRITICAL_OBI = 0.8;
-const DEFAULT_CONTESTED_SPREAD_MULTIPLIER = 1.5;
-const DEFAULT_TOXIC_SPREAD_MULTIPLIER = 3;
 const DEFAULT_CRITICAL_HALT_MS = 60_000;
 const VOLUME_EPSILON = 0.00000001;
 
@@ -44,8 +42,6 @@ export interface ProfilerAgentConfig {
   toxicThreshold?: number;
   criticalThreshold?: number;
   criticalObi?: number;
-  contestedSpreadMultiplier?: number;
-  toxicSpreadMultiplier?: number;
   criticalHaltMs?: number;
 }
 
@@ -90,8 +86,6 @@ export class ProfilerAgent {
   private toxicThreshold: number;
   private criticalThreshold: number;
   private criticalObi: number;
-  private contestedSpreadMultiplier: number;
-  private toxicSpreadMultiplier: number;
   private criticalHaltMs: number;
   private readonly whalePrintZThreshold: number;
   private readonly quoteHibernateMs: number;
@@ -142,14 +136,6 @@ export class ProfilerAgent {
       0,
       1
     );
-    this.contestedSpreadMultiplier = positiveNumber(
-      config.contestedSpreadMultiplier,
-      DEFAULT_CONTESTED_SPREAD_MULTIPLIER
-    );
-    this.toxicSpreadMultiplier = positiveNumber(
-      config.toxicSpreadMultiplier,
-      DEFAULT_TOXIC_SPREAD_MULTIPLIER
-    );
     this.criticalHaltMs = positiveInteger(
       config.criticalHaltMs,
       DEFAULT_CRITICAL_HALT_MS
@@ -199,14 +185,6 @@ export class ProfilerAgent {
     this.toxicThreshold = clamp(config.AM_VPIN_TOXIC_THRESHOLD, 0, 1);
     this.criticalThreshold = clamp(config.AM_VPIN_CRITICAL_THRESHOLD, 0, 1);
     this.criticalObi = clamp(config.AM_VPIN_CRITICAL_OBI, 0, 1);
-    this.contestedSpreadMultiplier = positiveNumber(
-      config.AM_VPIN_CONTESTED_SPREAD_MULTIPLIER,
-      this.contestedSpreadMultiplier
-    );
-    this.toxicSpreadMultiplier = positiveNumber(
-      config.AM_VPIN_TOXIC_SPREAD_MULTIPLIER,
-      this.toxicSpreadMultiplier
-    );
     this.criticalHaltMs = positiveInteger(
       config.AM_VPIN_QUOTE_HALT_MS,
       this.criticalHaltMs
@@ -538,8 +516,6 @@ export class ProfilerAgent {
       toxicThreshold: this.toxicThreshold,
       criticalThreshold: this.criticalThreshold,
       criticalObi: this.criticalObi,
-      contestedSpreadMultiplier: this.contestedSpreadMultiplier,
-      toxicSpreadMultiplier: this.toxicSpreadMultiplier,
       criticalHaltMs: this.criticalHaltMs
     });
 
@@ -611,7 +587,7 @@ export class ProfilerAgent {
     context: ProfilerContext,
     consensus: AmVpinConsensus
   ): AgentSignal {
-    const isCritical = consensus.state === "CRITICAL";
+    const isCritical = consensus.haltMs !== null;
     const suspendedUntil = isCritical
       ? this.state.quoteHaltUntil ??
         new Date(Date.parse(context.observedAt) + this.criticalHaltMs).toISOString()
@@ -623,14 +599,14 @@ export class ProfilerAgent {
       sourceAgent: "PROFILER",
       targetAgent: "CROUPIER",
       instrumentCode: tick.instrumentCode,
-      action: isCritical ? "PAUSE" : "REDUCE",
+      action: "PAUSE",
       confidence: clamp(this.state.amVpinScore, 0, 1),
-      horizonMs: isCritical ? this.criticalHaltMs : 5_000,
+      horizonMs: this.criticalHaltMs,
       expectedValue: -this.state.amVpinScore,
-      maxSlippageBps: consensus.state === "CONTESTED" ? 15 : isCritical ? 100 : 50,
+      maxSlippageBps: 100,
       rationale:
         `AM-VPIN ${this.state.amVpinScore.toFixed(4)} with OBI ` +
-        `${this.state.obi === null ? "n/a" : this.state.obi.toFixed(4)} classified ${consensus.state}.`,
+        `${this.state.obi === null ? "n/a" : this.state.obi.toFixed(4)} breached binary toxicity; evacuate resting quotes.`,
       featureVector: compactJsonRecord({
         signalType: `AM_VPIN_${consensus.state}`,
         am_vpin: this.state.amVpinScore,
@@ -649,11 +625,7 @@ export class ProfilerAgent {
         suspendedUntil
       }),
       riskContext: compactJsonRecord({
-        recommendation: isCritical
-          ? "CANCEL_ALL_QUOTES_AND_HALT_60S"
-          : consensus.state === "TOXIC"
-            ? "WIDEN_3X_AND_SHIFT_RESERVATION_AWAY_FROM_PRESSURE"
-            : "MAINTAIN_QUOTES_WITH_1_5X_SPREAD",
+        recommendation: "CANCEL_ALL_QUOTES_AND_HALT_60S",
         structuralConsensus: consensus.structuralConsensus,
         normalThreshold: this.normalThreshold,
         toxicThreshold: this.toxicThreshold,
@@ -1252,8 +1224,6 @@ function classifyToxicity(input: {
   toxicThreshold: number;
   criticalThreshold: number;
   criticalObi: number;
-  contestedSpreadMultiplier: number;
-  toxicSpreadMultiplier: number;
   criticalHaltMs: number;
 }): AmVpinConsensus {
   const pressureSign = signOf(input.directionalImbalance);
@@ -1274,34 +1244,12 @@ function classifyToxicity(input: {
     };
   }
 
-  if (input.amVpin >= input.criticalThreshold && Math.abs(input.obi ?? 0) >= input.criticalObi) {
-    return {
-      state: "CRITICAL",
-      pressureSide,
-      spreadMultiplier: input.toxicSpreadMultiplier,
-      reservationShiftBps: pressureSign === 0 ? 0 : 12,
-      haltMs: input.criticalHaltMs,
-      structuralConsensus
-    };
-  }
-
-  if (input.amVpin >= input.toxicThreshold && structuralConsensus) {
-    return {
-      state: "TOXIC",
-      pressureSide,
-      spreadMultiplier: input.toxicSpreadMultiplier,
-      reservationShiftBps: 8,
-      haltMs: null,
-      structuralConsensus
-    };
-  }
-
   return {
-    state: "CONTESTED",
+    state: "CRITICAL",
     pressureSide,
-    spreadMultiplier: input.contestedSpreadMultiplier,
+    spreadMultiplier: 1,
     reservationShiftBps: 0,
-    haltMs: null,
+    haltMs: input.criticalHaltMs,
     structuralConsensus
   };
 }

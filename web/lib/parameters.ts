@@ -185,24 +185,6 @@ export const PARAMETER_MATRIX: ParameterDescriptor[] = [
     step: 0.001
   },
   {
-    key: "AM_VPIN_CONTESTED_SPREAD_MULTIPLIER",
-    label: "Contested Spread",
-    group: "Profiler",
-    kind: "number",
-    min: 1,
-    max: 10,
-    step: 0.01
-  },
-  {
-    key: "AM_VPIN_TOXIC_SPREAD_MULTIPLIER",
-    label: "Toxic Spread",
-    group: "Profiler",
-    kind: "number",
-    min: 1,
-    max: 20,
-    step: 0.01
-  },
-  {
     key: "AM_VPIN_QUOTE_HALT_MS",
     label: "Critical Halt",
     group: "Profiler",

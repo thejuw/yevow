@@ -16,6 +16,7 @@ import {
 } from "./utils/TradingEngineStub";
 import type {
   Env,
+  AgentSignal,
   ExchangeStreamConfig,
   ExchangeStreamHealth,
   IngestHealth,
@@ -45,6 +46,12 @@ const DEFAULT_DWELLIR_GRPC_FILLS_WATCHDOG_TIMEOUT_MS = 60_000;
 const DEFAULT_DWELLIR_GRPC_START_LOOKBACK_MS = 1_000;
 const DEFAULT_DWELLIR_GRPC_FORWARD_MAX_AGE_MS = 5_000;
 const NORMAL_RECYCLE_LOG_THROTTLE_MS = 60_000;
+const DEFAULT_HAWKES_BASELINE_MU = 0.1;
+const DEFAULT_HAWKES_JUMP_BETA = 0.9;
+const DEFAULT_HAWKES_DECAY_ALPHA = 2.2;
+const DEFAULT_HAWKES_THRESHOLD_QUANTILE = 0.95;
+const DEFAULT_HAWKES_SIGNAL_COOLDOWN_MS = 60_000;
+const HAWKES_WINDOW_SECONDS = 3_600;
 const SNAPSHOT_SEQUENCE_FALLBACK_SEED = "snapshot";
 const DEFAULT_SOURCE_WEIGHT = 1;
 const DEFAULT_CLOCK_SYNC_ALPHA = 0.1;
@@ -121,7 +128,181 @@ interface HyperliquidBookLevelSet {
   asks: Set<string>;
 }
 
+type HawkesFlowSide = "BUY" | "SELL" | "UNKNOWN";
+
+interface HawkesFlowObservation {
+  triggered: boolean;
+  instrumentCode: string;
+  side: HawkesFlowSide;
+  pullSide: "BID" | "ASK" | "BOTH";
+  size: number;
+  intensity: number;
+  threshold: number;
+  confidence: number;
+  baselineMu: number;
+  jumpBeta: number;
+  decayAlpha: number;
+  observedAtMs: number;
+  receivedAt: string;
+  cooldownMs: number;
+}
+
+interface HawkesFlowTrackerConfig {
+  baselineMu: number;
+  jumpBeta: number;
+  decayAlpha: number;
+  thresholdQuantile: number;
+  signalCooldownMs: number;
+}
+
+interface HawkesInstrumentState {
+  excitation: number;
+  lastEventMs: number | null;
+  sampleValues: Float32Array;
+  sampleTimes: Float64Array;
+  scratch: Float32Array;
+  sampleIndex: number;
+  sampleCount: number;
+  lastSampleSecond: number;
+  lastThreshold: number;
+  lastSignalMs: number;
+}
+
 const seenNewsItems = new Map<string, number>();
+
+class HawkesFlowTracker {
+  private readonly states = new Map<string, HawkesInstrumentState>();
+  private readonly baselineMu: number;
+  private readonly jumpBeta: number;
+  private readonly decayAlpha: number;
+  private readonly thresholdQuantile: number;
+  private readonly signalCooldownMs: number;
+
+  constructor(config: HawkesFlowTrackerConfig) {
+    this.baselineMu = positiveConfigNumber(config.baselineMu, DEFAULT_HAWKES_BASELINE_MU);
+    this.jumpBeta = positiveConfigNumber(config.jumpBeta, DEFAULT_HAWKES_JUMP_BETA);
+    this.decayAlpha = positiveConfigNumber(config.decayAlpha, DEFAULT_HAWKES_DECAY_ALPHA);
+    this.thresholdQuantile = clampNumber(
+      config.thresholdQuantile,
+      0.5,
+      0.999,
+      DEFAULT_HAWKES_THRESHOLD_QUANTILE
+    );
+    this.signalCooldownMs = positiveConfigNumber(
+      config.signalCooldownMs,
+      DEFAULT_HAWKES_SIGNAL_COOLDOWN_MS
+    );
+  }
+
+  observe(input: {
+    instrumentCode: string;
+    side: HawkesFlowSide;
+    size: number;
+    observedAtMs: number;
+    receivedAt: string;
+  }): HawkesFlowObservation {
+    const observedAtMs = Number.isFinite(input.observedAtMs)
+      ? input.observedAtMs
+      : Date.parse(input.receivedAt);
+    const state = this.stateFor(input.instrumentCode);
+    const dtSeconds = state.lastEventMs === null
+      ? 0
+      : Math.max(0, (observedAtMs - state.lastEventMs) / 1_000);
+    const decay = Math.exp(-this.decayAlpha * dtSeconds);
+    const sizeScale = Math.max(1, Math.log1p(Math.max(0, input.size)));
+
+    state.excitation = state.excitation * decay + this.jumpBeta * sizeScale;
+    state.lastEventMs = observedAtMs;
+    const intensity = this.baselineMu + state.excitation;
+    const second = Math.floor(observedAtMs / 1_000);
+
+    if (second !== state.lastSampleSecond) {
+      this.recordSample(state, intensity, observedAtMs);
+      state.lastSampleSecond = second;
+      state.lastThreshold = this.quantile(state);
+    }
+
+    const threshold = Math.max(state.lastThreshold, this.baselineMu + this.jumpBeta);
+    const cooldownOpen = observedAtMs - state.lastSignalMs >= this.signalCooldownMs;
+    const triggered =
+      state.sampleCount >= 30 &&
+      cooldownOpen &&
+      input.side !== "UNKNOWN" &&
+      intensity > threshold;
+
+    if (triggered) {
+      state.lastSignalMs = observedAtMs;
+    }
+
+    return {
+      triggered,
+      instrumentCode: input.instrumentCode,
+      side: input.side,
+      pullSide: input.side === "BUY" ? "ASK" : input.side === "SELL" ? "BID" : "BOTH",
+      size: input.size,
+      intensity,
+      threshold,
+      confidence: clampNumber(intensity / Math.max(threshold, 1e-9) - 1, 0, 1, 0),
+      baselineMu: this.baselineMu,
+      jumpBeta: this.jumpBeta,
+      decayAlpha: this.decayAlpha,
+      observedAtMs,
+      receivedAt: input.receivedAt,
+      cooldownMs: this.signalCooldownMs
+    };
+  }
+
+  private stateFor(instrumentCode: string): HawkesInstrumentState {
+    const existing = this.states.get(instrumentCode);
+    if (existing) {
+      return existing;
+    }
+
+    const created: HawkesInstrumentState = {
+      excitation: 0,
+      lastEventMs: null,
+      sampleValues: new Float32Array(HAWKES_WINDOW_SECONDS),
+      sampleTimes: new Float64Array(HAWKES_WINDOW_SECONDS),
+      scratch: new Float32Array(HAWKES_WINDOW_SECONDS),
+      sampleIndex: 0,
+      sampleCount: 0,
+      lastSampleSecond: -1,
+      lastThreshold: 0,
+      lastSignalMs: 0
+    };
+    this.states.set(instrumentCode, created);
+    return created;
+  }
+
+  private recordSample(state: HawkesInstrumentState, intensity: number, observedAtMs: number): void {
+    state.sampleValues[state.sampleIndex] = intensity;
+    state.sampleTimes[state.sampleIndex] = observedAtMs;
+    state.sampleIndex = (state.sampleIndex + 1) % HAWKES_WINDOW_SECONDS;
+    state.sampleCount = Math.min(HAWKES_WINDOW_SECONDS, state.sampleCount + 1);
+  }
+
+  private quantile(state: HawkesInstrumentState): number {
+    const cutoffMs = (state.lastEventMs ?? Date.now()) - 3_600_000;
+    let count = 0;
+
+    for (let index = 0; index < state.sampleCount; index += 1) {
+      if (state.sampleTimes[index] >= cutoffMs) {
+        state.scratch[count] = state.sampleValues[index];
+        count += 1;
+      }
+    }
+
+    if (count === 0) {
+      return this.baselineMu + this.jumpBeta;
+    }
+
+    const targetIndex = Math.min(
+      count - 1,
+      Math.floor((count - 1) * this.thresholdQuantile)
+    );
+    return quickSelect(state.scratch, 0, count - 1, targetIndex);
+  }
+}
 
 export default {
   async fetch(
@@ -279,7 +460,7 @@ function ensureStreams(
       continue;
     }
 
-    const controller = new ExchangeStreamController(env, logger, config);
+    const controller = new ExchangeStreamController(env, logger, config, waitUntil);
     activeStreams.set(config.id, controller);
     waitUntil(controller.run());
   }
@@ -459,6 +640,7 @@ class ExchangeStreamController {
   private providerSequence: number | null = null;
   private awaitingProviderBridge = false;
   private readonly hyperliquidBookLevels = new Map<string, HyperliquidBookLevelSet>();
+  private readonly hawkesTracker: HawkesFlowTracker;
   private streamReady = false;
   private hasConnectedOnce = false;
   private preSnapshotBuffer: Array<string | ArrayBuffer> = [];
@@ -467,7 +649,8 @@ class ExchangeStreamController {
   constructor(
     private readonly env: Env,
     private readonly logger: Logger,
-    private readonly config: ResolvedExchangeStreamConfig
+    private readonly config: ResolvedExchangeStreamConfig,
+    private readonly waitUntil: (promise: Promise<unknown>) => void
   ) {
     this.clockSync = new ClockSyncTracker(
       readNumber(env.CLOCK_SYNC_ALPHA, DEFAULT_CLOCK_SYNC_ALPHA),
@@ -476,6 +659,19 @@ class ExchangeStreamController {
     this.clusterPool = new ClusterPool([config.streamUrl, ...(config.clusterUrls ?? [])]);
     this.notifier = new Notifier(env, (promise) => {
       void promise;
+    });
+    this.hawkesTracker = new HawkesFlowTracker({
+      baselineMu: readNumber(env.HAWKES_BASELINE_MU, DEFAULT_HAWKES_BASELINE_MU),
+      jumpBeta: readNumber(env.HAWKES_JUMP_BETA, DEFAULT_HAWKES_JUMP_BETA),
+      decayAlpha: readNumber(env.HAWKES_DECAY_ALPHA, DEFAULT_HAWKES_DECAY_ALPHA),
+      thresholdQuantile: readNumber(
+        env.HAWKES_THRESHOLD_QUANTILE,
+        DEFAULT_HAWKES_THRESHOLD_QUANTILE
+      ),
+      signalCooldownMs: readNumber(
+        env.HAWKES_SIGNAL_COOLDOWN_MS,
+        DEFAULT_HAWKES_SIGNAL_COOLDOWN_MS
+      )
     });
   }
 
@@ -1281,6 +1477,7 @@ class ExchangeStreamController {
     }
 
     if (this.config.source === "HYPERLIQUID") {
+      this.observeHawkesFlow(raw, this.lastMessageAt ?? new Date().toISOString());
       await this.forwardHyperliquidRaw(raw, this.lastMessageAt ?? new Date().toISOString());
       return;
     }
@@ -1355,6 +1552,7 @@ class ExchangeStreamController {
     }
 
     if (this.config.source === "HYPERLIQUID") {
+      this.observeHawkesFlow(raw, update.receivedAt);
       await this.forwardHyperliquidRaw(raw, update.receivedAt);
       return;
     }
@@ -1409,6 +1607,7 @@ class ExchangeStreamController {
     }
 
     for (const raw of rawMessages) {
+      this.observeHawkesFlow(raw, update.receivedAt);
       await this.forwardHyperliquidRaw(raw, update.receivedAt, "grpc");
     }
   }
@@ -1754,6 +1953,116 @@ class ExchangeStreamController {
 
     this.ticksForwarded += payload?.processedCount ?? 1;
     this.lastForwardAt = new Date().toISOString();
+  }
+
+  private observeHawkesFlow(raw: unknown, receivedAt: string): void {
+    if (!isRecord(raw) || normalizeString(raw.channel) !== "TRADES") {
+      return;
+    }
+
+    const data = Array.isArray(raw.data)
+      ? raw.data
+      : isRecord(raw.data) && Array.isArray(raw.data.trades)
+        ? raw.data.trades
+        : [];
+
+    for (const item of data) {
+      if (!isRecord(item)) {
+        continue;
+      }
+
+      const coin = stringifyOrNull(item.coin) ?? this.config.instrumentCode?.replace(/-usd$/i, "");
+      const normalizedCoin = coin?.toUpperCase();
+      if (!normalizedCoin) {
+        continue;
+      }
+
+      const instrumentCode = hyperliquidInstrumentCode(normalizedCoin, this.config.instrumentCode);
+      const tradeMs =
+        Date.parse(coerceExchangeTime(item.time ?? item.timestamp) ?? receivedAt);
+      const side = hawkesTradeSide(item);
+      const size = Number(item.sz ?? item.size);
+      const observation = this.hawkesTracker.observe({
+        instrumentCode,
+        side,
+        size: Number.isFinite(size) ? size : 0,
+        observedAtMs: Number.isFinite(tradeMs) ? tradeMs : Date.parse(receivedAt),
+        receivedAt
+      });
+
+      if (!observation.triggered) {
+        continue;
+      }
+
+      this.waitUntil(this.forwardHawkesSignal(observation));
+    }
+  }
+
+  private async forwardHawkesSignal(observation: HawkesFlowObservation): Promise<void> {
+    const observedAt = observation.receivedAt;
+    const signal: AgentSignal = {
+      signalId: crypto.randomUUID(),
+      traceId: `ingest:hawkes:${this.config.id}:${observation.instrumentCode}:${observation.observedAtMs}`,
+      sourceAgent: "PROFILER",
+      targetAgent: "CROUPIER",
+      instrumentCode: observation.instrumentCode,
+      action: "PAUSE",
+      confidence: observation.confidence,
+      horizonMs: observation.cooldownMs,
+      expectedValue: -observation.intensity,
+      maxSlippageBps: 100,
+      rationale:
+        `Hawkes trade-arrival intensity ${observation.intensity.toFixed(4)} exceeded rolling p95 ` +
+        `${observation.threshold.toFixed(4)}; pull ${observation.pullSide} quotes.`,
+      featureVector: {
+        signalType: "HAWKES_FLOW_CLUSTER",
+        lambda: observation.intensity,
+        p95: observation.threshold,
+        flowSide: observation.side,
+        pullSide: observation.pullSide,
+        size: observation.size,
+        baselineMu: observation.baselineMu,
+        jumpBeta: observation.jumpBeta,
+        decayAlpha: observation.decayAlpha
+      },
+      riskContext: {
+        recommendation: "CANCEL_OPPOSITE_SIDE_RESTING_QUOTES_AND_HALT_60S",
+        inventoryProtocol: "POST_ONLY_SKEW",
+        sourceStream: this.config.id,
+        transport: this.config.transport
+      },
+      createdAt: observedAt
+    };
+
+    try {
+      const engine = getTradingEngineStub(this.env);
+      const response = await engine.fetch(
+        new Request("https://trading-engine.internal/agent/signal", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-source": "sovereign-sigma-ingest"
+          },
+          body: JSON.stringify(signal)
+        })
+      );
+
+      if (!response.ok) {
+        this.logger.warn("HAWKES_SIGNAL_FORWARD_FAILED", "Engine rejected Hawkes evacuation signal", {
+          streamId: this.config.id,
+          instrumentCode: observation.instrumentCode,
+          status: response.status,
+          intensity: observation.intensity,
+          threshold: observation.threshold
+        });
+      }
+    } catch (error) {
+      this.logger.warn("HAWKES_SIGNAL_FORWARD_FAILED", "Failed to forward Hawkes evacuation signal", {
+        streamId: this.config.id,
+        instrumentCode: observation.instrumentCode,
+        error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
+      });
+    }
   }
 
   private async resolveGrpcAuthToken(): Promise<string | null> {
@@ -4356,6 +4665,24 @@ function hyperliquidTradeSide(value: unknown): MarketTick["side"] {
   return "unknown";
 }
 
+function hawkesTradeSide(fill: Record<string, unknown>): HawkesFlowSide {
+  if (typeof fill.isBuy === "boolean") {
+    return fill.isBuy ? "BUY" : "SELL";
+  }
+
+  const side = normalizeString(fill.side);
+
+  if (side === "B" || side === "BUY" || side === "BID") {
+    return "BUY";
+  }
+
+  if (side === "A" || side === "SELL" || side === "ASK") {
+    return "SELL";
+  }
+
+  return "UNKNOWN";
+}
+
 function hyperliquidInstrumentCode(coin: string, fallback?: string): string {
   const normalizedCoin = coin.trim().toLowerCase();
   if (!normalizedCoin && fallback) {
@@ -4460,8 +4787,53 @@ function websocketFetchUrl(url: string): string {
   return url;
 }
 
-function clampNumber(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
+function clampNumber(value: number, min: number, max: number, fallback = min): number {
+  return Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
+}
+
+function positiveConfigNumber(value: number, fallback: number): number {
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function quickSelect(values: Float32Array, left: number, right: number, target: number): number {
+  let low = left;
+  let high = right;
+
+  while (low < high) {
+    const pivotIndex = partition(values, low, high, Math.floor((low + high) / 2));
+    if (target === pivotIndex) {
+      return values[target];
+    }
+    if (target < pivotIndex) {
+      high = pivotIndex - 1;
+    } else {
+      low = pivotIndex + 1;
+    }
+  }
+
+  return values[target];
+}
+
+function partition(values: Float32Array, left: number, right: number, pivotIndex: number): number {
+  const pivotValue = values[pivotIndex];
+  swapFloat32(values, pivotIndex, right);
+  let storeIndex = left;
+
+  for (let index = left; index < right; index += 1) {
+    if (values[index] < pivotValue) {
+      swapFloat32(values, storeIndex, index);
+      storeIndex += 1;
+    }
+  }
+
+  swapFloat32(values, right, storeIndex);
+  return storeIndex;
+}
+
+function swapFloat32(values: Float32Array, left: number, right: number): void {
+  const temp = values[left];
+  values[left] = values[right];
+  values[right] = temp;
 }
 
 function isAuthorizedControlRequest(request: Request, env: Env): boolean {

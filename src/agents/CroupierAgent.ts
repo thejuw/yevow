@@ -18,6 +18,7 @@ import type {
 const DEFAULT_MIN_EV_THRESHOLD = 0;
 const DEFAULT_FEE_BPS = 5;
 const ADVERSE_SELECTION_CRITICAL_COST = 0.02;
+const PRICE_EPSILON = 1e-12;
 
 export interface CroupierConfig {
   minEvThreshold?: number;
@@ -45,8 +46,6 @@ export interface CroupierInput {
   liquidationHeatmap?: LiquidationHeatmapState | null;
   predatoryOrderOffsetBps?: number;
   profilerToxicityState?: ToxicityState;
-  profilerSpreadMultiplier?: number;
-  profilerReservationShiftBps?: number;
   profilerPressureSide?: ToxicityPressureSide;
   macroBias?: MacroBias;
   observedAt: string;
@@ -65,7 +64,6 @@ export class CroupierAgent {
   private readonly exchangeFeeBps: number;
   private readonly riskAversionFactor: number;
   private readonly amm: AMMEngine;
-  private sustainedToxicTicks = 0;
 
   constructor(config: CroupierConfig = {}) {
     this.minEvThreshold = finiteNumber(config.minEvThreshold, DEFAULT_MIN_EV_THRESHOLD);
@@ -76,10 +74,7 @@ export class CroupierAgent {
 
   evaluate(input: CroupierInput): CroupierDecision {
     const adverseSelectionCost = this.calculateInformationPremium(input.toxicityScore);
-    this.sustainedToxicTicks =
-      input.toxicityScore > 0.7 ? this.sustainedToxicTicks + 1 : 0;
-    const pullAllQuotes =
-      this.sustainedToxicTicks >= 3 && adverseSelectionCost >= ADVERSE_SELECTION_CRITICAL_COST;
+    const pullAllQuotes = input.profilerToxicityState === "CRITICAL";
     const baseMinEvThreshold = finiteNumber(input.minEvThreshold, this.minEvThreshold);
     const macroThresholdMultiplier = macroBiasThresholdMultiplier(
       input.macroBias,
@@ -88,7 +83,6 @@ export class CroupierAgent {
     );
     const minEvThreshold =
       baseMinEvThreshold *
-      Math.exp(Math.max(0, input.toxicityScore - 0.7) * 3) *
       sentimentMultiplier(input.sentiment, preferredDirection(input)) *
       macroThresholdMultiplier;
     const quote = this.amm.quote(input, adverseSelectionCost);
@@ -111,8 +105,7 @@ export class CroupierAgent {
   }
 
   calculateInformationPremium(vpinScore: number): number {
-    const score = Math.min(1, Math.max(0, vpinScore));
-    return score <= 0.7 ? score * 0.005 : 0.0035 + (score - 0.7) ** 2 * 0.2;
+    return vpinScore >= 1 ? ADVERSE_SELECTION_CRITICAL_COST : 0;
   }
 
   private createIntent(
@@ -210,7 +203,7 @@ export class CroupierAgent {
         `fundingHourly=${round(fundingRateHourly, 8)} fundingCarry=${round(fundingCarryCost, 8)} ` +
         `reservation=${round(reservationPrice ?? mid, 8)} gamma=${round(riskAversionFactor, 8)} ` +
         `macroBias=${input.macroBias?.direction ?? "NEUTRAL"} score=${round(macroScore, 4)} ` +
-        `amVpinState=${input.profilerToxicityState ?? "NORMAL"} spreadMultiplier=${round(input.profilerSpreadMultiplier ?? 1, 4)}`,
+        `amVpinState=${input.profilerToxicityState ?? "NORMAL"} discretePostOnly=true`,
       createdAt: input.observedAt
     };
   }
@@ -256,24 +249,15 @@ class AMMEngine {
     const inventoryDisplacement = currentDelta - fundingTargetDelta;
     const reservationPrice =
       mid -
-      inventoryDisplacement * riskAversionFactor * variance +
-      profilerReservationShift(input, mid);
-    const profilerSpreadMultiplier = Math.max(
-      1,
-      finiteNumber(input.profilerSpreadMultiplier, 1)
-    );
+      inventoryDisplacement * riskAversionFactor * variance;
     const halfSpread =
       (Math.max(input.book.spread ?? mid * 0.0001, mid * input.oracle.volatility * 0.25) *
         liquidityTightening +
-        adverseSelectionCost * mid) *
-      profilerSpreadMultiplier;
-    const imbalance = input.book.weightedImbalance ?? 0;
-    const toxicBuyPressure = Math.max(0, imbalance) * input.toxicityScore;
-    const toxicSellPressure = Math.max(0, -imbalance) * input.toxicityScore;
-    const bidHalfSpread = halfSpread * (1 + toxicSellPressure);
-    const askHalfSpread = halfSpread * (1 + toxicBuyPressure);
-    const bid = reservationPrice - bidHalfSpread;
-    const ask = reservationPrice + askHalfSpread;
+        adverseSelectionCost * mid);
+    const rawBid = reservationPrice - halfSpread;
+    const rawAsk = reservationPrice + halfSpread;
+    const bid = snapGueantDiscretePrice(rawBid, "BID", input);
+    const ask = snapGueantDiscretePrice(rawAsk, "ASK", input);
     const quoteSize = calculateQuoteSize(input);
     const liquidationCluster = selectLiquidationCluster(input.liquidationHeatmap, input.book);
     const predatoryOrder = predatoryLiquidationOrder(input, quoteSize, liquidationCluster);
@@ -287,7 +271,7 @@ class AMMEngine {
       orders.push({
         clientOrderId: crypto.randomUUID(),
         side: "BID",
-        price: round(bid, 8),
+        price: bid,
         size: quoteSize.bid,
         postOnly: true,
         strategy: "AMM"
@@ -298,7 +282,7 @@ class AMMEngine {
       orders.push({
         clientOrderId: crypto.randomUUID(),
         side: "ASK",
-        price: round(ask, 8),
+        price: ask,
         size: quoteSize.ask,
         postOnly: true,
         strategy: "AMM"
@@ -318,8 +302,8 @@ class AMMEngine {
       signalId: crypto.randomUUID(),
       instrumentCode: input.book.instrumentCode,
       marketKey: input.book.marketKey,
-      reservationPrice: round(reservationPrice, 8),
-      optimalSpread: round(halfSpread * 2, 8),
+      reservationPrice: normalizeTickDecimal(reservationPrice, input.book.tickSize),
+      optimalSpread: normalizeTickDecimal(Math.max(0, ask - bid), input.book.tickSize),
       orders,
       createdAt: input.observedAt
     };
@@ -423,12 +407,67 @@ function calculateQuoteSize(input: CroupierInput): { bid: number; ask: number } 
   const askDepth = input.book.asks.slice(0, 5).reduce((sum, level) => sum + level.size, 0);
   const bidRoom = Math.max(0, input.inventory.maxInventoryUnits - input.inventory.netDelta);
   const askRoom = Math.max(0, input.inventory.maxInventoryUnits + input.inventory.netDelta);
-  const toxicityScale = Math.max(0.1, 1 - input.toxicityScore);
 
   return {
-    bid: round(Math.max(0.00000001, Math.min(bidRoom, Math.max(0.00000001, bidDepth * 0.02)) * toxicityScale), 8),
-    ask: round(Math.max(0.00000001, Math.min(askRoom, Math.max(0.00000001, askDepth * 0.02)) * toxicityScale), 8)
+    bid: round(Math.max(0.00000001, Math.min(bidRoom, Math.max(0.00000001, bidDepth * 0.02))), 8),
+    ask: round(Math.max(0.00000001, Math.min(askRoom, Math.max(0.00000001, askDepth * 0.02))), 8)
   };
+}
+
+function snapGueantDiscretePrice(
+  rawPrice: number,
+  side: QuoteOrder["side"],
+  input: CroupierInput
+): number {
+  const tickSize = normalizeTickSize(input.book.tickSize);
+  const currentDelta = finiteNumber(
+    input.inventory.current_inventory_delta,
+    input.inventory.netDelta
+  );
+  const hardCap = Math.max(
+    Math.abs(input.inventory.maxInventoryDelta),
+    Math.abs(input.inventory.maxInventoryUnits),
+    PRICE_EPSILON
+  );
+  const pressureTicks = Math.min(3, Math.floor(Math.abs(currentDelta) / hardCap * 4));
+  const reducesLong = currentDelta > 0 && side === "ASK";
+  const reducesShort = currentDelta < 0 && side === "BID";
+  const accumulatesLong = currentDelta > 0 && side === "BID";
+  const accumulatesShort = currentDelta < 0 && side === "ASK";
+
+  if (side === "BID") {
+    const passive = floorToTick(rawPrice, tickSize);
+    if (reducesShort) {
+      const aggressive = ceilToTick(rawPrice, tickSize);
+      return normalizeTickDecimal(
+        input.book.bestAsk === null || aggressive < input.book.bestAsk
+          ? aggressive
+          : passive,
+        tickSize
+      );
+    }
+
+    return normalizeTickDecimal(
+      Math.max(tickSize, accumulatesLong ? passive - pressureTicks * tickSize : passive),
+      tickSize
+    );
+  }
+
+  const passive = ceilToTick(rawPrice, tickSize);
+  if (reducesLong) {
+    const aggressive = floorToTick(rawPrice, tickSize);
+    return normalizeTickDecimal(
+      input.book.bestBid === null || aggressive > input.book.bestBid
+        ? aggressive
+        : passive,
+      tickSize
+    );
+  }
+
+  return normalizeTickDecimal(
+    Math.max(tickSize, accumulatesShort ? passive + pressureTicks * tickSize : passive),
+    tickSize
+  );
 }
 
 function fundingInventoryTargetDelta(input: CroupierInput): number {
@@ -455,17 +494,6 @@ function fundingInventoryTargetDelta(input: CroupierInput): number {
   return fundingRateHourly > 0 ? -maxBias * scaled : maxBias * scaled;
 }
 
-function profilerReservationShift(input: CroupierInput, mid: number): number {
-  const bps = Math.max(0, finiteNumber(input.profilerReservationShiftBps, 0));
-
-  if (bps === 0 || input.profilerPressureSide === "NEUTRAL") {
-    return 0;
-  }
-
-  const sign = input.profilerPressureSide === "BUY" ? 1 : -1;
-  return sign * mid * bps / 10_000;
-}
-
 function predatoryLiquidationOrder(
   input: CroupierInput,
   quoteSize: { bid: number; ask: number },
@@ -486,7 +514,11 @@ function predatoryLiquidationOrder(
     return {
       clientOrderId: crypto.randomUUID(),
       side: "BID",
-      price: round(Math.max(0, cluster.priceStart * (1 - offsetMultiplier)), 8),
+      price: snapGueantDiscretePrice(
+        Math.max(0, cluster.priceStart * (1 - offsetMultiplier)),
+        "BID",
+        input
+      ),
       size: predatorySize(input, cluster, quoteSize.bid),
       postOnly: true,
       strategy: "LIQUIDATION_ABSORPTION",
@@ -502,7 +534,11 @@ function predatoryLiquidationOrder(
     return {
       clientOrderId: crypto.randomUUID(),
       side: "ASK",
-      price: round(cluster.priceEnd * (1 + offsetMultiplier), 8),
+      price: snapGueantDiscretePrice(
+        cluster.priceEnd * (1 + offsetMultiplier),
+        "ASK",
+        input
+      ),
       size: predatorySize(input, cluster, quoteSize.ask),
       postOnly: true,
       strategy: "LIQUIDATION_ABSORPTION",
@@ -554,10 +590,9 @@ function predatorySize(
     ? cluster.estimatedNotionalUsd / cluster.centerPrice
     : cluster.estimatedBaseSize;
   const boundedByCluster = Math.max(0.00000001, clusterBase * 0.0025);
-  const toxicityScale = Math.max(0.05, 1 - input.toxicityScore * 0.75);
 
   return round(
-    Math.max(0.00000001, Math.min(baseQuoteSize * 1.5, boundedByCluster) * toxicityScale),
+    Math.max(0.00000001, Math.min(baseQuoteSize * 1.5, boundedByCluster)),
     8
   );
 }
@@ -619,6 +654,35 @@ function calculateFundingCarryCost(
 
 function finiteNumber(value: number | undefined, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function normalizeTickSize(value: number | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : 0.00000001;
+}
+
+function floorToTick(value: number, tickSize: number): number {
+  return Math.floor((value + PRICE_EPSILON) / tickSize) * tickSize;
+}
+
+function ceilToTick(value: number, tickSize: number): number {
+  return Math.ceil((value - PRICE_EPSILON) / tickSize) * tickSize;
+}
+
+function normalizeTickDecimal(value: number, tickSize: number): number {
+  const decimals = decimalPlaces(tickSize);
+  return Number(value.toFixed(Math.min(12, Math.max(0, decimals))));
+}
+
+function decimalPlaces(value: number): number {
+  const text = String(value);
+  const decimal = text.includes("e-")
+    ? Number(text.split("e-")[1] ?? 8)
+    : text.includes(".")
+      ? text.split(".")[1]?.length ?? 0
+      : 0;
+  return Number.isFinite(decimal) ? decimal : 8;
 }
 
 function round(value: number, decimals: number): number {

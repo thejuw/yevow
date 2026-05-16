@@ -56,6 +56,11 @@ export interface Env {
   HL_STALE_AFTER_MS?: string;
   HL_BOOK_TIMESTAMP_MAX_DRIFT_MS?: string;
   HL_SEQUENCE_GAP_MS?: string;
+  HAWKES_BASELINE_MU?: string;
+  HAWKES_JUMP_BETA?: string;
+  HAWKES_DECAY_ALPHA?: string;
+  HAWKES_THRESHOLD_QUANTILE?: string;
+  HAWKES_SIGNAL_COOLDOWN_MS?: string;
   HL_INFO_URL?: string;
   HL_EXCHANGE_URL?: string;
   HL_ASSET?: string;
@@ -64,7 +69,6 @@ export interface Env {
   HL_AGENT_ADDRESS?: string;
   HL_AGENT_SECRET?: string;
   HL_VAULT_ADDRESS?: string;
-  HL_HEDGE_SUBACCOUNT_ADDRESS?: string;
   HL_IS_MAINNET?: string;
   HL_DEFAULT_TIF?: string;
   HL_ORDER_EXPIRES_MS?: string;

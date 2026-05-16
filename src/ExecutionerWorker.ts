@@ -119,7 +119,20 @@ async function executeIntent(
   const intent = await request.json<TradeIntent>();
   validateIntent(intent);
 
-  const priority = intent.action === "SELL" && intent.orderType === "MARKET" ? "HEDGE" : "NEW";
+  if (intent.orderType !== "LIMIT" || intent.postOnly !== true) {
+    const report = rejectedReport(intent, "TAKER_EXECUTION_DISABLED", 423);
+    ctx.waitUntil(forwardReport(env, report));
+    logger.warn("TAKER_EXECUTION_DISABLED", "Rejected non-post-only intent under passive inventory protocol", {
+      intentId: intent.intentId,
+      instrumentCode: intent.instrumentCode,
+      orderType: intent.orderType,
+      postOnly: intent.postOnly,
+      timeInForce: intent.timeInForce
+    });
+    return json({ ok: false, report, error: "TAKER_EXECUTION_DISABLED" }, 423);
+  }
+
+  const priority = "NEW";
   configureRuntimeRateLimits(env);
   const reservation = limiter.reserve(intent.source_exchange ?? "default", priority);
 

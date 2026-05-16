@@ -1,4 +1,4 @@
-export type RateLimitPriority = "CANCEL" | "HEDGE" | "NEW";
+export type RateLimitPriority = "CANCEL" | "NEW";
 
 export interface RateLimitBucketSnapshot {
   capacity: number;
@@ -30,7 +30,7 @@ export class RateLimiter {
       updatedAt: Date.now()
     };
     this.refill(bucket);
-    const cost = priority === "CANCEL" ? 0.25 : priority === "HEDGE" ? 0.5 : 1;
+    const cost = priority === "CANCEL" ? 0.25 : 1;
 
     if (bucket.tokens >= cost) {
       bucket.tokens -= cost;

@@ -12,7 +12,6 @@ import {
   type AnomalyDetectionResult
 } from "./agents/AnomalyDetector";
 import { CroupierAgent } from "./agents/CroupierAgent";
-import { HedgeAgent } from "./agents/HedgeAgent";
 import {
   HeatmapAgent,
   LIQUIDATION_HEATMAP_STORAGE_KEY,
@@ -370,7 +369,7 @@ interface ReplayTradeRow {
 
 interface QueuedExecutionIntent {
   intent: TradeIntent;
-  priority: "CANCEL" | "HEDGE" | "NEW";
+  priority: "CANCEL" | "NEW";
   runAfterMs: number;
   enqueuedAt: string;
 }
@@ -408,7 +407,6 @@ export class TradingEngine {
   private readonly oracleAgent = new OracleAgent();
   private readonly croupierAgent: CroupierAgent;
   private readonly pitBossAgent = new PitBossAgent(0.5);
-  private readonly hedgeAgent = new HedgeAgent();
   private readonly janitorAgent = new JanitorAgent();
   private readonly rateLimiter = new RateLimiter();
   private readonly jitterSampleWindow: number;
@@ -4017,15 +4015,7 @@ export class TradingEngine {
       oracleResult.state,
       profilerStates
     );
-    const hedge = this.hedgeAgent.evaluate({
-      positions: this.engineState.openPositions,
-      books: [...this.orderBook.values()],
-      leadLag,
-      currentInventoryDelta: inventory.current_inventory_delta,
-      threshold: inventory.maxInventoryDelta,
-      targetSubaccount: normalizeOptionalAddress(this.env.HL_HEDGE_SUBACCOUNT_ADDRESS),
-      observedAt: metrics.brainTimestamp
-    });
+    const hedge = passiveHedgeStateFromInventory(inventory, metrics.brainTimestamp);
     const croupierDecision = this.croupierAgent.evaluate({
       engineId: this.engineState.engineId,
       book,
@@ -4054,8 +4044,6 @@ export class TradingEngine {
         DEFAULT_PREDATORY_ORDER_OFFSET_BPS
       ),
       profilerToxicityState: profilerResult.state.toxicityState,
-      profilerSpreadMultiplier: profilerResult.state.spreadMultiplier,
-      profilerReservationShiftBps: profilerResult.state.reservationShiftBps,
       profilerPressureSide: profilerResult.state.pressureSide,
       macroBias: this.macroBias,
       observedAt: metrics.brainTimestamp
@@ -4065,16 +4053,7 @@ export class TradingEngine {
       metrics.brainTimestamp,
       { stateOverride: { ...this.engineState, assetMatrix } }
     );
-    const hedgePlan = this.prepareExecutionPlan(
-      hedge.lastIntent,
-      metrics.brainTimestamp,
-      {
-        bypassQuoteSuspension: true,
-        bypassPitBoss: hedge.hedgeRequired,
-        stateOverride: { ...this.engineState, assetMatrix }
-      }
-    );
-    const executionPlans = [executionPlan, hedgePlan].filter(
+    const executionPlans = [executionPlan].filter(
       (plan): plan is NonNullable<typeof executionPlan> => plan !== null
     );
     let quoteState = this.nextQuoteState(
@@ -4133,8 +4112,7 @@ export class TradingEngine {
         updatedAt: metrics.brainTimestamp
       },
       quoteState,
-      lastTradeIntent:
-        hedgePlan?.intent ?? executionPlan?.intent ?? croupierDecision.intent,
+      lastTradeIntent: executionPlan?.intent ?? croupierDecision.intent,
       hedge,
       orderMap: executionPlans.length > 0 && (this.cachedConfig.TRADING_ENABLED || options.shadowReplay)
         ? {
@@ -4483,6 +4461,12 @@ export class TradingEngine {
         : readPositiveNumber(this.env.RISK_AVERSION_FACTOR, DEFAULT_RISK_AVERSION_FACTOR);
     const normalized = this.normalizeInventoryDelta(positions);
     const inventoryPenalty = Math.abs(normalized.current_inventory_delta) * riskAversionFactor;
+    const stopBid =
+      netDelta >= maxInventoryUnits ||
+      (maxInventoryDelta > 0 && normalized.current_inventory_delta >= maxInventoryDelta);
+    const stopAsk =
+      netDelta <= -maxInventoryUnits ||
+      (maxInventoryDelta > 0 && normalized.current_inventory_delta <= -maxInventoryDelta);
 
     return {
       netDelta,
@@ -4492,8 +4476,8 @@ export class TradingEngine {
       maxInventoryUnits,
       maxInventoryDelta,
       inventoryPenalty,
-      stopBid: netDelta >= maxInventoryUnits,
-      stopAsk: netDelta <= -maxInventoryUnits,
+      stopBid,
+      stopAsk,
       updatedAt: observedAt
     };
   }
@@ -4615,7 +4599,6 @@ export class TradingEngine {
     observedAt: string,
     options: {
       bypassQuoteSuspension?: boolean;
-      bypassPitBoss?: boolean;
       stateOverride?: EngineState;
     } = {}
   ):
@@ -4634,28 +4617,15 @@ export class TradingEngine {
     }
 
     const riskState = options.stateOverride ?? this.engineState;
-    const pitBossDecision = options.bypassPitBoss
-      ? {
-          approved: true,
-          intent: {
-            ...intent,
-            approvedSize: intent.approvedSize ?? intent.requestedSize
-          },
-          kellyFraction: 0,
-          cappedFraction: 0,
-          capitalAllocationPct: 1,
-          assetMaxNotional: Number.POSITIVE_INFINITY,
-          reason: "APPROVED_HARD_HEDGE"
-        }
-      : this.pitBossAgent.approve(
-          intent,
-          riskState,
-          this.cachedConfig,
-          this.cachedConfig.MAX_POSITION_PCT > 0
-            ? this.cachedConfig.MAX_POSITION_PCT
-            : readPositiveNumber(this.env.MAX_POSITION_PCT, DEFAULT_MAX_POSITION_PCT),
-          this.cachedConfig.KELLY_FRACTION
-        );
+    const pitBossDecision = this.pitBossAgent.approve(
+      intent,
+      riskState,
+      this.cachedConfig,
+      this.cachedConfig.MAX_POSITION_PCT > 0
+        ? this.cachedConfig.MAX_POSITION_PCT
+        : readPositiveNumber(this.env.MAX_POSITION_PCT, DEFAULT_MAX_POSITION_PCT),
+      this.cachedConfig.KELLY_FRACTION
+    );
 
     if (!pitBossDecision.approved) {
       return null;
@@ -4837,6 +4807,18 @@ export class TradingEngine {
       return;
     }
 
+    if (intent.orderType !== "LIMIT" || intent.postOnly !== true) {
+      this.logger.warn("TAKER_EXECUTION_SUPPRESSED", "Non-post-only execution suppressed by passive inventory protocol", {
+        intentId: intent.intentId,
+        instrumentCode: intent.instrumentCode,
+        orderType: intent.orderType,
+        postOnly: intent.postOnly,
+        timeInForce: intent.timeInForce,
+        rationale: intent.rationale
+      });
+      return;
+    }
+
     if (!this.reservePaperExecutionBudget(intent)) {
       return;
     }
@@ -4845,7 +4827,7 @@ export class TradingEngine {
       await wait(initialDelayMs);
     }
 
-    const priority = intent.orderType === "MARKET" ? "HEDGE" : "NEW";
+    const priority = "NEW";
     const reservation = this.rateLimiter.reserve(intent.source_exchange ?? "default", priority);
     this.waitUntilStoragePut(
       RATE_LIMIT_STATE_KEY,
@@ -5535,39 +5517,14 @@ export class TradingEngine {
       return null;
     }
 
-    const price = this.currentMarkPrice(instrumentCode, position.markPrice);
-    const intent: TradeIntent = {
-      schemaVersion: "trade-intent.v1",
-      intentId: crypto.randomUUID(),
-      traceId: `${this.engineState.engineId}:janitor:dust:${instrumentCode}:${observedAt}`,
+    this.logger.warn("JANITOR_DUST_CLOSE_SKIPPED", "Dust closeout skipped because taker execution is disabled", {
       instrumentCode,
-      marketKey: this.selectMarketKey(instrumentCode)?.marketKey ?? null,
-      source_exchange: this.engineState.microstructure.source_exchange,
-      direction: position.side === "LONG" ? "SHORT" : "LONG",
-      action: position.side === "LONG" ? "SELL" : "BUY",
-      orderType: "MARKET",
-      postOnly: false,
-      timeInForce: "IOC",
-      intendedPrice: price,
-      expectedPrice: price,
-      requestedSize: position.quantity,
-      approvedSize: position.quantity,
-      probabilityWin: 0.5,
-      probabilityLoss: 0.5,
-      profit: 0,
-      loss: 0,
-      executionCosts: 0,
-      adverseSelectionCost: 0,
-      expectedValue: 0,
-      minEvThreshold: Number.NEGATIVE_INFINITY,
-      maxSlippageBps: Math.max(5, this.engineState.microstructure.spreadBps ?? 5),
-      confidence: 1,
-      rationale: "Janitor dust-position closeout",
-      createdAt: observedAt
-    };
-
-    await this.dispatchExecution(intent);
-    return intent.intentId;
+      side: position.side,
+      quantity: position.quantity,
+      observedAt,
+      inventoryProtocol: "POST_ONLY_SKEW"
+    });
+    return null;
   }
 
   private async pruneTelemetryLogs(): Promise<number> {
@@ -7297,6 +7254,18 @@ export class TradingEngine {
     }
 
     this.latestAgentSignals.set(signal.sourceAgent, signal);
+    const hawkesEvacuation = hawkesEvacuationSignal(signal);
+    const quoteState = hawkesEvacuation
+      ? {
+          status: "SUSPENDED" as const,
+          reason: "HAWKES_FLOW_CLUSTER",
+          suspendedUntil: new Date(
+            Date.parse(signal.createdAt) + Math.max(1_000, signal.horizonMs)
+          ).toISOString(),
+          lastQuote: this.engineState.quoteState.lastQuote,
+          updatedAt: signal.createdAt
+        }
+      : this.engineState.quoteState;
 
     const agentHealth = {
       ...this.engineState.agentHealth,
@@ -7313,6 +7282,7 @@ export class TradingEngine {
       ...this.engineState,
       acceptedSignals: this.engineState.acceptedSignals + 1,
       agentHealth,
+      quoteState,
       heartbeatAt: signal.createdAt,
       updatedAt: signal.createdAt
     };
@@ -7340,6 +7310,15 @@ export class TradingEngine {
       },
       signal.signalId
     );
+
+    if (hawkesEvacuation) {
+      this.publish("SUSPEND_QUOTES", quoteStateTelemetry(quoteState), signal.signalId);
+      if (this.cachedConfig.TRADING_ENABLED) {
+        this.state.waitUntil(
+          this.cancelAllQuotes(signal.instrumentCode || "ALL", "HAWKES_FLOW_CLUSTER")
+        );
+      }
+    }
   }
 
   private async applyConfigUpdate(update: AdminConfigUpdate): Promise<void> {
@@ -8148,15 +8127,6 @@ function normalizeTopologyHeader(value: string | null): string | null {
   return value && value.length > 0 ? value : null;
 }
 
-function normalizeOptionalAddress(value: string | undefined): string | null {
-  if (!value || value.trim() === "") {
-    return null;
-  }
-
-  const normalized = value.trim().toLowerCase();
-  return /^0x[0-9a-f]{40}$/.test(normalized) ? normalized : null;
-}
-
 function inferSignalBias(signal: AgentSignal): "BULLISH" | "BEARISH" | "NEUTRAL" {
   if (signal.action === "BUY" || signal.expectedValue > 0) {
     return "BULLISH";
@@ -8167,6 +8137,13 @@ function inferSignalBias(signal: AgentSignal): "BULLISH" | "BEARISH" | "NEUTRAL"
   }
 
   return "NEUTRAL";
+}
+
+function hawkesEvacuationSignal(signal: AgentSignal): boolean {
+  return (
+    signal.action === "PAUSE" &&
+    signal.featureVector?.signalType === "HAWKES_FLOW_CLUSTER"
+  );
 }
 
 function touchAgentHealth(
@@ -8429,6 +8406,26 @@ function defaultHedgeState(): EngineState["hedge"] {
     preferredVenue: null,
     lastIntent: null,
     updatedAt: null
+  };
+}
+
+function passiveHedgeStateFromInventory(
+  inventory: InventoryState,
+  observedAt: string
+): EngineState["hedge"] {
+  const hardCapBreached =
+    inventory.maxInventoryDelta > 0 &&
+    Math.abs(inventory.current_inventory_delta) >= inventory.maxInventoryDelta;
+
+  return {
+    netDelta: inventory.netDelta,
+    current_inventory_delta: inventory.current_inventory_delta,
+    maxInventoryDelta: inventory.maxInventoryDelta,
+    hedgeRequired: hardCapBreached,
+    hedgeRatio: 0,
+    preferredVenue: null,
+    lastIntent: null,
+    updatedAt: observedAt
   };
 }
 
@@ -9752,7 +9749,7 @@ function compareQueuedExecutionIntent(
   left: QueuedExecutionIntent,
   right: QueuedExecutionIntent
 ): number {
-  const priorityWeight = { CANCEL: 0, HEDGE: 1, NEW: 2 } as const;
+  const priorityWeight = { CANCEL: 0, NEW: 1 } as const;
   const priorityDelta = priorityWeight[left.priority] - priorityWeight[right.priority];
 
   if (priorityDelta !== 0) {
