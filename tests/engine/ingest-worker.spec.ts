@@ -34,6 +34,13 @@ describe("IngestWorker poison payload isolation", () => {
       "wss://api-hyperliquid-mainnet-orderbook.n.dwellir.com/test-route-token/ws"
     );
     expect(book?.subscriptions).toHaveLength(2);
+    expect(book?.subscriptionProfile?.tier).toBe("ENTERPRISE");
+    expect(book?.subscriptionProfile?.optimization).toBe("MAXIMIZED");
+    expect(book?.subscriptionProfile?.bookDepth).toBe(100);
+    expect(
+      (book?.subscriptions?.[0] as { subscription?: { nLevels?: number } } | undefined)
+        ?.subscription?.nLevels
+    ).toBe(100);
   });
 
   it("classifies malformed Dwellir protobuf payloads without throwing", () => {

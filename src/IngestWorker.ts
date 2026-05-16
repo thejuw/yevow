@@ -20,6 +20,8 @@ import type {
   ExchangeStreamHealth,
   IngestHealth,
   JsonRecord,
+  MarketDataSubscriptionProfile,
+  MarketDataSubscriptionTier,
   MarketDataSource,
   MarketTick,
   OrderBookSnapshot,
@@ -47,7 +49,8 @@ const DEFAULT_CLOCK_SYNC_ALPHA = 0.1;
 const DEFAULT_CLOCK_SYNC_MAX_OFFSET_MS = 10_000;
 const DEFAULT_STALE_TICK_DROP_MS = 1_000;
 const PRE_SNAPSHOT_BUFFER_LIMIT = 1_000;
-const HYPERLIQUID_L2_DEPTH_LIMIT = 20;
+const HYPERLIQUID_PUBLIC_L2_DEPTH_LIMIT = 20;
+const DWELLIR_MAX_L2_DEPTH_LIMIT = 100;
 const DEFAULT_HYPERLIQUID_ASSET_MATRIX = ["BTC", "ETH", "HYPE", "SOL"] as const;
 
 type ResolvedExchangeStreamConfig = Required<
@@ -75,6 +78,7 @@ type ResolvedExchangeStreamConfig = Required<
     | "grpcPingRequestType"
     | "grpcPingResponseType"
     | "grpcStreamTypes"
+    | "subscriptionProfile"
   > & {
     transport: "websocket" | "grpc";
     heartbeatIntervalMs: number;
@@ -484,6 +488,7 @@ class ExchangeStreamController {
       transport: this.config.transport,
       streamHost: hostnameOf(this.clusterPool.activeUrl()),
       activeClusterUrl: redactEndpoint(this.clusterPool.activeUrl()),
+      subscriptionProfile: this.config.subscriptionProfile,
       heartbeatLatencyMs: this.clusterPool.activeHeartbeatLatencyMs(),
       packetLossPct: this.packetLossPct(),
       sourceWeight: this.config.weight,
@@ -1958,6 +1963,7 @@ function getHealth(activeStreams: Map<string, ExchangeStreamController>): Ingest
       lastRecoveredAt: null,
       lastRecoveryDurationMs: null,
       lastError: null,
+      subscriptionProfile: undefined,
       streams: []
     };
   }
@@ -1968,7 +1974,42 @@ function getHealth(activeStreams: Map<string, ExchangeStreamController>): Ingest
     ...primary,
     ok: streams.every((stream) => stream.ok),
     status: streams.every((stream) => stream.ok) ? "CONNECTED" : primary.status,
+    subscriptionProfile: aggregateSubscriptionProfile(streams),
     streams
+  };
+}
+
+function aggregateSubscriptionProfile(
+  streams: ExchangeStreamHealth[]
+): MarketDataSubscriptionProfile | undefined {
+  const profiles = streams
+    .map((stream) => stream.subscriptionProfile)
+    .filter((profile): profile is MarketDataSubscriptionProfile => Boolean(profile));
+
+  if (profiles.length === 0) {
+    return undefined;
+  }
+
+  const primary = profiles.find((profile) => profile.provider === "DWELLIR") ?? profiles[0];
+  const maxBookDepth = Math.max(...profiles.map((profile) => profile.maxBookDepth));
+  const bookDepth = Math.max(...profiles.map((profile) => profile.bookDepth));
+  const l4BookEnabled = profiles.some((profile) => profile.l4BookEnabled);
+  const assetCount = Math.max(...profiles.map((profile) => profile.assetCount));
+  const reasons = [...new Set(profiles.map((profile) => profile.reason).filter(Boolean))];
+
+  return {
+    ...primary,
+    readMode: l4BookEnabled ? "DWELLIR_GRPC_FILLS_L4_BOOK_WS" : primary.readMode,
+    bookDepth,
+    maxBookDepth,
+    l4BookEnabled,
+    assetCount,
+    optimization:
+      bookDepth >= maxBookDepth && !profiles.some((profile) => profile.optimization === "CONSERVATIVE")
+        ? "MAXIMIZED"
+        : primary.optimization,
+    normalMode: profiles.every((profile) => profile.normalMode),
+    reason: reasons.join("; ")
   };
 }
 
@@ -2079,7 +2120,10 @@ function normalizeHyperliquidL2Book(
     coerceExchangeTime(readField(data, ["time", "timestamp"])) ?? receivedAt;
   const synchronized = clockSync.observe(exchangeTimestamp, receivedAt);
   const sequenceSeed = coerceGenericSequence(readField(data, ["time", "sequence", "seq"]));
-  const [bidLevels, askLevels] = normalizeHyperliquidBookSides(readField(data, ["levels"]));
+  const [bidLevels, askLevels] = normalizeHyperliquidBookSides(
+    readField(data, ["levels"]),
+    resolveBookDepthLimit(config)
+  );
   const ticks: MarketTick[] = [];
 
   for (const [price, size, orderCount] of bidLevels) {
@@ -2805,6 +2849,7 @@ function augmentDwellirHyperliquidReadStreams(
 
   const coins = parseAssetList(env.HL_ASSETS ?? env.HL_ASSET);
   const activeCoins = coins.length > 0 ? coins : [...DEFAULT_HYPERLIQUID_ASSET_MATRIX];
+  const subscriptionProfile = resolveDwellirSubscriptionProfile(env, activeCoins.length);
   const orderbookUrl = resolveDwellirOrderbookWsUrl(env);
   const normalized = configs.map((config) =>
     isDwellirGrpcRawConfig(config, env)
@@ -2814,6 +2859,7 @@ function augmentDwellirHyperliquidReadStreams(
           );
           return {
             ...config,
+            subscriptionProfile,
             // Dwellir's gRPC gateway is excellent for fills/blocks. The order-book
             // server is the authoritative low-latency L2 feed, so keep gRPC off
             // the book hot path to avoid snapshot-file churn resetting the engine.
@@ -2833,9 +2879,14 @@ function augmentDwellirHyperliquidReadStreams(
       streamUrl: orderbookUrl,
       weight: 1,
       exchangeCode: "hyperliquid",
+      subscriptionProfile,
       subscriptions: activeCoins.map((coin) => ({
         method: "subscribe",
-        subscription: { type: "l2Book", coin, nLevels: 50 }
+        subscription: {
+          type: subscriptionProfile.l4BookEnabled ? "l4Book" : "l2Book",
+          coin,
+          nLevels: subscriptionProfile.bookDepth
+        }
       }))
     }
   ];
@@ -2920,6 +2971,60 @@ function resolveDwellirOrderbookWsUrl(env: Env): string {
     ""
   );
   return `${endpoint}/${token}/ws`;
+}
+
+function resolveDwellirSubscriptionProfile(
+  env: Env,
+  assetCount: number
+): MarketDataSubscriptionProfile {
+  const tier = normalizeDwellirSubscriptionTier(env.DWELLIR_SUBSCRIPTION_TIER);
+  const maxBookDepth = tier === "PUBLIC" ? HYPERLIQUID_PUBLIC_L2_DEPTH_LIMIT : DWELLIR_MAX_L2_DEPTH_LIMIT;
+  const bookDepth = readPositiveInteger(
+    env.DWELLIR_ORDERBOOK_DEPTH,
+    maxBookDepth,
+    1,
+    maxBookDepth
+  );
+  const l4Requested = booleanEnv(env.DWELLIR_ENABLE_L4_BOOK);
+  const l4BookEnabled = false;
+  const optimization =
+    bookDepth >= maxBookDepth && !l4Requested
+      ? "MAXIMIZED"
+      : bookDepth >= maxBookDepth
+        ? "CUSTOM"
+        : "CONSERVATIVE";
+
+  return {
+    provider: "DWELLIR",
+    tier,
+    readMode: "DWELLIR_GRPC_FILLS_L2_BOOK_WS",
+    bookDepth,
+    maxBookDepth,
+    l4BookEnabled,
+    assetCount,
+    optimization,
+    normalMode: true,
+    reason: l4Requested
+      ? `Dwellir ${tier} detected; L4 requested but the hot path is L2-aggregate, so normal mode is maximized at ${bookDepth}/${maxBookDepth} L2 levels.`
+      : `Dwellir ${tier} detected; normal mode is maximized at ${bookDepth}/${maxBookDepth} L2 levels with gRPC fills plus order-book WebSocket.`
+  };
+}
+
+function normalizeDwellirSubscriptionTier(
+  value: string | undefined
+): MarketDataSubscriptionTier {
+  const normalized = normalizeString(value);
+
+  if (
+    normalized === "PUBLIC" ||
+    normalized === "STANDARD" ||
+    normalized === "ENTERPRISE" ||
+    normalized === "DEDICATED"
+  ) {
+    return normalized;
+  }
+
+  return "ENTERPRISE";
 }
 
 function dwellirRouteTokenFromUrl(value: string | undefined): string | null {
@@ -3091,11 +3196,13 @@ function isL2BookSubscription(subscription: string | JsonRecord | undefined): bo
   }
 
   if (typeof subscription === "string") {
-    return subscription.toLowerCase().includes("l2book");
+    const normalized = subscription.toLowerCase();
+    return normalized.includes("l2book") || normalized.includes("l4book");
   }
 
   const payload = subscription.subscription;
-  return isRecord(payload) && normalizeString(payload.type) === "L2BOOK";
+  const type = isRecord(payload) ? normalizeString(payload.type) : null;
+  return type === "L2BOOK" || type === "L4BOOK";
 }
 
 function dwellirGrpcStreams(
@@ -3641,6 +3748,7 @@ function resolveStreamConfig(
     weight,
     instrumentCode: config.instrumentCode?.toLowerCase(),
     exchangeCode: (config.exchangeCode ?? sourceExchange).toLowerCase(),
+    subscriptionProfile: config.subscriptionProfile,
     heartbeatIntervalMs: readNumber(env.HL_HEARTBEAT_INTERVAL_MS, DEFAULT_HEARTBEAT_INTERVAL_MS),
     watchdogTimeoutMs: readNumber(
       env.HL_WATCHDOG_TIMEOUT_MS ?? env.HL_STALE_AFTER_MS,
@@ -3974,7 +4082,8 @@ function readHyperliquidObject(raw: Record<string, unknown>): Record<string, unk
 }
 
 function normalizeHyperliquidBookSides(
-  levels: unknown
+  levels: unknown,
+  depthLimit = HYPERLIQUID_PUBLIC_L2_DEPTH_LIMIT
 ): [Array<[number, number, number | null]>, Array<[number, number, number | null]>] {
   if (!Array.isArray(levels)) {
     return [[], []];
@@ -3983,9 +4092,19 @@ function normalizeHyperliquidBookSides(
   const bidLevels = Array.isArray(levels[0]) ? levels[0] : [];
   const askLevels = Array.isArray(levels[1]) ? levels[1] : [];
   return [
-    normalizeHyperliquidBookLevels(bidLevels).slice(0, HYPERLIQUID_L2_DEPTH_LIMIT),
-    normalizeHyperliquidBookLevels(askLevels).slice(0, HYPERLIQUID_L2_DEPTH_LIMIT)
+    normalizeHyperliquidBookLevels(bidLevels).slice(0, depthLimit),
+    normalizeHyperliquidBookLevels(askLevels).slice(0, depthLimit)
   ];
+}
+
+function resolveBookDepthLimit(config: ResolvedExchangeStreamConfig): number {
+  return Math.max(
+    1,
+    Math.min(
+      config.subscriptionProfile?.maxBookDepth ?? HYPERLIQUID_PUBLIC_L2_DEPTH_LIMIT,
+      config.subscriptionProfile?.bookDepth ?? HYPERLIQUID_PUBLIC_L2_DEPTH_LIMIT
+    )
+  );
 }
 
 function normalizeHyperliquidBookLevels(value: unknown): Array<[number, number, number | null]> {
@@ -4164,9 +4283,28 @@ function readNumber(value: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function readPositiveInteger(
+  value: string | undefined,
+  fallback: number,
+  minimum: number,
+  maximum: number
+): number {
+  const parsed = Number(value);
+
+  if (!Number.isSafeInteger(parsed)) {
+    return fallback;
+  }
+
+  return Math.min(maximum, Math.max(minimum, parsed));
+}
+
 function readOptionalNumber(value: string | undefined): number | null {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function booleanEnv(value: string | undefined): boolean {
+  return ["1", "true", "yes", "on"].includes(value?.trim().toLowerCase() ?? "");
 }
 
 function roundTo(value: number, decimals: number): number {

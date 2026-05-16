@@ -22,6 +22,9 @@ export interface Env {
   DWELLIR_GRPC_ENDPOINT?: string;
   DWELLIR_ORDERBOOK_WS_URL?: string;
   DWELLIR_ORDERBOOK_WS_ENDPOINT?: string;
+  DWELLIR_SUBSCRIPTION_TIER?: string;
+  DWELLIR_ORDERBOOK_DEPTH?: string;
+  DWELLIR_ENABLE_L4_BOOK?: string;
   DWELLIR_GRPC_STREAMS?: string;
   DWELLIR_GRPC_START_TIMESTAMP_MS?: string;
   DWELLIR_GRPC_START_BLOCK_HEIGHT?: string;
@@ -227,6 +230,31 @@ export interface UniversalTick {
 
 export type MarketTick = UniversalTick;
 
+export type MarketDataSubscriptionTier =
+  | "PUBLIC"
+  | "STANDARD"
+  | "ENTERPRISE"
+  | "DEDICATED"
+  | "UNKNOWN";
+
+export interface MarketDataSubscriptionProfile {
+  provider: "DWELLIR" | "HYPERLIQUID_PUBLIC" | "CUSTOM";
+  tier: MarketDataSubscriptionTier;
+  readMode:
+    | "DWELLIR_GRPC_FILLS_L2_BOOK_WS"
+    | "DWELLIR_GRPC_FILLS_L4_BOOK_WS"
+    | "DWELLIR_ORDERBOOK_WS"
+    | "PUBLIC_WS"
+    | "CUSTOM";
+  bookDepth: number;
+  maxBookDepth: number;
+  l4BookEnabled: boolean;
+  assetCount: number;
+  optimization: "MAXIMIZED" | "CUSTOM" | "CONSERVATIVE";
+  normalMode: boolean;
+  reason: string;
+}
+
 export interface IngestHealth {
   ok: boolean;
   status: "IDLE" | "CONNECTING" | "CONNECTED" | "BACKING_OFF" | "STOPPED" | "ERROR";
@@ -243,6 +271,7 @@ export interface IngestHealth {
   lastRecoveredAt: ISO8601 | null;
   lastRecoveryDurationMs: number | null;
   lastError: string | null;
+  subscriptionProfile?: MarketDataSubscriptionProfile;
   streams?: ExchangeStreamHealth[];
 }
 
@@ -284,6 +313,7 @@ export interface ExchangeStreamConfig {
   weight?: number;
   instrumentCode?: string;
   exchangeCode?: string;
+  subscriptionProfile?: MarketDataSubscriptionProfile;
   enabled?: boolean;
 }
 

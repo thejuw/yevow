@@ -683,7 +683,7 @@ export default function CommandCenterPage() {
 
         <div className="dwellir-stream-state">
           <RadioTower size={14} />
-          <span>[ DWELLIR FILLS gRPC + L2 BOOK WS: ACTIVE ]</span>
+          <span>[ DWELLIR ENTERPRISE gRPC + L2-100 BOOK WS: ACTIVE ]</span>
           <strong>{compact.format(dwellirReceiptLatencyMs)}ms</strong>
         </div>
 
