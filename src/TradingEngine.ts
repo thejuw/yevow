@@ -888,6 +888,7 @@ export class TradingEngine {
       }
 
       if (request.method === "GET" && url.pathname === "/state") {
+        this.syncStateMicrostructureFromBook();
         return json({
           state: this.engineState,
           orderBook: Object.fromEntries(this.orderBook)
@@ -1234,6 +1235,7 @@ export class TradingEngine {
 
   healthCheck(): HealthReport {
     const now = new Date().toISOString();
+    this.syncStateMicrostructureFromBook();
     this.engineState = {
       ...this.engineState,
       heartbeatAt: now,
@@ -1285,6 +1287,37 @@ export class TradingEngine {
           orderBookDepth: this.engineState.internalOrderBookDepth
         }).length
       }
+    };
+  }
+
+  private syncStateMicrostructureFromBook(): void {
+    if (this.orderBook.size === 0) {
+      return;
+    }
+
+    const currentKey = this.engineState.microstructure.marketKey;
+    const currentBook = currentKey ? this.orderBook.get(currentKey) : undefined;
+    const bestBook =
+      currentBook ??
+      [...this.orderBook.values()].sort((left, right) => {
+        const leftScore = (left.isSynced ? 10 : 0) + (left.midPrice === null ? 0 : 1) + left.sourceWeight;
+        const rightScore = (right.isSynced ? 10 : 0) + (right.midPrice === null ? 0 : 1) + right.sourceWeight;
+        return rightScore - leftScore;
+      })[0];
+
+    if (!bestBook) {
+      return;
+    }
+
+    const microstructure = microstructureFromBook(bestBook);
+    const updatedAt = microstructure.updatedAt ?? new Date().toISOString();
+
+    this.engineState = {
+      ...this.engineState,
+      internalOrderBookDepth: countBookLevels(this.bids, this.asks),
+      microstructure,
+      priceDiscovery: this.calculatePriceDiscovery(bestBook.instrumentCode, updatedAt),
+      updatedAt
     };
   }
 
@@ -2128,25 +2161,29 @@ export class TradingEngine {
           ? await this.applySnapshot(snapshot, { telemetry: false, persist: false })
           : undefined;
       if (book) {
-        const syncState = this.bookSync.get(marketKey);
-        if (syncState) {
-          syncState.isSynced = false;
-          syncState.desyncReason = "NATIVE_HL_LATENCY";
-          syncState.lastDesyncAt = brainTimestamp;
-        }
-        const staleBook = {
-          ...book,
-          isSynced: false,
-          desyncReason: "NATIVE_HL_LATENCY"
-        };
-        this.orderBook.set(marketKey, staleBook);
-        this.engineState = {
-          ...this.engineState,
-          microstructure: {
-            ...this.engineState.microstructure,
-            isSynced: false
+        if (isCrossedBook(book)) {
+          await this.handleCrossedBookSnapshot(book, sequence, totalLatencyMs, brainTimestamp);
+        } else {
+          const syncState = this.bookSync.get(marketKey);
+          if (syncState) {
+            syncState.isSynced = false;
+            syncState.desyncReason = "NATIVE_HL_LATENCY";
+            syncState.lastDesyncAt = brainTimestamp;
           }
-        };
+          const staleBook = {
+            ...book,
+            isSynced: false,
+            desyncReason: "NATIVE_HL_LATENCY"
+          };
+          this.orderBook.set(marketKey, staleBook);
+          this.engineState = {
+            ...this.engineState,
+            microstructure: {
+              ...this.engineState.microstructure,
+              isSynced: false
+            }
+          };
+        }
       }
       const metrics = nativeHyperliquidLatencyMetrics({
         instrumentCode,
@@ -2206,6 +2243,18 @@ export class TradingEngine {
     }
 
     const book = await this.applySnapshot(snapshot, { persist: false });
+
+    if (isCrossedBook(book)) {
+      await this.handleCrossedBookSnapshot(book, sequence, totalLatencyMs, brainTimestamp);
+      return {
+        accepted: false,
+        status: "DESYNC",
+        reason: "CROSSED_BOOK",
+        book,
+        processedCount: 0
+      };
+    }
+
     const representativeTick = createNativeHyperliquidBookTick({
       payload,
       coin,
@@ -3122,6 +3171,59 @@ export class TradingEngine {
     });
   }
 
+  private async handleCrossedBookSnapshot(
+    book: InternalOrderBook,
+    sequence: number,
+    timeToBookMs: number | null,
+    observedAt: string
+  ): Promise<void> {
+    const syncState = this.getBookSync(
+      book.marketKey,
+      book.instrumentCode,
+      book.exchangeCode,
+      book.source_exchange,
+      book.tickSize,
+      book.source,
+      book.sourceWeight
+    );
+
+    syncState.isSynced = false;
+    syncState.desyncReason = "CROSSED_BOOK";
+    syncState.lastDesyncAt = observedAt;
+    syncState.ttbLatencyMs = timeToBookMs;
+
+    this.logger.error("ORDER_BOOK_CROSSED", "Crossed snapshot detected; purging local book", {
+      instrumentCode: book.instrumentCode,
+      exchangeCode: book.exchangeCode,
+      source_exchange: book.source_exchange,
+      sequence,
+      bestBid: book.bestBid,
+      bestAsk: book.bestAsk,
+      spread: book.spread,
+      timeToBookMs
+    });
+    this.publish("ORDER_BOOK_CROSSED", {
+      instrumentCode: book.instrumentCode,
+      exchangeCode: book.exchangeCode,
+      source_exchange: book.source_exchange,
+      sequence,
+      bestBid: book.bestBid,
+      bestAsk: book.bestAsk,
+      spread: book.spread,
+      timeToBookMs
+    });
+
+    await this.resetOrderBook({
+      source: "SYSTEM",
+      reason: "CROSSED_BOOK",
+      instrumentCode: book.instrumentCode,
+      source_exchange: book.source_exchange,
+      connectionId: null,
+      blackoutDurationMs: null,
+      recoveredAt: observedAt
+    });
+  }
+
   private rebuildBookSnapshot(
     marketKey: string,
     instrumentCode: string,
@@ -3202,7 +3304,31 @@ export class TradingEngine {
       return { marketKey, instrumentCode: target.instrumentCode.toLowerCase() };
     }
 
-    const requested = target?.toLowerCase();
+    const requested = target?.trim().toLowerCase();
+
+    if (!requested) {
+      const currentKey = this.engineState.microstructure.marketKey;
+      const currentBook = currentKey ? this.orderBook.get(currentKey) : undefined;
+
+      if (currentBook) {
+        return {
+          marketKey: currentBook.marketKey,
+          instrumentCode: currentBook.instrumentCode
+        };
+      }
+
+      const currentInstrument = this.engineState.microstructure.instrumentCode;
+      const currentAssetBook = currentInstrument
+        ? this.findBestAssetBook(currentInstrument)
+        : undefined;
+
+      if (currentAssetBook) {
+        return {
+          marketKey: currentAssetBook.marketKey,
+          instrumentCode: currentAssetBook.instrumentCode
+        };
+      }
+    }
 
     if (requested && this.orderBook.has(requested)) {
       const book = this.orderBook.get(requested);
@@ -3212,9 +3338,9 @@ export class TradingEngine {
       };
     }
 
-    const instrumentCode = requested?.includes(":")
-      ? requested.split(":").slice(1).join(":")
-      : requested;
+    const instrumentCode = requested
+      ? normalizeInstrumentSelector(requested)
+      : undefined;
     const candidates = [...this.orderBook.values()]
       .filter((book) => !instrumentCode || book.instrumentCode === instrumentCode)
       .sort((left, right) => {
@@ -3226,7 +3352,7 @@ export class TradingEngine {
 
         return Date.parse(right.updatedAt) - Date.parse(left.updatedAt);
       });
-    const selected = candidates[0] ?? [...this.orderBook.values()][0];
+    const selected = candidates[0];
 
     return selected
       ? { marketKey: selected.marketKey, instrumentCode: selected.instrumentCode }
@@ -3286,7 +3412,7 @@ export class TradingEngine {
     const selected = this.selectMarketKey(instrumentCode);
     const normalizedInstrument =
       selected?.instrumentCode ??
-      instrumentCode?.toLowerCase() ??
+      (instrumentCode ? normalizeInstrumentSelector(instrumentCode) : null) ??
       this.engineState.microstructure.instrumentCode ??
       selected?.marketKey ??
       "unknown";
@@ -3996,7 +4122,7 @@ export class TradingEngine {
         mode: "HALTED",
         processedTicks: this.engineState.processedTicks + 1,
         internalOrderBookDepth: countBookLevels(this.bids, this.asks),
-        microstructure: this.engineState.microstructure,
+        microstructure: microstructureFromBook(book),
         dom: domSnapshot,
         anomaly: anomalyResult.status,
         risk: {
@@ -4160,7 +4286,7 @@ export class TradingEngine {
           ? this.engineState.staleTickCount + 1
           : this.engineState.staleTickCount,
       internalOrderBookDepth: countBookLevels(this.bids, this.asks),
-      microstructure: this.engineState.microstructure,
+      microstructure: microstructureFromBook(book),
       oracle: oracleResult.state,
       leadLag,
       inventory,
@@ -7887,6 +8013,19 @@ function normalizeNativeInstrumentCode(value: string): string {
     .toLowerCase();
 }
 
+function normalizeInstrumentSelector(value: string): string {
+  const rawInstrument = value.includes(":")
+    ? value.split(":").slice(1).join(":")
+    : value;
+  const normalized = normalizeNativeInstrumentCode(rawInstrument);
+
+  if (!normalized.includes("-")) {
+    return `${normalizeNativeCoin(normalized).toLowerCase()}-usd`;
+  }
+
+  return normalized;
+}
+
 function splitNativeInstrument(instrumentCode: string): {
   baseAsset: string;
   quoteAsset: string;
@@ -9118,6 +9257,22 @@ function buildMicrostructureSnapshot(
     isSynced,
     updatedAt
   };
+}
+
+function microstructureFromBook(book: InternalOrderBook): MicrostructureMetrics {
+  return buildMicrostructureSnapshot(
+    book.marketKey,
+    book.instrumentCode,
+    book.exchangeCode,
+    book.source_exchange,
+    book.sourceWeight,
+    book.bids,
+    book.asks,
+    book.updatedAt,
+    book.lastSequence,
+    book.ttbLatencyMs,
+    book.isSynced
+  );
 }
 
 function sumVolume(levels: PriceLevel[]): number {

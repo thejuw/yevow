@@ -412,6 +412,7 @@ export class IngestCoordinator {
     const url = new URL(request.url);
 
     if (request.method === "GET" && url.pathname === "/health") {
+      this.ensureStreams();
       return json(getHealth(this.activeStreams));
     }
 
@@ -4213,8 +4214,9 @@ function normalizeDwellirL4BookForEngine(
   const depthLimit = resolveBookDepthLimit(config);
   const bidLevels = buildDwellirL4AggregatedLevels(orderCache, "buy", depthLimit);
   const askLevels = buildDwellirL4AggregatedLevels(orderCache, "sell", depthLimit);
+  const sanitized = sanitizeCrossedAggregatedBook(bidLevels, askLevels);
 
-  if (bidLevels.length === 0 && askLevels.length === 0) {
+  if (sanitized.bids.length === 0 && sanitized.asks.length === 0) {
     return null;
   }
 
@@ -4224,8 +4226,9 @@ function normalizeDwellirL4BookForEngine(
       coin: coin.toUpperCase(),
       time: exchangeTime,
       sequence,
-      levels: [bidLevels, askLevels],
-      sourceChannel: "l4Book"
+      levels: [sanitized.bids, sanitized.asks],
+      sourceChannel: "l4Book",
+      crossedLevelsPruned: sanitized.pruned
     }
   };
 }
@@ -4614,6 +4617,38 @@ function buildDwellirL4AggregatedLevels(
   }
 
   return levels;
+}
+
+function sanitizeCrossedAggregatedBook(
+  bids: Array<{ px: string; sz: string; n: number; updatedAt: string }>,
+  asks: Array<{ px: string; sz: string; n: number; updatedAt: string }>
+): {
+  bids: Array<{ px: string; sz: string; n: number; updatedAt: string }>;
+  asks: Array<{ px: string; sz: string; n: number; updatedAt: string }>;
+  pruned: number;
+} {
+  let bidOffset = 0;
+  let askOffset = 0;
+  let pruned = 0;
+
+  while (bidOffset < bids.length && askOffset < asks.length) {
+    const bestBid = Number(bids[bidOffset]?.px);
+    const bestAsk = Number(asks[askOffset]?.px);
+
+    if (!Number.isFinite(bestBid) || !Number.isFinite(bestAsk) || bestBid < bestAsk) {
+      break;
+    }
+
+    bidOffset += 1;
+    askOffset += 1;
+    pruned += 2;
+  }
+
+  return {
+    bids: bidOffset > 0 ? bids.slice(bidOffset) : bids,
+    asks: askOffset > 0 ? asks.slice(askOffset) : asks,
+    pruned
+  };
 }
 
 function pruneDwellirL4Cache(

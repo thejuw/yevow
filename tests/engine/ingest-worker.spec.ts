@@ -262,6 +262,75 @@ describe("IngestWorker poison payload isolation", () => {
     });
   });
 
+  it("sanitizes transient crossed Dwellir L4 top levels before forwarding", () => {
+    const cache = new Map();
+    const normalized = __test__.normalizeDwellirL4BookForEngine(
+      {
+        channel: "l4Book",
+        data: {
+          Snapshot: {
+            coin: "HYPE",
+            time: 1778888364000,
+            height: 125,
+            levels: [
+              [
+                { oid: "bid-crossed", limitPx: "41.500", sz: "1", side: "B" },
+                { oid: "bid-valid", limitPx: "41.498", sz: "2", side: "B" }
+              ],
+              [
+                { oid: "ask-crossed", limitPx: "41.499", sz: "1", side: "A" },
+                { oid: "ask-valid", limitPx: "41.501", sz: "2", side: "A" }
+              ]
+            ]
+          }
+        }
+      },
+      {
+        id: "dwellir-l4-hype-test",
+        source: "HYPERLIQUID",
+        source_exchange: "hyperliquid",
+        transport: "websocket",
+        streamUrl: "wss://dwellir.example/ws",
+        authHeader: "x-token",
+        weight: 1,
+        heartbeatIntervalMs: 15000,
+        watchdogTimeoutMs: 5000,
+        maxBackoffMs: 30000,
+        backoffBaseMs: 1000,
+        grpcFatalDropMs: 200,
+        instrumentCode: "hype-usd",
+        exchangeCode: "hyperliquid",
+        subscriptionProfile: {
+          provider: "DWELLIR",
+          tier: "ENTERPRISE",
+          normalMode: true,
+          assetCount: 4,
+          bookDepth: 100,
+          maxBookDepth: 100,
+          l4BookEnabled: true,
+          readMode: "DWELLIR_GRPC_FILLS_L4_BOOK_WS",
+          optimization: "MAXIMIZED",
+          reason: "test"
+        }
+      } as never,
+      cache,
+      "2026-05-16T00:00:00.000Z",
+      10000
+    );
+
+    expect(normalized).toMatchObject({
+      channel: "l2Book",
+      data: {
+        coin: "HYPE",
+        crossedLevelsPruned: 2,
+        levels: [
+          [{ px: "41.498", sz: "2", n: 1 }],
+          [{ px: "41.501", sz: "2", n: 1 }]
+        ]
+      }
+    });
+  });
+
   it("classifies malformed Dwellir protobuf payloads without throwing", () => {
     const update = {
       kind: "FILLS" as const,
