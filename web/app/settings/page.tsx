@@ -25,6 +25,7 @@ import {
   createStrategyVersion,
   login,
   readSettings,
+  readState,
   resetLatencyBaseline,
   rotateVaultSecret,
   sendTestAlert,
@@ -46,6 +47,7 @@ import type {
   AlertPriority,
   AlertTestResponse,
   CostBudgetSettings,
+  EngineState,
   GlobalRiskConfig,
   JsonRecord,
   NotificationSettings,
@@ -74,6 +76,17 @@ const VAULT_KEYS: VaultKeyName[] = [
   "EXCHANGE_ED25519_PRIVATE_KEY"
 ];
 
+const RETIRED_STATE_TOKENS = [
+  ".hedge",
+  ".agenthealth.hedge",
+  ".spreads",
+  "spreadmultiplier",
+  "reservationshiftbps",
+  "am_vpin_contested_spread_multiplier",
+  "am_vpin_toxic_spread_multiplier",
+  "hl_hedge_subaccount"
+];
+
 export default function SettingsPage() {
   const [apiBase, setApiBase] = useState(DEFAULT_API_BASE);
   const [password, setPassword] = useState("");
@@ -83,6 +96,7 @@ export default function SettingsPage() {
   const [commandStatus, setCommandStatus] = useState<string | null>(null);
   const [commandState, setCommandState] = useState<CommandState>("IDLE");
   const [settings, setSettings] = useState<AdminSettingsResponse | null>(null);
+  const [engineState, setEngineState] = useState<EngineState | null>(null);
   const [riskDraft, setRiskDraft] = useState<Partial<GlobalRiskConfig>>({});
   const [notificationDraft, setNotificationDraft] = useState<NotificationSettingsUpdate>({});
   const [costDraft, setCostDraft] = useState<Partial<CostBudgetSettings>>({});
@@ -103,8 +117,12 @@ export default function SettingsPage() {
       return;
     }
 
-    const response = await readSettings(apiBase, token);
+    const [response, stateResponse] = await Promise.all([
+      readSettings(apiBase, token),
+      readState(apiBase, token)
+    ]);
     setSettings(response);
+    setEngineState(stateResponse.state);
     if (!riskDirtyRef.current) {
       setRiskDraft(response.config);
     }
@@ -139,6 +157,10 @@ export default function SettingsPage() {
   const backendRows = useMemo(
     () => flattenState(settings?.backend ?? {}, "backend").slice(0, 180),
     [settings]
+  );
+  const stateRows = useMemo(
+    () => flattenState(engineState ?? {}, "state").filter(([key]) => isVisibleStateRow(key)).slice(0, 240),
+    [engineState]
   );
   const ingestSettings = isJsonRecord(settings?.backend.ingest)
     ? settings.backend.ingest
@@ -178,6 +200,7 @@ export default function SettingsPage() {
     setToken("");
     setStatus("LOCKED");
     setSettings(null);
+    setEngineState(null);
     setRiskDraft({});
     setNotificationDraft({});
     setCostDraft({});
@@ -965,6 +988,21 @@ export default function SettingsPage() {
         <section className="settings-panel settings-panel-wide glass">
           <div className="panel-title">
             <ChevronRight size={17} />
+            <span>Engine Raw State Matrix</span>
+          </div>
+          <div className="state-table settings-state-table">
+            {stateRows.map(([key, value]) => (
+              <div className="state-row" key={key}>
+                <code>{key}</code>
+                <span>{value}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className="settings-panel settings-panel-wide glass">
+          <div className="panel-title">
+            <ChevronRight size={17} />
             <span>Backend Runtime Settings</span>
           </div>
           <div className="state-table settings-state-table">
@@ -1170,6 +1208,16 @@ function settingString(value: unknown, fallback: string): string {
   }
 
   return fallback;
+}
+
+function isVisibleStateRow(key: string): boolean {
+  const normalized = key.toLowerCase();
+
+  if (normalized.includes("posteriorpdf.points")) {
+    return false;
+  }
+
+  return !RETIRED_STATE_TOKENS.some((token) => normalized.includes(token));
 }
 
 function numberSetting(value: unknown, fallback: number): number {

@@ -41,8 +41,7 @@ import {
   updateTradingMode
 } from "@/lib/api";
 import {
-  DEFAULT_TRANSPORT_SETTINGS,
-  flattenState
+  DEFAULT_TRANSPORT_SETTINGS
 } from "@/lib/parameters";
 import type {
   AttributionResponse,
@@ -108,16 +107,6 @@ const compact = new Intl.NumberFormat("en-US", {
 });
 
 const RETIRED_DRIVER_NAMES = new Set(["HEDGE"]);
-const RETIRED_STATE_TOKENS = [
-  ".hedge",
-  ".agenthealth.hedge",
-  ".spreads",
-  "spreadmultiplier",
-  "reservationshiftbps",
-  "am_vpin_contested_spread_multiplier",
-  "am_vpin_toxic_spread_multiplier",
-  "hl_hedge_subaccount"
-];
 
 export default function CommandCenterPage() {
   const [apiBase, setApiBase] = useState(DEFAULT_API_BASE);
@@ -371,10 +360,6 @@ export default function CommandCenterPage() {
   const fillRate = executionQuality?.fillRate ?? {};
   const costReport = costDashboard?.cost ?? null;
 
-  const stateRows = useMemo(
-    () => flattenState(engineState ?? {}).filter(([key]) => isVisibleStateRow(key)),
-    [engineState]
-  );
   const visibleLogicFeed = useMemo(
     () => logicFeed.filter(isVisibleLogicItem),
     [logicFeed]
@@ -1384,20 +1369,6 @@ export default function CommandCenterPage() {
           </div>
         </section>
 
-        <section className="state-panel glass">
-          <div className="panel-title">
-            <ChevronRight size={17} />
-            <span>Raw State Matrix</span>
-          </div>
-          <div className="state-table">
-            {stateRows.slice(0, 180).map(([key, value]) => (
-              <div className="state-row" key={key}>
-                <code>{key}</code>
-                <span>{value}</span>
-              </div>
-            ))}
-          </div>
-        </section>
       </section>
 
       {diagnostics ? (
@@ -1499,16 +1470,6 @@ function displayDriverName(driver: string | null | undefined): string {
   }
 
   return normalized;
-}
-
-function isVisibleStateRow(key: string): boolean {
-  const normalized = key.toLowerCase();
-
-  if (normalized.includes("posteriorpdf.points")) {
-    return false;
-  }
-
-  return !RETIRED_STATE_TOKENS.some((token) => normalized.includes(token));
 }
 
 function isVisibleLogicItem(item: JsonRecord): boolean {
