@@ -219,6 +219,17 @@ output {
   font-size: 11px;
 }
 
+.settings-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid rgba(215, 196, 139, 0.34);
+  border-radius: 7px;
+  color: var(--text);
+  background: rgba(215, 196, 139, 0.08);
+}
+
 .session-card {
   border: 1px solid var(--line-cold);
   border-radius: 8px;
@@ -916,12 +927,6 @@ output {
   overflow-wrap: anywhere;
 }
 
-.matrix-panel {
-  order: 5;
-  grid-column: span 5;
-  grid-row: span 4;
-}
-
 .moltworker-panel {
   order: 6;
   grid-column: span 4;
@@ -1202,10 +1207,6 @@ output {
   min-height: 104px;
   border-color: rgba(215, 196, 139, 0.24);
   background: linear-gradient(180deg, rgba(215, 196, 139, 0.085), rgba(6, 8, 11, 0.54));
-}
-
-.matrix-panel .param-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .param-control {
@@ -1647,7 +1648,6 @@ output {
   .mode-panel,
   .bridge-panel,
   .liquidation-panel,
-  .matrix-panel,
   .moltworker-panel,
   .system-panel,
   .efficacy-panel,

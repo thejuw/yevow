@@ -8,14 +8,12 @@ import {
   DatabaseZap,
   Flame,
   Gauge,
-  Info,
   KeyRound,
   LogOut,
-  Lock,
   RadioTower,
   ReceiptText,
+  Settings,
   Shield,
-  SlidersHorizontal,
   TerminalSquare,
   Zap
 } from "lucide-react";
@@ -44,11 +42,7 @@ import {
 } from "@/lib/api";
 import {
   DEFAULT_TRANSPORT_SETTINGS,
-  PARAMETER_MATRIX,
-  changedMoreThanTenPercent,
-  flattenState,
-  parameterHelp,
-  validateParameterDraft
+  flattenState
 } from "@/lib/parameters";
 import type {
   AttributionResponse,
@@ -134,7 +128,6 @@ export default function CommandCenterPage() {
   const [engineState, setEngineState] = useState<EngineState | null>(null);
   const [orderBook, setOrderBook] = useState<JsonRecord | null>(null);
   const [config, setConfig] = useState<GlobalRiskConfig | null>(null);
-  const [draftConfig, setDraftConfig] = useState<Partial<GlobalRiskConfig>>({});
   const [trace, setTrace] = useState<TraceResponse | null>(null);
   const [attribution, setAttribution] = useState<AttributionResponse | null>(null);
   const [tradeHistory, setTradeHistory] = useState<TradeHistoryResponse | null>(null);
@@ -143,10 +136,7 @@ export default function CommandCenterPage() {
   const [costDashboard, setCostDashboard] = useState<CostDashboardResponse | null>(null);
   const [pulse, setPulse] = useState<DashboardPulse | null>(null);
   const [logicFeed, setLogicFeed] = useState<JsonRecord[]>([]);
-  const [pendingFields, setPendingFields] = useState<string[]>([]);
-  const [confirmText, setConfirmText] = useState("");
   const [commandStatus, setCommandStatus] = useState<string | null>(null);
-  const [isApplyingMatrix, setIsApplyingMatrix] = useState(false);
   const [isClearingOverride, setIsClearingOverride] = useState(false);
   const [isResettingLatency, setIsResettingLatency] = useState(false);
   const [isSwitchingMode, setIsSwitchingMode] = useState(false);
@@ -169,7 +159,6 @@ export default function CommandCenterPage() {
   });
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectRef = useRef<number>(0);
-  const draftDirtyRef = useRef(false);
   const isUnlocked = Boolean(token);
 
   const refresh = useCallback(async () => {
@@ -204,9 +193,6 @@ export default function CommandCenterPage() {
     setEngineState(stateResult.state);
     setOrderBook(stateResult.orderBook ?? null);
     setConfig(configResult.config);
-    if (!draftDirtyRef.current) {
-      setDraftConfig(configResult.config);
-    }
     setTrace(traceResult);
     setAttribution(attributionResult);
     setTradeHistory(historyResult);
@@ -427,7 +413,6 @@ export default function CommandCenterPage() {
     setEngineState(null);
     setOrderBook(null);
     setConfig(null);
-    setDraftConfig({});
     setTrace(null);
     setAttribution(null);
     setTradeHistory(null);
@@ -435,55 +420,6 @@ export default function CommandCenterPage() {
     setDiagnostics(null);
     setPulse(null);
     setLogicFeed([]);
-  }
-
-  function updateDraft(key: keyof GlobalRiskConfig, value: string | number | boolean) {
-    draftDirtyRef.current = true;
-    setDraftConfig((draft) => ({
-      ...draft,
-      [key]: value
-    }));
-  }
-
-  async function submitDraftConfig(force = false) {
-    if (!config) {
-      return;
-    }
-
-    const validationErrors = validateParameterDraft(draftConfig);
-    if (validationErrors.length > 0) {
-      setError(validationErrors.join(" "));
-      setCommandStatus("Matrix validation blocked.");
-      return;
-    }
-
-    const overTen = changedMoreThanTenPercent(config, draftConfig);
-    if (!force && overTen.length > 0) {
-      setPendingFields(overTen);
-      setConfirmText("");
-      return;
-    }
-
-    setError(null);
-    setCommandStatus("Applying matrix...");
-    setIsApplyingMatrix(true);
-
-    try {
-      await updateConfig(apiBase, token, draftConfig);
-      draftDirtyRef.current = false;
-      setPendingFields([]);
-      await refresh();
-      setCommandStatus(
-        temporaryOverride
-          ? "Baseline matrix saved. Effective governance is still controlled by the active Moltworker override."
-          : "Matrix applied."
-      );
-    } catch (caught: unknown) {
-      setError(errorMessage(caught));
-      setCommandStatus("Matrix update failed.");
-    } finally {
-      setIsApplyingMatrix(false);
-    }
   }
 
   async function switchTradingMode(mode: "OBSERVE" | "PAPER" | "LIVE") {
@@ -504,7 +440,6 @@ export default function CommandCenterPage() {
 
     try {
       await updateTradingMode(apiBase, token, mode);
-      draftDirtyRef.current = false;
       await refresh();
       setCommandStatus(
         mode === "OBSERVE"
@@ -532,7 +467,6 @@ export default function CommandCenterPage() {
 
     try {
       await updateConfig(apiBase, token, { ORACLE_GOVERNANCE_MODE: mode });
-      draftDirtyRef.current = false;
       await refresh();
       setCommandStatus(mode === "AUTONOMOUS" ? "Autonomous governance armed." : "Manual intervention armed.");
     } catch (caught: unknown) {
@@ -786,6 +720,10 @@ export default function CommandCenterPage() {
             <Shield size={16} />
             {isRunningDiagnostics ? "Scanning" : "Run Integrity Check"}
           </button>
+          <a className="compact-action settings-link" href="/settings">
+            <Settings size={16} />
+            Settings
+          </a>
         </div>
 
         <div className={`system-state ${status.toLowerCase()}`}>
@@ -1144,30 +1082,6 @@ export default function CommandCenterPage() {
           </button>
         </section>
 
-        <section className="matrix-panel glass">
-          <div className="panel-title">
-            <SlidersHorizontal size={17} />
-            <span>Full Parameter Matrix</span>
-            <button
-              disabled={isApplyingMatrix || !token || !config || !isManualGovernance}
-              onClick={() => void submitDraftConfig()}
-            >
-              {isApplyingMatrix ? "APPLYING" : "APPLY CHANGES"}
-            </button>
-          </div>
-          <div className="param-grid">
-            {PARAMETER_MATRIX.map((param) => (
-              <ParameterControl
-                key={param.key}
-                param={param}
-                value={draftConfig[param.key] ?? config?.[param.key]}
-                onChange={(value) => updateDraft(param.key, value)}
-                disabled={!isManualGovernance}
-              />
-            ))}
-          </div>
-        </section>
-
         <section className="moltworker-panel glass">
           <div className="panel-title">
             <Brain size={17} />
@@ -1486,32 +1400,6 @@ export default function CommandCenterPage() {
         </section>
       </section>
 
-      {pendingFields.length > 0 ? (
-        <div className="modal-backdrop">
-          <div className="confirm-modal">
-            <div className="panel-title">
-              <Lock size={17} />
-              <span>Confirm Action</span>
-            </div>
-            <p>
-              Warning: Overriding System 2 Logic. Confirm manual parameter override?
-              {" "}{pendingFields.join(", ")} changed by more than 10%. Type CONFIRM to apply.
-            </p>
-            <input value={confirmText} onChange={(event) => setConfirmText(event.target.value)} />
-            <div className="modal-actions">
-              <button onClick={() => setPendingFields([])}>Cancel</button>
-              <button
-                className="danger-action"
-                disabled={confirmText !== "CONFIRM"}
-                onClick={() => void submitDraftConfig(true)}
-              >
-                Confirm
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
       {diagnostics ? (
         <div className="modal-backdrop">
           <div className="confirm-modal diagnostics-modal">
@@ -1551,78 +1439,6 @@ function Metric({
       <span>{icon}{label}</span>
       <strong>{value}</strong>
     </div>
-  );
-}
-
-function ParameterControl({
-  param,
-  value,
-  onChange,
-  disabled = false
-}: {
-  param: (typeof PARAMETER_MATRIX)[number];
-  value: unknown;
-  onChange: (value: string | number | boolean) => void;
-  disabled?: boolean;
-}) {
-  const help = parameterHelp(param);
-
-  if (param.kind === "boolean") {
-    return (
-      <label className="param-control toggle-control">
-        <span>{param.group}</span>
-        <strong>{param.label}<InfoBadge text={help} /></strong>
-        <input
-          type="checkbox"
-          checked={Boolean(value)}
-          disabled={disabled}
-          onChange={(event) => onChange(event.target.checked)}
-        />
-      </label>
-    );
-  }
-
-  if (param.kind === "select") {
-    return (
-      <label className="param-control">
-        <span>{param.group}</span>
-        <strong>{param.label}<InfoBadge text={help} /></strong>
-        <select
-          value={String(value ?? "")}
-          disabled={disabled}
-          onChange={(event) => onChange(event.target.value)}
-        >
-          {param.options?.map((option) => <option key={option}>{option}</option>)}
-        </select>
-      </label>
-    );
-  }
-
-  return (
-    <label className="param-control">
-      <span>{param.group}</span>
-      <strong>{param.label}<InfoBadge text={help} /></strong>
-      <input
-        type="number"
-        aria-label={param.label}
-        data-testid={`param-${String(param.key)}`}
-        min={param.min}
-        max={param.max}
-        step={param.step}
-        value={Number(value ?? 0)}
-        disabled={disabled}
-        onChange={(event) => onChange(Number(event.target.value))}
-      />
-    </label>
-  );
-}
-
-function InfoBadge({ text }: { text: string }) {
-  return (
-    <span className="info-badge" tabIndex={0}>
-      <Info size={11} />
-      <span className="info-popover">{text}</span>
-    </span>
   );
 }
 
