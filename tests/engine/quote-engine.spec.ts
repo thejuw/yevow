@@ -44,11 +44,13 @@ describe("quote engine toxicity gating", () => {
   it("turns toxic pressure into one-sided passive quoting instead of a global halt", () => {
     const sellPressure = new CroupierAgent().evaluate({
       ...croupierInput(),
+      minEvThreshold: -1_000_000_000,
       profilerToxicityState: "TOXIC",
       profilerPressureSide: "SELL"
     });
     expect(sellPressure.pullAllQuotes).toBe(false);
     expect(sellPressure.quote?.orders.map((order) => order.side)).toEqual(["ASK"]);
+    expect(sellPressure.intent?.timeInForce).toBe("ALO");
 
     const buyPressure = new CroupierAgent().evaluate({
       ...croupierInput(),

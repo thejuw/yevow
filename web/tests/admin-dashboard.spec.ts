@@ -202,6 +202,34 @@ async function installApiMock(page: Page): Promise<{
       return;
     }
 
+    if (path === "/admin/live-readiness") {
+      await route.fulfill({
+        status: 409,
+        json: {
+          ok: false,
+          readiness: {
+            ok: false,
+            generatedAt: now,
+            checks: [
+              {
+                id: "shadow_mode_disabled",
+                label: "Shadow Mode Disabled",
+                ok: false,
+                detail: "Worker is still in SHADOW_MODE."
+              },
+              {
+                id: "quote_health",
+                label: "Quote Health",
+                ok: true,
+                detail: "One quote-eligible paper asset."
+              }
+            ]
+          }
+        }
+      });
+      return;
+    }
+
     await route.fulfill({ status: 404, json: { ok: false, error: "UNMOCKED_ROUTE", path } });
   });
 

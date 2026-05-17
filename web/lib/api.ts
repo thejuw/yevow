@@ -7,6 +7,7 @@ import type {
   AttributionResponse,
   DiagnosticsResponse,
   GlobalRiskConfig,
+  LiveReadinessResponse,
   LoginResponse,
   MacroBiasDirection,
   NotificationSettingsUpdate,
@@ -28,6 +29,8 @@ export class SovereignApiError extends Error {
     super(message);
   }
 }
+
+type ApiFetchInit = RequestInit & { allowErrorBody?: boolean };
 
 export function normalizeApiBase(value: string): string {
   return value.replace(/\/+$/, "");
@@ -85,6 +88,15 @@ export async function readDiagnostics(
   token: string
 ): Promise<DiagnosticsResponse> {
   return apiFetch<DiagnosticsResponse>(apiBase, "/admin/diagnostics", token);
+}
+
+export async function readLiveReadiness(
+  apiBase: string,
+  token: string
+): Promise<LiveReadinessResponse> {
+  return apiFetch<LiveReadinessResponse>(apiBase, "/admin/live-readiness", token, {
+    allowErrorBody: true
+  });
 }
 
 export async function readSettings(
@@ -265,20 +277,21 @@ async function apiFetch<T>(
   apiBase: string,
   path: string,
   token: string,
-  init: RequestInit = {}
+  init: ApiFetchInit = {}
 ): Promise<T> {
+  const { allowErrorBody, ...fetchInit } = init;
   const response = await fetch(`${normalizeApiBase(apiBase)}${path}`, {
-    ...init,
+    ...fetchInit,
     headers: {
       "content-type": "application/json",
       ...(token ? { authorization: `Bearer ${token}` } : {}),
-      ...init.headers
+      ...fetchInit.headers
     }
   });
   const text = await response.text();
   const body = text ? JSON.parse(text) : null;
 
-  if (!response.ok) {
+  if (!response.ok && !allowErrorBody) {
     throw new SovereignApiError(body?.error ?? `HTTP_${response.status}`, response.status);
   }
 

@@ -164,6 +164,11 @@ const DEFAULT_WHALE_PRINT_Z_THRESHOLD = 5;
 const DEFAULT_QUOTE_HIBERNATE_MS = 3_000;
 const DEFAULT_PAPER_BANKROLL_USD = 5_000;
 const DEFAULT_PAPER_MAX_GHOST_FILLS_PER_MINUTE = 90;
+const DEFAULT_PAPER_FILL_PARTICIPATION_RATE = 0.35;
+const DEFAULT_PAPER_FILL_ADVERSE_BPS = 1.5;
+const DEFAULT_PAPER_MAKER_FEE_BPS = 2;
+const DEFAULT_QUOTE_REFRESH_MIN_INTERVAL_MS = 750;
+const DEFAULT_QUOTE_REFRESH_MIN_PRICE_TICKS = 1;
 const DEFAULT_MARKET_TICK_JOURNAL_INTERVAL = 100;
 const DEFAULT_MARKET_TICK_MAX_ROWS = 100_000;
 const DEFAULT_SHADOW_VLO_CAPACITY = 2_048;
@@ -466,6 +471,15 @@ export class TradingEngine {
   private performanceSpikeLogAt = new Map<string, number>();
   private rateLimitDeferralLogAt = 0;
   private cancelAllLogAt = new Map<string, number>();
+  private readonly lastDispatchedQuoteByInstrument = new Map<
+    string,
+    {
+      bid: number | null;
+      ask: number | null;
+      updatedAtMs: number;
+    }
+  >();
+  private quoteRefreshThrottleLogAt = new Map<string, number>();
   private latencyHistory: LatencyMetrics[] = [];
   private processingLatencySamples: number[] = [];
   private domWallHistory: LiquidityWall[] = [];
@@ -766,6 +780,12 @@ export class TradingEngine {
         assetMatrix:
           baseState.assetMatrix ??
           defaultAssetMatrix(this.cachedConfig, this.macroBias, now),
+        assetQuoteStates: normalizeAssetQuoteStates(
+          baseState.assetQuoteStates,
+          this.cachedConfig,
+          this.macroBias,
+          now
+        ),
         profilerStates: this.profilerStateSnapshot(),
         location,
         fundingRates: baseState.fundingRates ?? {},
@@ -916,20 +936,27 @@ export class TradingEngine {
             this.engineState.quoteState.reason === "NATIVE_HL_LATENCY" ||
             this.engineState.quoteState.reason === "GRPC_FATAL_DROP" ||
             this.engineState.quoteState.reason === "STALE_DATA_KILL_SWITCH"
-          );
+        );
         this.resetLatencyBaseline(observedAt, "ADMIN_MAINTENANCE");
+        const recoveredAssetQuoteStates = shouldClearQuoteSuspension
+          ? resumeExpiredAssetQuoteStates(
+              suspendAssetQuoteStates(
+                this.engineState.assetQuoteStates,
+                "ADMIN_RESET_LATENCY",
+                observedAt,
+                { suspendedUntil: observedAt }
+              ),
+              observedAt
+            )
+          : this.engineState.assetQuoteStates;
+        const recoveredQuoteState = shouldClearQuoteSuspension
+          ? aggregateQuoteState(recoveredAssetQuoteStates, this.engineState.quoteState, observedAt)
+          : this.engineState.quoteState;
         this.engineState = {
           ...this.engineState,
           staleTickCount: 0,
-          quoteState: shouldClearQuoteSuspension
-            ? {
-                ...this.engineState.quoteState,
-                status: "ACTIVE",
-                reason: null,
-                suspendedUntil: null,
-                updatedAt: observedAt
-              }
-            : this.engineState.quoteState,
+          quoteState: recoveredQuoteState,
+          assetQuoteStates: recoveredAssetQuoteStates,
           updatedAt: observedAt
         };
         if (shouldClearQuoteSuspension) {
@@ -1270,6 +1297,7 @@ export class TradingEngine {
       inventoryGuard: this.engineState.inventoryGuard,
       riskMetrics: this.engineState.riskMetrics,
       quoteState: this.engineState.quoteState,
+      assetQuoteStates: this.engineState.assetQuoteStates,
       shadowQueue: this.engineState.shadowQueue,
       slippage: this.engineState.slippage,
       executionProfile: this.engineState.executionProfile,
@@ -1317,6 +1345,13 @@ export class TradingEngine {
       internalOrderBookDepth: countBookLevels(this.bids, this.asks),
       microstructure,
       priceDiscovery: this.calculatePriceDiscovery(bestBook.instrumentCode, updatedAt),
+      assetMatrix: this.calculateAssetMatrix(
+        updatedAt,
+        bestBook.instrumentCode,
+        this.engineState.oracle,
+        this.profilerStateSnapshot(),
+        this.engineState.assetQuoteStates
+      ),
       updatedAt
     };
   }
@@ -1531,7 +1566,8 @@ export class TradingEngine {
     observedAt: string,
     latestInstrumentCode: string | undefined,
     latestOracle: EngineState["oracle"],
-    profilerStates: Record<string, ProfilerState>
+    profilerStates: Record<string, ProfilerState>,
+    assetQuoteStates: EngineState["assetQuoteStates"] = this.engineState.assetQuoteStates
   ): Record<string, AssetRuntimeState> {
     const selected = selectedMoltworkerInstruments(this.macroBias);
     const activeWeights: Record<string, number> = {};
@@ -1549,7 +1585,12 @@ export class TradingEngine {
         selected.has(asset.coin.toLowerCase()) ||
         selected.has(`${asset.coin.toLowerCase()}-perp`);
       const book = this.findBestAssetBook(asset.instrumentCode);
-      const active = selectedByMoltworker && Boolean(book?.isSynced);
+      const quoteState = quoteStateForInstrumentState(
+        assetQuoteStates,
+        asset.instrumentCode,
+        this.engineState.quoteState
+      );
+      const active = selectedByMoltworker && Boolean(book?.isSynced) && !isQuoteSuspendedAt(quoteState, observedAt);
       const weight = active ? 1 / volatility : 0;
       activeWeights[asset.instrumentCode] = weight;
       totalWeight += weight;
@@ -1576,6 +1617,17 @@ export class TradingEngine {
           selected.has(asset.instrumentCode) ||
           selected.has(asset.coin.toLowerCase()) ||
           selected.has(`${asset.coin.toLowerCase()}-perp`);
+        const quoteState = quoteStateForInstrumentState(
+          assetQuoteStates,
+          asset.instrumentCode,
+          this.engineState.quoteState
+        );
+        const quoteSuspended = isQuoteSuspendedAt(quoteState, observedAt);
+        const quoteEligible =
+          selectedByMoltworker &&
+          Boolean(book?.isSynced) &&
+          !quoteSuspended &&
+          profilerState.toxicityState !== "CRITICAL";
 
         return [
           asset.instrumentCode,
@@ -1583,7 +1635,7 @@ export class TradingEngine {
             instrumentCode: asset.instrumentCode,
             coin: asset.coin,
             selectedByMoltworker,
-            active: selectedByMoltworker && Boolean(book?.isSynced),
+            active: quoteEligible,
             isSynced: Boolean(book?.isSynced),
             lastSequence: book?.lastSequence ?? null,
             midPrice: book?.midPrice ?? null,
@@ -1593,7 +1645,11 @@ export class TradingEngine {
             toxicityState: profilerState.toxicityState,
             amVpin: profilerState.amVpinScore,
             obi: profilerState.obi,
-            quoteStatus: this.engineState.quoteState.status,
+            quoteStatus: quoteSuspended ? "SUSPENDED" : "ACTIVE",
+            quoteReason: quoteState.reason,
+            quoteSuspendedUntil: quoteState.suspendedUntil,
+            quoteEligible,
+            lastQuoteAt: quoteState.lastQuote?.createdAt ?? quoteState.updatedAt,
             updatedAt: book?.updatedAt ?? observedAt
           } satisfies AssetRuntimeState
         ];
@@ -2386,6 +2442,12 @@ export class TradingEngine {
       reason,
       observedAt
     });
+    const assetQuoteStates = suspendAssetQuoteStates(
+      this.engineState.assetQuoteStates,
+      "GRPC_FATAL_DROP",
+      observedAt,
+      { lastQuote: this.engineState.quoteState.lastQuote }
+    );
 
     this.engineState = {
       ...this.engineState,
@@ -2397,13 +2459,8 @@ export class TradingEngine {
         0,
         reason
       ),
-      quoteState: {
-        status: "SUSPENDED",
-        reason: "GRPC_FATAL_DROP",
-        suspendedUntil: null,
-        lastQuote: this.engineState.quoteState.lastQuote,
-        updatedAt: observedAt
-      },
+      quoteState: aggregateQuoteState(assetQuoteStates, this.engineState.quoteState, observedAt),
+      assetQuoteStates,
       executionProfile: {
         ...this.engineState.executionProfile,
         status: "UNSTABLE",
@@ -2468,17 +2525,18 @@ export class TradingEngine {
     this.latencyHistory = [...this.latencyHistory, metrics].slice(
       -PERFORMANCE_HISTORY_LIMIT
     );
+    const assetQuoteStates = suspendAssetQuoteStates(
+      this.engineState.assetQuoteStates,
+      "NATIVE_HL_LATENCY",
+      observedAt,
+      { instrumentCode, lastQuote: this.engineState.quoteState.lastQuote }
+    );
     this.engineState = {
       ...this.engineState,
       processedTicks: this.engineState.processedTicks + 1,
       staleTickCount: this.engineState.staleTickCount + 1,
-      quoteState: {
-        status: "SUSPENDED",
-        reason: "NATIVE_HL_LATENCY",
-        suspendedUntil: null,
-        lastQuote: this.engineState.quoteState.lastQuote,
-        updatedAt: observedAt
-      },
+      quoteState: aggregateQuoteState(assetQuoteStates, this.engineState.quoteState, observedAt),
+      assetQuoteStates,
       heartbeatAt: observedAt,
       updatedAt: observedAt
     };
@@ -2722,16 +2780,14 @@ export class TradingEngine {
       this.resetLatencyBaseline(observedAt, reason);
     }
 
+    const nextAssetQuoteStates =
+      payload.clearQuoteState === false
+        ? this.engineState.assetQuoteStates
+        : defaultAssetQuoteStates(this.cachedConfig, this.macroBias, observedAt);
     const nextQuoteState =
       payload.clearQuoteState === false
         ? this.engineState.quoteState
-        : {
-            ...this.engineState.quoteState,
-            status: "ACTIVE" as const,
-            reason: null,
-            suspendedUntil: null,
-            updatedAt: observedAt
-          };
+        : aggregateQuoteState(nextAssetQuoteStates, this.engineState.quoteState, observedAt);
     const nextCitadel =
       payload.clearCitadel === false
         ? this.engineState.citadel
@@ -2788,6 +2844,7 @@ export class TradingEngine {
       current_inventory_delta: nextInventory.current_inventory_delta,
       staleTickCount: 0,
       quoteState: nextQuoteState,
+      assetQuoteStates: nextAssetQuoteStates,
       citadel: nextCitadel,
       riskMetrics: nextRiskMetrics,
       risk: nextRisk,
@@ -3722,6 +3779,12 @@ export class TradingEngine {
       this.engineState.mode === "HALTED"
     ) {
       const resumedAt = new Date().toISOString();
+      const assetQuoteStates = normalizeAssetQuoteStates(
+        defaultAssetQuoteStates(this.cachedConfig, this.macroBias, resumedAt),
+        this.cachedConfig,
+        this.macroBias,
+        resumedAt
+      );
       this.engineState = {
         ...this.engineState,
         mode: "PAPER",
@@ -3731,13 +3794,8 @@ export class TradingEngine {
           killSwitch: false,
           updatedAt: resumedAt
         },
-        quoteState: {
-          status: "ACTIVE",
-          reason: null,
-          suspendedUntil: null,
-          lastQuote: this.engineState.quoteState.lastQuote,
-          updatedAt: resumedAt
-        },
+        quoteState: aggregateQuoteState(assetQuoteStates, this.engineState.quoteState, resumedAt),
+        assetQuoteStates,
         heartbeatAt: resumedAt,
         updatedAt: resumedAt
       };
@@ -3803,18 +3861,19 @@ export class TradingEngine {
       metrics.maxLatencyMs = hardStaleDropMs;
       metrics.averageLatencyMs = this.engineState.averageLatency;
       metrics.sampleCount = this.engineState.latencySampleCount;
+      const assetQuoteStates = suspendAssetQuoteStates(
+        this.engineState.assetQuoteStates,
+        "HARD_STALE_DROP",
+        metrics.brainTimestamp,
+        { lastQuote: this.engineState.quoteState.lastQuote }
+      );
 
       this.engineState = {
         ...this.engineState,
         processedTicks: this.engineState.processedTicks + 1,
         staleTickCount: nextStaleTickCount,
-        quoteState: {
-          status: "SUSPENDED",
-          reason: "HARD_STALE_DROP",
-          suspendedUntil: null,
-          lastQuote: this.engineState.quoteState.lastQuote,
-          updatedAt: metrics.brainTimestamp
-        },
+        quoteState: aggregateQuoteState(assetQuoteStates, this.engineState.quoteState, metrics.brainTimestamp),
+        assetQuoteStates,
         heartbeatAt: metrics.brainTimestamp,
         updatedAt: metrics.brainTimestamp
       };
@@ -3904,19 +3963,21 @@ export class TradingEngine {
         observedAt: metrics.brainTimestamp
       });
 
+      const suspendedUntil = new Date(
+        Date.parse(metrics.brainTimestamp) + this.resolveQuoteHibernateMs()
+      ).toISOString();
+      const assetQuoteStates = suspendAssetQuoteStates(
+        this.engineState.assetQuoteStates,
+        "STALE_DATA_KILL_SWITCH",
+        metrics.brainTimestamp,
+        { instrumentCode: tick.instrumentCode, suspendedUntil, lastQuote: this.engineState.quoteState.lastQuote }
+      );
       this.engineState = {
         ...this.engineState,
         processedTicks: this.engineState.processedTicks + 1,
         staleTickCount: this.engineState.staleTickCount + 1,
-        quoteState: {
-          status: "SUSPENDED",
-          reason: "STALE_DATA_KILL_SWITCH",
-          suspendedUntil: new Date(
-            Date.parse(metrics.brainTimestamp) + this.resolveQuoteHibernateMs()
-          ).toISOString(),
-          lastQuote: this.engineState.quoteState.lastQuote,
-          updatedAt: metrics.brainTimestamp
-        },
+        quoteState: aggregateQuoteState(assetQuoteStates, this.engineState.quoteState, metrics.brainTimestamp),
+        assetQuoteStates,
         maxLatencyMs: this.maxLatencyMs,
         heartbeatAt: metrics.brainTimestamp,
         updatedAt: metrics.brainTimestamp
@@ -3985,18 +4046,21 @@ export class TradingEngine {
           observedAt: metrics.brainTimestamp
         });
 
+        const assetQuoteStates = this.cachedConfig.TRADING_ENABLED
+          ? suspendAssetQuoteStates(
+              this.engineState.assetQuoteStates,
+              "ORDER_BOOK_NOT_READY",
+              metrics.brainTimestamp,
+              { instrumentCode: tick.instrumentCode, lastQuote: this.engineState.quoteState.lastQuote }
+            )
+          : this.engineState.assetQuoteStates;
         this.engineState = {
           ...this.engineState,
           processedTicks: this.engineState.processedTicks + 1,
           quoteState: this.cachedConfig.TRADING_ENABLED
-            ? {
-                status: "SUSPENDED",
-                reason: "ORDER_BOOK_NOT_READY",
-                suspendedUntil: null,
-                lastQuote: this.engineState.quoteState.lastQuote,
-                updatedAt: metrics.brainTimestamp
-              }
+            ? aggregateQuoteState(assetQuoteStates, this.engineState.quoteState, metrics.brainTimestamp)
             : this.engineState.quoteState,
+          assetQuoteStates,
           maxLatencyMs: this.maxLatencyMs,
           heartbeatAt: metrics.brainTimestamp,
           updatedAt: metrics.brainTimestamp
@@ -4248,10 +4312,11 @@ export class TradingEngine {
       metrics.brainTimestamp,
       { stateOverride: { ...this.engineState, assetMatrix } }
     );
-    const executionPlans = [executionPlan].filter(
+    let executionPlans = [executionPlan].filter(
       (plan): plan is NonNullable<typeof executionPlan> => plan !== null
     );
-    let quoteState = this.nextQuoteState(
+    let assetQuoteState = this.nextQuoteStateForInstrument(
+      tick.instrumentCode,
       croupierDecision.quote,
       croupierDecision.pullAllQuotes,
       metrics.brainTimestamp
@@ -4263,6 +4328,7 @@ export class TradingEngine {
       profilerSignalType === "AM_VPIN_CRITICAL";
 
     if (isProfilerQuoteHalt) {
+      executionPlans = [];
       const suspendedUntil =
         typeof profilerResult.signal?.featureVector.suspendedUntil === "string"
           ? profilerResult.signal.featureVector.suspendedUntil
@@ -4273,15 +4339,35 @@ export class TradingEngine {
                   ? this.cachedConfig.AM_VPIN_QUOTE_HALT_MS
                   : this.resolveQuoteHibernateMs())
             ).toISOString();
-      quoteState = {
+      assetQuoteState = {
         status: "SUSPENDED",
         reason: profilerSignalType === "AM_VPIN_CRITICAL" ? "AM_VPIN_CRITICAL" : "WHALE_PRINT",
         suspendedUntil,
-        lastQuote: quoteState.lastQuote,
+        lastQuote: assetQuoteState.lastQuote,
         updatedAt: metrics.brainTimestamp
       };
-      this.publish("SUSPEND_QUOTES", quoteStateTelemetry(quoteState));
+      this.publish("SUSPEND_QUOTES", {
+        instrumentCode: tick.instrumentCode,
+        ...quoteStateTelemetry(assetQuoteState)
+      });
     }
+
+    const assetQuoteStates = {
+      ...this.engineState.assetQuoteStates,
+      [tick.instrumentCode]: assetQuoteState
+    };
+    const quoteState = aggregateQuoteState(
+      assetQuoteStates,
+      this.engineState.quoteState,
+      metrics.brainTimestamp
+    );
+    const finalAssetMatrix = this.calculateAssetMatrix(
+      metrics.brainTimestamp,
+      tick.instrumentCode,
+      oracleResult.state,
+      profilerStates,
+      assetQuoteStates
+    );
 
     this.engineState = {
       ...this.engineState,
@@ -4307,6 +4393,7 @@ export class TradingEngine {
         updatedAt: metrics.brainTimestamp
       },
       quoteState,
+      assetQuoteStates,
       shadowQueue: shadowQueueState,
       lastTradeIntent: executionPlan?.intent ?? croupierDecision.intent,
       inventoryGuard,
@@ -4323,7 +4410,7 @@ export class TradingEngine {
       dom: domSnapshot,
       anomaly: anomalyResult.status,
       liquidationHeatmap: this.engineState.liquidationHeatmap,
-      assetMatrix,
+      assetMatrix: finalAssetMatrix,
       profilerStates,
       toxicityScore: profilerResult.toxicityScore,
       agentHealth: profilerResult.processed
@@ -4587,22 +4674,44 @@ export class TradingEngine {
     book: InternalOrderBook,
     observedAt: string
   ): void {
-    const paperSizeCap = this.shadowQueueKellySize(fill.side, fill.price, book);
-    const executablePaperSize = roundCrypto(Math.min(fill.size, paperSizeCap));
+    const participationRate = readBoundedNumber(
+      this.env.PAPER_FILL_PARTICIPATION_RATE,
+      DEFAULT_PAPER_FILL_PARTICIPATION_RATE,
+      0,
+      1
+    );
+    const adverseBps = readBoundedNumber(
+      this.env.PAPER_FILL_ADVERSE_BPS,
+      DEFAULT_PAPER_FILL_ADVERSE_BPS,
+      0,
+      100
+    );
+    const makerFeeBps = readBoundedNumber(
+      this.env.PAPER_MAKER_FEE_BPS ?? this.env.EXCHANGE_FEE_BPS,
+      DEFAULT_PAPER_MAKER_FEE_BPS,
+      0,
+      100
+    );
+    const paperFillPrice = adverseAdjustedPaperFillPrice(fill.side, fill.price, adverseBps, book.tickSize);
+    const paperSizeCap = this.shadowQueueKellySize(fill.side, paperFillPrice, book);
+    const executablePaperSize = roundCrypto(Math.min(fill.size * participationRate, paperSizeCap));
 
     if (executablePaperSize <= 0) {
       this.publish("SHADOW_QUEUE_GHOST_FILL", {
         fillId: fill.fillId,
         instrumentCode: fill.instrumentCode,
         side: fill.side,
-        price: fill.price,
+        price: paperFillPrice,
         virtualQueueSize: fill.size,
         paperExecutionSize: 0,
         reason: "PAPER_RISK_CAP_ZERO",
+        participationRate,
+        adverseBps,
         observedAt
       }, fill.fillId);
       return;
     }
+    const fees = roundCrypto(paperFillPrice * executablePaperSize * makerFeeBps / 10_000);
 
     const trade: TradeExecution = {
       tradeId: `shadow-queue:${fill.fillId}:${Date.parse(observedAt) || observedAt}`,
@@ -4612,21 +4721,27 @@ export class TradingEngine {
       asset: fill.instrumentCode,
       side: fill.side,
       orderType: "LIMIT",
-      price: fill.price,
+      price: paperFillPrice,
       size: executablePaperSize,
       evAtExecution: 0,
-      slippageBps: 0,
+      slippageBps: adverseBps,
       resultingPnl: 0,
       primaryDriver: "PROFILER",
-      fees: 0,
+      fees,
       status: "GHOST_FILL",
       exchangeTradeId: fill.fillId,
       metadata: toJsonValue({
         schemaVersion: "shadow-queue.fill.v1",
         paperSizer: "shadowQueueKellySize",
+        fillModel: "risk_capped_participation_with_adverse_price_haircut",
         virtualQueueSize: fill.size,
         paperExecutionSize: executablePaperSize,
         paperSizeCap,
+        participationRate,
+        adverseBps,
+        makerFeeBps,
+        originalVirtualPrice: fill.price,
+        paperFillPrice,
         sizeCapped: executablePaperSize < fill.size,
         queueAhead: fill.queueAhead,
         p0MidPrice: fill.p0MidPrice,
@@ -4775,7 +4890,7 @@ export class TradingEngine {
       action,
       orderType: "LIMIT",
       postOnly: true,
-      timeInForce: "GTC",
+      timeInForce: "ALO",
       intendedPrice: price,
       expectedPrice: price,
       requestedSize,
@@ -5149,14 +5264,24 @@ export class TradingEngine {
         orders: ManagedOrder[];
       }
     | null {
-    if (
-      !intent ||
-      (!options.bypassQuoteSuspension && this.engineState.quoteState.status === "SUSPENDED")
-    ) {
+    if (!intent) {
       return null;
     }
 
     const riskState = options.stateOverride ?? this.engineState;
+    if (
+      !options.bypassQuoteSuspension &&
+      isQuoteSuspendedAt(
+        quoteStateForInstrumentState(
+          riskState.assetQuoteStates,
+          intent.instrumentCode,
+          riskState.quoteState
+        ),
+        observedAt
+      )
+    ) {
+      return null;
+    }
     const pitBossDecision = this.pitBossAgent.approve(
       intent,
       riskState,
@@ -5229,32 +5354,38 @@ export class TradingEngine {
     return { intent: camouflage.intent, camouflage: routedCamouflage, sorPlan, orders };
   }
 
-  private nextQuoteState(
+  private nextQuoteStateForInstrument(
+    instrumentCode: string,
     quote: EngineState["quoteState"]["lastQuote"],
     pullAllQuotes: boolean,
     observedAt: string
   ): EngineState["quoteState"] {
-    const suspendedUntil = this.engineState.quoteState.suspendedUntil;
+    const previous = quoteStateForInstrumentState(
+      this.engineState.assetQuoteStates,
+      instrumentCode,
+      this.engineState.quoteState
+    );
+    const suspendedUntil = previous.suspendedUntil;
 
     if (pullAllQuotes) {
       return {
         status: "SUSPENDED",
         reason: "ADVERSE_SELECTION_CRITICAL",
         suspendedUntil: new Date(Date.parse(observedAt) + this.resolveQuoteHibernateMs()).toISOString(),
-        lastQuote: this.engineState.quoteState.lastQuote,
+        lastQuote: previous.lastQuote,
         updatedAt: observedAt
       };
     }
 
     if (suspendedUntil && Date.parse(suspendedUntil) > Date.parse(observedAt)) {
-      return this.engineState.quoteState;
+      return previous;
     }
 
     return {
       status: "ACTIVE",
       reason: null,
       suspendedUntil: null,
-      lastQuote: quote ?? this.engineState.quoteState.lastQuote,
+      lastQuote: quote ?? previous.lastQuote,
       updatedAt: observedAt
     };
   }
@@ -5271,22 +5402,38 @@ export class TradingEngine {
   }
 
   private maybeResumeQuotes(observedAt: string): void {
+    const nextAssetQuoteStates = resumeExpiredAssetQuoteStates(
+      this.engineState.assetQuoteStates,
+      observedAt
+    );
+    const nextAggregate = aggregateQuoteState(
+      nextAssetQuoteStates,
+      this.engineState.quoteState,
+      observedAt
+    );
     const suspendedUntil = this.engineState.quoteState.suspendedUntil;
+    const assetStatesChanged = TARGET_ASSET_MATRIX.some((asset) => {
+      const previous = this.engineState.assetQuoteStates[asset.instrumentCode];
+      const next = nextAssetQuoteStates[asset.instrumentCode];
+      return (
+        previous?.status !== next?.status ||
+        previous?.reason !== next?.reason ||
+        previous?.suspendedUntil !== next?.suspendedUntil
+      );
+    });
 
     if (
-      this.engineState.quoteState.status === "SUSPENDED" &&
-      suspendedUntil &&
-      Date.parse(suspendedUntil) <= Date.parse(observedAt)
+      assetStatesChanged ||
+      nextAggregate.status !== this.engineState.quoteState.status ||
+      nextAggregate.reason !== this.engineState.quoteState.reason ||
+      (this.engineState.quoteState.status === "SUSPENDED" &&
+        suspendedUntil &&
+        Date.parse(suspendedUntil) <= Date.parse(observedAt))
     ) {
       this.engineState = {
         ...this.engineState,
-        quoteState: {
-          ...this.engineState.quoteState,
-          status: "ACTIVE",
-          reason: null,
-          suspendedUntil: null,
-          updatedAt: observedAt
-        }
+        quoteState: nextAggregate,
+        assetQuoteStates: nextAssetQuoteStates
       };
       this.publish("RESUME_QUOTES", { observedAt });
     }
@@ -5294,6 +5441,20 @@ export class TradingEngine {
 
   private async dispatchQuote(quote: NonNullable<EngineState["quoteState"]["lastQuote"]>): Promise<void> {
     if (!this.env.EXECUTIONER || !this.cachedConfig.TRADING_ENABLED) {
+      return;
+    }
+
+    if (
+      isQuoteSuspendedAt(
+        quoteStateForInstrumentState(
+          this.engineState.assetQuoteStates,
+          quote.instrumentCode,
+          this.engineState.quoteState
+        ),
+        quote.createdAt
+      ) ||
+      this.shouldThrottleQuoteDispatch(quote)
+    ) {
       return;
     }
 
@@ -5311,7 +5472,7 @@ export class TradingEngine {
         action,
         orderType: "LIMIT",
         postOnly: order.postOnly,
-        timeInForce: "GTC",
+        timeInForce: "ALO",
         intendedPrice: order.price,
         expectedPrice: order.price,
         requestedSize: order.size,
@@ -5337,6 +5498,76 @@ export class TradingEngine {
     for (const intent of intents) {
       await this.dispatchExecution(intent);
     }
+
+    this.rememberDispatchedQuote(quote);
+  }
+
+  private shouldThrottleQuoteDispatch(
+    quote: NonNullable<EngineState["quoteState"]["lastQuote"]>
+  ): boolean {
+    const last = this.lastDispatchedQuoteByInstrument.get(quote.instrumentCode);
+
+    if (!last) {
+      return false;
+    }
+
+    const now = Date.parse(quote.createdAt);
+    const elapsedMs = Number.isFinite(now) ? now - last.updatedAtMs : Date.now() - last.updatedAtMs;
+    const minIntervalMs = readPositiveInteger(
+      this.env.QUOTE_REFRESH_MIN_INTERVAL_MS,
+      DEFAULT_QUOTE_REFRESH_MIN_INTERVAL_MS,
+      0,
+      60_000
+    );
+
+    if (elapsedMs >= minIntervalMs) {
+      return false;
+    }
+
+    const minPriceTicks = readPositiveInteger(
+      this.env.QUOTE_REFRESH_MIN_PRICE_TICKS,
+      DEFAULT_QUOTE_REFRESH_MIN_PRICE_TICKS,
+      0,
+      100
+    );
+    const tickSize =
+      this.findBestAssetBook(quote.instrumentCode)?.tickSize ?? DEFAULT_ORDER_BOOK_TICK_SIZE;
+    const nextBid = quote.orders.find((order) => order.side === "BID")?.price ?? null;
+    const nextAsk = quote.orders.find((order) => order.side === "ASK")?.price ?? null;
+    const bidChanged = quotePriceMovedTicks(last.bid, nextBid, tickSize) >= minPriceTicks;
+    const askChanged = quotePriceMovedTicks(last.ask, nextAsk, tickSize) >= minPriceTicks;
+    const changedEnough = bidChanged || askChanged;
+
+    if (changedEnough) {
+      return false;
+    }
+
+    const logKey = quote.instrumentCode;
+    const logAt = this.quoteRefreshThrottleLogAt.get(logKey) ?? 0;
+    const nowMs = Date.now();
+    if (nowMs - logAt >= HOT_PATH_LOG_THROTTLE_MS) {
+      this.quoteRefreshThrottleLogAt.set(logKey, nowMs);
+      this.logger.info("QUOTE_REFRESH_THROTTLED", "Skipped quote refresh inside minimum cadence window", {
+        instrumentCode: quote.instrumentCode,
+        elapsedMs,
+        minIntervalMs,
+        minPriceTicks,
+        signalId: quote.signalId
+      });
+    }
+
+    return true;
+  }
+
+  private rememberDispatchedQuote(
+    quote: NonNullable<EngineState["quoteState"]["lastQuote"]>
+  ): void {
+    const observedAtMs = Date.parse(quote.createdAt);
+    this.lastDispatchedQuoteByInstrument.set(quote.instrumentCode, {
+      bid: quote.orders.find((order) => order.side === "BID")?.price ?? null,
+      ask: quote.orders.find((order) => order.side === "ASK")?.price ?? null,
+      updatedAtMs: Number.isFinite(observedAtMs) ? observedAtMs : Date.now()
+    });
   }
 
   private async dispatchExecution(
@@ -7679,6 +7910,17 @@ export class TradingEngine {
     if (nextConfig.TRADING_ENABLED) {
       this.killSwitchLogged = false;
     }
+    const nextAssetQuoteStates = reconcileAssetQuoteStatesForConfig(
+      this.engineState.assetQuoteStates,
+      nextConfig,
+      this.macroBias,
+      now
+    );
+    const nextQuoteState = aggregateQuoteState(
+      nextAssetQuoteStates,
+      this.engineState.quoteState,
+      now
+    );
 
     const refreshedLocation = resolveEngineLocation(
       {
@@ -7704,11 +7946,14 @@ export class TradingEngine {
       cachedConfig: nextConfig,
       macroBias: this.macroBias,
       temporaryOverride: this.activeTemporaryOverride,
+      assetQuoteStates: nextAssetQuoteStates,
+      quoteState: nextQuoteState,
       assetMatrix: this.calculateAssetMatrix(
         now,
         this.engineState.microstructure.instrumentCode ?? undefined,
         this.engineState.oracle,
-        this.profilerStateSnapshot()
+        this.profilerStateSnapshot(),
+        nextAssetQuoteStates
       ),
       profilerStates: this.profilerStateSnapshot(),
       maxLatencyMs: nextConfig.LATENCY_THRESHOLD_MS,
@@ -7770,16 +8015,22 @@ export class TradingEngine {
 
     this.latestAgentSignals.set(signal.sourceAgent, signal);
     const hawkesEvacuation = hawkesEvacuationSignal(signal);
+    const assetQuoteStates = hawkesEvacuation
+      ? suspendAssetQuoteStates(
+          this.engineState.assetQuoteStates,
+          "HAWKES_FLOW_CLUSTER",
+          signal.createdAt,
+          {
+            instrumentCode: signal.instrumentCode,
+            suspendedUntil: new Date(
+              Date.parse(signal.createdAt) + Math.max(1_000, signal.horizonMs)
+            ).toISOString(),
+            lastQuote: this.engineState.quoteState.lastQuote
+          }
+        )
+      : this.engineState.assetQuoteStates;
     const quoteState = hawkesEvacuation
-      ? {
-          status: "SUSPENDED" as const,
-          reason: "HAWKES_FLOW_CLUSTER",
-          suspendedUntil: new Date(
-            Date.parse(signal.createdAt) + Math.max(1_000, signal.horizonMs)
-          ).toISOString(),
-          lastQuote: this.engineState.quoteState.lastQuote,
-          updatedAt: signal.createdAt
-        }
+      ? aggregateQuoteState(assetQuoteStates, this.engineState.quoteState, signal.createdAt)
       : this.engineState.quoteState;
 
     const agentHealth = {
@@ -7798,6 +8049,7 @@ export class TradingEngine {
       acceptedSignals: this.engineState.acceptedSignals + 1,
       agentHealth,
       quoteState,
+      assetQuoteStates,
       heartbeatAt: signal.createdAt,
       updatedAt: signal.createdAt
     };
@@ -8441,6 +8693,7 @@ function defaultEngineState(engineId: string): EngineState {
     inventory: defaultInventoryState(DEFAULT_MAX_INVENTORY_UNITS),
     riskMetrics: defaultRiskMetrics(0, now),
     quoteState: defaultQuoteState(),
+    assetQuoteStates: defaultAssetQuoteStates(defaultConfig, neutralMacroBias(), now),
     shadowQueue: defaultShadowQueueState(null),
     lastTradeIntent: null,
     inventoryGuard: defaultInventoryGuardState(),
@@ -8921,6 +9174,39 @@ function defaultQuoteState(): EngineState["quoteState"] {
   };
 }
 
+function defaultAssetQuoteStates(
+  config: GlobalRiskConfig,
+  macroBias: MacroBias,
+  observedAt: string
+): EngineState["assetQuoteStates"] {
+  const selected = selectedMoltworkerInstruments(macroBias);
+
+  return Object.fromEntries(
+    TARGET_ASSET_MATRIX.map((asset) => {
+      const selectedByMoltworker =
+        selected.size === 0 ||
+        selected.has(asset.instrumentCode) ||
+        selected.has(asset.coin.toLowerCase()) ||
+        selected.has(`${asset.coin.toLowerCase()}-perp`);
+      const active = config.TRADING_ENABLED && selectedByMoltworker;
+
+      return [
+        asset.instrumentCode,
+        {
+          ...defaultQuoteState(),
+          status: active ? "ACTIVE" : "SUSPENDED",
+          reason: active
+            ? null
+            : selectedByMoltworker
+              ? "TRADING_DISABLED"
+              : "MOLTWORKER_NOT_SELECTED",
+          updatedAt: observedAt
+        } satisfies EngineState["quoteState"]
+      ];
+    })
+  );
+}
+
 function defaultShadowQueueState(observedAt: string | null): ShadowQueueState {
   return {
     schemaVersion: "shadow-queue.v1",
@@ -9367,10 +9653,239 @@ function defaultAssetMatrix(
           amVpin: 0,
           obi: null,
           quoteStatus: config.TRADING_ENABLED ? "ACTIVE" : "SUSPENDED",
+          quoteReason: config.TRADING_ENABLED ? null : "TRADING_DISABLED",
+          quoteSuspendedUntil: null,
+          quoteEligible: config.TRADING_ENABLED && selectedByMoltworker,
+          lastQuoteAt: null,
           updatedAt: observedAt
         } satisfies AssetRuntimeState
       ];
     })
+  );
+}
+
+function normalizeAssetQuoteStates(
+  stored: EngineState["assetQuoteStates"] | undefined,
+  config: GlobalRiskConfig,
+  macroBias: MacroBias,
+  observedAt: string
+): EngineState["assetQuoteStates"] {
+  const defaults = defaultAssetQuoteStates(config, macroBias, observedAt);
+
+  return Object.fromEntries(
+    TARGET_ASSET_MATRIX.map((asset) => {
+      const existing = stored?.[asset.instrumentCode];
+      return [
+        asset.instrumentCode,
+        existing
+          ? {
+              ...defaults[asset.instrumentCode],
+              ...existing,
+              lastQuote: existing.lastQuote ?? defaults[asset.instrumentCode].lastQuote,
+              updatedAt: existing.updatedAt ?? observedAt
+            }
+          : defaults[asset.instrumentCode]
+      ];
+    })
+  );
+}
+
+function reconcileAssetQuoteStatesForConfig(
+  current: EngineState["assetQuoteStates"],
+  config: GlobalRiskConfig,
+  macroBias: MacroBias,
+  observedAt: string
+): EngineState["assetQuoteStates"] {
+  const defaults = defaultAssetQuoteStates(config, macroBias, observedAt);
+  const selected = selectedMoltworkerInstruments(macroBias);
+
+  return Object.fromEntries(
+    TARGET_ASSET_MATRIX.map((asset) => {
+      const existing = current[asset.instrumentCode] ?? defaults[asset.instrumentCode];
+      const selectedByMoltworker =
+        selected.size === 0 ||
+        selected.has(asset.instrumentCode) ||
+        selected.has(asset.coin.toLowerCase()) ||
+        selected.has(`${asset.coin.toLowerCase()}-perp`);
+
+      if (!config.TRADING_ENABLED || !selectedByMoltworker) {
+        return [asset.instrumentCode, defaults[asset.instrumentCode]];
+      }
+
+      if (
+        existing.reason === "TRADING_DISABLED" ||
+        existing.reason === "MOLTWORKER_NOT_SELECTED"
+      ) {
+        return [
+          asset.instrumentCode,
+          {
+            ...existing,
+            status: "ACTIVE" as const,
+            reason: null,
+            suspendedUntil: null,
+            updatedAt: observedAt
+          }
+        ];
+      }
+
+      return [asset.instrumentCode, existing];
+    })
+  );
+}
+
+function quoteStateForInstrumentState(
+  states: EngineState["assetQuoteStates"] | undefined,
+  instrumentCode: string,
+  fallback: EngineState["quoteState"]
+): EngineState["quoteState"] {
+  const normalized = normalizeNativeInstrumentCode(instrumentCode);
+  return states?.[normalized] ?? fallback;
+}
+
+function isQuoteSuspendedAt(
+  quoteState: EngineState["quoteState"],
+  observedAt: string
+): boolean {
+  if (quoteState.status !== "SUSPENDED") {
+    return false;
+  }
+
+  return !quoteState.suspendedUntil || Date.parse(quoteState.suspendedUntil) > Date.parse(observedAt);
+}
+
+function suspendAssetQuoteStates(
+  states: EngineState["assetQuoteStates"],
+  reason: string,
+  observedAt: string,
+  options: {
+    instrumentCode?: string;
+    suspendedUntil?: string | null;
+    lastQuote?: EngineState["quoteState"]["lastQuote"];
+  } = {}
+): EngineState["assetQuoteStates"] {
+  const targets = options.instrumentCode
+    ? new Set([normalizeNativeInstrumentCode(options.instrumentCode)])
+    : new Set(TARGET_ASSET_MATRIX.map((asset) => asset.instrumentCode));
+
+  return Object.fromEntries(
+    TARGET_ASSET_MATRIX.map((asset) => {
+      const current = states[asset.instrumentCode] ?? defaultQuoteState();
+      if (!targets.has(asset.instrumentCode)) {
+        return [asset.instrumentCode, current];
+      }
+
+      return [
+        asset.instrumentCode,
+        {
+          status: "SUSPENDED" as const,
+          reason,
+          suspendedUntil: options.suspendedUntil ?? null,
+          lastQuote: options.lastQuote ?? current.lastQuote,
+          updatedAt: observedAt
+        }
+      ];
+    })
+  );
+}
+
+function resumeExpiredAssetQuoteStates(
+  states: EngineState["assetQuoteStates"],
+  observedAt: string
+): EngineState["assetQuoteStates"] {
+  return Object.fromEntries(
+    TARGET_ASSET_MATRIX.map((asset) => {
+      const current = states[asset.instrumentCode] ?? defaultQuoteState();
+      if (!isQuoteSuspendedAt(current, observedAt)) {
+        return [
+          asset.instrumentCode,
+          current.status === "SUSPENDED"
+            ? {
+                ...current,
+                status: "ACTIVE" as const,
+                reason: null,
+                suspendedUntil: null,
+                updatedAt: observedAt
+              }
+            : current
+        ];
+      }
+
+      return [asset.instrumentCode, current];
+    })
+  );
+}
+
+function aggregateQuoteState(
+  states: EngineState["assetQuoteStates"],
+  previous: EngineState["quoteState"],
+  observedAt: string
+): EngineState["quoteState"] {
+  const values = Object.values(states);
+  const suspended = values.filter((state) => isQuoteSuspendedAt(state, observedAt));
+  const active = values.filter((state) => !isQuoteSuspendedAt(state, observedAt));
+  const lastQuote =
+    values
+      .map((state) => state.lastQuote)
+      .filter((quote): quote is NonNullable<EngineState["quoteState"]["lastQuote"]> => Boolean(quote))
+      .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))[0] ??
+    previous.lastQuote;
+
+  if (values.length > 0 && active.length === 0 && suspended.length > 0) {
+    const indefinite = suspended.find((state) => !state.suspendedUntil);
+    const longest = [...suspended].sort(
+      (left, right) => Date.parse(right.suspendedUntil ?? "9999-12-31T23:59:59.999Z") -
+        Date.parse(left.suspendedUntil ?? "9999-12-31T23:59:59.999Z")
+    )[0];
+
+    return {
+      status: "SUSPENDED",
+      reason:
+        indefinite?.reason ??
+        longest?.reason ??
+        "ALL_ASSET_QUOTES_SUSPENDED",
+      suspendedUntil: indefinite ? null : longest?.suspendedUntil ?? null,
+      lastQuote,
+      updatedAt: observedAt
+    };
+  }
+
+  return {
+    status: "ACTIVE",
+    reason: suspended.length > 0 ? "PARTIAL_ASSET_SUSPENSION" : null,
+    suspendedUntil: null,
+    lastQuote,
+    updatedAt: observedAt
+  };
+}
+
+function quotePriceMovedTicks(
+  previous: number | null,
+  next: number | null,
+  tickSize: number
+): number {
+  if (previous === null || next === null) {
+    return previous === next ? 0 : Number.POSITIVE_INFINITY;
+  }
+
+  const safeTick = Math.max(tickSize, DEFAULT_ORDER_BOOK_TICK_SIZE);
+  return Math.abs(next - previous) / safeTick;
+}
+
+function adverseAdjustedPaperFillPrice(
+  side: "BUY" | "SELL",
+  price: number,
+  adverseBps: number,
+  tickSize: number
+): number {
+  const adjusted =
+    side === "BUY"
+      ? price * (1 + adverseBps / 10_000)
+      : price * (1 - adverseBps / 10_000);
+
+  return normalizePriceToTick(
+    Math.max(tickSize, adjusted),
+    Math.max(tickSize, DEFAULT_ORDER_BOOK_TICK_SIZE),
+    side === "BUY" ? "CEIL" : "FLOOR"
   );
 }
 

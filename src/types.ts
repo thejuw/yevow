@@ -161,6 +161,15 @@ export interface Env {
   SHADOW_MODE?: string;
   PAPER_BANKROLL_USD?: string;
   PAPER_MAX_GHOST_FILLS_PER_MINUTE?: string;
+  PAPER_FILL_PARTICIPATION_RATE?: string;
+  PAPER_FILL_ADVERSE_BPS?: string;
+  PAPER_MAKER_FEE_BPS?: string;
+  QUOTE_REFRESH_MIN_INTERVAL_MS?: string;
+  QUOTE_REFRESH_MIN_PRICE_TICKS?: string;
+  LIVE_READINESS_MIN_PAPER_TRADES?: string;
+  LIVE_READINESS_MIN_PAPER_PNL_USD?: string;
+  LIVE_READINESS_REQUIRE_SINGLE_ASSET?: string;
+  LIVE_READINESS_ALLOW_HYPE?: string;
   SHADOW_VLO_CAPACITY?: string;
   SHADOW_VLO_DRIFT_TRADES?: string;
   SHADOW_VLO_QUEUE_DEPTH_MULTIPLIER?: string;
@@ -397,6 +406,10 @@ export interface AssetRuntimeState {
   amVpin: number;
   obi: number | null;
   quoteStatus: "ACTIVE" | "SUSPENDED";
+  quoteReason: string | null;
+  quoteSuspendedUntil: ISO8601 | null;
+  quoteEligible: boolean;
+  lastQuoteAt: ISO8601 | null;
   updatedAt: ISO8601 | null;
 }
 
@@ -490,6 +503,7 @@ export interface EngineState {
   inventory: InventoryState;
   riskMetrics: RiskMetrics;
   quoteState: QuoteState;
+  assetQuoteStates: Record<string, QuoteState>;
   shadowQueue: ShadowQueueState;
   lastTradeIntent: TradeIntent | null;
   inventoryGuard: InventoryGuardState;
@@ -1248,7 +1262,7 @@ export interface InternalOrderBook {
 export type MarketRegime = "REGIME_TREND" | "REGIME_RANGE" | "REGIME_CRISIS";
 export type TradeDirection = "LONG" | "SHORT";
 export type QuoteSide = "BID" | "ASK";
-export type ExecutionTimeInForce = "GTC" | "IOC" | "FOK";
+export type ExecutionTimeInForce = "ALO" | "GTC" | "IOC" | "FOK";
 export type ManagedOrderStatus =
   | "PENDING"
   | "OPEN"
@@ -1591,6 +1605,9 @@ export interface AdminConfigUpdate {
   temporaryOverride?: TemporaryGovernanceOverrideUpdate;
   clearMacroBias?: boolean;
   clearTemporaryOverride?: boolean;
+  confirmHighImpact?: boolean;
+  confirmLive?: boolean;
+  confirmLiveReadinessOverride?: boolean;
 }
 
 export interface HealthReport {
@@ -1620,6 +1637,7 @@ export interface HealthReport {
   inventoryGuard: InventoryGuardState;
   riskMetrics: RiskMetrics;
   quoteState: QuoteState;
+  assetQuoteStates: Record<string, QuoteState>;
   shadowQueue: ShadowQueueState;
   slippage: SlippageAnalytics;
   executionProfile: ExecutionProfile;

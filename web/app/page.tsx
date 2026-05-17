@@ -27,6 +27,7 @@ import {
   readAttribution,
   readConfig,
   readDiagnostics,
+  readLiveReadiness,
   readSettings,
   readState,
   readTradeHistory,
@@ -55,6 +56,7 @@ import type {
   GlobalRiskConfig,
   GovernanceMode,
   JsonRecord,
+  LiveReadinessResponse,
   LiquidationHeatmapState,
   MacroBiasDirection,
   PaperPnlAsset,
@@ -140,6 +142,7 @@ export default function CommandCenterPage() {
   const [isSwitchingMode, setIsSwitchingMode] = useState(false);
   const [isRunningDiagnostics, setIsRunningDiagnostics] = useState(false);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsResponse | null>(null);
+  const [liveReadiness, setLiveReadiness] = useState<LiveReadinessResponse | null>(null);
   const [transport, setTransport] = useState<DraftTransportSettings>(DEFAULT_TRANSPORT_SETTINGS);
   const [moltworker, setMoltworker] = useState<MoltworkerDraft>({
     direction: "RISK_OFF" as MacroBiasDirection,
@@ -161,13 +164,22 @@ export default function CommandCenterPage() {
       return;
     }
 
-    const [stateResult, configResult, traceResult, attributionResult, historyResult, settingsResult] = await Promise.all([
+    const [
+      stateResult,
+      configResult,
+      traceResult,
+      attributionResult,
+      historyResult,
+      settingsResult,
+      liveReadinessResult
+    ] = await Promise.all([
       readState(apiBase, token),
       readConfig(apiBase, token),
       readTrace(apiBase, token),
       readAttribution(apiBase, token),
       readTradeHistory(apiBase, token),
-      readSettings(apiBase, token)
+      readSettings(apiBase, token),
+      readLiveReadiness(apiBase, token)
     ]);
 
     setEngineState(stateResult.state);
@@ -180,6 +192,7 @@ export default function CommandCenterPage() {
     setAttribution(attributionResult);
     setTradeHistory(historyResult);
     setSettings(settingsResult);
+    setLiveReadiness(liveReadinessResult);
   }, [apiBase, token]);
 
   const connectStream = useCallback(() => {
@@ -333,6 +346,8 @@ export default function CommandCenterPage() {
       ingestSettings?.dwellirOrderbookTransport ??
       "websocket"
   ).toUpperCase();
+  const readiness = liveReadiness?.readiness ?? null;
+  const failedReadinessChecks = readiness?.checks.filter((check) => !check.ok) ?? [];
   const pureGrpcBookActive = ingestSettings?.pureGrpcOrderbookActive === true;
   const dwellirStatusLabel = pureGrpcBookActive
     ? "[ DWELLIR gRPC FILLS + gRPC BOOK: ACTIVE ]"
@@ -782,12 +797,18 @@ export default function CommandCenterPage() {
           <div className={isManualGovernance ? "asset-pulse-grid dimmed" : "asset-pulse-grid"}>
             {assetMatrix.map((asset) => (
               <span
-                className={asset.selectedByMoltworker && asset.active ? "asset-pill live" : "asset-pill"}
+                className={
+                  asset.quoteStatus === "SUSPENDED"
+                    ? "asset-pill suspended"
+                    : asset.selectedByMoltworker && asset.active
+                      ? "asset-pill live"
+                      : "asset-pill"
+                }
                 key={asset.instrumentCode}
-                title={`${asset.instrumentCode} allocation ${compact.format(asset.capitalAllocationPct * 100)}%`}
+                title={`${asset.instrumentCode} allocation ${compact.format(asset.capitalAllocationPct * 100)}% · quotes ${asset.quoteStatus}${asset.quoteReason ? `: ${asset.quoteReason}` : ""}`}
               >
                 <strong>{asset.selectedByMoltworker && asset.active ? "●" : "○"} {asset.coin}</strong>
-                <small>{compact.format(asset.capitalAllocationPct * 100)}%</small>
+                <small>{asset.quoteStatus === "SUSPENDED" ? asset.quoteReason ?? "SUSPENDED" : `${compact.format(asset.capitalAllocationPct * 100)}%`}</small>
               </span>
             ))}
           </div>
@@ -810,6 +831,27 @@ export default function CommandCenterPage() {
           <Metric label="Jitter" value={`${compact.format(pulse?.jitter_ms ?? engineState?.executionProfile.jitterMs ?? 0)}ms`} />
           <Metric label="VPIN" value={compact.format(pulse?.toxicity_score ?? engineState?.toxicityScore ?? 0)} />
           <Metric label="Quotes" value={engineState?.quoteState.status ?? "n/a"} />
+        </section>
+
+        <section className={readiness?.ok ? "readiness-strip glass ready" : "readiness-strip glass locked"}>
+          <div>
+            <span>Live Readiness Gate</span>
+            <strong>{readiness?.ok ? "CLEAR" : "LOCKED"}</strong>
+          </div>
+          <div className="readiness-checks">
+            {(readiness?.checks ?? []).slice(0, 7).map((check) => (
+              <span className={check.ok ? "ok" : "fail"} key={check.id} title={check.detail}>
+                {check.ok ? "✓" : "×"} {check.label}
+              </span>
+            ))}
+          </div>
+          <small>
+            {failedReadinessChecks.length === 0
+              ? "All live-trading preflight checks are green."
+              : `${failedReadinessChecks.length} blocker${failedReadinessChecks.length === 1 ? "" : "s"}: ${failedReadinessChecks
+                  .map((check) => check.label)
+                  .join(", ")}`}
+          </small>
         </section>
 
         <section className="shadow-queue-panel glass">
@@ -1746,7 +1788,12 @@ function normalizeAssetMatrix(value: EngineState["assetMatrix"] | undefined) {
       capitalAllocationPct: Number(asset?.capitalAllocationPct ?? 0),
       amVpin: Number(asset?.amVpin ?? 0),
       obi: asset?.obi ?? null,
-      toxicityState: asset?.toxicityState ?? "NORMAL"
+      toxicityState: asset?.toxicityState ?? "NORMAL",
+      quoteStatus: asset?.quoteStatus ?? "ACTIVE",
+      quoteReason: asset?.quoteReason ?? null,
+      quoteEligible: asset?.quoteEligible ?? false,
+      quoteSuspendedUntil: asset?.quoteSuspendedUntil ?? null,
+      lastQuoteAt: asset?.lastQuoteAt ?? null
     };
   });
 }

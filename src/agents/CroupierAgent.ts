@@ -183,7 +183,7 @@ export class CroupierAgent {
       action: direction === "LONG" ? "BUY" : "SELL",
       orderType: "LIMIT",
       postOnly: true,
-      timeInForce: "GTC",
+      timeInForce: "ALO",
       intendedPrice: reservationPrice ?? input.book.midPrice ?? input.book.bestBid ?? input.book.bestAsk ?? 0,
       expectedPrice: reservationPrice ?? input.book.midPrice ?? input.book.bestBid ?? input.book.bestAsk ?? 0,
       requestedSize,

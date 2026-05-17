@@ -164,6 +164,10 @@ export interface AssetRuntimeState {
   amVpin: number;
   obi: number | null;
   quoteStatus: "ACTIVE" | "SUSPENDED";
+  quoteReason: string | null;
+  quoteSuspendedUntil: string | null;
+  quoteEligible: boolean;
+  lastQuoteAt: string | null;
   updatedAt: string | null;
 }
 
@@ -351,6 +355,12 @@ export interface EngineState {
     reason: string | null;
     suspendedUntil: string | null;
   };
+  assetQuoteStates?: Record<string, {
+    status: "ACTIVE" | "SUSPENDED";
+    reason: string | null;
+    suspendedUntil: string | null;
+    updatedAt: string | null;
+  }>;
   shadowQueue?: ShadowQueueState;
   executionProfile: {
     status: "STABLE" | "UNSTABLE";
@@ -616,6 +626,23 @@ export interface AdminSettingsResponse {
   alerting: AlertingResponse["alerting"];
   vault: VaultStatus;
   backend: JsonRecord;
+}
+
+export interface LiveReadinessCheck {
+  id: string;
+  label: string;
+  ok: boolean;
+  detail: string;
+  metadata?: JsonRecord;
+}
+
+export interface LiveReadinessResponse {
+  ok: boolean;
+  readiness: {
+    ok: boolean;
+    generatedAt: string;
+    checks: LiveReadinessCheck[];
+  };
 }
 
 export interface VaultStatusResponse {

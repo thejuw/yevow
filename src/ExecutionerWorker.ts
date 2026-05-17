@@ -1547,11 +1547,17 @@ function hyperliquidCoin(env: Env, instrumentCode: string): string {
 
 function hyperliquidTif(env: Env, intent: TradeIntent): "Alo" | "Ioc" | "Gtc" {
   const configured = env.HL_DEFAULT_TIF?.trim().toLowerCase();
+  if (configured === "alo") {
+    return "Alo";
+  }
   if (configured === "ioc") {
     return "Ioc";
   }
   if (configured === "gtc") {
     return "Gtc";
+  }
+  if (intent.timeInForce === "ALO") {
+    return "Alo";
   }
   if (intent.postOnly !== false) {
     return "Alo";

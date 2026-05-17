@@ -132,6 +132,20 @@ interface TradeStatusBreakdownRow {
   latest_executed_at: string | null;
 }
 
+interface LiveReadinessCheck {
+  id: string;
+  label: string;
+  ok: boolean;
+  detail: string;
+  metadata?: JsonRecord;
+}
+
+interface LiveReadinessReport {
+  ok: boolean;
+  generatedAt: string;
+  checks: LiveReadinessCheck[];
+}
+
 interface AgentTraceRow {
   decision_id: string;
   signal_id: string;
@@ -363,6 +377,7 @@ export default {
         "GET /admin/state",
         "GET /admin/settings",
         "GET /admin/diagnostics",
+        "GET /admin/live-readiness",
         "POST /admin/moltworker/heartbeat",
         "POST /admin/settings/notifications",
         "GET|POST /admin/topology/calibrate",
@@ -504,6 +519,7 @@ async function handleAdminRequest(
         "GET /admin/state",
         "GET /admin/settings",
         "GET /admin/diagnostics",
+        "GET /admin/live-readiness",
         "POST /admin/moltworker/heartbeat",
         "POST /admin/settings/notifications",
         "GET|POST /admin/topology/calibrate",
@@ -585,6 +601,14 @@ async function handleAdminRequest(
     }
 
     return runDiagnostics(env, logger, topology);
+  }
+
+  if (url.pathname === "/admin/live-readiness") {
+    if (request.method !== "GET") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+
+    return readLiveReadiness(env, topology);
   }
 
   if (url.pathname === "/admin/moltworker/heartbeat") {
@@ -832,7 +856,7 @@ async function handleAdminConfig(
 
   if (
     requestedMode === "LIVE" &&
-    !((update as Record<string, unknown>).confirmLive === true)
+    update.confirmLive !== true
   ) {
     return json(
       {
@@ -855,6 +879,36 @@ async function handleAdminConfig(
       actor
     );
     changedParameters = diffConfig(currentConfig, nextConfig);
+  }
+
+  const livePostureRequested =
+    requestedMode === "LIVE" ||
+    (currentConfig.TRADING_ENABLED !== true &&
+      nextConfig.TRADING_ENABLED === true &&
+      env.SHADOW_MODE !== "true");
+
+  if (livePostureRequested && update.confirmLiveReadinessOverride !== true) {
+    const readiness = await evaluateLiveReadiness(env, topology);
+    if (!readiness.ok) {
+      logger.warn("LIVE_READINESS_GATE_BLOCKED", "Live posture request blocked by readiness gate", {
+        actor,
+        requestedMode,
+        changedParameters,
+        failedChecks: readiness.checks
+          .filter((check) => !check.ok)
+          .map((check) => check.id),
+        colo: topology.colo,
+        placement: topology.placement
+      });
+      return json(
+        {
+          ok: false,
+          error: "LIVE_READINESS_CHECK_FAILED",
+          readiness
+        },
+        409
+      );
+    }
   }
 
   if (requiresHighImpactConfirmation(changedParameters, update)) {
@@ -1126,6 +1180,168 @@ async function runDiagnostics(
     checks,
     engine: engineDiagnostics
   });
+}
+
+async function readLiveReadiness(
+  env: Env,
+  topology: EdgeTopology
+): Promise<Response> {
+  const report = await evaluateLiveReadiness(env, topology);
+  return json({ ok: report.ok, readiness: report }, report.ok ? 200 : 409);
+}
+
+async function evaluateLiveReadiness(
+  env: Env,
+  topology: EdgeTopology
+): Promise<LiveReadinessReport> {
+  const generatedAt = new Date().toISOString();
+  const [stateResponse, paperPnl, secretDiagnostic, d1Check] = await Promise.all([
+    routeToEngine(new Request("https://trading-engine.internal/state"), env, topology),
+    readPaperPnlSummary(env),
+    evaluateHyperliquidSecrets(env),
+    measureD1Readiness(env)
+  ]);
+  const statePayload = await safeResponseJson(stateResponse);
+  const state = isJsonRecord(statePayload?.state) ? statePayload.state : null;
+  const quoteState = isJsonRecord(state?.quoteState) ? state.quoteState : null;
+  const cachedConfig = isJsonRecord(state?.cachedConfig) ? state.cachedConfig : null;
+  const assetMatrix = isJsonRecord(state?.assetMatrix)
+    ? Object.values(state.assetMatrix).filter(isJsonRecord)
+    : [];
+  const selectedAssets = assetMatrix.filter((asset) => asset.selectedByMoltworker !== false);
+  const quoteEligibleAssets = selectedAssets.filter(
+    (asset) => asset.quoteEligible === true || (asset.active === true && asset.quoteStatus !== "SUSPENDED")
+  );
+  const activeAssetSymbols = quoteEligibleAssets
+    .map((asset) => String(asset.coin ?? asset.instrumentCode ?? "").toUpperCase())
+    .filter(Boolean);
+  const minPaperTrades = Math.max(1, Math.floor(positiveNumber(env.LIVE_READINESS_MIN_PAPER_TRADES, 500)));
+  const minPaperPnlUsd = Number(env.LIVE_READINESS_MIN_PAPER_PNL_USD ?? 0);
+  const paperTotals = isJsonRecord(paperPnl.totals) ? paperPnl.totals : {};
+  const paperTradeCount = Number(paperTotals.tradeCount ?? 0);
+  const paperNet = Number(paperTotals.cashPnl ?? 0) - Number(paperTotals.totalFees ?? 0);
+  const requireSingleAsset = env.LIVE_READINESS_REQUIRE_SINGLE_ASSET !== "false";
+  const allowHype = env.LIVE_READINESS_ALLOW_HYPE === "true";
+  const averageLatency = Number(state?.averageLatency ?? 0);
+  const latencyThreshold = Number(cachedConfig?.LATENCY_THRESHOLD_MS ?? 150);
+  const checks = [
+    readinessCheck(
+      "shadow_mode_disabled",
+      "Shadow Mode Disabled",
+      env.SHADOW_MODE !== "true",
+      env.SHADOW_MODE === "true"
+        ? "Worker is still in SHADOW_MODE; live exchange POSTs remain disabled."
+        : "Worker is allowed to submit real exchange POSTs when config permits.",
+      { shadowMode: env.SHADOW_MODE ?? "false" }
+    ),
+    readinessCheck(
+      "exchange_test_mode_disabled",
+      "Exchange Test Mode Disabled",
+      env.EXCHANGE_ORDER_TEST_MODE === "false",
+      env.EXCHANGE_ORDER_TEST_MODE === "false"
+        ? "Executioner is configured for live Hyperliquid exchange writes."
+        : "EXCHANGE_ORDER_TEST_MODE is still enabled.",
+      { exchangeOrderTestMode: env.EXCHANGE_ORDER_TEST_MODE ?? "true" }
+    ),
+    readinessCheck(
+      "api_agent_secret",
+      "Hyperliquid API Agent",
+      secretDiagnostic.ok,
+      secretDiagnostic.detail,
+      secretDiagnostic.metadata
+    ),
+    readinessCheck(
+      "paper_sample",
+      "Paper Evidence",
+      paperTradeCount >= minPaperTrades && paperNet >= minPaperPnlUsd,
+      `${paperTradeCount} risk-capped paper fills, net ${round(paperNet, 4)} USD after modeled fees.`,
+      {
+        minPaperTrades,
+        minPaperPnlUsd,
+        tradeCount: paperTradeCount,
+        paperNetUsd: round(paperNet, 8)
+      }
+    ),
+    readinessCheck(
+      "quote_health",
+      "Quote Health",
+      quoteState?.status === "ACTIVE" && quoteEligibleAssets.length > 0,
+      quoteState?.status === "ACTIVE"
+        ? `${quoteEligibleAssets.length} quote-eligible asset(s): ${activeAssetSymbols.join(", ") || "none"}.`
+        : `Quotes are ${String(quoteState?.status ?? "UNKNOWN")}: ${String(quoteState?.reason ?? "no reason")}.`,
+      {
+        quoteState: quoteState?.status ?? null,
+        quoteReason: quoteState?.reason ?? null,
+        quoteEligibleAssets: activeAssetSymbols
+      }
+    ),
+    readinessCheck(
+      "single_asset_ramp",
+      "Single Asset Ramp",
+      !requireSingleAsset || (quoteEligibleAssets.length === 1 && (allowHype || !activeAssetSymbols.includes("HYPE"))),
+      requireSingleAsset
+        ? "Live ramp must start with exactly one non-HYPE asset unless explicitly overridden by env."
+        : "Single-asset live ramp requirement is disabled by env.",
+      {
+        requireSingleAsset,
+        allowHype,
+        activeAssetSymbols
+      }
+    ),
+    readinessCheck(
+      "latency_budget",
+      "Latency Budget",
+      Number.isFinite(averageLatency) && averageLatency > 0 && averageLatency <= latencyThreshold,
+      `Engine average latency is ${round(averageLatency, 3)}ms against ${round(latencyThreshold, 3)}ms budget.`,
+      { averageLatencyMs: averageLatency, latencyThresholdMs: latencyThreshold }
+    ),
+    readinessCheck(
+      "d1_latency",
+      "D1 Audit Path",
+      d1Check.ok,
+      d1Check.detail,
+      d1Check.metadata
+    )
+  ];
+
+  return {
+    ok: checks.every((check) => check.ok),
+    generatedAt,
+    checks
+  };
+}
+
+async function measureD1Readiness(env: Env): Promise<LiveReadinessCheck> {
+  const startedAt = performance.now();
+  try {
+    await env.TRADING_DB.prepare("SELECT 1 AS ok").first();
+    const latencyMs = round(performance.now() - startedAt, 3);
+    return readinessCheck(
+      "d1_latency",
+      "D1 Audit Path",
+      latencyMs <= positiveNumber(env.D1_DIAGNOSTIC_MAX_LATENCY_MS, 250),
+      `D1 read round-trip completed in ${latencyMs}ms.`,
+      { latencyMs }
+    );
+  } catch (error) {
+    return readinessCheck(
+      "d1_latency",
+      "D1 Audit Path",
+      false,
+      error instanceof Error ? error.message : "D1_READINESS_FAILED",
+      {}
+    );
+  }
+}
+
+function readinessCheck(
+  id: string,
+  label: string,
+  ok: boolean,
+  detail: string,
+  metadata: JsonRecord = {}
+): LiveReadinessCheck {
+  return { id, label, ok, detail, metadata };
 }
 
 async function updateNotificationSettings(
@@ -2247,6 +2463,15 @@ function backendSettings(env: Env): JsonRecord {
       recvWindowMs: stringNumber(env.EXCHANGE_RECV_WINDOW_MS),
       orderAckTimeoutMs: stringNumber(env.ORDER_ACK_TIMEOUT_MS),
       slippageGuardTicks: stringNumber(env.SLIPPAGE_GUARD_TICKS),
+      paperFillParticipationRate: stringNumber(env.PAPER_FILL_PARTICIPATION_RATE),
+      paperFillAdverseBps: stringNumber(env.PAPER_FILL_ADVERSE_BPS),
+      paperMakerFeeBps: stringNumber(env.PAPER_MAKER_FEE_BPS),
+      quoteRefreshMinIntervalMs: stringNumber(env.QUOTE_REFRESH_MIN_INTERVAL_MS),
+      quoteRefreshMinPriceTicks: stringNumber(env.QUOTE_REFRESH_MIN_PRICE_TICKS),
+      liveReadinessMinPaperTrades: stringNumber(env.LIVE_READINESS_MIN_PAPER_TRADES),
+      liveReadinessMinPaperPnlUsd: stringNumber(env.LIVE_READINESS_MIN_PAPER_PNL_USD),
+      liveReadinessRequireSingleAsset: env.LIVE_READINESS_REQUIRE_SINGLE_ASSET ?? "true",
+      liveReadinessAllowHype: env.LIVE_READINESS_ALLOW_HYPE ?? "false",
       signatureAlgorithm: env.SIGNATURE_ALGORITHM ?? null
     },
     riskAndStrategy: {
