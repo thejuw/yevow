@@ -297,6 +297,7 @@ export class ProfilerAgent {
   }
 
   processTick(tick: MarketTick, context: ProfilerContext): ProfilerEvaluation {
+    this.expireCriticalHaltIfNeeded(context.observedAt);
     const cascadeSignal = this.maybeCreateCascadeShieldSignal(tick, context);
     const spoofingSignal = this.maybeCreateSpoofingSignal(tick, context);
 
@@ -459,6 +460,23 @@ export class ProfilerAgent {
       state: this.snapshot(),
       signal: null
     };
+  }
+
+  private expireCriticalHaltIfNeeded(observedAt: string): void {
+    if (this.state.toxicityState !== "CRITICAL" || !this.state.quoteHaltUntil) {
+      return;
+    }
+
+    if (Date.parse(this.state.quoteHaltUntil) > Date.parse(observedAt)) {
+      return;
+    }
+
+    this.state.toxicityState =
+      this.state.amVpinScore >= this.toxicThreshold ? "TOXIC" : "CONTESTED";
+    this.state.quoteHaltUntil = null;
+    this.state.spreadMultiplier = 1;
+    this.state.reservationShiftBps = 0;
+    this.state.updatedAt = observedAt;
   }
 
   private allocateRingBuffers(): void {
@@ -1228,6 +1246,7 @@ function classifyToxicity(input: {
 }): AmVpinConsensus {
   const pressureSign = signOf(input.directionalImbalance);
   const obiSign = signOf(input.obi ?? 0);
+  const absoluteObi = Math.abs(input.obi ?? 0);
   const pressureSide: ToxicityPressureSide =
     pressureSign > 0 ? "BUY" : pressureSign < 0 ? "SELL" : "NEUTRAL";
   const structuralConsensus =
@@ -1244,12 +1263,48 @@ function classifyToxicity(input: {
     };
   }
 
+  if (!structuralConsensus) {
+    return {
+      state: "CONTESTED",
+      pressureSide,
+      spreadMultiplier: 1,
+      reservationShiftBps: 0,
+      haltMs: null,
+      structuralConsensus
+    };
+  }
+
+  if (
+    input.amVpin >= input.criticalThreshold &&
+    absoluteObi >= input.criticalObi
+  ) {
+    return {
+      state: "CRITICAL",
+      pressureSide,
+      spreadMultiplier: 1,
+      reservationShiftBps: 0,
+      haltMs: input.criticalHaltMs,
+      structuralConsensus
+    };
+  }
+
+  if (input.amVpin >= input.toxicThreshold) {
+    return {
+      state: "TOXIC",
+      pressureSide,
+      spreadMultiplier: 1,
+      reservationShiftBps: 0,
+      haltMs: null,
+      structuralConsensus
+    };
+  }
+
   return {
-    state: "CRITICAL",
+    state: "CONTESTED",
     pressureSide,
     spreadMultiplier: 1,
     reservationShiftBps: 0,
-    haltMs: input.criticalHaltMs,
+    haltMs: null,
     structuralConsensus
   };
 }

@@ -85,7 +85,7 @@ export class CroupierAgent {
       baseMinEvThreshold *
       sentimentMultiplier(input.sentiment, preferredDirection(input)) *
       macroThresholdMultiplier;
-    const quote = this.amm.quote(input, adverseSelectionCost);
+    const quote = pullAllQuotes ? null : this.amm.quote(input, adverseSelectionCost);
     const intent = pullAllQuotes
       ? null
       : this.createIntent(
@@ -261,13 +261,15 @@ class AMMEngine {
     const quoteSize = calculateQuoteSize(input);
     const liquidationCluster = selectLiquidationCluster(input.liquidationHeatmap, input.book);
     const predatoryOrder = predatoryLiquidationOrder(input, quoteSize, liquidationCluster);
+    const suppressBid = suppressBidForToxicity(input);
+    const suppressAsk = suppressAskForToxicity(input);
     const boundaryOnly =
       Boolean(predatoryOrder) &&
       Boolean(liquidationCluster?.isCascadeRisk) &&
       input.toxicityScore >= 0.99;
     const orders: QuoteOrder[] = [];
 
-    if (!boundaryOnly && !input.inventory.stopBid) {
+    if (!boundaryOnly && !input.inventory.stopBid && !suppressBid) {
       orders.push({
         clientOrderId: crypto.randomUUID(),
         side: "BID",
@@ -278,7 +280,7 @@ class AMMEngine {
       });
     }
 
-    if (!boundaryOnly && !input.inventory.stopAsk) {
+    if (!boundaryOnly && !input.inventory.stopAsk && !suppressAsk) {
       orders.push({
         clientOrderId: crypto.randomUUID(),
         side: "ASK",
@@ -308,6 +310,14 @@ class AMMEngine {
       createdAt: input.observedAt
     };
   }
+}
+
+function suppressBidForToxicity(input: CroupierInput): boolean {
+  return input.profilerToxicityState === "TOXIC" && input.profilerPressureSide === "SELL";
+}
+
+function suppressAskForToxicity(input: CroupierInput): boolean {
+  return input.profilerToxicityState === "TOXIC" && input.profilerPressureSide === "BUY";
 }
 
 function preferredDirection(input: CroupierInput): TradeDirection {
