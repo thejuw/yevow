@@ -186,10 +186,11 @@ const DEFAULT_SHADOW_VLO_MIN_SIZE = 0.00000001;
 const DEFAULT_VAR_CONFIDENCE_Z = 2.326;
 const TARGET_ASSET_MATRIX = [
   { coin: "BTC", instrumentCode: "btc-usd" },
-  { coin: "ETH", instrumentCode: "eth-usd" },
-  { coin: "HYPE", instrumentCode: "hype-usd" },
-  { coin: "SOL", instrumentCode: "sol-usd" }
+  { coin: "HYPE", instrumentCode: "hype-usd" }
 ] as const;
+const TARGET_INSTRUMENTS = new Set<string>(
+  TARGET_ASSET_MATRIX.map((asset) => asset.instrumentCode)
+);
 const DEFAULT_JANITOR_INTERVAL_MS = 60_000;
 const DEFAULT_ORDER_ACK_TIMEOUT_MS = 2_000;
 const DEFAULT_REPLAY_LIMIT = 250;
@@ -726,7 +727,7 @@ export class TradingEngine {
       const baseState = persistedState ?? defaultEngineState(this.state.id.toString());
       const now = new Date().toISOString();
 
-      const hydratedBooks = hydrateOrderBooks(persistedBooks);
+      const hydratedBooks = hydrateOrderBooks(filterTargetOrderBooks(persistedBooks));
 
       this.orderBook = hydratedBooks.snapshots;
       this.bids = hydratedBooks.bids;
@@ -800,9 +801,12 @@ export class TradingEngine {
         cachedConfig: this.cachedConfig,
         macroBias: this.macroBias,
         temporaryOverride: this.activeTemporaryOverride,
-        assetMatrix:
-          baseState.assetMatrix ??
-          defaultAssetMatrix(this.cachedConfig, this.macroBias, now),
+        assetMatrix: normalizeAssetMatrix(
+          baseState.assetMatrix,
+          this.cachedConfig,
+          this.macroBias,
+          now
+        ),
         assetQuoteStates: normalizeAssetQuoteStates(
           baseState.assetQuoteStates,
           this.cachedConfig,
@@ -1541,6 +1545,9 @@ export class TradingEngine {
 
     for (const [storageKey, state] of persistedStates) {
       const instrumentCode = profilerInstrumentFromStorageKey(storageKey);
+      if (!isTargetInstrument(instrumentCode)) {
+        continue;
+      }
       const agent = instrumentCode === "btc-usd" ? this.profilerAgent : this.createProfilerAgent();
       agent.hydrate(state);
       this.profilerAgents.set(instrumentCode, agent);
@@ -1563,6 +1570,34 @@ export class TradingEngine {
     }
   }
 
+  private async deleteRetiredProfilerStorage(): Promise<string[]> {
+    const retiredKeys: string[] = [];
+
+    for (const instrumentCode of [...this.profilerAgents.keys()]) {
+      if (!isTargetInstrument(instrumentCode)) {
+        this.profilerAgents.delete(instrumentCode);
+      }
+    }
+
+    try {
+      const stored = await this.state.storage.list<ProfilerState>({
+        prefix: PROFILER_STATE_STORAGE_PREFIX
+      });
+      for (const key of stored.keys()) {
+        if (!isTargetInstrument(profilerInstrumentFromStorageKey(key))) {
+          retiredKeys.push(key);
+        }
+      }
+      if (retiredKeys.length > 0) {
+        await this.state.storage.delete(retiredKeys);
+      }
+    } catch (error) {
+      this.handleStorageWriteFailure("RETIRED_PROFILER_STORAGE_DELETE", error);
+    }
+
+    return retiredKeys;
+  }
+
   private configureProfilerAgents(config: GlobalRiskConfig): void {
     this.profilerAgent.configure(config);
     for (const agent of this.profilerAgents.values()) {
@@ -1580,14 +1615,11 @@ export class TradingEngine {
       entries.push([asset.instrumentCode, this.profilerFor(asset.instrumentCode).snapshot()]);
     }
 
-    for (const [instrumentCode, agent] of this.profilerAgents) {
-      if (!TARGET_ASSET_MATRIX.some((asset) => asset.instrumentCode === instrumentCode)) {
-        entries.push([instrumentCode, agent.snapshot()]);
-      }
-    }
-
     if (overrideInstrument && overrideState) {
       const normalized = normalizeNativeInstrumentCode(overrideInstrument);
+      if (!isTargetInstrument(normalized)) {
+        return Object.fromEntries(entries);
+      }
       const index = entries.findIndex(([instrumentCode]) => instrumentCode === normalized);
       if (index >= 0) {
         entries[index] = [normalized, overrideState];
@@ -2856,6 +2888,7 @@ export class TradingEngine {
       this.resetLatencyBaseline(observedAt, reason);
     }
 
+    const prunedProfilerStorageKeys = await this.deleteRetiredProfilerStorage();
     const nextAssetQuoteStates =
       payload.clearQuoteState === false
         ? this.engineState.assetQuoteStates
@@ -2953,6 +2986,7 @@ export class TradingEngine {
       clearQuoteState: payload.clearQuoteState !== false,
       clearLatency: payload.clearLatency !== false,
       resetPaperPortfolio: payload.resetPaperPortfolio === true,
+      prunedProfilerStorageKeys,
       tradingEnabled: this.cachedConfig.TRADING_ENABLED,
       observedAt
     });
@@ -2964,6 +2998,7 @@ export class TradingEngine {
       clearQuoteState: payload.clearQuoteState !== false,
       clearLatency: payload.clearLatency !== false,
       resetPaperPortfolio: payload.resetPaperPortfolio === true,
+      prunedProfilerStorageKeyCount: prunedProfilerStorageKeys.length,
       tradingEnabled: this.cachedConfig.TRADING_ENABLED,
       observedAt
     });
@@ -3847,6 +3882,16 @@ export class TradingEngine {
     options: TickHandlingOptions = {}
   ): Promise<TickIngestResult> {
     const hotPathStartedAt = highResolutionNow();
+    const normalizedInstrument = normalizeNativeInstrumentCode(tick.instrumentCode);
+
+    if (!options.shadowReplay && !isTargetInstrument(normalizedInstrument)) {
+      return {
+        accepted: false,
+        status: "IGNORED",
+        reason: "NON_TARGET_ASSET",
+        processedCount: 0
+      };
+    }
 
     if (
       !options.shadowReplay &&
@@ -10225,6 +10270,10 @@ function selectedMoltworkerInstruments(macroBias: MacroBias): Set<string> {
   );
 }
 
+function isTargetInstrument(instrumentCode: string): boolean {
+  return TARGET_INSTRUMENTS.has(normalizeNativeInstrumentCode(instrumentCode));
+}
+
 function isInstrumentSelectedByMoltworker(
   instrumentCode: string,
   macroBias: MacroBias
@@ -10238,6 +10287,41 @@ function isInstrumentSelectedByMoltworker(
     selected.has(normalized) ||
     selected.has(coin) ||
     selected.has(`${coin}-perp`)
+  );
+}
+
+function normalizeAssetMatrix(
+  stored: Record<string, AssetRuntimeState> | undefined,
+  config: GlobalRiskConfig,
+  macroBias: MacroBias,
+  observedAt: string
+): Record<string, AssetRuntimeState> {
+  const defaults = defaultAssetMatrix(config, macroBias, observedAt);
+
+  return Object.fromEntries(
+    TARGET_ASSET_MATRIX.map((asset) => {
+      const existing = stored?.[asset.instrumentCode];
+      return [
+        asset.instrumentCode,
+        existing
+          ? {
+              ...defaults[asset.instrumentCode],
+              ...existing,
+              instrumentCode: asset.instrumentCode,
+              coin: asset.coin,
+              updatedAt: existing.updatedAt ?? observedAt
+            }
+          : defaults[asset.instrumentCode]
+      ];
+    })
+  );
+}
+
+function filterTargetOrderBooks(
+  books: Map<string, InternalOrderBook>
+): Map<string, InternalOrderBook> {
+  return new Map(
+    [...books.entries()].filter(([, book]) => isTargetInstrument(book.instrumentCode))
   );
 }
 
