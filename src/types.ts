@@ -7,6 +7,22 @@ export interface Env {
   SECRET_VAULT?: KVNamespace;
   AI?: Ai;
   WORKERS_AI_SENTIMENT_COST_USD?: string;
+  STRUCTURED_CONSOLE_LOGS?: string;
+  LOG_SINK_PROVIDER?: string;
+  LOG_SINK_URL?: string;
+  LOG_SINK_TOKEN?: string;
+  LOG_SINK_DATASET?: string;
+  AXIOM_DATASET?: string;
+  HONEYCOMB_DATASET?: string;
+  COST_DAILY_BUDGET_USD?: string;
+  WORKERS_AI_DAILY_BUDGET_USD?: string;
+  DO_COMPUTE_DAILY_BUDGET_USD?: string;
+  D1_DAILY_BUDGET_USD?: string;
+  WORKERS_AI_COST_PER_CALL_USD?: string;
+  DO_COMPUTE_COST_PER_MS_USD?: string;
+  D1_READ_COST_PER_QUERY_USD?: string;
+  D1_WRITE_COST_PER_ROW_USD?: string;
+  COST_BUDGET_ENFORCEMENT?: string;
   EXECUTIONER?: Fetcher;
   ENGINE_OBJECT_NAME?: string;
   ENGINE_LOCATION_HINT?: string;
@@ -1697,6 +1713,7 @@ export interface AdminConfigUpdate {
   confirmHighImpact?: boolean;
   confirmLive?: boolean;
   confirmLiveReadinessOverride?: boolean;
+  confirmCostBudgetOverride?: boolean;
 }
 
 export interface HealthReport {

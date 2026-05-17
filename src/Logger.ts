@@ -3,6 +3,7 @@ import type {
   AgentSignal,
   AuditContext,
   EngineStabilityStatus,
+  Env,
   JsonRecord,
   JsonValue,
   LatencyMetrics,
@@ -14,6 +15,23 @@ import type {
 type WaitUntil = (promise: Promise<unknown>) => void;
 type AuditContextProvider = () => AuditContext;
 type LogLevel = LogEvent["level"];
+
+interface StructuredLogEnvelope {
+  schemaVersion: "sovereign-log.v1";
+  service: string;
+  source: string;
+  level: LogLevel;
+  eventType: string;
+  message: string;
+  correlationId: string | null;
+  telemetry: JsonRecord;
+  auditContext: AuditContext;
+  timestamp: string;
+}
+
+interface LogSink {
+  export(event: StructuredLogEnvelope): Promise<void>;
+}
 
 export interface PerformanceSnapshot {
   engineId: string;
@@ -46,7 +64,9 @@ export class Logger {
     private readonly getAuditContext: AuditContextProvider = () => ({
       lastTickTimestamp: null,
       orderBookImbalance: null
-    })
+    }),
+    private readonly logSink: LogSink | null = null,
+    private readonly structuredConsoleLogs = false
   ) {}
 
   writeLog(
@@ -55,7 +75,26 @@ export class Logger {
     message: string,
     metadata: Record<string, unknown> = {}
   ): void {
-    const telemetry = this.withAuditContext(metadata);
+    const observedAt = new Date().toISOString();
+    const auditContext = this.getAuditContext();
+    const telemetry = sanitizeJsonRecord({
+      ...metadata,
+      auditContext
+    });
+    const eventType = safeString(telemetry.eventType, "SYSTEM_EVENT");
+    const correlationId = nullableString(telemetry.correlationId);
+    const envelope: StructuredLogEnvelope = {
+      schemaVersion: "sovereign-log.v1",
+      service: "sovereign-sigma",
+      source: source || this.source,
+      level,
+      eventType,
+      message,
+      correlationId,
+      telemetry,
+      auditContext,
+      timestamp: observedAt
+    };
     const statement = this.db
       .prepare(
         `INSERT INTO logs
@@ -64,15 +103,16 @@ export class Logger {
       )
       .bind(
         level,
-        safeString(telemetry.eventType, "SYSTEM_EVENT"),
-        source || this.source,
+        eventType,
+        envelope.source,
         message,
-        nullableString(telemetry.correlationId),
+        correlationId,
         stringifyJson(telemetry),
-        new Date().toISOString()
+        observedAt
       );
 
     this.enqueue(statement, "logs");
+    this.exportStructuredLog(envelope);
   }
 
   emit(event: LogEvent): void {
@@ -377,13 +417,6 @@ export class Logger {
     this.enqueue(statement, "execution_quality");
   }
 
-  private withAuditContext(metadata: Record<string, unknown>): JsonRecord {
-    return sanitizeJsonRecord({
-      ...metadata,
-      auditContext: this.getAuditContext()
-    });
-  }
-
   private enqueue(statement: D1PreparedStatement, table: string): void {
     this.pending.push(statement);
 
@@ -422,6 +455,104 @@ export class Logger {
       `[Sovereign-Sigma] failed to write ${table}`,
       error instanceof Error ? error.message : error
     );
+  }
+
+  private exportStructuredLog(envelope: StructuredLogEnvelope): void {
+    if (this.structuredConsoleLogs) {
+      const method =
+        envelope.level === "ERROR" || envelope.level === "CRITICAL"
+          ? "error"
+          : envelope.level === "WARN"
+            ? "warn"
+            : "log";
+      console[method](JSON.stringify(envelope));
+    }
+
+    if (!this.logSink) {
+      return;
+    }
+
+    this.waitUntil(
+      this.logSink.export(envelope).catch((error) => {
+        console.error(
+          "[Sovereign-Sigma] structured log export failed",
+          error instanceof Error ? error.message : error
+        );
+      })
+    );
+  }
+}
+
+export function createLogSink(env: Env): LogSink | null {
+  const provider = (env.LOG_SINK_PROVIDER ?? "disabled").trim().toLowerCase();
+  const token = env.LOG_SINK_TOKEN?.trim();
+  const dataset =
+    env.LOG_SINK_DATASET?.trim() ||
+    env.AXIOM_DATASET?.trim() ||
+    env.HONEYCOMB_DATASET?.trim();
+
+  if (provider === "disabled" || provider === "none" || provider.length === 0) {
+    return null;
+  }
+
+  if (provider === "axiom") {
+    if (!token || !dataset) {
+      return null;
+    }
+    return new HttpLogSink(
+      `https://api.axiom.co/v1/datasets/${encodeURIComponent(dataset)}/ingest`,
+      { Authorization: `Bearer ${token}`, "content-type": "application/json" },
+      (event) => JSON.stringify([event])
+    );
+  }
+
+  if (provider === "honeycomb") {
+    if (!token || !dataset) {
+      return null;
+    }
+    return new HttpLogSink(
+      `https://api.honeycomb.io/1/events/${encodeURIComponent(dataset)}`,
+      { "X-Honeycomb-Team": token, "content-type": "application/json" },
+      (event) => JSON.stringify(event)
+    );
+  }
+
+  const url = env.LOG_SINK_URL?.trim();
+  if (provider === "http" && url) {
+    return new HttpLogSink(
+      url,
+      {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        "content-type": "application/x-ndjson"
+      },
+      (event) => `${JSON.stringify(event)}\n`
+    );
+  }
+
+  return null;
+}
+
+export function structuredConsoleLogsEnabled(env: Env): boolean {
+  return String(env.STRUCTURED_CONSOLE_LOGS ?? "false").toLowerCase() === "true";
+}
+
+class HttpLogSink implements LogSink {
+  constructor(
+    private readonly url: string,
+    private readonly headers: Record<string, string>,
+    private readonly encode: (event: StructuredLogEnvelope) => string
+  ) {}
+
+  async export(event: StructuredLogEnvelope): Promise<void> {
+    const response = await fetch(this.url, {
+      method: "POST",
+      headers: this.headers,
+      body: this.encode(event)
+    });
+
+    if (!response.ok) {
+      throw new Error(`LOG_SINK_HTTP_${response.status}`);
+    }
   }
 }
 

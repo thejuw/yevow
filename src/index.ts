@@ -2,7 +2,11 @@ import { AuthManager } from "./AuthManager";
 import { calibrateGoldenColos, type ColoCalibrationOptions } from "./ColoCalibrator";
 import { ConfigManager } from "./ConfigManager";
 import { Governor } from "./Governor";
-import { Logger } from "./Logger";
+import {
+  Logger,
+  createLogSink,
+  structuredConsoleLogsEnabled
+} from "./Logger";
 import {
   readNotificationSettings,
   writeNotificationSettings
@@ -32,6 +36,7 @@ const ENGINE_HEALTH_TIMEOUT_MS = 1_500;
 const MOLTWORKER_HEARTBEAT_KEY = "moltworker:heartbeat";
 const DEFAULT_MOLTWORKER_HEARTBEAT_MAX_AGE_MS = 300_000;
 const PAPER_SESSION_STARTED_AT_KEY = "paper:session_started_at";
+const COST_BUDGET_SETTINGS_KEY = "cost_budget_settings";
 const LOG_LEVELS = ["DEBUG", "INFO", "WARN", "ERROR", "CRITICAL"] as const;
 const AGENT_NAMES = [
   "ORACLE",
@@ -133,6 +138,38 @@ interface TradeStatusBreakdownRow {
   latest_executed_at: string | null;
 }
 
+interface ExecutionQualityAggregateRow {
+  sample_count: number;
+  average_slippage_bps: number | null;
+  adverse_selection_bps: number | null;
+  average_shortfall: number | null;
+  average_latency_ms: number | null;
+  total_fees: number | null;
+}
+
+interface ExecutionQualityAssetRow extends ExecutionQualityAggregateRow {
+  instrument_code: string;
+}
+
+interface CountRow {
+  count: number;
+}
+
+interface CostBudgetSettings {
+  schemaVersion: "cost-budgets.v1";
+  dailyBudgetUsd: number;
+  workersAiDailyBudgetUsd: number;
+  durableObjectDailyBudgetUsd: number;
+  d1DailyBudgetUsd: number;
+  workersAiCostPerCallUsd: number;
+  durableObjectCostPerMsUsd: number;
+  d1ReadCostPerQueryUsd: number;
+  d1WriteCostPerRowUsd: number;
+  enforcement: "WARN" | "BLOCK_LIVE" | "BLOCK_ALL";
+  updatedAt: string;
+  updatedBy: string;
+}
+
 interface LiveReadinessCheck {
   id: string;
   label: string;
@@ -213,7 +250,10 @@ export default {
     const logger = new Logger(
       env.TRADING_DB,
       (promise) => ctx.waitUntil(promise),
-      "GatewayWorker"
+      "GatewayWorker",
+      undefined,
+      createLogSink(env),
+      structuredConsoleLogsEnabled(env)
     );
     const configManager = new ConfigManager(env.CONFIG_STORE);
     const topology = extractEdgeTopology(request);
@@ -711,6 +751,14 @@ async function handleAdminRequest(
     return routeToEngine(remapRequestPath(request, "/slippage"), env, topology);
   }
 
+  if (url.pathname === "/admin/execution-quality") {
+    if (request.method !== "GET") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+
+    return readExecutionQuality(env, url);
+  }
+
   if (url.pathname === "/admin/history") {
     if (request.method !== "GET") {
       return json({ ok: false, error: "Method not allowed" }, 405);
@@ -733,6 +781,22 @@ async function handleAdminRequest(
     }
 
     return readAttribution(env, url);
+  }
+
+  if (url.pathname === "/admin/costs") {
+    if (request.method !== "GET") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+
+    return readCostDashboard(env, topology);
+  }
+
+  if (url.pathname === "/admin/costs/budgets") {
+    if (request.method !== "POST") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+
+    return updateCostBudgets(request, env, logger, topology, auth);
   }
 
   if (url.pathname === "/admin/alerts") {
@@ -930,6 +994,31 @@ async function handleAdminConfig(
     }
   }
 
+  if (livePostureRequested && update.confirmCostBudgetOverride !== true) {
+    const costReport = await buildCostDashboard(env, topology);
+    const enforcement = costReport.budgets.enforcement;
+    if (!costReport.ok && (enforcement === "BLOCK_LIVE" || enforcement === "BLOCK_ALL")) {
+      logger.warn("COST_BUDGET_GATE_BLOCKED", "Live posture request blocked by hard cost budget", {
+        actor,
+        requestedMode,
+        enforcement,
+        totalEstimatedUsd: costReport.totals.estimatedUsd,
+        budgetUsd: costReport.budgets.dailyBudgetUsd,
+        violations: costReport.violations,
+        colo: topology.colo,
+        placement: topology.placement
+      });
+      return json(
+        {
+          ok: false,
+          error: "COST_BUDGET_CHECK_FAILED",
+          cost: costReport
+        },
+        409
+      );
+    }
+  }
+
   if (requiresHighImpactConfirmation(changedParameters, update)) {
     return json(
       {
@@ -1076,14 +1165,15 @@ async function readAdminSettings(
 ): Promise<Response> {
   const notifier = new Notifier(env, () => undefined);
   const strategyVault = new StrategyVault(env.TRADING_DB, env.CONFIG_STORE);
-  const [config, alerting, vault, notifications, hyperliquidSecrets, strategies, activeStrategy] = await Promise.all([
+  const [config, alerting, vault, notifications, hyperliquidSecrets, strategies, activeStrategy, costBudgets] = await Promise.all([
     configManager.fetchConfig(),
     notifier.statusAsync(),
     vaultStatus(env),
     readNotificationSettings(env),
     evaluateHyperliquidSecrets(env),
     strategyVault.listVersions(20).catch(() => []),
-    strategyVault.activeVersion().catch(() => null)
+    strategyVault.activeVersion().catch(() => null),
+    readCostBudgetSettings(env)
   ]);
 
   return json({
@@ -1106,7 +1196,8 @@ async function readAdminSettings(
     strategyVault: {
       active: activeStrategy,
       versions: strategies
-    }
+    },
+    costBudgets
   });
 }
 
@@ -2109,6 +2200,398 @@ function paperTradeWhereSql(alias?: string): string {
   )`;
 }
 
+async function readExecutionQuality(env: Env, url: URL): Promise<Response> {
+  const dateRange = parseDateRange(url);
+  const where: string[] = [];
+  const bindings: string[] = [];
+  if (dateRange.from) {
+    where.push("observed_at >= ?");
+    bindings.push(dateRange.from);
+  }
+  if (dateRange.to) {
+    where.push("observed_at <= ?");
+    bindings.push(dateRange.to);
+  }
+  if (where.length === 0) {
+    where.push("observed_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-24 hours')");
+  }
+  const whereSql = `WHERE ${where.join(" AND ")}`;
+  const [summary, byAsset, fillStats] = await Promise.all([
+    env.TRADING_DB.prepare(
+      `SELECT
+         COUNT(*) AS sample_count,
+         AVG(slippage_bps) AS average_slippage_bps,
+         AVG(CASE WHEN slippage_bps > 0 THEN slippage_bps ELSE 0 END) AS adverse_selection_bps,
+         AVG(implementation_shortfall) AS average_shortfall,
+         AVG(latency_ms) AS average_latency_ms,
+         SUM(fees) AS total_fees
+       FROM execution_quality
+       ${whereSql}`
+    ).bind(...bindings).first<ExecutionQualityAggregateRow>(),
+    env.TRADING_DB.prepare(
+      `SELECT
+         instrument_code,
+         COUNT(*) AS sample_count,
+         AVG(slippage_bps) AS average_slippage_bps,
+         AVG(CASE WHEN slippage_bps > 0 THEN slippage_bps ELSE 0 END) AS adverse_selection_bps,
+         AVG(implementation_shortfall) AS average_shortfall,
+         AVG(latency_ms) AS average_latency_ms,
+         SUM(fees) AS total_fees
+       FROM execution_quality
+       ${whereSql}
+       GROUP BY instrument_code
+       ORDER BY sample_count DESC
+       LIMIT 20`
+    ).bind(...bindings).all<ExecutionQualityAssetRow>(),
+    readFillRateStats(env, dateRange)
+  ]);
+
+  return json({
+    ok: true,
+    window: {
+      from: dateRange.from,
+      to: dateRange.to,
+      fallback: dateRange.from || dateRange.to ? null : "24h"
+    },
+    summary: formatExecutionQualitySummary(summary),
+    byAsset: (byAsset.results ?? []).map(formatExecutionQualityAsset),
+    fillRate: fillStats
+  });
+}
+
+async function readFillRateStats(
+  env: Env,
+  dateRange: DateRangeFilter
+): Promise<JsonRecord> {
+  const where: string[] = [];
+  const bindings: string[] = [];
+  if (dateRange.from) {
+    where.push("executed_at >= ?");
+    bindings.push(dateRange.from);
+  }
+  if (dateRange.to) {
+    where.push("executed_at <= ?");
+    bindings.push(dateRange.to);
+  }
+  if (where.length === 0) {
+    where.push("executed_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-24 hours')");
+  }
+  const rows = await env.TRADING_DB.prepare(
+    `SELECT status, COUNT(*) AS count
+     FROM trades
+     WHERE ${where.join(" AND ")}
+     GROUP BY status`
+  ).bind(...bindings).all<{ status: string; count: number }>();
+  const counts = Object.fromEntries(
+    (rows.results ?? []).map((row) => [row.status, Number(row.count ?? 0)])
+  );
+  const filled =
+    Number(counts.FILLED ?? 0) +
+    Number(counts.PARTIAL ?? 0) +
+    Number(counts.GHOST_FILL ?? 0);
+  const attempted = Object.values(counts).reduce((sum, value) => sum + Number(value), 0);
+
+  return {
+    attempted,
+    filled,
+    rejected: Number(counts.REJECTED ?? 0),
+    cancelled: Number(counts.CANCELLED ?? 0),
+    acceptedOpen: Number(counts.ACCEPTED ?? 0),
+    fillRate: attempted > 0 ? round(filled / attempted, 6) : null,
+    counts
+  };
+}
+
+function formatExecutionQualitySummary(
+  row: ExecutionQualityAggregateRow | null
+): JsonRecord {
+  return {
+    sampleCount: Number(row?.sample_count ?? 0),
+    averageSlippageBps: nullableRound(row?.average_slippage_bps, 6),
+    adverseSelectionBps: nullableRound(row?.adverse_selection_bps, 6),
+    averageShortfall: nullableRound(row?.average_shortfall, 8),
+    averageLatencyMs: nullableRound(row?.average_latency_ms, 6),
+    totalFees: nullableRound(row?.total_fees, 8)
+  };
+}
+
+function formatExecutionQualityAsset(row: ExecutionQualityAssetRow): JsonRecord {
+  return {
+    instrumentCode: row.instrument_code,
+    ...formatExecutionQualitySummary(row)
+  };
+}
+
+async function readCostDashboard(
+  env: Env,
+  topology: EdgeTopology
+): Promise<Response> {
+  const report = await buildCostDashboard(env, topology);
+  return json({ ok: report.ok, cost: report }, report.ok ? 200 : 409);
+}
+
+async function updateCostBudgets(
+  request: Request,
+  env: Env,
+  logger: Logger,
+  topology: EdgeTopology,
+  admin: AuthenticatedAdmin
+): Promise<Response> {
+  const body = (await readJsonBody<Partial<CostBudgetSettings>>(request)) ?? {};
+  const current = await readCostBudgetSettings(env);
+  const next: CostBudgetSettings = {
+    ...current,
+    dailyBudgetUsd: nonNegativeNumberField(body.dailyBudgetUsd, current.dailyBudgetUsd),
+    workersAiDailyBudgetUsd: nonNegativeNumberField(
+      body.workersAiDailyBudgetUsd,
+      current.workersAiDailyBudgetUsd
+    ),
+    durableObjectDailyBudgetUsd: nonNegativeNumberField(
+      body.durableObjectDailyBudgetUsd,
+      current.durableObjectDailyBudgetUsd
+    ),
+    d1DailyBudgetUsd: nonNegativeNumberField(body.d1DailyBudgetUsd, current.d1DailyBudgetUsd),
+    workersAiCostPerCallUsd: nonNegativeNumberField(
+      body.workersAiCostPerCallUsd,
+      current.workersAiCostPerCallUsd
+    ),
+    durableObjectCostPerMsUsd: nonNegativeNumberField(
+      body.durableObjectCostPerMsUsd,
+      current.durableObjectCostPerMsUsd
+    ),
+    d1ReadCostPerQueryUsd: nonNegativeNumberField(
+      body.d1ReadCostPerQueryUsd,
+      current.d1ReadCostPerQueryUsd
+    ),
+    d1WriteCostPerRowUsd: nonNegativeNumberField(
+      body.d1WriteCostPerRowUsd,
+      current.d1WriteCostPerRowUsd
+    ),
+    enforcement:
+      body.enforcement === "WARN" ||
+      body.enforcement === "BLOCK_LIVE" ||
+      body.enforcement === "BLOCK_ALL"
+        ? body.enforcement
+        : current.enforcement,
+    updatedAt: new Date().toISOString(),
+    updatedBy: admin.subject
+  };
+
+  await env.CONFIG_STORE.put(COST_BUDGET_SETTINGS_KEY, JSON.stringify(next));
+  logger.warn("COST_BUDGETS_UPDATED", "Admin updated telemetry cost budgets", {
+    actor: admin.subject,
+    budgets: toJsonRecord(next),
+    colo: topology.colo,
+    placement: topology.placement
+  });
+
+  return json({ ok: true, budgets: next });
+}
+
+async function buildCostDashboard(
+  env: Env,
+  topology: EdgeTopology
+): Promise<{
+  ok: boolean;
+  generatedAt: string;
+  topology: JsonRecord;
+  budgets: CostBudgetSettings;
+  totals: JsonRecord;
+  components: JsonRecord[];
+  violations: JsonRecord[];
+}> {
+  const generatedAt = new Date().toISOString();
+  const budgets = await readCostBudgetSettings(env);
+  const [
+    logs,
+    trades,
+    decisions,
+    marketTicks,
+    executionQuality,
+    sentimentCalls,
+    stateResponse
+  ] = await Promise.all([
+    countTableRows(env, "logs"),
+    countTableRows(env, "trades"),
+    countTableRows(env, "agent_decisions"),
+    countTableRows(env, "market_ticks"),
+    countTableRows(env, "execution_quality"),
+    countLogEvents(env, "SENTIMENT_ANALYZED"),
+    routeToEngine(new Request("https://trading-engine.internal/state"), env, topology)
+  ]);
+  const statePayload = await safeResponseJson(stateResponse);
+  const state = isJsonRecord(statePayload?.state) ? statePayload.state : {};
+  const executionProfile = isJsonRecord(state.executionProfile) ? state.executionProfile : {};
+  const processedTicks = Number(state.processedTicks ?? 0);
+  const avgProcessingMs = Number(executionProfile.averageProcessingLatencyMs ?? 0);
+  const estimatedDoComputeMs = Math.max(0, processedTicks * Math.max(0, avgProcessingMs));
+  const d1WriteRows = logs + trades + decisions + marketTicks + executionQuality;
+  const components = [
+    costComponent(
+      "WORKERS_AI",
+      sentimentCalls,
+      budgets.workersAiCostPerCallUsd,
+      budgets.workersAiDailyBudgetUsd,
+      "sentiment call"
+    ),
+    costComponent(
+      "DURABLE_OBJECT_COMPUTE",
+      estimatedDoComputeMs,
+      budgets.durableObjectCostPerMsUsd,
+      budgets.durableObjectDailyBudgetUsd,
+      "estimated compute ms"
+    ),
+    costComponent(
+      "D1_WRITES",
+      d1WriteRows,
+      budgets.d1WriteCostPerRowUsd,
+      budgets.d1DailyBudgetUsd,
+      "journal row"
+    )
+  ];
+  const totalEstimatedUsd = round(
+    components.reduce((sum, component) => sum + Number(component.estimatedUsd ?? 0), 0),
+    8
+  );
+  const violations = components
+    .filter((component) => component.budgetExceeded === true)
+    .concat(
+      budgets.dailyBudgetUsd > 0 && totalEstimatedUsd > budgets.dailyBudgetUsd
+        ? [
+            {
+              component: "TOTAL",
+              estimatedUsd: totalEstimatedUsd,
+              budgetUsd: budgets.dailyBudgetUsd,
+              budgetExceeded: true
+            }
+          ]
+        : []
+    );
+
+  return {
+    ok: violations.length === 0,
+    generatedAt,
+    topology: topologyTelemetry(topology),
+    budgets,
+    totals: {
+      estimatedUsd: totalEstimatedUsd,
+      d1WriteRows,
+      sentimentCalls,
+      estimatedDoComputeMs: round(estimatedDoComputeMs, 3),
+      processedTicks,
+      averageProcessingLatencyMs: Number.isFinite(avgProcessingMs)
+        ? round(avgProcessingMs, 6)
+        : null,
+      model: "CONFIGURED_UNIT_COST_ESTIMATE"
+    },
+    components,
+    violations
+  };
+}
+
+async function readCostBudgetSettings(env: Env): Promise<CostBudgetSettings> {
+  const stored = await env.CONFIG_STORE.get<Partial<CostBudgetSettings>>(
+    COST_BUDGET_SETTINGS_KEY,
+    "json"
+  ).catch(() => null);
+  const now = new Date().toISOString();
+  return {
+    schemaVersion: "cost-budgets.v1",
+    dailyBudgetUsd: nonNegativeNumberField(
+      stored?.dailyBudgetUsd,
+      positiveNumber(env.COST_DAILY_BUDGET_USD, 25)
+    ),
+    workersAiDailyBudgetUsd: nonNegativeNumberField(
+      stored?.workersAiDailyBudgetUsd,
+      positiveNumber(env.WORKERS_AI_DAILY_BUDGET_USD, 2)
+    ),
+    durableObjectDailyBudgetUsd: nonNegativeNumberField(
+      stored?.durableObjectDailyBudgetUsd,
+      positiveNumber(env.DO_COMPUTE_DAILY_BUDGET_USD, 10)
+    ),
+    d1DailyBudgetUsd: nonNegativeNumberField(
+      stored?.d1DailyBudgetUsd,
+      positiveNumber(env.D1_DAILY_BUDGET_USD, 5)
+    ),
+    workersAiCostPerCallUsd: nonNegativeNumberField(
+      stored?.workersAiCostPerCallUsd,
+      nonNegativeEnvNumber(env.WORKERS_AI_COST_PER_CALL_USD, 0)
+    ),
+    durableObjectCostPerMsUsd: nonNegativeNumberField(
+      stored?.durableObjectCostPerMsUsd,
+      nonNegativeEnvNumber(env.DO_COMPUTE_COST_PER_MS_USD, 0)
+    ),
+    d1ReadCostPerQueryUsd: nonNegativeNumberField(
+      stored?.d1ReadCostPerQueryUsd,
+      nonNegativeEnvNumber(env.D1_READ_COST_PER_QUERY_USD, 0)
+    ),
+    d1WriteCostPerRowUsd: nonNegativeNumberField(
+      stored?.d1WriteCostPerRowUsd,
+      nonNegativeEnvNumber(env.D1_WRITE_COST_PER_ROW_USD, 0)
+    ),
+    enforcement:
+      stored?.enforcement === "WARN" ||
+      stored?.enforcement === "BLOCK_LIVE" ||
+      stored?.enforcement === "BLOCK_ALL"
+        ? stored.enforcement
+        : normalizeCostEnforcement(env.COST_BUDGET_ENFORCEMENT),
+    updatedAt: typeof stored?.updatedAt === "string" ? stored.updatedAt : now,
+    updatedBy: typeof stored?.updatedBy === "string" ? stored.updatedBy : "system-default"
+  };
+}
+
+async function countTableRows(env: Env, tableName: string): Promise<number> {
+  const row = await env.TRADING_DB.prepare(
+    `SELECT COUNT(*) AS count FROM ${tableName}
+     WHERE created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-24 hours')`
+  ).first<CountRow>();
+  return Number(row?.count ?? 0);
+}
+
+async function countLogEvents(env: Env, eventType: string): Promise<number> {
+  const row = await env.TRADING_DB.prepare(
+    `SELECT COUNT(*) AS count FROM logs
+     WHERE event_type = ?
+       AND created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-24 hours')`
+  ).bind(eventType).first<CountRow>();
+  return Number(row?.count ?? 0);
+}
+
+function costComponent(
+  component: string,
+  quantity: number,
+  unitCostUsd: number,
+  budgetUsd: number,
+  unit: string
+): JsonRecord {
+  const estimatedUsd = round(quantity * unitCostUsd, 8);
+  return {
+    component,
+    quantity: round(quantity, 6),
+    unit,
+    unitCostUsd,
+    estimatedUsd,
+    budgetUsd,
+    budgetExceeded: budgetUsd > 0 && estimatedUsd > budgetUsd
+  };
+}
+
+function normalizeCostEnforcement(value: string | undefined): CostBudgetSettings["enforcement"] {
+  return value === "WARN" || value === "BLOCK_ALL" || value === "BLOCK_LIVE"
+    ? value
+    : "BLOCK_LIVE";
+}
+
+function nonNegativeNumberField(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function nonNegativeEnvNumber(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
 async function readAgentTrace(env: Env, url: URL): Promise<Response> {
   const limit = clampInteger(url.searchParams.get("limit"), 50, 1, 200);
   const agent = normalizeEnum(url.searchParams.get("agent"), AGENT_NAMES);
@@ -2492,6 +2975,10 @@ function calculateAttributionBuckets(
       averagePnl: round(mean, 8),
       sharpe: sigma > 0 ? round((mean / sigma) * Math.sqrt(bucket.length), 6) : null,
       profitFactor: grossLoss > 0 ? round(grossProfit / grossLoss, 6) : null,
+      winRate:
+        bucket.length > 0
+          ? round(bucket.filter((trade) => trade.pnl > 0).length / bucket.length, 6)
+          : null,
       grossProfit: round(grossProfit, 8),
       grossLoss: round(grossLoss, 8),
       averageConfidence: round(
@@ -2583,7 +3070,16 @@ function backendSettings(env: Env): JsonRecord {
       adminStreamPath: "/admin/stream",
       healthPath: "/health",
       executionerBound: Boolean(env.EXECUTIONER),
-      aiBound: Boolean(env.AI)
+      aiBound: Boolean(env.AI),
+      structuredConsoleLogs: env.STRUCTURED_CONSOLE_LOGS ?? "false",
+      logSinkProvider: env.LOG_SINK_PROVIDER ?? "disabled",
+      logSinkConfigured: Boolean(
+        env.LOG_SINK_PROVIDER &&
+          env.LOG_SINK_PROVIDER !== "disabled" &&
+          (env.LOG_SINK_TOKEN || env.LOG_SINK_URL)
+      ),
+      logSinkDataset:
+        env.LOG_SINK_DATASET ?? env.AXIOM_DATASET ?? env.HONEYCOMB_DATASET ?? null
     },
     ingest: {
       nativeSource: "DWELLIR_HYPERLIQUID_GRPC",
@@ -3113,6 +3609,12 @@ function numberOption(
 function round(value: number, decimalPlaces: number): number {
   const scale = 10 ** decimalPlaces;
   return Math.round(value * scale) / scale;
+}
+
+function nullableRound(value: number | null | undefined, decimalPlaces: number): number | null {
+  return typeof value === "number" && Number.isFinite(value)
+    ? round(value, decimalPlaces)
+    : null;
 }
 
 function isJsonRecord(value: unknown): value is JsonRecord {

@@ -5,6 +5,7 @@ import {
   Brain,
   ChevronRight,
   CircleDot,
+  DatabaseZap,
   Flame,
   Gauge,
   Info,
@@ -26,7 +27,9 @@ import {
   login,
   readAttribution,
   readConfig,
+  readCostDashboard,
   readDiagnostics,
+  readExecutionQuality,
   readLiveReadiness,
   readSettings,
   readState,
@@ -50,11 +53,13 @@ import {
 import type {
   AttributionResponse,
   AdminSettingsResponse,
+  CostDashboardResponse,
   DashboardPulse,
   DiagnosticCheck,
   DiagnosticsResponse,
   DraftTransportSettings,
   EngineState,
+  ExecutionQualityResponse,
   GlobalRiskConfig,
   GovernanceMode,
   JsonRecord,
@@ -134,6 +139,8 @@ export default function CommandCenterPage() {
   const [attribution, setAttribution] = useState<AttributionResponse | null>(null);
   const [tradeHistory, setTradeHistory] = useState<TradeHistoryResponse | null>(null);
   const [settings, setSettings] = useState<AdminSettingsResponse | null>(null);
+  const [executionQuality, setExecutionQuality] = useState<ExecutionQualityResponse | null>(null);
+  const [costDashboard, setCostDashboard] = useState<CostDashboardResponse | null>(null);
   const [pulse, setPulse] = useState<DashboardPulse | null>(null);
   const [logicFeed, setLogicFeed] = useState<JsonRecord[]>([]);
   const [pendingFields, setPendingFields] = useState<string[]>([]);
@@ -178,7 +185,9 @@ export default function CommandCenterPage() {
       historyResult,
       settingsResult,
       liveReadinessResult,
-      replayStatusResult
+      replayStatusResult,
+      executionQualityResult,
+      costDashboardResult
     ] = await Promise.all([
       readState(apiBase, token),
       readConfig(apiBase, token),
@@ -187,7 +196,9 @@ export default function CommandCenterPage() {
       readTradeHistory(apiBase, token),
       readSettings(apiBase, token),
       readLiveReadiness(apiBase, token),
-      readReplayStatus(apiBase, token)
+      readReplayStatus(apiBase, token),
+      readExecutionQuality(apiBase, token),
+      readCostDashboard(apiBase, token)
     ]);
 
     setEngineState(stateResult.state);
@@ -202,6 +213,8 @@ export default function CommandCenterPage() {
     setSettings(settingsResult);
     setLiveReadiness(liveReadinessResult);
     setReplayStatus(replayStatusResult.replay);
+    setExecutionQuality(executionQualityResult);
+    setCostDashboard(costDashboardResult);
   }, [apiBase, token]);
 
   const connectStream = useCallback(() => {
@@ -317,6 +330,10 @@ export default function CommandCenterPage() {
     () => (attribution?.byDriver ?? []).filter(isActiveAttributionDriver),
     [attribution]
   );
+  const agentHealthRows = useMemo(
+    () => summarizeAgentHealth(engineState, visibleAttributionDrivers),
+    [engineState, visibleAttributionDrivers]
+  );
   const realizedAlpha = useMemo(
     () =>
       visibleAttributionDrivers.reduce(
@@ -364,6 +381,9 @@ export default function CommandCenterPage() {
       .toLowerCase() === "true";
   const shadowQueue = engineState?.shadowQueue ?? pulse?.shadow_queue ?? null;
   const shadowQueueLight = shadowQueue?.lastDecision?.action ?? "IDLE";
+  const executionQualitySummary = executionQuality?.summary ?? {};
+  const fillRate = executionQuality?.fillRate ?? {};
+  const costReport = costDashboard?.cost ?? null;
 
   const stateRows = useMemo(
     () => flattenState(engineState ?? {}).filter(([key]) => isVisibleStateRow(key)),
@@ -876,6 +896,51 @@ export default function CommandCenterPage() {
           <Metric label="Quotes" value={engineState?.quoteState.status ?? "n/a"} />
         </section>
 
+        <section className="agent-health-panel glass">
+          <div className="panel-title">
+            <Gauge size={17} />
+            <span>Real-Time Agent Health</span>
+            <strong className="panel-pill">{agentHealthRows.length} agents</strong>
+          </div>
+          <div className="agent-health-grid">
+            {agentHealthRows.map((agent) => (
+              <div className={`agent-health-row ${agent.status.toLowerCase()}`} key={agent.agent}>
+                <strong>{displayDriverName(agent.agent)}</strong>
+                <span>{agent.status}</span>
+                <span>{agent.latencyMs === null ? "lat n/a" : `${compact.format(agent.latencyMs)}ms`}</span>
+                <span>{agent.accuracy === null ? "acc n/a" : `${compact.format(agent.accuracy * 100)}%`}</span>
+                <code>{currency.format(agent.pnl)}</code>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        <section className={costReport?.ok === false ? "cost-panel glass over-budget" : "cost-panel glass"}>
+          <div className="panel-title">
+            <DatabaseZap size={17} />
+            <span>Cost Guardrails</span>
+            <strong className="panel-pill">{costReport?.ok === false ? "BUDGET BREACH" : "WITHIN BUDGET"}</strong>
+          </div>
+          <div className="trade-summary">
+            <Metric label="24h Est." value={currency.format(Number(costReport?.totals.estimatedUsd ?? 0))} />
+            <Metric label="Daily Cap" value={currency.format(Number(costReport?.budgets.dailyBudgetUsd ?? 0))} />
+            <Metric label="AI Calls" value={compact.format(Number(costReport?.totals.sentimentCalls ?? 0))} />
+            <Metric label="D1 Writes" value={compact.format(Number(costReport?.totals.d1WriteRows ?? 0))} />
+            <Metric label="DO ms" value={compact.format(Number(costReport?.totals.estimatedDoComputeMs ?? 0))} />
+            <Metric label="Enforce" value={String(costReport?.budgets.enforcement ?? "BLOCK_LIVE")} />
+          </div>
+          <div className="cost-component-grid">
+            {(costReport?.components ?? []).map((component) => (
+              <div className={component.budgetExceeded ? "cost-row over" : "cost-row"} key={String(component.component)}>
+                <strong>{String(component.component)}</strong>
+                <span>{compact.format(Number(component.quantity ?? 0))} {String(component.unit ?? "")}</span>
+                <span>{currency.format(Number(component.estimatedUsd ?? 0))}</span>
+                <code>{currency.format(Number(component.budgetUsd ?? 0))}</code>
+              </div>
+            ))}
+          </div>
+        </section>
+
         <section className={readiness?.ok ? "readiness-strip glass ready" : "readiness-strip glass locked"}>
           <div>
             <span>Live Readiness Gate</span>
@@ -1069,6 +1134,14 @@ export default function CommandCenterPage() {
                     : "NO ORDERS"}
             </span>
           </div>
+          <button
+            className={operatorMode === "PAPER" ? "paper-mirror-toggle active" : "paper-mirror-toggle"}
+            disabled={isSwitchingMode || !token}
+            onClick={() => void switchTradingMode(operatorMode === "PAPER" ? "OBSERVE" : "PAPER")}
+          >
+            <span>Paper Trading Mirror</span>
+            <strong>{operatorMode === "PAPER" ? "ON" : "OFF"}</strong>
+          </button>
         </section>
 
         <section className="matrix-panel glass">
@@ -1311,6 +1384,9 @@ export default function CommandCenterPage() {
             <Metric label="Paper Return" value={formatBps(paperPnl.returnBps)} />
             <Metric label="Gross Notional" value={currency.format(paperPnl.grossNotional)} />
             <Metric label="Rejected" value={compact.format(statusSummary.REJECTED)} />
+            <Metric label="Fill Rate" value={formatPercent(numberOrNull(fillRate.fillRate))} />
+            <Metric label="Slippage" value={formatBps(numberOrNull(executionQualitySummary.averageSlippageBps))} />
+            <Metric label="Adverse Sel." value={formatBps(numberOrNull(executionQualitySummary.adverseSelectionBps))} />
           </div>
           <div className="execution-ledger-note">
             <span>Paper fills are risk-capped shadow queue fills only.</span>
@@ -1665,6 +1741,40 @@ function summarizeTradeStatuses(
   }, initial);
 }
 
+function summarizeAgentHealth(
+  state: EngineState | null,
+  attributionDrivers: AttributionResponse["byDriver"]
+): Array<{
+  agent: string;
+  status: string;
+  latencyMs: number | null;
+  accuracy: number | null;
+  pnl: number;
+}> {
+  const attribution = new Map(
+    attributionDrivers.map((driver) => [displayDriverName(driver.driver), driver])
+  );
+  const health = state?.agentHealth;
+  if (!health) {
+    return [];
+  }
+
+  return Object.entries(health)
+    .filter(([agent]) => isActiveAttributionDriver({ driver: agent }))
+    .map(([agent, details]) => {
+      const normalized = displayDriverName(agent);
+      const driver = attribution.get(normalized);
+      return {
+        agent: normalized,
+        status: String(details.status ?? "YELLOW"),
+        latencyMs: numberOrNull(details.latencyMs),
+        accuracy: numberOrNull(driver?.winRate),
+        pnl: Number(driver?.cumulativePnl ?? 0)
+      };
+    })
+    .sort((left, right) => right.pnl - left.pnl);
+}
+
 function summarizePaperPnl(
   summary: TradeHistoryResponse["paperPnl"] | undefined,
   state: EngineState | null
@@ -1766,6 +1876,10 @@ function formatNullableCurrency(value: number | null): string {
 
 function formatBps(value: number | null): string {
   return value === null ? "n/a" : `${compact.format(value)} bps`;
+}
+
+function formatPercent(value: number | null): string {
+  return value === null ? "n/a" : `${compact.format(value * 100)}%`;
 }
 
 function roundDisplay(value: number, precision = 8): number {

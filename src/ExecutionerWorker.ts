@@ -1,5 +1,9 @@
 import { ConfigManager } from "./ConfigManager";
-import { Logger } from "./Logger";
+import {
+  Logger,
+  createLogSink,
+  structuredConsoleLogsEnabled
+} from "./Logger";
 import { RateLimiter } from "./utils/RateLimiter";
 import { SignatureEngine } from "./utils/SignatureEngine";
 import { getTradingEngineStub } from "./utils/TradingEngineStub";
@@ -64,7 +68,10 @@ export default {
     const logger = new Logger(
       env.TRADING_DB,
       (promise) => ctx.waitUntil(promise),
-      "ExecutionerWorker"
+      "ExecutionerWorker",
+      undefined,
+      createLogSink(env),
+      structuredConsoleLogsEnabled(env)
     );
     const url = new URL(request.url);
 

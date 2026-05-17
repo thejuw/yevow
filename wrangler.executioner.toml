@@ -45,12 +45,15 @@ SHADOW_MODE = "true"
 EXCHANGE_RECV_WINDOW_MS = "5000"
 SIGNATURE_ALGORITHM = "HYPERLIQUID_EIP712"
 SLIPPAGE_GUARD_TICKS = "2"
+STRUCTURED_CONSOLE_LOGS = "false"
+LOG_SINK_PROVIDER = "disabled"
 
 # Secrets are intentionally excluded from source control/config values.
 # Provision them with:
 #   wrangler secret put HL_AGENT_ADDRESS -c wrangler.executioner.toml
 #   wrangler secret put HL_AGENT_SECRET -c wrangler.executioner.toml
 #   wrangler secret put HL_ACCOUNT_ADDRESS -c wrangler.executioner.toml
+#   wrangler secret put LOG_SINK_TOKEN -c wrangler.executioner.toml
 #
 # Keep EXCHANGE_ORDER_TEST_MODE="true" until the Hyperliquid API wallet is
 # approved, account reads pass, and signed test payloads have been reviewed.

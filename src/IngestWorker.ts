@@ -1,4 +1,8 @@
-import { Logger } from "./Logger";
+import {
+  Logger,
+  createLogSink,
+  structuredConsoleLogsEnabled
+} from "./Logger";
 import { encode as msgpackEncode } from "@msgpack/msgpack";
 import {
   DwellirHyperliquidGrpcClient,
@@ -321,7 +325,10 @@ export default {
     const logger = new Logger(
       env.TRADING_DB,
       (promise) => ctx.waitUntil(promise),
-      "IngestWorker"
+      "IngestWorker",
+      undefined,
+      createLogSink(env),
+      structuredConsoleLogsEnabled(env)
     );
 
     if (request.method === "GET" && url.pathname === "/health") {
@@ -404,7 +411,10 @@ export class IngestCoordinator {
     this.logger = new Logger(
       env.TRADING_DB,
       (promise) => this.state.waitUntil(promise),
-      "IngestCoordinator"
+      "IngestCoordinator",
+      undefined,
+      createLogSink(env),
+      structuredConsoleLogsEnabled(env)
     );
   }
 

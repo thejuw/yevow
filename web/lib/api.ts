@@ -5,7 +5,10 @@ import type {
   AlertPriority,
   AlertTestResponse,
   AttributionResponse,
+  CostBudgetSettings,
+  CostDashboardResponse,
   DiagnosticsResponse,
+  ExecutionQualityResponse,
   GlobalRiskConfig,
   LiveReadinessResponse,
   LoginResponse,
@@ -79,6 +82,38 @@ export async function readTradeHistory(apiBase: string, token: string): Promise<
     apiBase,
     "/admin/history?status=ALL&limit=250",
     token
+  );
+}
+
+export async function readExecutionQuality(
+  apiBase: string,
+  token: string
+): Promise<ExecutionQualityResponse> {
+  return apiFetch<ExecutionQualityResponse>(apiBase, "/admin/execution-quality", token);
+}
+
+export async function readCostDashboard(
+  apiBase: string,
+  token: string
+): Promise<CostDashboardResponse> {
+  return apiFetch<CostDashboardResponse>(apiBase, "/admin/costs", token, {
+    allowErrorBody: true
+  });
+}
+
+export async function updateCostBudgets(
+  apiBase: string,
+  token: string,
+  budgets: Partial<CostBudgetSettings>
+): Promise<{ ok: boolean; budgets: CostBudgetSettings }> {
+  return apiFetch<{ ok: boolean; budgets: CostBudgetSettings }>(
+    apiBase,
+    "/admin/costs/budgets",
+    token,
+    {
+      method: "POST",
+      body: JSON.stringify(budgets)
+    }
   );
 }
 

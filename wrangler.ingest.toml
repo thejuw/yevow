@@ -84,6 +84,8 @@ CLOCK_SYNC_ALPHA = "0.10"
 CLOCK_SYNC_MAX_OFFSET_MS = "10000"
 NOTIFIER_DEBOUNCE_MS = "60000"
 NEWS_FEEDS = "[]"
+STRUCTURED_CONSOLE_LOGS = "false"
+LOG_SINK_PROVIDER = "disabled"
 
 # Secrets are intentionally excluded from source control/config values.
 # Dwellir gRPC is the default ingest path. It fails closed unless the API key
@@ -97,3 +99,4 @@ NEWS_FEEDS = "[]"
 #   wrangler secret put TELEGRAM_BOT_TOKEN -c wrangler.ingest.toml
 #   wrangler secret put TELEGRAM_CHAT_ID -c wrangler.ingest.toml
 #   wrangler secret put ALERT_WEBHOOK_URL -c wrangler.ingest.toml
+#   wrangler secret put LOG_SINK_TOKEN -c wrangler.ingest.toml

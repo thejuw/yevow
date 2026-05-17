@@ -645,6 +645,20 @@ output {
   grid-column: span 4;
 }
 
+.agent-health-panel {
+  order: 2;
+  grid-column: span 6;
+}
+
+.cost-panel {
+  order: 2;
+  grid-column: span 6;
+}
+
+.cost-panel.over-budget {
+  border-color: rgba(255, 107, 107, 0.45);
+}
+
 .liquidation-panel {
   order: 5;
   grid-column: span 7;
@@ -822,6 +836,70 @@ output {
   color: var(--muted);
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 11px;
+}
+
+.paper-mirror-toggle {
+  width: 100%;
+  margin-top: 10px;
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  text-transform: uppercase;
+}
+
+.paper-mirror-toggle.active {
+  border-color: var(--green);
+  background: rgba(102, 227, 161, 0.12);
+  color: var(--green);
+}
+
+.agent-health-grid,
+.cost-component-grid {
+  display: grid;
+  gap: 6px;
+}
+
+.agent-health-row,
+.cost-row {
+  min-height: 34px;
+  display: grid;
+  grid-template-columns: 1fr 0.65fr 0.85fr 0.85fr 0.85fr;
+  gap: 8px;
+  align-items: center;
+  border: 1px solid var(--line-cold);
+  border-radius: 7px;
+  padding: 7px 9px;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.cost-row {
+  grid-template-columns: 1fr 1fr 0.8fr 0.8fr;
+}
+
+.agent-health-row.green strong,
+.agent-health-row.green span,
+.agent-health-row.green code {
+  color: var(--green);
+}
+
+.agent-health-row.yellow strong,
+.agent-health-row.yellow span,
+.agent-health-row.yellow code {
+  color: var(--gold);
+}
+
+.agent-health-row.red strong,
+.agent-health-row.red span,
+.agent-health-row.red code,
+.cost-row.over strong,
+.cost-row.over span,
+.cost-row.over code {
+  color: var(--red);
 }
 
 .mode-readout span {

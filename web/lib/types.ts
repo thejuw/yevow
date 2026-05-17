@@ -320,6 +320,13 @@ export interface EngineState {
     isTradingEnabled: boolean;
     updatedAt: string | null;
   };
+  agentHealth?: Record<string, {
+    status: "GREEN" | "YELLOW" | "RED";
+    heartbeatAt: string;
+    latencyMs: number;
+    lastSignalId?: string | null;
+    failures24h: number;
+  }>;
   processedTicks: number;
   acceptedSignals: number;
   averageLatency: number;
@@ -433,12 +440,49 @@ export interface AttributionResponse {
     averagePnl: number;
     sharpe: number | null;
     profitFactor: number | null;
+    winRate?: number | null;
     averageConfidence: number;
   }>;
   byAsset?: JsonRecord[];
   byRegime?: JsonRecord[];
   byAgentAsset?: JsonRecord[];
   timeline: JsonRecord[];
+}
+
+export interface ExecutionQualityResponse {
+  ok: boolean;
+  summary: JsonRecord;
+  byAsset: JsonRecord[];
+  fillRate: JsonRecord;
+  window: JsonRecord;
+}
+
+export interface CostBudgetSettings {
+  schemaVersion: "cost-budgets.v1";
+  dailyBudgetUsd: number;
+  workersAiDailyBudgetUsd: number;
+  durableObjectDailyBudgetUsd: number;
+  d1DailyBudgetUsd: number;
+  workersAiCostPerCallUsd: number;
+  durableObjectCostPerMsUsd: number;
+  d1ReadCostPerQueryUsd: number;
+  d1WriteCostPerRowUsd: number;
+  enforcement: "WARN" | "BLOCK_LIVE" | "BLOCK_ALL";
+  updatedAt: string;
+  updatedBy: string;
+}
+
+export interface CostDashboardResponse {
+  ok: boolean;
+  cost: {
+    ok: boolean;
+    generatedAt: string;
+    topology: JsonRecord;
+    budgets: CostBudgetSettings;
+    totals: JsonRecord;
+    components: JsonRecord[];
+    violations: JsonRecord[];
+  };
 }
 
 export interface ReplayStatus {
@@ -672,6 +716,7 @@ export interface AdminSettingsResponse {
   vault: VaultStatus;
   backend: JsonRecord;
   strategyVault?: StrategyVaultResponse["strategyVault"];
+  costBudgets?: CostBudgetSettings;
 }
 
 export interface StrategyVersion {

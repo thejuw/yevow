@@ -31,6 +31,7 @@ import {
   testVaultConnection,
   toWebSocketUrl,
   updateConfig,
+  updateCostBudgets,
   updateNotificationSettings
 } from "@/lib/api";
 import {
@@ -43,6 +44,7 @@ import type {
   AdminSettingsResponse,
   AlertPriority,
   AlertTestResponse,
+  CostBudgetSettings,
   GlobalRiskConfig,
   JsonRecord,
   NotificationSettings,
@@ -82,6 +84,7 @@ export default function SettingsPage() {
   const [settings, setSettings] = useState<AdminSettingsResponse | null>(null);
   const [riskDraft, setRiskDraft] = useState<Partial<GlobalRiskConfig>>({});
   const [notificationDraft, setNotificationDraft] = useState<NotificationSettingsUpdate>({});
+  const [costDraft, setCostDraft] = useState<Partial<CostBudgetSettings>>({});
   const [lastAlertTest, setLastAlertTest] = useState<AlertTestResponse | null>(null);
   const [vaultKey, setVaultKey] = useState<VaultKeyName>("TELEGRAM_BOT_TOKEN");
   const [vaultSecret, setVaultSecret] = useState("");
@@ -92,6 +95,7 @@ export default function SettingsPage() {
   const [confirmText, setConfirmText] = useState("");
   const riskDirtyRef = useRef(false);
   const notificationDirtyRef = useRef(false);
+  const costDirtyRef = useRef(false);
 
   const refresh = useCallback(async () => {
     if (!token) {
@@ -105,6 +109,9 @@ export default function SettingsPage() {
     }
     if (!notificationDirtyRef.current) {
       setNotificationDraft(response.notifications);
+    }
+    if (!costDirtyRef.current) {
+      setCostDraft(response.costBudgets ?? {});
     }
   }, [apiBase, token]);
 
@@ -135,11 +142,16 @@ export default function SettingsPage() {
   const ingestSettings = isJsonRecord(settings?.backend.ingest)
     ? settings.backend.ingest
     : {};
+  const apiSettings = isJsonRecord(settings?.backend.api) ? settings.backend.api : {};
   const activeNotifications = settings?.notifications;
   const effectiveNotifications = {
     ...activeNotifications,
     ...notificationDraft
   } as NotificationSettings;
+  const effectiveCostBudgets = {
+    ...settings?.costBudgets,
+    ...costDraft
+  } as Partial<CostBudgetSettings>;
 
   async function handleLogin() {
     setError(null);
@@ -167,6 +179,7 @@ export default function SettingsPage() {
     setSettings(null);
     setRiskDraft({});
     setNotificationDraft({});
+    setCostDraft({});
     setLastAlertTest(null);
     setCommandStatus("Settings console locked.");
   }
@@ -185,6 +198,17 @@ export default function SettingsPage() {
   ) {
     notificationDirtyRef.current = true;
     setNotificationDraft((draft) => ({
+      ...draft,
+      [key]: value
+    }));
+  }
+
+  function updateCostDraft<K extends keyof CostBudgetSettings>(
+    key: K,
+    value: CostBudgetSettings[K]
+  ) {
+    costDirtyRef.current = true;
+    setCostDraft((draft) => ({
       ...draft,
       [key]: value
     }));
@@ -324,6 +348,31 @@ export default function SettingsPage() {
     } catch (caught: unknown) {
       setError(errorMessage(caught));
       setCommandStatus("Latency reset failed.");
+    } finally {
+      setCommandState("IDLE");
+    }
+  }
+
+  async function saveCostBudgets() {
+    setCommandState("SAVING");
+    setError(null);
+    setCommandStatus("Saving hard cost budgets...");
+
+    try {
+      const response = await updateCostBudgets(apiBase, token, costDraft);
+      costDirtyRef.current = false;
+      setSettings((current) =>
+        current
+          ? {
+              ...current,
+              costBudgets: response.budgets
+            }
+          : current
+      );
+      setCommandStatus("Cost budgets saved.");
+    } catch (caught: unknown) {
+      setError(errorMessage(caught));
+      setCommandStatus("Cost budget save failed.");
     } finally {
       setCommandState("IDLE");
     }
@@ -768,6 +817,124 @@ export default function SettingsPage() {
 
         <section className="settings-panel settings-panel-wide glass">
           <div className="panel-title">
+            <DatabaseZap size={17} />
+            <span>Cost Budgets & Log Export</span>
+            <button disabled={commandState !== "IDLE"} onClick={() => void saveCostBudgets()}>
+              <Save size={16} />
+              Save Budgets
+            </button>
+          </div>
+          <div className="settings-metrics">
+            <Metric
+              label="Structured Logs"
+              value={settingString(apiSettings.structuredConsoleLogs, "false").toUpperCase()}
+            />
+            <Metric
+              label="Sink Provider"
+              value={settingString(apiSettings.logSinkProvider, "disabled").toUpperCase()}
+            />
+            <Metric
+              label="Sink Armed"
+              value={apiSettings.logSinkConfigured === true ? "YES" : "NO"}
+            />
+            <Metric
+              label="Sink Dataset"
+              value={settingString(apiSettings.logSinkDataset, "n/a")}
+            />
+          </div>
+          <div className="settings-form two-col">
+            <NumberField
+              label="Daily Hard Budget USD"
+              value={numberSetting(effectiveCostBudgets.dailyBudgetUsd, 25)}
+              min={0}
+              max={1000000}
+              step={1}
+              onChange={(value) => updateCostDraft("dailyBudgetUsd", value)}
+            />
+            <NumberField
+              label="Workers AI Budget USD"
+              value={numberSetting(effectiveCostBudgets.workersAiDailyBudgetUsd, 2)}
+              min={0}
+              max={100000}
+              step={0.01}
+              onChange={(value) => updateCostDraft("workersAiDailyBudgetUsd", value)}
+            />
+            <NumberField
+              label="Durable Object Budget USD"
+              value={numberSetting(effectiveCostBudgets.durableObjectDailyBudgetUsd, 10)}
+              min={0}
+              max={100000}
+              step={0.01}
+              onChange={(value) => updateCostDraft("durableObjectDailyBudgetUsd", value)}
+            />
+            <NumberField
+              label="D1 Budget USD"
+              value={numberSetting(effectiveCostBudgets.d1DailyBudgetUsd, 5)}
+              min={0}
+              max={100000}
+              step={0.01}
+              onChange={(value) => updateCostDraft("d1DailyBudgetUsd", value)}
+            />
+            <NumberField
+              label="Workers AI Cost / Call"
+              value={numberSetting(effectiveCostBudgets.workersAiCostPerCallUsd, 0)}
+              min={0}
+              max={1000}
+              step={0.000001}
+              onChange={(value) => updateCostDraft("workersAiCostPerCallUsd", value)}
+            />
+            <NumberField
+              label="DO Cost / ms"
+              value={numberSetting(effectiveCostBudgets.durableObjectCostPerMsUsd, 0)}
+              min={0}
+              max={1000}
+              step={0.000000001}
+              onChange={(value) => updateCostDraft("durableObjectCostPerMsUsd", value)}
+            />
+            <NumberField
+              label="D1 Read Cost / Query"
+              value={numberSetting(effectiveCostBudgets.d1ReadCostPerQueryUsd, 0)}
+              min={0}
+              max={1000}
+              step={0.000001}
+              onChange={(value) => updateCostDraft("d1ReadCostPerQueryUsd", value)}
+            />
+            <NumberField
+              label="D1 Write Cost / Row"
+              value={numberSetting(effectiveCostBudgets.d1WriteCostPerRowUsd, 0)}
+              min={0}
+              max={1000}
+              step={0.000001}
+              onChange={(value) => updateCostDraft("d1WriteCostPerRowUsd", value)}
+            />
+            <label>
+              Budget Enforcement
+              <select
+                value={effectiveCostBudgets.enforcement ?? "BLOCK_LIVE"}
+                onChange={(event) =>
+                  updateCostDraft(
+                    "enforcement",
+                    event.target.value as CostBudgetSettings["enforcement"]
+                  )
+                }
+              >
+                <option>WARN</option>
+                <option>BLOCK_LIVE</option>
+                <option>BLOCK_ALL</option>
+              </select>
+            </label>
+          </div>
+          <div className="transport-explainer">
+            <strong>Hard budgets gate live posture changes.</strong>
+            <span>
+              Unit costs are explicit operator inputs, so the dashboard never invents provider
+              billing numbers. Set Axiom/Honeycomb/HTTP sink secrets with Wrangler.
+            </span>
+          </div>
+        </section>
+
+        <section className="settings-panel settings-panel-wide glass">
+          <div className="panel-title">
             <ChevronRight size={17} />
             <span>Backend Runtime Settings</span>
           </div>
@@ -974,6 +1141,10 @@ function settingString(value: unknown, fallback: string): string {
   }
 
   return fallback;
+}
+
+function numberSetting(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
 function errorMessage(error: unknown): string {

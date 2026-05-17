@@ -1,7 +1,11 @@
 import { ConfigManager, defaultConfig } from "./ConfigManager";
 import { decode as msgpackDecode } from "@msgpack/msgpack";
 import { Governor, neutralMacroBias } from "./Governor";
-import { Logger } from "./Logger";
+import {
+  Logger,
+  createLogSink,
+  structuredConsoleLogsEnabled
+} from "./Logger";
 import {
   ProfilerAgent,
   PROFILER_STATE_STORAGE_KEY,
@@ -658,7 +662,9 @@ export class TradingEngine {
         placement: this.engineState.location.placement,
         latencyRiskMultiplier: this.engineState.location.latencyRiskMultiplier,
         positionSizeMultiplier: this.engineState.location.positionSizeMultiplier
-      })
+      }),
+      createLogSink(env),
+      structuredConsoleLogsEnabled(env)
     );
     this.notifier = new Notifier(env, (promise) => this.state.waitUntil(promise));
 
@@ -1164,10 +1170,15 @@ export class TradingEngine {
           updatedAt: sentiment.updatedAt ?? new Date().toISOString()
         };
         await this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "SENTIMENT_UPDATED");
-        this.logger.info("SENTIMENT_UPDATED", "Sentiment agent updated headline bias", {
+        this.logger.info("SENTIMENT_ANALYZED", "Sentiment agent updated headline bias", {
           score: sentiment.score,
           bias: sentiment.bias,
           model: sentiment.model,
+          provider: sentiment.provider ?? null,
+          fallbackUsed: sentiment.fallbackUsed ?? null,
+          latencyMs: sentiment.latencyMs ?? null,
+          estimatedCostUsd: sentiment.estimatedCostUsd ?? 0,
+          ablation: sentiment.ablation ?? null,
           source: payload.source ?? "manual",
           url: payload.url ?? null,
           publishedAt: payload.publishedAt ?? null,
