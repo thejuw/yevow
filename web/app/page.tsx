@@ -84,6 +84,7 @@ interface PaperPnlDisplay {
   paperMtm: number | null;
   returnBps: number | null;
   realizedPnl: number;
+  realizedNetPnl: number;
   totalEv: number;
   totalFees: number;
   grossNotional: number;
@@ -91,6 +92,7 @@ interface PaperPnlDisplay {
     PaperPnlAsset & {
       midPrice: number | null;
       markToMarketPnl: number | null;
+      realizedNetPnl: number;
       returnBps: number | null;
     }
   >;
@@ -1279,8 +1281,9 @@ export default function CommandCenterPage() {
             <Metric label="Order Events" value={compact.format(totalOrderEvents)} />
             <Metric label="Open Intents" value={compact.format(statusSummary.ACCEPTED)} />
             <Metric label="Paper Fills" value={compact.format(paperPnl.tradeCount || paperTradeRows.length)} />
-            <Metric label="Paper MTM" value={formatNullableCurrency(paperPnl.paperMtm)} />
-            <Metric label="Paper Return" value={formatBps(paperPnl.returnBps)} />
+            <Metric label="Realized Net" value={currency.format(paperPnl.realizedNetPnl)} />
+            <Metric label="Unrealized MTM" value={formatNullableCurrency(paperPnl.paperMtm)} />
+            <Metric label="MTM Return" value={formatBps(paperPnl.returnBps)} />
             <Metric label="Gross Notional" value={currency.format(paperPnl.grossNotional)} />
             <Metric label="Rejected" value={compact.format(statusSummary.REJECTED)} />
             <Metric label="Fill Rate" value={formatPercent(numberOrNull(fillRate.fillRate))} />
@@ -1288,21 +1291,21 @@ export default function CommandCenterPage() {
             <Metric label="Adverse Sel." value={formatBps(numberOrNull(executionQualitySummary.adverseSelectionBps))} />
           </div>
           <div className="execution-ledger-note">
-            <span>Paper fills are risk-capped shadow queue fills only.</span>
-            <code>{statusSummary.GHOST_FILL} total ghost fills · {statusSummary.ACCEPTED} open shadow quote intents</code>
+            <span>Paper fills are shadow fills only; unrealized MTM is open inventory, not realized profit.</span>
+            <code>{statusSummary.GHOST_FILL} ghost fills · {statusSummary.ACCEPTED} open quote intents · fees included in realized net</code>
           </div>
           {paperPnl.assets.length > 0 ? (
             <div className="paper-pnl-grid" aria-label="Shadow mark-to-market by asset">
               {paperPnl.assets.map((asset) => (
                 <div
-                  className={asset.markToMarketPnl !== null && asset.markToMarketPnl < 0 ? "paper-pnl-row negative" : "paper-pnl-row positive"}
+                  className={asset.realizedNetPnl < 0 ? "paper-pnl-row negative" : "paper-pnl-row positive"}
                   key={asset.asset}
                 >
                   <strong>{asset.asset}</strong>
-                  <span>{formatNullableCurrency(asset.markToMarketPnl)}</span>
-                  <span>Net {compact.format(asset.netQuantity)}</span>
+                  <span>Realized {currency.format(asset.realizedNetPnl)}</span>
+                  <span>MTM {formatNullableCurrency(asset.markToMarketPnl)}</span>
+                  <span>Open {compact.format(asset.netQuantity)}</span>
                   <span>{asset.midPrice === null ? "mark n/a" : currency.format(asset.midPrice)}</span>
-                  <code>{formatBps(asset.returnBps)}</code>
                 </div>
               ))}
             </div>
@@ -1321,7 +1324,7 @@ export default function CommandCenterPage() {
                   <span>{trade.status}</span>
                   <span>{compact.format(trade.size)}</span>
                   <span>{currency.format(trade.price)}</span>
-                  <span>{currency.format(trade.resultingPnl ?? 0)}</span>
+                  <span>{currency.format(Number(trade.resultingPnl ?? 0) - Number(trade.fees ?? 0))}</span>
                   <code>{displayDriverName(trade.primaryDriver ?? trade.agentName ?? "PROFILER")}</code>
                 </div>
               ))
@@ -1568,6 +1571,7 @@ function summarizePaperPnl(
     const midPrice = findAssetMarkPrice(asset.asset, state);
     const gross = Number(asset.grossNotional ?? 0);
     const fees = Number(asset.totalFees ?? 0);
+    const realizedNetPnl = roundDisplay(Number(asset.realizedPnl ?? 0) - fees);
     const markToMarketPnl =
       midPrice === null
         ? null
@@ -1590,12 +1594,15 @@ function summarizePaperPnl(
       ...asset,
       midPrice,
       markToMarketPnl,
+      realizedNetPnl,
       returnBps
     };
   });
 
   const totals = summary?.totals;
   const totalGross = Number(totals?.grossNotional ?? grossNotional);
+  const totalRealized = Number(totals?.realizedPnl ?? realizedPnl);
+  const totalFeesValue = Number(totals?.totalFees ?? totalFees);
   const paperMtm = hasMarks ? roundDisplay(markedPnl) : null;
 
   return {
@@ -1603,9 +1610,10 @@ function summarizePaperPnl(
     tradeCount: Number(totals?.tradeCount ?? sourceAssets.reduce((count, asset) => count + Number(asset.tradeCount ?? 0), 0)),
     paperMtm,
     returnBps: paperMtm === null || totalGross <= 0 ? null : roundDisplay((paperMtm / totalGross) * 10_000, 4),
-    realizedPnl: roundDisplay(Number(totals?.realizedPnl ?? realizedPnl)),
+    realizedPnl: roundDisplay(totalRealized),
+    realizedNetPnl: roundDisplay(totalRealized - totalFeesValue),
     totalEv: roundDisplay(Number(totals?.totalEv ?? totalEv)),
-    totalFees: roundDisplay(Number(totals?.totalFees ?? totalFees)),
+    totalFees: roundDisplay(totalFeesValue),
     grossNotional: roundDisplay(totalGross),
     assets
   };
