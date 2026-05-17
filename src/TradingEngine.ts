@@ -1374,33 +1374,20 @@ export class TradingEngine {
       staleTickCount: this.engineState.staleTickCount,
       toxicityScore: this.engineState.toxicityScore,
       current_inventory_delta: this.engineState.current_inventory_delta,
-      liquidationHeatmap: this.engineState.liquidationHeatmap,
-      cachedConfig: this.engineState.cachedConfig,
       location: this.engineState.location,
       microstructure: this.engineState.microstructure,
-      priceDiscovery: this.engineState.priceDiscovery,
-      oracle: this.engineState.oracle,
-      sentiment: this.engineState.sentiment,
-      leadLag: this.engineState.leadLag,
-      inventory: this.engineState.inventory,
-      inventoryGuard: this.engineState.inventoryGuard,
-      riskMetrics: this.engineState.riskMetrics,
       quoteState: this.engineState.quoteState,
-      assetQuoteStates: this.engineState.assetQuoteStates,
-      shadowQueue: this.engineState.shadowQueue,
-      slippage: this.engineState.slippage,
       executionProfile: this.engineState.executionProfile,
-      dom: this.engineState.dom,
       anomaly: this.engineState.anomaly,
-      assetMatrix: this.engineState.assetMatrix,
-      profilerStates: this.engineState.profilerStates,
       memoryUsage: {
         available: Boolean(memory),
         usedJSHeapSize: memory?.usedJSHeapSize ?? null,
         totalJSHeapSize: memory?.totalJSHeapSize ?? null,
         jsHeapSizeLimit: memory?.jsHeapSizeLimit ?? null,
         stateBytesEstimate: JSON.stringify({
-          state: this.engineState,
+          mode: this.engineState.mode,
+          processedTicks: this.engineState.processedTicks,
+          orderMapSize: Object.keys(this.engineState.orderMap).length,
           orderBookDepth: this.engineState.internalOrderBookDepth
         }).length
       }
@@ -9387,12 +9374,13 @@ function resolveEngineLocation(
   config: GlobalRiskConfig,
   observedLatencyMs: number | null
 ): EngineLocation {
+  const targetColo = configuredPlacementColo(env.PLACEMENT_TARGET_COLO);
   const observedColo =
     (
       placementColo(topology.placement) ??
-      topology.colo
+      topology.colo ??
+      targetColo
     )?.toUpperCase() ?? null;
-  const targetColo = configuredPlacementColo(env.PLACEMENT_TARGET_COLO);
   const colo = observedColo;
   const goldenColos = parseColoSet(config.GOLDEN_COLOS || env.GOLDEN_COLOS);
   const hasGoldenRegionPolicy = goldenColos.size > 0;
@@ -9418,9 +9406,9 @@ function resolveEngineLocation(
     observedLatencyMs,
     reason:
       colo === null
-        ? targetColo
-          ? "TARGET_COLO_UNOBSERVED"
-          : "UNKNOWN_COLO"
+        ? "UNKNOWN_COLO"
+        : !placementColo(topology.placement) && !topology.colo && targetColo === colo
+          ? "TARGET_COLO_ASSUMED"
         : isGoldenRegion
           ? "GOLDEN_REGION"
           : "NON_GOLDEN_REGION"

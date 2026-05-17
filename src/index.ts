@@ -256,7 +256,7 @@ export default {
       structuredConsoleLogsEnabled(env)
     );
     const configManager = new ConfigManager(env.CONFIG_STORE);
-    const topology = extractEdgeTopology(request);
+    const topology = extractEdgeTopology(request, env);
 
     if (request.method === "OPTIONS") {
       return corsPreflight();
@@ -359,6 +359,11 @@ export default {
         url.pathname === "/hyperliquid/tick" ||
         url.pathname === "/hyperliquid/raw")
     ) {
+      const ingestAuth = await authenticateIngest(request, env, logger, topology);
+      if (ingestAuth instanceof Response) {
+        return ingestAuth;
+      }
+
       return routeToEngine(request, env, topology);
     }
 
@@ -366,10 +371,20 @@ export default {
       url.pathname === "/market/ws" &&
       request.headers.get("Upgrade")?.toLowerCase() === "websocket"
     ) {
+      const ingestAuth = await authenticateIngest(request, env, logger, topology);
+      if (ingestAuth instanceof Response) {
+        return ingestAuth;
+      }
+
       return routeToEngine(request, env, topology);
     }
 
     if (request.method === "POST" && url.pathname === "/agent/signal") {
+      const ingestAuth = await authenticateIngest(request, env, logger, topology);
+      if (ingestAuth instanceof Response) {
+        return ingestAuth;
+      }
+
       return routeToEngine(request, env, topology);
     }
 
@@ -1886,6 +1901,51 @@ function createAuthManager(env: Env): AuthManager | null {
   return jwtSecret ? new AuthManager(jwtSecret, env.ADMIN_PASSWORD) : null;
 }
 
+async function authenticateIngest(
+  request: Request,
+  env: Env,
+  logger: Logger,
+  topology: EdgeTopology
+): Promise<true | Response> {
+  const url = new URL(request.url);
+  const expected = env.INGESTOR_CONTROL_TOKEN;
+
+  if (!expected) {
+    logSecurityEvent(
+      logger,
+      "INGEST_AUTH_CONFIG_MISSING",
+      "Rejected ingest request because INGESTOR_CONTROL_TOKEN is not configured",
+      request,
+      url,
+      topology
+    );
+    return json({ ok: false, error: "Ingest authentication unavailable" }, 503);
+  }
+
+  const supplied =
+    bearerToken(request) ??
+    request.headers.get("x-ingestor-token") ??
+    request.headers.get("x-sovereign-ingest-token");
+
+  if (!supplied || !(await constantTimeStringEqual(supplied, expected))) {
+    logSecurityEvent(
+      logger,
+      "INGEST_AUTH_REJECTED",
+      "Rejected unauthorized market ingest request",
+      request,
+      url,
+      topology,
+      {
+        reason: supplied ? "INVALID_TOKEN" : "MISSING_TOKEN",
+        sourceHeader: request.headers.get("x-source") ?? null
+      }
+    );
+    return json({ ok: false, error: "Unauthorized" }, 401);
+  }
+
+  return true;
+}
+
 function requiredScopeForAdminRequest(request: Request): AdminScope {
   return request.method === "GET" || request.method === "HEAD" ? "READ" : "WRITE";
 }
@@ -1905,6 +1965,23 @@ function bearerToken(request: Request): string | null {
 
   const token = authorization.slice("Bearer ".length).trim();
   return token.length > 0 ? token : null;
+}
+
+async function constantTimeStringEqual(left: string, right: string): Promise<boolean> {
+  const encoder = new TextEncoder();
+  const [leftDigest, rightDigest] = await Promise.all([
+    crypto.subtle.digest("SHA-256", encoder.encode(left)),
+    crypto.subtle.digest("SHA-256", encoder.encode(right))
+  ]);
+  const leftBytes = new Uint8Array(leftDigest);
+  const rightBytes = new Uint8Array(rightDigest);
+  let diff = leftBytes.length ^ rightBytes.length;
+
+  for (let index = 0; index < leftBytes.length; index += 1) {
+    diff |= leftBytes[index] ^ rightBytes[index];
+  }
+
+  return diff === 0;
 }
 
 function remapRequestPath(request: Request, pathname: string): Request {
@@ -3675,9 +3752,11 @@ function clampInteger(
   return Math.min(maximum, Math.max(minimum, Math.round(parsed)));
 }
 
-function extractEdgeTopology(request: Request): EdgeTopology {
+function extractEdgeTopology(request: Request, env: Env): EdgeTopology {
   const cf = (request as Request & { cf?: CloudflareRequestMetadata }).cf;
-  const placement = nullableHeader(request.headers.get("cf-placement"));
+  const placement =
+    nullableHeader(request.headers.get("cf-placement")) ??
+    configuredPlacementFallback(env.PLACEMENT_TARGET_COLO);
 
   return {
     colo: normalizeCfValue(cf?.colo),
@@ -3696,6 +3775,13 @@ function extractEdgeTopology(request: Request): EdgeTopology {
 function placementColo(placement: string | null): string | null {
   const match = /^(?:remote|local)-([a-z0-9]{3,4})$/i.exec(placement ?? "");
   return match?.[1]?.toUpperCase() ?? null;
+}
+
+function configuredPlacementFallback(targetColo: string | undefined): string | null {
+  const normalized = targetColo?.trim().toUpperCase();
+  return normalized && /^[A-Z0-9]{3,4}$/.test(normalized)
+    ? `remote-${normalized}`
+    : null;
 }
 
 function withTopologyHeaders(
@@ -4435,7 +4521,8 @@ function corsHeaders(): Record<string, string> {
   return {
     "access-control-allow-origin": "*",
     "access-control-allow-methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
-    "access-control-allow-headers": "authorization,content-type,x-source",
+    "access-control-allow-headers":
+      "authorization,content-type,x-source,x-ingestor-token,x-sovereign-ingest-token",
     "access-control-max-age": "86400"
   };
 }

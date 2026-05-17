@@ -100,8 +100,9 @@ Production ingest is subscription-aware. Shared/Enterprise Dwellir routes use
 gRPC for fills plus the Dwellir L4 order-book server for book state:
 `DWELLIR_GRPC_STREAMS=FILLS`, `DWELLIR_ORDERBOOK_TRANSPORT=websocket`, and
 `DWELLIR_ENABLE_L4_BOOK=true`. Dedicated-node deployments can flip the book
-transport to `grpc` for `ORDERBOOK_SNAPSHOT,FILLS`. The active asset matrix is
-`BTC,ETH,HYPE,SOL`. The protobuf compiler fails closed if provider schema files
+transport to `grpc` for `ORDERBOOK_SNAPSHOT,FILLS`. The production subscription
+set is currently focused on `BTC,HYPE` to keep CPU and quota concentrated on the
+highest-priority books. The protobuf compiler fails closed if provider schema files
 are missing, so the Worker cannot silently deploy with an empty placeholder
 descriptor.
 

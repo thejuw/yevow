@@ -1301,7 +1301,7 @@ function classifyToxicity(input: {
     return {
       state: "CONTESTED",
       pressureSide,
-      spreadMultiplier: input.contestedSpreadMultiplier,
+      spreadMultiplier: 1,
       reservationShiftBps: 0,
       haltMs: null,
       structuralConsensus
@@ -1324,11 +1324,11 @@ function classifyToxicity(input: {
 
   if (input.amVpin >= input.toxicThreshold) {
     return {
-      state: "TOXIC",
+      state: "CRITICAL",
       pressureSide,
-      spreadMultiplier: input.toxicSpreadMultiplier,
-      reservationShiftBps: Math.max(0, (input.toxicSpreadMultiplier - 1) * 2),
-      haltMs: null,
+      spreadMultiplier: 1,
+      reservationShiftBps: 0,
+      haltMs: input.criticalHaltMs,
       structuralConsensus
     };
   }
@@ -1336,7 +1336,7 @@ function classifyToxicity(input: {
   return {
     state: "CONTESTED",
     pressureSide,
-    spreadMultiplier: input.contestedSpreadMultiplier,
+    spreadMultiplier: 1,
     reservationShiftBps: 0,
     haltMs: null,
     structuralConsensus

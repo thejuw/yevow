@@ -3,7 +3,7 @@ import { expect, test, type Page } from "@playwright/test";
 const API_BASE = "https://api.yevow.co";
 
 test.describe("Grand Command admin dashboard", () => {
-  test("logs in, toggles governance, edits AM-VPIN controls, and renders high-impact confirmation", async ({ page }) => {
+  test("logs in, shows shadow posture, and toggles governance", async ({ page }) => {
     const api = await installApiMock(page);
     await loginToDashboard(page);
 
@@ -13,18 +13,26 @@ test.describe("Grand Command admin dashboard", () => {
 
     await page.getByRole("button", { name: /\[ AUTONOMOUS MODE \]/ }).click();
     await expect(page.getByRole("button", { name: /\[ MANUAL INTERVENTION \]/ })).toBeVisible();
+    expect(api.configUpdates.at(-1)).toMatchObject({
+      ORACLE_GOVERNANCE_MODE: "MANUAL"
+    });
+  });
+
+  test("edits Settings AM-VPIN controls and renders high-impact confirmation", async ({ page }) => {
+    const api = await installApiMock(page);
+    await loginToSettings(page);
 
     await page.getByTestId("param-AM_VPIN_ROLLING_WINDOW").fill("65");
     await page.getByTestId("param-AM_VPIN_DIRECTIONAL_DECAY").fill("0.42");
-    await page.getByRole("button", { name: "APPLY CHANGES" }).click();
+    await page.getByRole("button", { name: "Save Matrix" }).click();
 
-    await expect(page.getByText("Warning: Overriding System 2 Logic")).toBeVisible();
+    await expect(page.getByText("Confirm Matrix Change")).toBeVisible();
     await expect(page.locator(".confirm-modal")).toContainText("AM_VPIN_ROLLING_WINDOW");
 
     await page.locator(".confirm-modal input").fill("CONFIRM");
     await page.getByRole("button", { name: "Confirm" }).click();
 
-    await expect(page.getByText("Matrix applied.")).toBeVisible();
+    await expect(page.getByText("Engine parameters saved and refreshed.")).toBeVisible();
     expect(api.configUpdates.at(-1)).toMatchObject({
       AM_VPIN_ROLLING_WINDOW: 65,
       AM_VPIN_DIRECTIONAL_DECAY: 0.42
@@ -33,20 +41,19 @@ test.describe("Grand Command admin dashboard", () => {
 
   test("rejects negative and out-of-bounds matrix variables before backend submission", async ({ page }) => {
     const api = await installApiMock(page);
-    await loginToDashboard(page);
+    await loginToSettings(page);
 
-    await page.getByRole("button", { name: /\[ AUTONOMOUS MODE \]/ }).click();
     const before = api.configPostCount;
 
     await page.getByTestId("param-AM_VPIN_DIRECTIONAL_DECAY").fill("-0.01");
-    await page.getByRole("button", { name: "APPLY CHANGES" }).click();
+    await page.getByRole("button", { name: "Save Matrix" }).click();
 
     await expect(page.getByText(/Directional Decay.*greater than or equal to 0/i)).toBeVisible();
     expect(api.configPostCount).toBe(before);
 
     await page.getByTestId("param-AM_VPIN_DIRECTIONAL_DECAY").fill("0.3");
     await page.getByTestId("param-AM_VPIN_ROLLING_WINDOW").fill("9999");
-    await page.getByRole("button", { name: "APPLY CHANGES" }).click();
+    await page.getByRole("button", { name: "Save Matrix" }).click();
 
     await expect(page.getByText(/AM-VPIN Window.*less than or equal to 500/i)).toBeVisible();
     expect(api.configPostCount).toBe(before);
@@ -59,6 +66,14 @@ async function loginToDashboard(page: Page): Promise<void> {
   await page.getByLabel("Admin Password").fill("phase-59-test-password");
   await page.getByRole("button", { name: "Unlock Admin" }).click();
   await expect(page.getByText("Moltworker Grand Command")).toBeVisible();
+}
+
+async function loginToSettings(page: Page): Promise<void> {
+  await page.goto("/settings");
+  await page.getByLabel("API").fill(API_BASE);
+  await page.getByLabel("Admin Password").fill("phase-59-test-password");
+  await page.getByRole("button", { name: "Unlock Settings" }).click();
+  await expect(page.getByText("Backend Settings Console")).toBeVisible();
 }
 
 async function installApiMock(page: Page): Promise<{
@@ -193,10 +208,33 @@ async function installApiMock(page: Page): Promise<{
         json: {
           ok: true,
           config,
-          notifications: {},
+          notifications: {
+            enabled: true,
+            minPriority: "MEDIUM",
+            debounceMs: 60000,
+            textFrequencyMs: 300000,
+            heartbeatDigestMinutes: 60,
+            tradeAlertMode: "SUMMARY",
+            telegramEnabled: false,
+            discordEnabled: false,
+            genericWebhookEnabled: false,
+            quietHoursEnabled: false
+          },
           alerting: { configured: false, debounceMs: 60000, channels: [] },
           vault: { entries: {}, rotationPolicy: "test" },
-          backend: { execution: { shadowMode: "true" } }
+          backend: { execution: { shadowMode: "true" }, ingest: {} },
+          costBudgets: {
+            dailyBudgetUsd: 25,
+            workersAiDailyBudgetUsd: 2,
+            durableObjectDailyBudgetUsd: 10,
+            d1DailyBudgetUsd: 5,
+            workersAiCostPerCallUsd: 0,
+            durableObjectCostPerMsUsd: 0,
+            d1ReadCostPerQueryUsd: 0,
+            d1WriteCostPerRowUsd: 0,
+            enforcement: "BLOCK_LIVE"
+          },
+          strategyVault: { versions: [], active: null }
         }
       });
       return;
@@ -224,6 +262,55 @@ async function installApiMock(page: Page): Promise<{
                 detail: "One quote-eligible paper asset."
               }
             ]
+          }
+        }
+      });
+      return;
+    }
+
+    if (path === "/admin/replay/status") {
+      await route.fulfill({ json: { ok: true, replay: null } });
+      return;
+    }
+
+    if (path === "/admin/execution-quality") {
+      await route.fulfill({
+        json: {
+          ok: true,
+          fillRate: { accepted: 1, filled: 1, fillRate: 1 },
+          aggregate: {
+            sampleCount: 1,
+            averageSlippageBps: 0,
+            adverseSelectionBps: 0,
+            averageShortfall: 0,
+            averageLatencyMs: 1,
+            totalFees: 0
+          },
+          byAsset: []
+        }
+      });
+      return;
+    }
+
+    if (path === "/admin/costs") {
+      await route.fulfill({
+        json: {
+          ok: true,
+          cost: {
+            ok: true,
+            totals: { estimatedUsd: 0 },
+            budgets: {
+              dailyBudgetUsd: 25,
+              workersAiDailyBudgetUsd: 2,
+              durableObjectDailyBudgetUsd: 10,
+              d1DailyBudgetUsd: 5,
+              workersAiCostPerCallUsd: 0,
+              durableObjectCostPerMsUsd: 0,
+              d1ReadCostPerQueryUsd: 0,
+              d1WriteCostPerRowUsd: 0,
+              enforcement: "BLOCK_LIVE"
+            },
+            violations: []
           }
         }
       });

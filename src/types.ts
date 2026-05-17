@@ -765,7 +765,12 @@ export interface EngineLocation {
   latencyRiskMultiplier: number;
   positionSizeMultiplier: number;
   observedLatencyMs: number | null;
-  reason: "GOLDEN_REGION" | "NON_GOLDEN_REGION" | "UNKNOWN_COLO" | "TARGET_COLO_UNOBSERVED";
+  reason:
+    | "GOLDEN_REGION"
+    | "NON_GOLDEN_REGION"
+    | "UNKNOWN_COLO"
+    | "TARGET_COLO_UNOBSERVED"
+    | "TARGET_COLO_ASSUMED";
 }
 
 export interface FundingRateSnapshot {
@@ -1753,25 +1758,10 @@ export interface HealthReport {
   staleTickCount: number;
   toxicityScore: number;
   current_inventory_delta: number;
-  liquidationHeatmap: LiquidationHeatmapState;
-  assetMatrix: Record<string, AssetRuntimeState>;
-  profilerStates: Record<string, ProfilerState>;
-  cachedConfig: GlobalRiskConfig;
   location: EngineLocation;
   microstructure: MicrostructureMetrics;
-  priceDiscovery: PriceDiscoveryMetrics;
-  oracle: OracleState;
-  sentiment: SentimentState;
-  leadLag: LeadLagMetrics;
-  inventory: InventoryState;
-  inventoryGuard: InventoryGuardState;
-  riskMetrics: RiskMetrics;
   quoteState: QuoteState;
-  assetQuoteStates: Record<string, QuoteState>;
-  shadowQueue: ShadowQueueState;
-  slippage: SlippageAnalytics;
   executionProfile: ExecutionProfile;
-  dom: DomAnalysisSnapshot | null;
   anomaly: AnomalyStatus;
   memoryUsage: {
     available: boolean;

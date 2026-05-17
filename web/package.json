@@ -9,7 +9,7 @@
     "test:e2e": "playwright test",
     "pages:build": "next build",
     "start": "next start",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "node -e \"try{require('fs').rmSync('tsconfig.tsbuildinfo')}catch(e){}\" && tsc --noEmit"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",

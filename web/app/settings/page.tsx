@@ -243,6 +243,13 @@ export default function SettingsPage() {
       return;
     }
 
+    const validationError = validateRiskDraft(riskDraft);
+    if (validationError) {
+      setError(validationError);
+      setCommandStatus("Engine parameter validation failed.");
+      return;
+    }
+
     const overTen = changedMoreThanTenPercent(settings.config, riskDraft);
     if (!force && overTen.length > 0) {
       setPendingFields(overTen);
@@ -1061,6 +1068,7 @@ function ParameterControl({
         <span>{param.group}</span>
         <strong>{param.label}<InfoBadge text={help} /></strong>
         <input
+          data-testid={`param-${String(param.key)}`}
           type="checkbox"
           checked={Boolean(value)}
           onChange={(event) => onChange(event.target.checked)}
@@ -1074,7 +1082,11 @@ function ParameterControl({
       <label className="param-control">
         <span>{param.group}</span>
         <strong>{param.label}<InfoBadge text={help} /></strong>
-        <select value={String(value ?? "")} onChange={(event) => onChange(event.target.value)}>
+        <select
+          data-testid={`param-${String(param.key)}`}
+          value={String(value ?? "")}
+          onChange={(event) => onChange(event.target.value)}
+        >
           {param.options?.map((option) => <option key={option}>{option}</option>)}
         </select>
       </label>
@@ -1086,6 +1098,7 @@ function ParameterControl({
       <span>{param.group}</span>
       <strong>{param.label}<InfoBadge text={help} /></strong>
       <input
+        data-testid={`param-${String(param.key)}`}
         type="number"
         min={param.min}
         max={param.max}
@@ -1095,6 +1108,29 @@ function ParameterControl({
       />
     </label>
   );
+}
+
+function validateRiskDraft(draft: Partial<GlobalRiskConfig>): string | null {
+  const descriptors = [...STRATEGY_KNOBS, ...PARAMETER_MATRIX];
+
+  for (const descriptor of descriptors) {
+    if (descriptor.kind !== "number" || !(descriptor.key in draft)) {
+      continue;
+    }
+
+    const value = Number(draft[descriptor.key]);
+    if (!Number.isFinite(value)) {
+      return `${descriptor.label} must be a finite number.`;
+    }
+    if (descriptor.min !== undefined && value < descriptor.min) {
+      return `${descriptor.label} must be greater than or equal to ${descriptor.min}.`;
+    }
+    if (descriptor.max !== undefined && value > descriptor.max) {
+      return `${descriptor.label} must be less than or equal to ${descriptor.max}.`;
+    }
+  }
+
+  return null;
 }
 
 function InfoBadge({ text }: { text: string }) {

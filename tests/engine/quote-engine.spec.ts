@@ -24,9 +24,9 @@ describe("quote engine toxicity gating", () => {
     expect(contested.signal?.featureVector.signalType).toBe("AM_VPIN_CONTESTED");
 
     const toxic = profiler.processTick(tradeTick(2, "buy"), profilerContext(0.7));
-    expect(toxic.state.toxicityState).toBe("TOXIC");
-    expect(toxic.state.quoteHaltUntil).toBeNull();
-    expect(toxic.signal?.featureVector.signalType).toBe("AM_VPIN_TOXIC");
+    expect(toxic.state.toxicityState).toBe("CRITICAL");
+    expect(toxic.state.quoteHaltUntil).not.toBeNull();
+    expect(toxic.signal?.featureVector.signalType).toBe("AM_VPIN_CRITICAL");
 
     const critical = profiler.processTick(tradeTick(3, "buy"), profilerContext(0.9));
     expect(critical.state.toxicityState).toBe("CRITICAL");
@@ -41,33 +41,26 @@ describe("quote engine toxicity gating", () => {
     expect(expired.state.quoteHaltUntil).toBeNull();
   });
 
-  it("turns toxic pressure into one-sided passive quoting instead of a global halt", () => {
-    const sellPressure = new CroupierAgent().evaluate({
-      ...croupierInput(),
-      minEvThreshold: -1_000_000_000,
-      profilerToxicityState: "TOXIC",
-      profilerPressureSide: "SELL"
-    });
-    expect(sellPressure.pullAllQuotes).toBe(false);
-    expect(sellPressure.quote?.orders.map((order) => order.side)).toEqual(["ASK"]);
-    expect(sellPressure.intent?.timeInForce).toBe("ALO");
-
-    const buyPressure = new CroupierAgent().evaluate({
-      ...croupierInput(),
-      profilerToxicityState: "TOXIC",
-      profilerPressureSide: "BUY"
-    });
-    expect(buyPressure.pullAllQuotes).toBe(false);
-    expect(buyPressure.quote?.orders.map((order) => order.side)).toEqual(["BID"]);
-
+  it("treats AM-VPIN toxicity as a binary quote kill-switch", () => {
     const critical = new CroupierAgent().evaluate({
       ...croupierInput(),
+      minEvThreshold: -1_000_000_000,
       profilerToxicityState: "CRITICAL",
       profilerPressureSide: "BUY"
     });
     expect(critical.pullAllQuotes).toBe(true);
     expect(critical.quote).toBeNull();
     expect(critical.intent).toBeNull();
+
+    const contested = new CroupierAgent().evaluate({
+      ...croupierInput(),
+      minEvThreshold: -1_000_000_000,
+      profilerToxicityState: "CONTESTED",
+      profilerPressureSide: "BUY"
+    });
+    expect(contested.pullAllQuotes).toBe(false);
+    expect(contested.quote?.orders.length).toBeGreaterThan(0);
+    expect(contested.intent?.timeInForce).toBe("ALO");
   });
 });
 

@@ -253,9 +253,15 @@ class AMMEngine {
       input.riskAversionFactor,
       this.riskAversionFactor
     );
-    const topDepth =
-      input.book.bids.slice(0, 5).reduce((sum, level) => sum + level.size, 0) +
-      input.book.asks.slice(0, 5).reduce((sum, level) => sum + level.size, 0);
+    let topDepth = 0;
+    const bidDepthLimit = Math.min(5, input.book.bids.length);
+    const askDepthLimit = Math.min(5, input.book.asks.length);
+    for (let index = 0; index < bidDepthLimit; index += 1) {
+      topDepth += input.book.bids[index].size;
+    }
+    for (let index = 0; index < askDepthLimit; index += 1) {
+      topDepth += input.book.asks[index].size;
+    }
     const arrivalIntensity =
       Math.log1p(topDepth) / Math.max(1, input.book.spreadBps ?? 1);
     const liquidityTightening = 1 / Math.sqrt(1 + arrivalIntensity);
