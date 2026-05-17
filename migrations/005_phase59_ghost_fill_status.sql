@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS trades_phase59 (
   ev_at_execution REAL NOT NULL,
   slippage_bps REAL NOT NULL,
   resulting_pnl REAL NOT NULL DEFAULT 0,
-  primary_driver TEXT CHECK (primary_driver IN ('ORACLE', 'SENTIMENT', 'PROFILER', 'CROUPIER', 'PIT_BOSS', 'JANITOR', 'EXECUTIONER', 'MOLTWORKER', 'RISK', 'SYSTEM')),
+  primary_driver TEXT CHECK (primary_driver IN ('ORACLE', 'SENTIMENT', 'PROFILER', 'CROUPIER', 'PIT_BOSS', 'HEDGE', 'JANITOR', 'EXECUTIONER', 'MOLTWORKER', 'RISK', 'SYSTEM')),
   fees REAL NOT NULL DEFAULT 0,
   status TEXT NOT NULL CHECK (status IN ('ACCEPTED', 'FILLED', 'PARTIAL', 'REJECTED', 'CANCELLED', 'GHOST_FILL')),
   exchange_trade_id TEXT,
@@ -52,11 +52,17 @@ ALTER TABLE trades_phase59 RENAME TO trades;
 CREATE INDEX IF NOT EXISTS idx_trades_executed_at
   ON trades (executed_at);
 
+CREATE INDEX IF NOT EXISTS idx_trades_created_at
+  ON trades (created_at);
+
 CREATE INDEX IF NOT EXISTS idx_trades_status_executed_at
   ON trades (status, executed_at);
 
 CREATE INDEX IF NOT EXISTS idx_trades_asset
   ON trades (asset);
+
+CREATE INDEX IF NOT EXISTS idx_trades_asset_created_at
+  ON trades (asset, created_at);
 
 CREATE INDEX IF NOT EXISTS idx_trades_signal_id
   ON trades (signal_id);

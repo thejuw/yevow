@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS trades (
   ev_at_execution REAL NOT NULL,
   slippage_bps REAL NOT NULL,
   resulting_pnl REAL NOT NULL DEFAULT 0,
-  primary_driver TEXT CHECK (primary_driver IN ('ORACLE', 'SENTIMENT', 'PROFILER', 'CROUPIER', 'PIT_BOSS', 'JANITOR', 'EXECUTIONER', 'MOLTWORKER', 'RISK', 'SYSTEM')),
+  primary_driver TEXT CHECK (primary_driver IN ('ORACLE', 'SENTIMENT', 'PROFILER', 'CROUPIER', 'PIT_BOSS', 'HEDGE', 'JANITOR', 'EXECUTIONER', 'MOLTWORKER', 'RISK', 'SYSTEM')),
   fees REAL NOT NULL DEFAULT 0,
   status TEXT NOT NULL CHECK (status IN ('ACCEPTED', 'FILLED', 'PARTIAL', 'REJECTED', 'CANCELLED', 'GHOST_FILL')),
   exchange_trade_id TEXT,
