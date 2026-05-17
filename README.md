@@ -76,7 +76,6 @@ The repository is designed to fail closed:
 wrangler secret put HL_AGENT_ADDRESS -c wrangler.executioner.toml
 wrangler secret put HL_AGENT_SECRET -c wrangler.executioner.toml
 wrangler secret put HL_ACCOUNT_ADDRESS -c wrangler.executioner.toml
-wrangler secret put HL_HEDGE_SUBACCOUNT_ADDRESS
 ```
 
 Leave `EXCHANGE_ORDER_TEST_MODE=true` until account reads pass and a signed order/cancel payload has been reviewed against Hyperliquid.

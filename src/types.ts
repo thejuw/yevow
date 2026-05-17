@@ -39,6 +39,7 @@ export interface Env {
   DWELLIR_MAX_PAYLOAD_BYTES?: string;
   DWELLIR_MAX_LATENCY_MS?: string;
   DWELLIR_L4_ORDER_CACHE_LIMIT?: string;
+  INGEST_FORWARD_ENCODING?: string;
   HL_GRPC_BACKOFF_BASE_MS?: string;
   RPC_GRPC_ENDPOINT?: string;
   RPC_GRPC_SERVICE?: string;
@@ -151,8 +152,12 @@ export interface Env {
   VAULT_ENCRYPTION_SECRET?: string;
   NEWS_FEEDS?: string;
   JANITOR_LOG_RETENTION_DAYS?: string;
+  JANITOR_TELEMETRY_MAX_ROWS?: string;
+  MARKET_TICK_JOURNAL_INTERVAL?: string;
+  MARKET_TICK_MAX_ROWS?: string;
   MOLTWORKER_HEALTH_URL?: string;
   MOLTWORKER_HEARTBEAT_MAX_AGE_MS?: string;
+  D1_DIAGNOSTIC_MAX_LATENCY_MS?: string;
   SHADOW_MODE?: string;
   PAPER_BANKROLL_USD?: string;
   PAPER_MAX_GHOST_FILLS_PER_MINUTE?: string;
@@ -180,7 +185,6 @@ export type AgentName =
   | "PROFILER"
   | "CROUPIER"
   | "PIT_BOSS"
-  | "HEDGE"
   | "JANITOR"
   | "EXECUTIONER"
   | "MOLTWORKER"
@@ -219,6 +223,9 @@ export interface UniversalTick {
   source: MarketDataSource;
   source_exchange: string;
   transport: MarketTransport;
+  streamId?: string | null;
+  connectionId?: string | null;
+  sourceChannel?: string | null;
   exchangeCode: string;
   instrumentCode: string;
   baseAsset: string;
@@ -485,7 +492,7 @@ export interface EngineState {
   quoteState: QuoteState;
   shadowQueue: ShadowQueueState;
   lastTradeIntent: TradeIntent | null;
-  hedge: HedgeState;
+  inventoryGuard: InventoryGuardState;
   janitor: JanitorState;
   slippage: SlippageAnalytics;
   orderMap: Record<string, ManagedOrder>;
@@ -708,7 +715,7 @@ export interface EngineLocation {
   latencyRiskMultiplier: number;
   positionSizeMultiplier: number;
   observedLatencyMs: number | null;
-  reason: "GOLDEN_REGION" | "NON_GOLDEN_REGION" | "UNKNOWN_COLO";
+  reason: "GOLDEN_REGION" | "NON_GOLDEN_REGION" | "UNKNOWN_COLO" | "TARGET_COLO_UNOBSERVED";
 }
 
 export interface FundingRateSnapshot {
@@ -1472,12 +1479,13 @@ export interface ExchangeOpenOrder {
   observedAt: ISO8601;
 }
 
-export interface HedgeState {
+export interface InventoryGuardState {
   netDelta: number;
   current_inventory_delta: number;
   maxInventoryDelta: number;
-  hedgeRequired: boolean;
-  hedgeRatio: number;
+  hardCapReached: boolean;
+  quoteHaltRequired: boolean;
+  skewRatio: number;
   preferredVenue: string | null;
   lastIntent: TradeIntent | null;
   updatedAt: ISO8601 | null;
@@ -1609,7 +1617,7 @@ export interface HealthReport {
   sentiment: SentimentState;
   leadLag: LeadLagMetrics;
   inventory: InventoryState;
-  hedge: HedgeState;
+  inventoryGuard: InventoryGuardState;
   riskMetrics: RiskMetrics;
   quoteState: QuoteState;
   shadowQueue: ShadowQueueState;

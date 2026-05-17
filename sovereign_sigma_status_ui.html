@@ -446,7 +446,7 @@
             <div class="node"><strong>Executioner Worker</strong><span>Pre-trade checks, signing, order/cancel routes, balance connection test.</span><code>src/ExecutionerWorker.ts</code></div>
             <div class="node"><strong>D1</strong><span>Logs, trades, decisions, ticks, execution quality, attribution-ready indexes.</span><code>schema.sql</code></div>
             <div class="node"><strong>KV + Vault</strong><span>Atomic config cache, encrypted credential rotation metadata, notifier debounce.</span><code>CONFIG_STORE / RISK_VAULT</code></div>
-            <div class="node"><strong>Agents</strong><span>Oracle, Profiler, Croupier, Pit Boss, Hedge, Janitor, Sentiment.</span><code>src/agents/*</code></div>
+            <div class="node"><strong>Agents</strong><span>Oracle, Profiler, Croupier, Pit Boss, Janitor, Sentiment.</span><code>src/agents/*</code></div>
             <div class="node"><strong>Notifier</strong><span>Discord and Telegram alerts with priority, debouncing, and sanitized metadata.</span><code>src/utils/Notifier.ts</code></div>
           </div>
         </div>
@@ -485,7 +485,7 @@
             <div class="gate pass"><strong>Passed: Executioner Worker dry-run</strong><span><code>wrangler deploy --dry-run -c wrangler.executioner.toml</code></span></div>
             <div class="gate pass"><strong>Passed: D1 schema parse</strong><span><code>sqlite3 :memory: &lt; schema.sql</code></span></div>
             <div class="gate done"><strong>Production IDs wired</strong><span>D1, KV, API, Pages, Binance.US ingest, and execution fail-closed config are connected.</span></div>
-            <div class="gate pending"><strong>Pending: Worker secrets</strong><span>Provision JWT, admin, Kaiko, exchange, vault, Telegram, and Discord secrets.</span></div>
+            <div class="gate pending"><strong>Pending: Worker secrets</strong><span>Provision JWT, admin, Hyperliquid agent, vault, Telegram, and Discord secrets.</span></div>
             <div class="gate pending"><strong>Pending: Live Cloudflare deploy</strong><span>Run actual deploys and live smoke tests before enabling trading.</span></div>
           </div>
         </div>
@@ -513,7 +513,7 @@
       ["32", "Signature Engine", "HMAC/Ed25519 signing path."],
       ["33", "FOK / Post-Only", "Order semantics and fail-closed validation."],
       ["34", "Order Lifecycle", "Managed order state and execution reports."],
-      ["35", "Hedge Agent", "Automated offsetting intent path."],
+      ["35", "Inventory Guard", "Post-only skew and hard-cap quote halts."],
       ["36", "Smart Order Routing", "Venue-aware route planning."],
       ["37", "Rate Limits", "Durable token buckets by venue/priority."],
       ["38", "Cluster Failover", "Redundant stream recovery logic."],

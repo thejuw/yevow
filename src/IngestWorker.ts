@@ -1,4 +1,5 @@
 import { Logger } from "./Logger";
+import { encode as msgpackEncode } from "@msgpack/msgpack";
 import {
   DwellirHyperliquidGrpcClient,
   type DwellirGrpcPayload,
@@ -2002,11 +2003,11 @@ class ExchangeStreamController {
         body: JSON.stringify({ ticks })
       })
     );
-    const payload = await readResponseJson<EngineTickResponse>(response);
+    const responsePayload = await readResponseJson<EngineTickResponse>(response);
 
-    if (payload?.status === "DESYNC" || response.status === 409) {
-      await this.recoverFromEngineDesync(payload?.reason ?? "DESYNC");
-      this.ticksForwarded += payload?.processedCount ?? 0;
+    if (responsePayload?.status === "DESYNC" || response.status === 409) {
+      await this.recoverFromEngineDesync(responsePayload?.reason ?? "DESYNC");
+      this.ticksForwarded += responsePayload?.processedCount ?? 0;
       this.lastForwardAt = new Date().toISOString();
       return;
     }
@@ -2015,7 +2016,7 @@ class ExchangeStreamController {
       throw new Error(`ENGINE_FORWARD_FAILED_${response.status}`);
     }
 
-    this.ticksForwarded += payload?.processedCount ?? ticks.length;
+    this.ticksForwarded += responsePayload?.processedCount ?? ticks.length;
     this.lastForwardAt = new Date().toISOString();
   }
 
@@ -2029,32 +2030,40 @@ class ExchangeStreamController {
     }
 
     const engine = getTradingEngineStub(this.env);
+    const payload = {
+      streamId: this.config.id,
+      source: "HYPERLIQUID",
+      source_exchange: this.config.source_exchange,
+      exchangeCode: this.config.exchangeCode,
+      instrumentCode: this.config.instrumentCode,
+      sourceWeight: this.config.weight,
+      transport,
+      connectionId: this.connectionId,
+      receivedAt,
+      raw
+    };
+    const forwardEncoding = (this.env.INGEST_FORWARD_ENCODING ?? "msgpack").toLowerCase();
+    const useMsgpack = transport === "grpc" && forwardEncoding !== "json";
+    const encoded = useMsgpack ? msgpackEncode(payload) : null;
+    const body =
+      encoded === null
+        ? JSON.stringify(payload)
+        : encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength);
     const response = await engine.fetch(
       new Request("https://trading-engine.internal/hyperliquid/raw", {
         method: "POST",
         headers: {
-          "content-type": "application/json",
+          "content-type": useMsgpack ? "application/x-msgpack" : "application/json",
           "x-source": "sovereign-sigma-ingest"
         },
-        body: JSON.stringify({
-          streamId: this.config.id,
-          source: "HYPERLIQUID",
-          source_exchange: this.config.source_exchange,
-          exchangeCode: this.config.exchangeCode,
-          instrumentCode: this.config.instrumentCode,
-          sourceWeight: this.config.weight,
-          transport,
-          connectionId: this.connectionId,
-          receivedAt,
-          raw
-        })
+        body
       })
     );
-    const payload = await readResponseJson<EngineTickResponse>(response);
+    const responsePayload = await readResponseJson<EngineTickResponse>(response);
 
-    if (payload?.status === "DESYNC" || response.status === 409) {
-      await this.recoverFromEngineDesync(payload?.reason ?? "DESYNC");
-      this.ticksForwarded += payload?.processedCount ?? 0;
+    if (responsePayload?.status === "DESYNC" || response.status === 409) {
+      await this.recoverFromEngineDesync(responsePayload?.reason ?? "DESYNC");
+      this.ticksForwarded += responsePayload?.processedCount ?? 0;
       this.lastForwardAt = new Date().toISOString();
       return;
     }
@@ -2063,7 +2072,7 @@ class ExchangeStreamController {
       throw new Error(`ENGINE_RAW_FORWARD_FAILED_${response.status}`);
     }
 
-    this.ticksForwarded += payload?.processedCount ?? 1;
+    this.ticksForwarded += responsePayload?.processedCount ?? 1;
     this.lastForwardAt = new Date().toISOString();
   }
 
@@ -4992,7 +5001,10 @@ function createUniversalTick(input: {
     schemaVersion: "universal-tick.v1",
     source: input.config.source,
     source_exchange: input.config.source_exchange,
-    transport: "websocket",
+    transport: input.config.transport,
+    streamId: input.config.id,
+    connectionId: null,
+    sourceChannel: typeof input.rawMetadata.eventType === "string" ? input.rawMetadata.eventType : null,
     exchangeCode: (input.config.exchangeCode ?? input.config.source_exchange).toLowerCase(),
     instrumentCode,
     baseAsset,

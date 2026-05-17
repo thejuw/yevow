@@ -1,4 +1,5 @@
 import { ConfigManager, defaultConfig } from "./ConfigManager";
+import { decode as msgpackDecode } from "@msgpack/msgpack";
 import { Governor, neutralMacroBias } from "./Governor";
 import { Logger } from "./Logger";
 import {
@@ -163,6 +164,8 @@ const DEFAULT_WHALE_PRINT_Z_THRESHOLD = 5;
 const DEFAULT_QUOTE_HIBERNATE_MS = 3_000;
 const DEFAULT_PAPER_BANKROLL_USD = 5_000;
 const DEFAULT_PAPER_MAX_GHOST_FILLS_PER_MINUTE = 90;
+const DEFAULT_MARKET_TICK_JOURNAL_INTERVAL = 100;
+const DEFAULT_MARKET_TICK_MAX_ROWS = 100_000;
 const DEFAULT_SHADOW_VLO_CAPACITY = 2_048;
 const DEFAULT_SHADOW_VLO_DRIFT_TRADES = 3;
 const DEFAULT_SHADOW_VLO_QUEUE_DEPTH_MULTIPLIER = 1;
@@ -179,6 +182,19 @@ const TARGET_ASSET_MATRIX = [
 const DEFAULT_JANITOR_INTERVAL_MS = 60_000;
 const DEFAULT_ORDER_ACK_TIMEOUT_MS = 2_000;
 const DEFAULT_REPLAY_LIMIT = 250;
+const AGGREGATED_BUS_TELEMETRY_TYPES = new Set([
+  "POST_QUOTE",
+  "PULL_ALL_QUOTES",
+  "STALE_DATA_KILL_SWITCH",
+  "SUSPEND_QUOTES",
+  "RESUME_QUOTES",
+  "SHADOW_QUEUE_NO_EDGE",
+  "SHADOW_QUEUE_GHOST_FILL",
+  "SHADOW_QUEUE_GREEN_LIGHT",
+  "SHADOW_QUEUE_RED_LIGHT",
+  "SHADOW_QUEUE_SIGNAL_SUPPRESSED",
+  "SHADOW_QUEUE_LATENCY_BREACH"
+]);
 
 interface TickIngestResult {
   accepted: boolean;
@@ -771,7 +787,10 @@ export class TradingEngine {
           baseState.shadowQueue ??
           this.ghostBook.snapshot(now),
         lastTradeIntent: baseState.lastTradeIntent ?? null,
-        hedge: baseState.hedge ?? defaultHedgeState(),
+        inventoryGuard:
+          baseState.inventoryGuard ??
+          (baseState as EngineState & { hedge?: EngineState["inventoryGuard"] }).hedge ??
+          defaultInventoryGuardState(),
         janitor: baseState.janitor ?? defaultJanitorState(),
         slippage: baseState.slippage ?? defaultSlippageAnalytics(),
         orderMap: baseState.orderMap ?? {},
@@ -826,9 +845,19 @@ export class TradingEngine {
     const url = new URL(request.url);
     const requestId = request.headers.get("cf-ray") ?? crypto.randomUUID();
     const topology = readTopologyHeaders(request);
+    const sourceHeader = request.headers.get("x-source")?.toLowerCase() ?? "";
+    const isMarketDataRequest =
+      sourceHeader.includes("ingest") ||
+      url.pathname === "/tick" ||
+      url.pathname === "/ticks" ||
+      url.pathname === "/market/tick" ||
+      url.pathname === "/hyperliquid/tick" ||
+      url.pathname === "/hyperliquid/raw";
 
-    this.observeTopology(topology);
-    this.warmUpForTopology(topology);
+    if (isMarketDataRequest) {
+      this.observeTopology(topology);
+      this.warmUpForTopology(topology);
+    }
 
     if (
       request.headers.get("Upgrade")?.toLowerCase() === "websocket" &&
@@ -1101,7 +1130,7 @@ export class TradingEngine {
       }
 
       if (request.method === "POST" && url.pathname === "/hyperliquid/raw") {
-        const payload = await request.json<HyperliquidRawIngestPayload>();
+        const payload = await readHyperliquidRawIngestPayload(request);
         const result = await this.handleHyperliquidRaw(payload, wakeUpTimeMs);
         return json(
           {
@@ -1236,7 +1265,7 @@ export class TradingEngine {
       sentiment: this.engineState.sentiment,
       leadLag: this.engineState.leadLag,
       inventory: this.engineState.inventory,
-      hedge: this.engineState.hedge,
+      inventoryGuard: this.engineState.inventoryGuard,
       riskMetrics: this.engineState.riskMetrics,
       quoteState: this.engineState.quoteState,
       shadowQueue: this.engineState.shadowQueue,
@@ -1531,10 +1560,7 @@ export class TradingEngine {
             toxicityState: profilerState.toxicityState,
             amVpin: profilerState.amVpinScore,
             obi: profilerState.obi,
-            quoteStatus:
-              latestInstrumentCode === asset.instrumentCode
-                ? this.engineState.quoteState.status
-                : "ACTIVE",
+            quoteStatus: this.engineState.quoteState.status,
             updatedAt: book?.updatedAt ?? observedAt
           } satisfies AssetRuntimeState
         ];
@@ -3637,7 +3663,11 @@ export class TradingEngine {
     this.lastTickTimestamp = tick.receivedAt;
 
     const metrics = this.calculateLatency(tick);
-    const hardStaleDropMs = this.resolveNativeHyperliquidMaxLatencyMs(tick.transport);
+    const streamId = extractTickStreamId(tick);
+    const hardStaleDropMs = this.resolveNativeHyperliquidMaxLatencyMs(
+      tick.transport,
+      streamId
+    );
     const isHardStale =
       !options.shadowReplay && metrics.totalLatencyMs > hardStaleDropMs;
 
@@ -3678,6 +3708,8 @@ export class TradingEngine {
           instrumentCode: tick.instrumentCode,
           exchangeCode: tick.exchangeCode,
           source_exchange: tick.source_exchange,
+          transport: tick.transport,
+          streamId,
           sequence: tick.sequence,
           totalLatencyMs: metrics.totalLatencyMs,
           networkLatencyMs: metrics.networkLatencyMs,
@@ -3690,6 +3722,8 @@ export class TradingEngine {
         instrumentCode: tick.instrumentCode,
         exchangeCode: tick.exchangeCode,
         source_exchange: tick.source_exchange,
+        transport: tick.transport,
+        streamId,
         sequence: tick.sequence,
         totalLatencyMs: metrics.totalLatencyMs,
         maxLatencyMs: hardStaleDropMs,
@@ -4041,7 +4075,7 @@ export class TradingEngine {
       oracleResult.state,
       profilerStates
     );
-    const hedge = passiveHedgeStateFromInventory(inventory, metrics.brainTimestamp);
+    const inventoryGuard = passiveInventoryGuardStateFromInventory(inventory, metrics.brainTimestamp);
     const croupierDecision = this.croupierAgent.evaluate({
       engineId: this.engineState.engineId,
       book,
@@ -4140,7 +4174,7 @@ export class TradingEngine {
       quoteState,
       shadowQueue: shadowQueueState,
       lastTradeIntent: executionPlan?.intent ?? croupierDecision.intent,
-      hedge,
+      inventoryGuard,
       orderMap: executionPlans.length > 0 && (this.cachedConfig.TRADING_ENABLED || options.shadowReplay)
         ? {
             ...this.engineState.orderMap,
@@ -4192,7 +4226,9 @@ export class TradingEngine {
     }
 
     await this.persistHotStorageSnapshot(writes, "HOT_PATH_TICK_SNAPSHOT");
-    this.logger.recordMarketTick(tick);
+    if (this.shouldJournalMarketTick()) {
+      this.logger.recordMarketTick(tick);
+    }
 
     if (
       oracleResult.bayesianTrace &&
@@ -4394,12 +4430,45 @@ export class TradingEngine {
       : snapshot;
   }
 
+  private shouldJournalMarketTick(): boolean {
+    const parsedInterval = Number(this.env.MARKET_TICK_JOURNAL_INTERVAL);
+    const interval = Number.isFinite(parsedInterval)
+      ? Math.max(0, Math.floor(parsedInterval))
+      : DEFAULT_MARKET_TICK_JOURNAL_INTERVAL;
+
+    if (interval === 0) {
+      return false;
+    }
+
+    return (
+      this.engineState.processedTicks <= 5 ||
+      this.engineState.processedTicks % interval === 0
+    );
+  }
+
   private recordShadowQueueGhostFill(
     fill: ShadowQueueFill,
     tick: MarketTick,
     book: InternalOrderBook,
     observedAt: string
   ): void {
+    const paperSizeCap = this.shadowQueueKellySize(fill.side, fill.price, book);
+    const executablePaperSize = roundCrypto(Math.min(fill.size, paperSizeCap));
+
+    if (executablePaperSize <= 0) {
+      this.publish("SHADOW_QUEUE_GHOST_FILL", {
+        fillId: fill.fillId,
+        instrumentCode: fill.instrumentCode,
+        side: fill.side,
+        price: fill.price,
+        virtualQueueSize: fill.size,
+        paperExecutionSize: 0,
+        reason: "PAPER_RISK_CAP_ZERO",
+        observedAt
+      }, fill.fillId);
+      return;
+    }
+
     const trade: TradeExecution = {
       tradeId: `shadow-queue:${fill.fillId}:${Date.parse(observedAt) || observedAt}`,
       orderId: fill.fillId,
@@ -4409,7 +4478,7 @@ export class TradingEngine {
       side: fill.side,
       orderType: "LIMIT",
       price: fill.price,
-      size: fill.size,
+      size: executablePaperSize,
       evAtExecution: 0,
       slippageBps: 0,
       resultingPnl: 0,
@@ -4419,6 +4488,11 @@ export class TradingEngine {
       exchangeTradeId: fill.fillId,
       metadata: toJsonValue({
         schemaVersion: "shadow-queue.fill.v1",
+        paperSizer: "shadowQueueKellySize",
+        virtualQueueSize: fill.size,
+        paperExecutionSize: executablePaperSize,
+        paperSizeCap,
+        sizeCapped: executablePaperSize < fill.size,
         queueAhead: fill.queueAhead,
         p0MidPrice: fill.p0MidPrice,
         tapePrice: tick.price,
@@ -5861,22 +5935,65 @@ export class TradingEngine {
   private async pruneTelemetryLogs(): Promise<number> {
     const retentionDays = readPositiveInteger(
       this.env.JANITOR_LOG_RETENTION_DAYS,
-      30,
+      7,
       1,
       3650
+    );
+    const maxTelemetryRows = readPositiveInteger(
+      this.env.JANITOR_TELEMETRY_MAX_ROWS,
+      50_000,
+      1_000,
+      1_000_000
+    );
+    const maxMarketTickRows = readPositiveInteger(
+      this.env.MARKET_TICK_MAX_ROWS,
+      DEFAULT_MARKET_TICK_MAX_ROWS,
+      1_000,
+      1_000_000
     );
     const cutoff = new Date(Date.now() - retentionDays * 86_400_000).toISOString();
 
     try {
-      const result = await this.env.TRADING_DB.prepare(
+      const retentionResult = await this.env.TRADING_DB.prepare(
         `DELETE FROM logs
          WHERE event_type = 'TELEMETRY'
            AND created_at < ?`
       ).bind(cutoff).run();
-      return Number(result.meta?.changes ?? 0);
+      const capResult = await this.env.TRADING_DB.prepare(
+        `DELETE FROM logs
+         WHERE event_type = 'TELEMETRY'
+           AND id NOT IN (
+             SELECT id
+             FROM logs
+             WHERE event_type = 'TELEMETRY'
+             ORDER BY created_at DESC, id DESC
+             LIMIT ?
+           )`
+      ).bind(maxTelemetryRows).run();
+      const tickRetentionResult = await this.env.TRADING_DB.prepare(
+        `DELETE FROM market_ticks
+         WHERE received_at < ?`
+      ).bind(cutoff).run();
+      const tickCapResult = await this.env.TRADING_DB.prepare(
+        `DELETE FROM market_ticks
+         WHERE tick_id NOT IN (
+           SELECT tick_id
+           FROM market_ticks
+           ORDER BY received_at DESC, tick_id DESC
+           LIMIT ?
+         )`
+      ).bind(maxMarketTickRows).run();
+      return (
+        Number(retentionResult.meta?.changes ?? 0) +
+        Number(capResult.meta?.changes ?? 0) +
+        Number(tickRetentionResult.meta?.changes ?? 0) +
+        Number(tickCapResult.meta?.changes ?? 0)
+      );
     } catch (error) {
       this.logger.error("JANITOR_LOG_PRUNE_FAILED", "Failed to prune old telemetry logs", {
         cutoff,
+        maxTelemetryRows,
+        maxMarketTickRows,
         error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
       });
       return 0;
@@ -7884,6 +8001,9 @@ function createNativeHyperliquidBookTick(input: {
     source: "HYPERLIQUID",
     source_exchange: input.sourceExchange,
     transport: input.payload.transport ?? "websocket",
+    streamId: input.payload.streamId ?? null,
+    connectionId: input.payload.connectionId ?? null,
+    sourceChannel: input.rawEventType,
     exchangeCode: input.exchangeCode,
     instrumentCode: input.instrumentCode,
     baseAsset: instrument.baseAsset,
@@ -7952,6 +8072,9 @@ function createNativeHyperliquidTradeTick(
     source: "HYPERLIQUID",
     source_exchange: sourceExchange,
     transport: payload.transport ?? "websocket",
+    streamId: payload.streamId ?? null,
+    connectionId: payload.connectionId ?? null,
+    sourceChannel: "trades",
     exchangeCode,
     instrumentCode,
     baseAsset: instrument.baseAsset,
@@ -8010,6 +8133,9 @@ function createNativeHyperliquidFundingTick(
     source: "HYPERLIQUID",
     source_exchange: sourceExchange,
     transport: payload.transport ?? "websocket",
+    streamId: payload.streamId ?? null,
+    connectionId: payload.connectionId ?? null,
+    sourceChannel: "activeAssetCtx",
     exchangeCode,
     instrumentCode,
     baseAsset: instrument.baseAsset,
@@ -8112,7 +8238,6 @@ function defaultEngineState(engineId: string): EngineState {
         "PROFILER",
         "CROUPIER",
         "PIT_BOSS",
-        "HEDGE",
         "JANITOR",
         "EXECUTIONER",
         "MOLTWORKER",
@@ -8170,7 +8295,7 @@ function defaultEngineState(engineId: string): EngineState {
     quoteState: defaultQuoteState(),
     shadowQueue: defaultShadowQueueState(null),
     lastTradeIntent: null,
-    hedge: defaultHedgeState(),
+    inventoryGuard: defaultInventoryGuardState(),
     janitor: defaultJanitorState(),
     slippage: defaultSlippageAnalytics(),
     orderMap: {},
@@ -8269,13 +8394,13 @@ function resolveEngineLocation(
   config: GlobalRiskConfig,
   observedLatencyMs: number | null
 ): EngineLocation {
-  const colo =
+  const observedColo =
     (
       placementColo(topology.placement) ??
-      configuredPlacementColo(env.PLACEMENT_TARGET_COLO) ??
-      topology.colo ??
-      previous.colo
+      topology.colo
     )?.toUpperCase() ?? null;
+  const targetColo = configuredPlacementColo(env.PLACEMENT_TARGET_COLO);
+  const colo = observedColo;
   const goldenColos = parseColoSet(config.GOLDEN_COLOS || env.GOLDEN_COLOS);
   const hasGoldenRegionPolicy = goldenColos.size > 0;
   const isGoldenRegion =
@@ -8287,12 +8412,12 @@ function resolveEngineLocation(
   return {
     colo,
     placement: topology.placement ?? previous.placement,
-    country: topology.country ?? previous.country,
-    city: topology.city ?? previous.city,
-    region: topology.region ?? previous.region,
-    timezone: topology.timezone ?? previous.timezone,
-    latitude: topology.latitude ?? previous.latitude,
-    longitude: topology.longitude ?? previous.longitude,
+    country: null,
+    city: null,
+    region: null,
+    timezone: null,
+    latitude: null,
+    longitude: null,
     lastSeenAt: topology.observedAt,
     isGoldenRegion,
     latencyRiskMultiplier,
@@ -8300,7 +8425,9 @@ function resolveEngineLocation(
     observedLatencyMs,
     reason:
       colo === null
-        ? "UNKNOWN_COLO"
+        ? targetColo
+          ? "TARGET_COLO_UNOBSERVED"
+          : "UNKNOWN_COLO"
         : isGoldenRegion
           ? "GOLDEN_REGION"
           : "NON_GOLDEN_REGION"
@@ -8698,23 +8825,24 @@ function maintenanceRecoveryInstruments(payload: {
   return [...new Set(normalized)];
 }
 
-function defaultHedgeState(): EngineState["hedge"] {
+function defaultInventoryGuardState(): EngineState["inventoryGuard"] {
   return {
     netDelta: 0,
     current_inventory_delta: 0,
     maxInventoryDelta: DEFAULT_MAX_INVENTORY_DELTA,
-    hedgeRequired: false,
-    hedgeRatio: 0,
+    hardCapReached: false,
+    quoteHaltRequired: false,
+    skewRatio: 0,
     preferredVenue: null,
     lastIntent: null,
     updatedAt: null
   };
 }
 
-function passiveHedgeStateFromInventory(
+function passiveInventoryGuardStateFromInventory(
   inventory: InventoryState,
   observedAt: string
-): EngineState["hedge"] {
+): EngineState["inventoryGuard"] {
   const hardCapBreached =
     inventory.maxInventoryDelta > 0 &&
     Math.abs(inventory.current_inventory_delta) >= inventory.maxInventoryDelta;
@@ -8723,8 +8851,12 @@ function passiveHedgeStateFromInventory(
     netDelta: inventory.netDelta,
     current_inventory_delta: inventory.current_inventory_delta,
     maxInventoryDelta: inventory.maxInventoryDelta,
-    hedgeRequired: hardCapBreached,
-    hedgeRatio: 0,
+    hardCapReached: hardCapBreached,
+    quoteHaltRequired: hardCapBreached,
+    skewRatio:
+      inventory.maxInventoryDelta > 0
+        ? roundMetric(inventory.current_inventory_delta / inventory.maxInventoryDelta, 8)
+        : 0,
     preferredVenue: null,
     lastIntent: null,
     updatedAt: observedAt
@@ -9938,7 +10070,7 @@ function inferExecutionPrimaryDriver(
   const rationale = intent?.rationale.toLowerCase() ?? "";
 
   if (rationale.includes("hedge") || order.clientId.includes(":hedge")) {
-    return "HEDGE";
+    return "RISK";
   }
 
   if (intent?.traceId.includes("profiler")) {
@@ -10312,7 +10444,6 @@ function assertAgentSignal(value: AgentSignal): AgentSignal {
     "PROFILER",
     "CROUPIER",
     "PIT_BOSS",
-    "HEDGE",
     "JANITOR",
     "EXECUTIONER",
     "MOLTWORKER",
@@ -10386,8 +10517,38 @@ function isTradeTick(tick: MarketTick): boolean {
   return eventType === "trade" || commodity === "TRADE";
 }
 
+function extractTickStreamId(tick: MarketTick): string | null {
+  const direct = tick.streamId?.trim();
+  if (direct) {
+    return direct;
+  }
+
+  const rawStreamId = tick.raw?.streamId;
+  return typeof rawStreamId === "string" && rawStreamId.trim() ? rawStreamId.trim() : null;
+}
+
+async function readHyperliquidRawIngestPayload(request: Request): Promise<HyperliquidRawIngestPayload> {
+  const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
+
+  if (contentType.includes("application/x-msgpack")) {
+    const decoded = msgpackDecode(new Uint8Array(await request.arrayBuffer()));
+
+    if (!isPlainObject(decoded)) {
+      throw new Error("INVALID_HYPERLIQUID_MSGPACK_PAYLOAD");
+    }
+
+    return decoded as unknown as HyperliquidRawIngestPayload;
+  }
+
+  return request.json<HyperliquidRawIngestPayload>();
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function shouldAggregateBusTelemetry(type: string): boolean {
-  return type === "POST_QUOTE";
+  return AGGREGATED_BUS_TELEMETRY_TYPES.has(type);
 }
 
 function decodeWebSocketMessage(data: string | ArrayBuffer): string | null {

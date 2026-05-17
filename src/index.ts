@@ -38,7 +38,6 @@ const AGENT_NAMES = [
   "PROFILER",
   "CROUPIER",
   "PIT_BOSS",
-  "HEDGE",
   "JANITOR",
   "EXECUTIONER",
   "MOLTWORKER",
@@ -1049,6 +1048,10 @@ async function runDiagnostics(
   }
 
   const d1LatencyMs = Math.round((performance.now() - d1StartedAt) * 1000) / 1000;
+  const d1DiagnosticMaxLatencyMs = positiveNumber(
+    env.D1_DIAGNOSTIC_MAX_LATENCY_MS,
+    250
+  );
   const secretDiagnostic = await evaluateHyperliquidSecrets(env);
   const moltworker = await evaluateMoltworkerHeartbeat(env);
   const l1Sync = isJsonRecord(engineDiagnostics?.l1Sync)
@@ -1086,11 +1089,11 @@ async function runDiagnostics(
     diagnosticCheck(
       "d1_log_latency",
       "D1 Log Latency",
-      d1Ok && d1LatencyMs < 100,
+      d1Ok && d1LatencyMs < d1DiagnosticMaxLatencyMs,
       d1Ok
         ? `D1 round trip ${d1LatencyMs}ms.`
         : `D1 diagnostic query failed: ${d1Error ?? "UNKNOWN_ERROR"}.`,
-      { latencyMs: d1LatencyMs, error: d1Error }
+      { latencyMs: d1LatencyMs, thresholdMs: d1DiagnosticMaxLatencyMs, error: d1Error }
     ),
     diagnosticCheck(
       "moltworker_heartbeat",
@@ -1604,6 +1607,7 @@ async function readPaperPnlSummary(env: Env): Promise<JsonRecord> {
        MAX(executed_at) AS last_seen
      FROM trades
      WHERE status = 'GHOST_FILL'
+       AND raw_execution_json LIKE '%"paperSizer":"shadowQueueKellySize"%'
        ${timeFilterSql}
      GROUP BY asset
      ORDER BY asset`
@@ -1661,7 +1665,7 @@ async function readPaperPnlSummary(env: Env): Promise<JsonRecord> {
 
   return {
     windowHours,
-    mode: sessionCutoff ? "SHADOW_CURRENT_SESSION" : "SHADOW_MARK_TO_MARKET",
+    mode: sessionCutoff ? "SHADOW_CURRENT_SESSION" : "SHADOW_RISK_CAPPED_MARK_TO_MARKET",
     sessionStartedAt: sessionCutoff,
     assets,
     totals: {
@@ -2160,6 +2164,9 @@ function backendSettings(env: Env): JsonRecord {
       notifierDebounceMs: stringNumber(env.NOTIFIER_DEBOUNCE_MS),
       janitorIntervalMs: stringNumber(env.JANITOR_INTERVAL_MS),
       janitorLogRetentionDays: stringNumber(env.JANITOR_LOG_RETENTION_DAYS),
+      janitorTelemetryMaxRows: stringNumber(env.JANITOR_TELEMETRY_MAX_ROWS),
+      marketTickJournalInterval: stringNumber(env.MARKET_TICK_JOURNAL_INTERVAL),
+      marketTickMaxRows: stringNumber(env.MARKET_TICK_MAX_ROWS),
       newsFeeds: parseJsonValue(env.NEWS_FEEDS)
     }
   };
@@ -2565,6 +2572,11 @@ function stringNumber(value: string | undefined): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function positiveNumber(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 function readString(record: JsonRecord | null, key: string): string | null {
   const value = record?.[key];
   return typeof value === "string" && value.length > 0 ? value : null;
@@ -2656,7 +2668,7 @@ function extractEdgeTopology(request: Request): EdgeTopology {
   const placement = nullableHeader(request.headers.get("cf-placement"));
 
   return {
-    colo: placementColo(placement) ?? normalizeCfValue(cf?.colo),
+    colo: normalizeCfValue(cf?.colo),
     placement,
     country: normalizeCfValue(cf?.country),
     city: normalizeCfValue(cf?.city),

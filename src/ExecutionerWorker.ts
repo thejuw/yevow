@@ -549,6 +549,8 @@ function exchangePayload(
     throw new Error("UNSUPPORTED_EXCHANGE_ADAPTER");
   }
 
+  const rationale = intent.rationale.toLowerCase();
+
   return {
     client_id: intent.intentId,
     symbol: intent.instrumentCode,
@@ -560,7 +562,7 @@ function exchangePayload(
     post_only: intent.postOnly,
     time_in_force: intent.timeInForce,
     target_subaccount: intent.targetSubaccount ?? intent.target_subaccount ?? null,
-    reduce_only: intent.rationale.includes("hedge") || intent.rationale.includes("closeout"),
+    reduce_only: rationale.includes("closeout") || rationale.includes("reduce-only"),
     slippage_bps: intent.maxSlippageBps
   };
 }
@@ -1652,7 +1654,7 @@ function normalizeOptionalAddress(value: string | null | undefined): string | nu
 
 function isReduceOnlyIntent(intent: TradeIntent): boolean {
   const rationale = intent.rationale.toLowerCase();
-  return rationale.includes("hedge") || rationale.includes("closeout") || rationale.includes("reduce-only");
+  return rationale.includes("closeout") || rationale.includes("reduce-only");
 }
 
 function positiveIntegerOrDefault(value: unknown, fallback: number): number {

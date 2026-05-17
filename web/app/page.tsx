@@ -769,8 +769,8 @@ export default function CommandCenterPage() {
             ))}
           </div>
           <div className="bridge-metrics">
-            <Metric label="Paper MTM" value={formatNullableCurrency(paperPnl.paperMtm)} />
-            <Metric label="Paper Return" value={formatBps(paperPnl.returnBps)} />
+            <Metric label="Shadow MTM" value={formatNullableCurrency(paperPnl.paperMtm)} />
+            <Metric label="Shadow Return" value={formatBps(paperPnl.returnBps)} />
             <Metric label="κ Regime" value={compact.format(pulse?.regimeCoefficient ?? engineState?.oracle.skepticismMultiplier ?? 0)} />
             <Metric label="Bias Power" value={compact.format((macroBias?.intensity ?? 0) * (macroBias?.confidence ?? 0))} />
             <Metric label="Realized Alpha" value={currency.format(realizedAlpha)} />
@@ -1150,14 +1150,14 @@ export default function CommandCenterPage() {
           </div>
           <div className="trade-summary">
             <Metric label="Order Events" value={compact.format(totalOrderEvents)} />
-            <Metric label="Filled Events" value={compact.format(paperPnl.tradeCount || tradeSummary.filled)} />
-            <Metric label="Paper MTM" value={formatNullableCurrency(paperPnl.paperMtm)} />
+            <Metric label="Ghost Fills" value={compact.format(paperPnl.tradeCount || tradeSummary.filled)} />
+            <Metric label="Shadow MTM" value={formatNullableCurrency(paperPnl.paperMtm)} />
             <Metric label="Expected EV" value={currency.format(paperPnl.totalEv)} />
             <Metric label="Gross Notional" value={currency.format(paperPnl.grossNotional)} />
             <Metric label="Fees" value={currency.format(paperPnl.totalFees || tradeSummary.fees)} />
           </div>
           {paperPnl.assets.length > 0 ? (
-            <div className="paper-pnl-grid" aria-label="Paper mark-to-market by asset">
+            <div className="paper-pnl-grid" aria-label="Shadow mark-to-market by asset">
               {paperPnl.assets.map((asset) => (
                 <div
                   className={asset.markToMarketPnl !== null && asset.markToMarketPnl < 0 ? "paper-pnl-row negative" : "paper-pnl-row positive"}

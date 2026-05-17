@@ -70,7 +70,6 @@ Provision Worker runtime secrets with Wrangler from a trusted local machine:
 ```bash
 npx wrangler secret put JWT_SECRET
 npx wrangler secret put ADMIN_PASSWORD
-npx wrangler secret put HL_HEDGE_SUBACCOUNT_ADDRESS
 npx wrangler secret put EXCHANGE_API_KEY -c wrangler.executioner.toml
 npx wrangler secret put EXCHANGE_API_SECRET -c wrangler.executioner.toml
 ```
