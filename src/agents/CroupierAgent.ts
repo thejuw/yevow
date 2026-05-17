@@ -5,6 +5,7 @@ import type {
   LiquidationCascadeCluster,
   LiquidationHeatmapState,
   MacroBias,
+  MarketMakingMode,
   OracleState,
   QuoteOrder,
   QuoteSignal,
@@ -50,6 +51,7 @@ export interface CroupierInput {
   profilerSpreadMultiplier?: number;
   profilerReservationShiftBps?: number;
   macroBias?: MacroBias;
+  marketMakingMode?: MarketMakingMode;
   observedAt: string;
 }
 
@@ -75,6 +77,16 @@ export class CroupierAgent {
   }
 
   evaluate(input: CroupierInput): CroupierDecision {
+    if (input.marketMakingMode === "OFF") {
+      return {
+        intent: null,
+        quote: null,
+        pullAllQuotes: false,
+        adverseSelectionCost: 0,
+        minEvThreshold: finiteNumber(input.minEvThreshold, this.minEvThreshold)
+      };
+    }
+
     const adverseSelectionCost = this.calculateInformationPremium(input.toxicityScore);
     const pullAllQuotes = input.profilerToxicityState === "CRITICAL";
     const baseMinEvThreshold = finiteNumber(input.minEvThreshold, this.minEvThreshold);
@@ -266,8 +278,9 @@ class AMMEngine {
       inventoryDisplacement * riskAversionFactor * variance +
       pressureShift;
     const spreadMultiplier = Math.max(
-      1,
-      finiteNumber(input.profilerSpreadMultiplier, 1)
+      0.5,
+      finiteNumber(input.profilerSpreadMultiplier, 1) *
+        marketMakingSpreadMultiplier(input.marketMakingMode)
     );
     const halfSpread =
       (Math.max(input.book.spread ?? mid * 0.0001, mid * input.oracle.volatility * 0.25) *
@@ -289,7 +302,11 @@ class AMMEngine {
       input.toxicityScore >= 0.99;
     const orders: QuoteOrder[] = [];
 
-    if (!boundaryOnly && !input.inventory.stopBid && !suppressBid) {
+    const inventorySkewOnly = input.marketMakingMode === "INVENTORY_SKEW_ONLY";
+    const allowBid = !inventorySkewOnly || currentDelta < 0;
+    const allowAsk = !inventorySkewOnly || currentDelta > 0;
+
+    if (!boundaryOnly && allowBid && !input.inventory.stopBid && !suppressBid) {
       orders.push({
         clientOrderId: crypto.randomUUID(),
         side: "BID",
@@ -300,7 +317,7 @@ class AMMEngine {
       });
     }
 
-    if (!boundaryOnly && !input.inventory.stopAsk && !suppressAsk) {
+    if (!boundaryOnly && allowAsk && !input.inventory.stopAsk && !suppressAsk) {
       orders.push({
         clientOrderId: crypto.randomUUID(),
         side: "ASK",
@@ -438,10 +455,36 @@ function calculateQuoteSize(input: CroupierInput): { bid: number; ask: number } 
   const bidRoom = Math.max(0, input.inventory.maxInventoryUnits - input.inventory.netDelta);
   const askRoom = Math.max(0, input.inventory.maxInventoryUnits + input.inventory.netDelta);
 
+  const sizeMultiplier = marketMakingSizeMultiplier(input.marketMakingMode);
+
   return {
-    bid: round(Math.max(0.00000001, Math.min(bidRoom, Math.max(0.00000001, bidDepth * 0.02))), 8),
-    ask: round(Math.max(0.00000001, Math.min(askRoom, Math.max(0.00000001, askDepth * 0.02))), 8)
+    bid: round(Math.max(0.00000001, Math.min(bidRoom, Math.max(0.00000001, bidDepth * 0.02 * sizeMultiplier))), 8),
+    ask: round(Math.max(0.00000001, Math.min(askRoom, Math.max(0.00000001, askDepth * 0.02 * sizeMultiplier))), 8)
   };
+}
+
+function marketMakingSpreadMultiplier(mode: MarketMakingMode | undefined): number {
+  if (mode === "PASSIVE") {
+    return 2;
+  }
+
+  if (mode === "AGGRESSIVE") {
+    return 0.75;
+  }
+
+  return 1;
+}
+
+function marketMakingSizeMultiplier(mode: MarketMakingMode | undefined): number {
+  if (mode === "PASSIVE" || mode === "INVENTORY_SKEW_ONLY") {
+    return 0.5;
+  }
+
+  if (mode === "AGGRESSIVE") {
+    return 1.25;
+  }
+
+  return 1;
 }
 
 function snapGueantDiscretePrice(

@@ -1,7 +1,13 @@
 import type { DraftTransportSettings, GlobalRiskConfig } from "./types";
 
 export type ParameterKind = "boolean" | "number" | "select";
-export type ParameterGroup = "Oracle" | "Profiler" | "Croupier" | "Pit Boss" | "System";
+export type ParameterGroup =
+  | "Strategy"
+  | "Oracle"
+  | "Profiler"
+  | "Croupier"
+  | "Pit Boss"
+  | "System";
 
 export interface ParameterDescriptor {
   key: keyof GlobalRiskConfig;
@@ -14,6 +20,52 @@ export interface ParameterDescriptor {
   options?: string[];
   help?: string;
 }
+
+export const STRATEGY_KNOBS: ParameterDescriptor[] = [
+  {
+    key: "MARKET_MAKING_MODE",
+    label: "Market-Making Mode",
+    group: "Strategy",
+    kind: "select",
+    options: ["OFF", "PASSIVE", "BALANCED", "AGGRESSIVE", "INVENTORY_SKEW_ONLY"],
+    help: "Top-level quote posture. OFF pulls quoting, PASSIVE widens, BALANCED is normal, AGGRESSIVE tightens cautiously, and INVENTORY_SKEW_ONLY only quotes the side that reduces inventory."
+  },
+  {
+    key: "ORACLE_ENABLED",
+    label: "Oracle Agent",
+    group: "Strategy",
+    kind: "boolean",
+    help: "Enables the regime and posterior-price agent. When disabled, the engine reuses the last Oracle state and marks the agent disabled."
+  },
+  {
+    key: "SENTIMENT_ENABLED",
+    label: "Sentiment Agent",
+    group: "Strategy",
+    kind: "boolean",
+    help: "Allows Workers AI or lexical sentiment to influence ensemble confidence. Disabled mode blocks new sentiment calls and uses a neutral bias."
+  },
+  {
+    key: "PROFILER_ENABLED",
+    label: "Profiler Agent",
+    group: "Strategy",
+    kind: "boolean",
+    help: "Enables AM-VPIN, spoofing, whale-print, and cascade toxicity checks. Disabling removes defensive toxicity signals, so keep this on for production paper/live trading."
+  },
+  {
+    key: "CROUPIER_ENABLED",
+    label: "Croupier Agent",
+    group: "Strategy",
+    kind: "boolean",
+    help: "Enables EV calculation and quote construction. Disabled mode keeps market data live but produces no new quotes or trade intents."
+  },
+  {
+    key: "PIT_BOSS_ENABLED",
+    label: "Pit Boss Agent",
+    group: "Strategy",
+    kind: "boolean",
+    help: "Enables Kelly sizing and final risk approval. Disabled mode is fail-closed: quote/intent telemetry may be computed, but executable dispatch is blocked."
+  }
+];
 
 export const PARAMETER_MATRIX: ParameterDescriptor[] = [
   {
@@ -321,6 +373,15 @@ export function changedMoreThanTenPercent(
   return Object.entries(draft).flatMap(([key, draftValue]) => {
     const currentValue = current[key as keyof GlobalRiskConfig];
 
+    if (
+      draftValue !== undefined &&
+      currentValue !== undefined &&
+      typeof draftValue !== "number" &&
+      draftValue !== currentValue
+    ) {
+      return [key];
+    }
+
     if (typeof draftValue !== "number" || typeof currentValue !== "number") {
       return [];
     }
@@ -334,7 +395,7 @@ export function changedMoreThanTenPercent(
 }
 
 export function validateParameterDraft(draft: Partial<GlobalRiskConfig>): string[] {
-  return PARAMETER_MATRIX.flatMap((param) => {
+  return [...STRATEGY_KNOBS, ...PARAMETER_MATRIX].flatMap((param) => {
     const value = draft[param.key];
     if (value === undefined || value === null) {
       return [];

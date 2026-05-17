@@ -3,6 +3,12 @@ export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue
 export type JsonRecord = Record<string, JsonValue>;
 
 export type GovernanceMode = "MANUAL" | "AUTONOMOUS" | "HYBRID";
+export type MarketMakingMode =
+  | "OFF"
+  | "PASSIVE"
+  | "BALANCED"
+  | "AGGRESSIVE"
+  | "INVENTORY_SKEW_ONLY";
 export type MacroBiasDirection = "BULLISH" | "BEARISH" | "RISK_ON" | "RISK_OFF" | "NEUTRAL";
 export type AlertPriority = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 export type AlertChannel = "DISCORD" | "TELEGRAM" | "GENERIC_WEBHOOK";
@@ -13,6 +19,12 @@ export type CitadelOperationalStatus = "NOMINAL" | "WATCH" | "CRITICAL";
 
 export interface GlobalRiskConfig {
   TRADING_ENABLED: boolean;
+  ORACLE_ENABLED: boolean;
+  SENTIMENT_ENABLED: boolean;
+  PROFILER_ENABLED: boolean;
+  CROUPIER_ENABLED: boolean;
+  PIT_BOSS_ENABLED: boolean;
+  MARKET_MAKING_MODE: MarketMakingMode;
   MAX_POSITION_SIZE: number;
   MAX_POSITION_PCT: number;
   MAX_INVENTORY_UNITS: number;
@@ -321,7 +333,7 @@ export interface EngineState {
     updatedAt: string | null;
   };
   agentHealth?: Record<string, {
-    status: "GREEN" | "YELLOW" | "RED";
+    status: "GREEN" | "YELLOW" | "RED" | "DISABLED";
     heartbeatAt: string;
     latencyMs: number;
     lastSignalId?: string | null;

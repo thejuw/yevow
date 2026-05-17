@@ -9,14 +9,15 @@ import {
 import {
   ProfilerAgent,
   PROFILER_STATE_STORAGE_KEY,
-  PROFILER_STATE_STORAGE_PREFIX
+  PROFILER_STATE_STORAGE_PREFIX,
+  type ProfilerEvaluation
 } from "./agents/ProfilerAgent";
 import {
   AnomalyDetector,
   ANOMALY_DETECTOR_STORAGE_KEY,
   type AnomalyDetectionResult
 } from "./agents/AnomalyDetector";
-import { CroupierAgent } from "./agents/CroupierAgent";
+import { CroupierAgent, type CroupierDecision } from "./agents/CroupierAgent";
 import {
   HeatmapAgent,
   LIQUIDATION_HEATMAP_STORAGE_KEY,
@@ -1159,6 +1160,28 @@ export class TradingEngine {
           publishedAt?: string | null;
           id?: string;
         }>();
+        if (!this.cachedConfig.SENTIMENT_ENABLED) {
+          const observedAt = new Date().toISOString();
+          const sentiment = {
+            ...defaultSentimentState(),
+            updatedAt: observedAt
+          };
+          this.engineState = {
+            ...this.engineState,
+            sentiment,
+            agentHealth: touchAgentHealth(
+              this.engineState.agentHealth,
+              "SENTIMENT",
+              "DISABLED",
+              observedAt,
+              0
+            ),
+            heartbeatAt: observedAt,
+            updatedAt: observedAt
+          };
+          await this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "SENTIMENT_DISABLED");
+          return json({ ok: true, skipped: true, reason: "SENTIMENT_AGENT_DISABLED", sentiment });
+        }
         const sentiment = await this.sentimentAgent.analyzeHeadline(
           payload.headline ?? "",
           this.env
@@ -1166,6 +1189,13 @@ export class TradingEngine {
         this.engineState = {
           ...this.engineState,
           sentiment,
+          agentHealth: touchAgentHealth(
+            this.engineState.agentHealth,
+            "SENTIMENT",
+            "GREEN",
+            sentiment.updatedAt ?? new Date().toISOString(),
+            sentiment.latencyMs ?? 0
+          ),
           heartbeatAt: sentiment.updatedAt ?? new Date().toISOString(),
           updatedAt: sentiment.updatedAt ?? new Date().toISOString()
         };
@@ -4291,19 +4321,23 @@ export class TradingEngine {
 
     const profilerAgent = this.profilerFor(tick.instrumentCode);
     const profilerStartedAt = highResolutionNow();
-    const profilerResult = profilerAgent.processTick(tick, {
-      engineId: this.engineState.engineId,
-      observedAt: metrics.brainTimestamp,
-      midPrice: book.midPrice,
-      spreadBps: book.spreadBps,
-      weightedImbalance: book.weightedImbalance,
-      orderBookBids: book.bids,
-      orderBookAsks: book.asks,
-      liquidityWalls: domSnapshot.walls,
-      spoofingAlerts: domSnapshot.pulledWalls,
-      liquidationHeatmap: this.engineState.liquidationHeatmap
-    });
-    const profilerLatencyMs = roundLatency(highResolutionNow() - profilerStartedAt);
+    const profilerResult: ProfilerEvaluation = this.cachedConfig.PROFILER_ENABLED
+      ? profilerAgent.processTick(tick, {
+          engineId: this.engineState.engineId,
+          observedAt: metrics.brainTimestamp,
+          midPrice: book.midPrice,
+          spreadBps: book.spreadBps,
+          weightedImbalance: book.weightedImbalance,
+          orderBookBids: book.bids,
+          orderBookAsks: book.asks,
+          liquidityWalls: domSnapshot.walls,
+          spoofingAlerts: domSnapshot.pulledWalls,
+          liquidationHeatmap: this.engineState.liquidationHeatmap
+        })
+      : disabledProfilerEvaluation(profilerAgent.snapshot(), metrics.brainTimestamp);
+    const profilerLatencyMs = this.cachedConfig.PROFILER_ENABLED
+      ? roundLatency(highResolutionNow() - profilerStartedAt)
+      : 0;
 
     this.observeExecutionProfile(metrics, {
       wakeUpTimeMs,
@@ -4313,16 +4347,29 @@ export class TradingEngine {
       observedAt: metrics.brainTimestamp
     });
 
-    const oracleResult = this.oracleAgent.processTick({
-      tick,
-      book,
-      observedAt: metrics.brainTimestamp,
-      config: {
-        ORACLE_GOVERNANCE_MODE: this.cachedConfig.ORACLE_GOVERNANCE_MODE,
-        ORACLE_MANUAL_SKEPTICISM: this.cachedConfig.ORACLE_MANUAL_SKEPTICISM,
-        ORACLE_MAX_SKEPTICISM: this.cachedConfig.ORACLE_MAX_SKEPTICISM
-      }
-    });
+    const oracleStartedAt = highResolutionNow();
+    const oracleResult = this.cachedConfig.ORACLE_ENABLED
+      ? this.oracleAgent.processTick({
+          tick,
+          book,
+          observedAt: metrics.brainTimestamp,
+          config: {
+            ORACLE_GOVERNANCE_MODE: this.cachedConfig.ORACLE_GOVERNANCE_MODE,
+            ORACLE_MANUAL_SKEPTICISM: this.cachedConfig.ORACLE_MANUAL_SKEPTICISM,
+            ORACLE_MAX_SKEPTICISM: this.cachedConfig.ORACLE_MAX_SKEPTICISM
+          }
+        })
+      : {
+          state: {
+            ...this.engineState.oracle,
+            updatedAt: metrics.brainTimestamp
+          },
+          bayesianTrace: null,
+          regimeChanged: false
+        };
+    const oracleLatencyMs = this.cachedConfig.ORACLE_ENABLED
+      ? roundLatency(highResolutionNow() - oracleStartedAt)
+      : 0;
     const leadLag = this.engineState.leadLag;
     const inventory = this.calculateInventoryState(metrics.brainTimestamp);
     const riskMetrics = this.updatePortfolioRisk(oracleResult.state, metrics.brainTimestamp);
@@ -4334,58 +4381,78 @@ export class TradingEngine {
       profilerStates
     );
     const inventoryGuard = passiveInventoryGuardStateFromInventory(inventory, metrics.brainTimestamp);
-    const croupierDecision = this.croupierAgent.evaluate({
-      engineId: this.engineState.engineId,
-      book,
-      oracle: oracleResult.state,
-      sentiment: this.engineState.sentiment,
-      toxicityScore: profilerResult.toxicityScore,
-      inventory,
-      leadLag,
-      minEvThreshold: this.cachedConfig.MIN_EV_THRESHOLD,
-      exchangeFeeBps: this.cachedConfig.EXCHANGE_FEE_BPS,
-      executionCostBufferBps: this.engineState.slippage.executionCostBufferBps,
-      fundingRateHourly: this.currentFundingRate(book),
-      fundingHorizonHours: readPositiveNumber(this.env.FUNDING_HORIZON_HOURS, 1),
-      riskAversionFactor: this.cachedConfig.RISK_AVERSION_FACTOR,
-      fundingBiasThreshold:
-        this.cachedConfig.FUNDING_BIAS_THRESHOLD > 0
-          ? this.cachedConfig.FUNDING_BIAS_THRESHOLD
-          : readPositiveNumber(this.env.FUNDING_BIAS_THRESHOLD, DEFAULT_FUNDING_BIAS_THRESHOLD),
-      fundingInventoryBias:
-        this.cachedConfig.FUNDING_INVENTORY_BIAS > 0
-          ? this.cachedConfig.FUNDING_INVENTORY_BIAS
-          : readPositiveNumber(this.env.FUNDING_INVENTORY_BIAS, DEFAULT_FUNDING_INVENTORY_BIAS),
-      liquidationHeatmap: this.engineState.liquidationHeatmap,
-      predatoryOrderOffsetBps: readPositiveNumber(
-        this.env.HL_PREDATORY_ORDER_OFFSET_BPS,
-        DEFAULT_PREDATORY_ORDER_OFFSET_BPS
-      ),
-      profilerToxicityState: profilerResult.state.toxicityState,
-      profilerPressureSide: profilerResult.state.pressureSide,
-      profilerSpreadMultiplier: profilerResult.state.spreadMultiplier,
-      profilerReservationShiftBps: profilerResult.state.reservationShiftBps,
-      macroBias: this.macroBias,
-      observedAt: metrics.brainTimestamp
-    });
+    const sentimentForDecision = this.cachedConfig.SENTIMENT_ENABLED
+      ? this.engineState.sentiment
+      : {
+          ...defaultSentimentState(),
+          updatedAt: metrics.brainTimestamp
+        };
+    const croupierStartedAt = highResolutionNow();
+    const croupierDecision = this.cachedConfig.CROUPIER_ENABLED
+      ? this.croupierAgent.evaluate({
+          engineId: this.engineState.engineId,
+          book,
+          oracle: oracleResult.state,
+          sentiment: sentimentForDecision,
+          toxicityScore: profilerResult.toxicityScore,
+          inventory,
+          leadLag,
+          minEvThreshold: this.cachedConfig.MIN_EV_THRESHOLD,
+          exchangeFeeBps: this.cachedConfig.EXCHANGE_FEE_BPS,
+          executionCostBufferBps: this.engineState.slippage.executionCostBufferBps,
+          fundingRateHourly: this.currentFundingRate(book),
+          fundingHorizonHours: readPositiveNumber(this.env.FUNDING_HORIZON_HOURS, 1),
+          riskAversionFactor: this.cachedConfig.RISK_AVERSION_FACTOR,
+          fundingBiasThreshold:
+            this.cachedConfig.FUNDING_BIAS_THRESHOLD > 0
+              ? this.cachedConfig.FUNDING_BIAS_THRESHOLD
+              : readPositiveNumber(this.env.FUNDING_BIAS_THRESHOLD, DEFAULT_FUNDING_BIAS_THRESHOLD),
+          fundingInventoryBias:
+            this.cachedConfig.FUNDING_INVENTORY_BIAS > 0
+              ? this.cachedConfig.FUNDING_INVENTORY_BIAS
+              : readPositiveNumber(this.env.FUNDING_INVENTORY_BIAS, DEFAULT_FUNDING_INVENTORY_BIAS),
+          liquidationHeatmap: this.engineState.liquidationHeatmap,
+          predatoryOrderOffsetBps: readPositiveNumber(
+            this.env.HL_PREDATORY_ORDER_OFFSET_BPS,
+            DEFAULT_PREDATORY_ORDER_OFFSET_BPS
+          ),
+          profilerToxicityState: profilerResult.state.toxicityState,
+          profilerPressureSide: profilerResult.state.pressureSide,
+          profilerSpreadMultiplier: profilerResult.state.spreadMultiplier,
+          profilerReservationShiftBps: profilerResult.state.reservationShiftBps,
+          macroBias: this.macroBias,
+          marketMakingMode: this.cachedConfig.MARKET_MAKING_MODE,
+          observedAt: metrics.brainTimestamp
+        })
+      : disabledCroupierDecision(this.cachedConfig.MIN_EV_THRESHOLD);
+    const croupierLatencyMs = this.cachedConfig.CROUPIER_ENABLED
+      ? roundLatency(highResolutionNow() - croupierStartedAt)
+      : 0;
     const ensemble = this.calculateEnsembleState(
       croupierDecision.intent,
       profilerResult.state,
       oracleResult.state,
-      this.engineState.sentiment,
+      sentimentForDecision,
       anomalyResult.status,
       metrics.brainTimestamp
     );
-    const executionPlan = this.prepareExecutionPlan(
-      croupierDecision.intent,
-      metrics.brainTimestamp,
-      {
-        stateOverride: { ...this.engineState, assetMatrix, ensemble },
-        kellyFractionOverride: this.cachedConfig.KELLY_FRACTION * ensemble.kellyMultiplier
-      }
-    );
+    const executionPlan = this.cachedConfig.PIT_BOSS_ENABLED
+      ? this.prepareExecutionPlan(
+          croupierDecision.intent,
+          metrics.brainTimestamp,
+          {
+            stateOverride: { ...this.engineState, assetMatrix, ensemble },
+            kellyFractionOverride: this.cachedConfig.KELLY_FRACTION * ensemble.kellyMultiplier
+          }
+        )
+      : null;
     let executionPlans = [executionPlan].filter(
       (plan): plan is NonNullable<typeof executionPlan> => plan !== null
+    );
+    const previousQuoteState = quoteStateForInstrumentState(
+      this.engineState.assetQuoteStates,
+      tick.instrumentCode,
+      this.engineState.quoteState
     );
     let assetQuoteState = this.nextQuoteStateForInstrument(
       tick.instrumentCode,
@@ -4393,6 +4460,15 @@ export class TradingEngine {
       croupierDecision.pullAllQuotes,
       metrics.brainTimestamp
     );
+    const strategyQuoteDisableReason = this.strategyQuoteDisabledReason();
+    if (
+      strategyQuoteDisableReason &&
+      previousQuoteState.reason !== strategyQuoteDisableReason &&
+      !options.shadowReplay &&
+      this.cachedConfig.TRADING_ENABLED
+    ) {
+      this.state.waitUntil(this.cancelAllQuotes(tick.instrumentCode, strategyQuoteDisableReason));
+    }
     const profilerSignalType = profilerResult.signal?.featureVector.signalType;
     const isCascadeShield = profilerSignalType === "CASCADE_SHIELD";
     const isProfilerQuoteHalt =
@@ -4457,6 +4533,53 @@ export class TradingEngine {
       profilerStates,
       assetQuoteStates
     );
+    let agentHealth = this.engineState.agentHealth;
+    agentHealth = touchAgentHealth(
+      agentHealth,
+      "ORACLE",
+      this.cachedConfig.ORACLE_ENABLED ? "GREEN" : "DISABLED",
+      metrics.brainTimestamp,
+      oracleLatencyMs
+    );
+    agentHealth = touchAgentHealth(
+      agentHealth,
+      "SENTIMENT",
+      this.cachedConfig.SENTIMENT_ENABLED ? "GREEN" : "DISABLED",
+      metrics.brainTimestamp,
+      this.cachedConfig.SENTIMENT_ENABLED ? agentHealth.SENTIMENT.latencyMs : 0
+    );
+    agentHealth = touchAgentHealth(
+      agentHealth,
+      "PROFILER",
+      this.cachedConfig.PROFILER_ENABLED
+        ? profilerResult.toxicityScore > profilerResult.state.alertThreshold
+          ? "YELLOW"
+          : "GREEN"
+        : "DISABLED",
+      metrics.brainTimestamp,
+      profilerLatencyMs,
+      profilerResult.signal?.signalId ?? undefined
+    );
+    agentHealth = touchAgentHealth(
+      agentHealth,
+      "CROUPIER",
+      this.cachedConfig.CROUPIER_ENABLED && this.cachedConfig.MARKET_MAKING_MODE !== "OFF"
+        ? croupierDecision.intent || croupierDecision.quote
+          ? "GREEN"
+          : "YELLOW"
+        : "DISABLED",
+      metrics.brainTimestamp,
+      croupierLatencyMs,
+      croupierDecision.quote?.signalId ?? croupierDecision.intent?.intentId
+    );
+    agentHealth = touchAgentHealth(
+      agentHealth,
+      "PIT_BOSS",
+      this.cachedConfig.PIT_BOSS_ENABLED ? (executionPlan ? "GREEN" : "YELLOW") : "DISABLED",
+      metrics.brainTimestamp,
+      0,
+      executionPlan?.intent.intentId
+    );
 
     this.engineState = {
       ...this.engineState,
@@ -4472,6 +4595,7 @@ export class TradingEngine {
       internalOrderBookDepth: countBookLevels(this.bids, this.asks),
       microstructure: microstructureFromBook(book),
       oracle: oracleResult.state,
+      sentiment: sentimentForDecision,
       ensemble,
       leadLag,
       inventory,
@@ -4503,18 +4627,7 @@ export class TradingEngine {
       assetMatrix: finalAssetMatrix,
       profilerStates,
       toxicityScore: profilerResult.toxicityScore,
-      agentHealth: profilerResult.processed
-        ? touchAgentHealth(
-            this.engineState.agentHealth,
-            "PROFILER",
-            profilerResult.toxicityScore > profilerResult.state.alertThreshold
-              ? "YELLOW"
-              : "GREEN",
-            metrics.brainTimestamp,
-            profilerLatencyMs,
-            profilerResult.signal?.signalId ?? undefined
-          )
-        : this.engineState.agentHealth,
+      agentHealth,
       maxLatencyMs: this.maxLatencyMs,
       heartbeatAt: metrics.brainTimestamp,
       updatedAt: metrics.brainTimestamp
@@ -4561,7 +4674,7 @@ export class TradingEngine {
       if (!options.shadowReplay && this.cachedConfig.TRADING_ENABLED) {
         this.state.waitUntil(this.cancelAllQuotes(tick.instrumentCode, "ADVERSE_SELECTION_CRITICAL"));
       }
-    } else if (croupierDecision.quote) {
+    } else if (croupierDecision.quote && !strategyQuoteDisableReason) {
       this.publish(
         "POST_QUOTE",
         quoteToTelemetry(croupierDecision.quote),
@@ -4570,7 +4683,8 @@ export class TradingEngine {
       if (
         !options.shadowReplay &&
         this.cachedConfig.TRADING_ENABLED &&
-        !isProfilerQuoteHalt
+        !isProfilerQuoteHalt &&
+        this.canDispatchStrategyOrders()
       ) {
         const quote = croupierDecision.quote;
         this.state.waitUntil(
@@ -5354,16 +5468,18 @@ export class TradingEngine {
       Math.min(1, anomalyStatus.cancellationToExecutionRatio / 12)
     );
     const anomalyCircuitBreaker = anomalyScore >= 0.85 || profilerState.toxicityState === "CRITICAL";
-    const profilerConfidence =
-      profilerState.toxicityState === "CRITICAL"
+    const profilerConfidence = !this.cachedConfig.PROFILER_ENABLED
+      ? 0
+      : profilerState.toxicityState === "CRITICAL"
         ? 0
         : profilerState.toxicityState === "TOXIC"
           ? 0.15
           : profilerState.toxicityState === "CONTESTED"
             ? 0.55
             : 0.85;
-    const oracleConfidence =
-      oracleState.regime === "REGIME_CRISIS"
+    const oracleConfidence = !this.cachedConfig.ORACLE_ENABLED
+      ? 0
+      : oracleState.regime === "REGIME_CRISIS"
         ? 0.25
         : oracleState.regime === "REGIME_TREND"
           ? 0.7
@@ -5373,10 +5489,12 @@ export class TradingEngine {
       sentimentState.bias === "NEUTRAL" ||
       (intent.direction === "LONG" && sentimentState.bias === "BULLISH") ||
       (intent.direction === "SHORT" && sentimentState.bias === "BEARISH");
-    const sentimentConfidence = sentimentDirectionMatches
+    const sentimentConfidence = !this.cachedConfig.SENTIMENT_ENABLED
+      ? 0
+      : sentimentDirectionMatches
       ? Math.max(0.35, sentimentState.confidence)
       : Math.max(0.1, 1 - sentimentState.confidence);
-    const croupierConfidence = intent
+    const croupierConfidence = this.cachedConfig.CROUPIER_ENABLED && intent
       ? Math.min(
           1,
           Math.max(
@@ -5392,28 +5510,34 @@ export class TradingEngine {
         confidence: roundMetric(oracleConfidence, 6),
         weight: 0.3,
         contribution: roundMetric(oracleConfidence * 0.3, 6),
-        rationale: oracleState.regime
+        rationale: this.cachedConfig.ORACLE_ENABLED ? oracleState.regime : "DISABLED"
       },
       {
         agent: "PROFILER",
         confidence: roundMetric(profilerConfidence, 6),
         weight: 0.3,
         contribution: roundMetric(profilerConfidence * 0.3, 6),
-        rationale: profilerState.toxicityState ?? "NORMAL"
+        rationale: this.cachedConfig.PROFILER_ENABLED ? profilerState.toxicityState ?? "NORMAL" : "DISABLED"
       },
       {
         agent: "CROUPIER",
         confidence: roundMetric(croupierConfidence, 6),
         weight: 0.25,
         contribution: roundMetric(croupierConfidence * 0.25, 6),
-        rationale: intent ? `EV=${roundMetric(intent.expectedValue, 8)}` : "NO_INTENT"
+        rationale: this.cachedConfig.CROUPIER_ENABLED
+          ? intent
+            ? `EV=${roundMetric(intent.expectedValue, 8)}`
+            : "NO_INTENT"
+          : "DISABLED"
       },
       {
         agent: "SENTIMENT",
         confidence: roundMetric(sentimentConfidence, 6),
         weight: 0.15,
         contribution: roundMetric(sentimentConfidence * 0.15, 6),
-        rationale: `${sentimentState.provider ?? "LEXICAL"}:${sentimentState.bias}`
+        rationale: this.cachedConfig.SENTIMENT_ENABLED
+          ? `${sentimentState.provider ?? "LEXICAL"}:${sentimentState.bias}`
+          : "DISABLED"
       }
     ];
     const weightedConfidence = votes.reduce((sum, vote) => sum + vote.contribution, 0);
@@ -5573,6 +5697,17 @@ export class TradingEngine {
       };
     }
 
+    const strategyDisabledReason = this.strategyQuoteDisabledReason();
+    if (strategyDisabledReason) {
+      return {
+        status: "SUSPENDED",
+        reason: strategyDisabledReason,
+        suspendedUntil: null,
+        lastQuote: previous.lastQuote,
+        updatedAt: observedAt
+      };
+    }
+
     if (!isInstrumentSelectedByMoltworker(instrumentCode, this.macroBias)) {
       return {
         status: "SUSPENDED",
@@ -5604,6 +5739,26 @@ export class TradingEngine {
       lastQuote: quote ?? previous.lastQuote,
       updatedAt: observedAt
     };
+  }
+
+  private strategyQuoteDisabledReason(): string | null {
+    if (!this.cachedConfig.CROUPIER_ENABLED) {
+      return "CROUPIER_DISABLED";
+    }
+
+    if (this.cachedConfig.MARKET_MAKING_MODE === "OFF") {
+      return "MARKET_MAKING_OFF";
+    }
+
+    if (!this.cachedConfig.PIT_BOSS_ENABLED) {
+      return "PIT_BOSS_DISABLED";
+    }
+
+    return null;
+  }
+
+  private canDispatchStrategyOrders(): boolean {
+    return this.strategyQuoteDisabledReason() === null;
   }
 
   private resolveQuoteHibernateMs(): number {
@@ -9408,6 +9563,40 @@ function touchAgentHealth(
       lastSignalId: lastSignalId ?? current[agentName].lastSignalId,
       failures24h: current[agentName].failures24h
     }
+  };
+}
+
+function disabledProfilerEvaluation(
+  state: ProfilerState,
+  observedAt: string
+): ProfilerEvaluation {
+  return {
+    processed: false,
+    skippedReason: "PROFILER_AGENT_DISABLED",
+    closedBuckets: 0,
+    toxicityScore: 0,
+    state: {
+      ...state,
+      toxicityScore: 0,
+      amVpinScore: 0,
+      toxicityState: "NORMAL",
+      pressureSide: "NEUTRAL",
+      spreadMultiplier: 1,
+      reservationShiftBps: 0,
+      quoteHaltUntil: null,
+      updatedAt: observedAt
+    },
+    signal: null
+  };
+}
+
+function disabledCroupierDecision(minEvThreshold: number): CroupierDecision {
+  return {
+    intent: null,
+    quote: null,
+    pullAllQuotes: false,
+    adverseSelectionCost: 0,
+    minEvThreshold: Number.isFinite(minEvThreshold) ? minEvThreshold : 0
   };
 }
 

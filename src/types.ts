@@ -230,8 +230,14 @@ export type AgentAction =
 export type EngineMode = "PAPER" | "LIVE" | "HALTED";
 export type EngineStabilityStatus = "STABLE" | "UNSTABLE";
 export type CitadelOperationalStatus = "NOMINAL" | "WATCH" | "CRITICAL";
-export type HealthStatus = "GREEN" | "YELLOW" | "RED";
+export type HealthStatus = "GREEN" | "YELLOW" | "RED" | "DISABLED";
 export type GovernanceMode = "MANUAL" | "AUTONOMOUS" | "HYBRID";
+export type MarketMakingMode =
+  | "OFF"
+  | "PASSIVE"
+  | "BALANCED"
+  | "AGGRESSIVE"
+  | "INVENTORY_SKEW_ONLY";
 export type NotificationPriority = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 export type TradeAlertMode = "ALL" | "FILLED_ONLY" | "NONE";
 export type MarketTransport = "grpc" | "websocket";
@@ -546,6 +552,12 @@ export interface CitadelState {
 
 export interface GlobalRiskConfig {
   TRADING_ENABLED: boolean;
+  ORACLE_ENABLED: boolean;
+  SENTIMENT_ENABLED: boolean;
+  PROFILER_ENABLED: boolean;
+  CROUPIER_ENABLED: boolean;
+  PIT_BOSS_ENABLED: boolean;
+  MARKET_MAKING_MODE: MarketMakingMode;
   MAX_POSITION_SIZE: number;
   MAX_POSITION_PCT: number;
   MAX_INVENTORY_UNITS: number;
@@ -686,6 +698,12 @@ export type GlobalRiskConfigUpdate = Partial<
   Pick<
     GlobalRiskConfig,
     | "TRADING_ENABLED"
+    | "ORACLE_ENABLED"
+    | "SENTIMENT_ENABLED"
+    | "PROFILER_ENABLED"
+    | "CROUPIER_ENABLED"
+    | "PIT_BOSS_ENABLED"
+    | "MARKET_MAKING_MODE"
     | "MAX_POSITION_SIZE"
     | "MAX_POSITION_PCT"
     | "MAX_INVENTORY_UNITS"
@@ -1673,6 +1691,12 @@ export interface AdminConfigUpdate {
   config?: GlobalRiskConfigUpdate;
   signal?: "REFRESH_CONFIG";
   TRADING_ENABLED?: boolean;
+  ORACLE_ENABLED?: boolean;
+  SENTIMENT_ENABLED?: boolean;
+  PROFILER_ENABLED?: boolean;
+  CROUPIER_ENABLED?: boolean;
+  PIT_BOSS_ENABLED?: boolean;
+  MARKET_MAKING_MODE?: MarketMakingMode;
   MAX_POSITION_SIZE?: number;
   MAX_POSITION_PCT?: number;
   MAX_INVENTORY_UNITS?: number;

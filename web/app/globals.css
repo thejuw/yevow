@@ -902,6 +902,12 @@ output {
   color: var(--red);
 }
 
+.agent-health-row.disabled strong,
+.agent-health-row.disabled span,
+.agent-health-row.disabled code {
+  color: var(--muted);
+}
+
 .mode-readout span {
   border: 1px solid var(--line-cold);
   border-radius: 7px;
@@ -1184,6 +1190,18 @@ output {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
+}
+
+.strategy-knob-grid {
+  display: grid;
+  grid-template-columns: 1.25fr repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.strategy-knob-grid .param-control {
+  min-height: 104px;
+  border-color: rgba(215, 196, 139, 0.24);
+  background: linear-gradient(180deg, rgba(215, 196, 139, 0.085), rgba(6, 8, 11, 0.54));
 }
 
 .matrix-panel .param-grid {
@@ -1641,7 +1659,8 @@ output {
     grid-column: 1 / -1;
   }
 
-  .param-grid {
+  .param-grid,
+  .strategy-knob-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
@@ -1682,6 +1701,7 @@ output {
   .settings-form.two-col,
   .settings-metrics,
   .param-grid,
+  .strategy-knob-grid,
   .heatmap-row,
   .cascade-card,
   .driver-row,

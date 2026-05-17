@@ -3781,6 +3781,12 @@ function diffConfig(
 ): Record<string, { before: boolean | number | string; after: boolean | number | string }> {
   const fields = [
     "TRADING_ENABLED",
+    "ORACLE_ENABLED",
+    "SENTIMENT_ENABLED",
+    "PROFILER_ENABLED",
+    "CROUPIER_ENABLED",
+    "PIT_BOSS_ENABLED",
+    "MARKET_MAKING_MODE",
     "MAX_POSITION_SIZE",
     "MAX_POSITION_PCT",
     "MAX_INVENTORY_UNITS",
@@ -3820,6 +3826,12 @@ function requiresHighImpactConfirmation(
 ): boolean {
   const highImpact = new Set([
     "TRADING_ENABLED",
+    "ORACLE_ENABLED",
+    "SENTIMENT_ENABLED",
+    "PROFILER_ENABLED",
+    "CROUPIER_ENABLED",
+    "PIT_BOSS_ENABLED",
+    "MARKET_MAKING_MODE",
     "MAX_POSITION_SIZE",
     "MAX_POSITION_PCT",
     "MAX_INVENTORY_DELTA",
@@ -3841,8 +3853,14 @@ function requiresHighImpactConfirmation(
 
 function hasRiskConfigMutation(update: AdminConfigUpdate): boolean {
   return Boolean(
-    update.config ||
+      update.config ||
       update.TRADING_ENABLED !== undefined ||
+      update.ORACLE_ENABLED !== undefined ||
+      update.SENTIMENT_ENABLED !== undefined ||
+      update.PROFILER_ENABLED !== undefined ||
+      update.CROUPIER_ENABLED !== undefined ||
+      update.PIT_BOSS_ENABLED !== undefined ||
+      update.MARKET_MAKING_MODE !== undefined ||
       update.MAX_POSITION_SIZE !== undefined ||
       update.MAX_POSITION_PCT !== undefined ||
       update.MAX_INVENTORY_UNITS !== undefined ||
@@ -3915,6 +3933,12 @@ function sanitizeSupervisorPayload(payload: unknown): JsonRecord {
 function configTelemetry(config: GlobalRiskConfig): Record<string, boolean | number | string> {
   return {
     TRADING_ENABLED: config.TRADING_ENABLED,
+    ORACLE_ENABLED: config.ORACLE_ENABLED,
+    SENTIMENT_ENABLED: config.SENTIMENT_ENABLED,
+    PROFILER_ENABLED: config.PROFILER_ENABLED,
+    CROUPIER_ENABLED: config.CROUPIER_ENABLED,
+    PIT_BOSS_ENABLED: config.PIT_BOSS_ENABLED,
+    MARKET_MAKING_MODE: config.MARKET_MAKING_MODE,
     MAX_POSITION_SIZE: config.MAX_POSITION_SIZE,
     MAX_POSITION_PCT: config.MAX_POSITION_PCT,
     MAX_INVENTORY_UNITS: config.MAX_INVENTORY_UNITS,

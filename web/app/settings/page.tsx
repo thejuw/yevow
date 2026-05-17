@@ -36,6 +36,7 @@ import {
 } from "@/lib/api";
 import {
   PARAMETER_MATRIX,
+  STRATEGY_KNOBS,
   changedMoreThanTenPercent,
   flattenState,
   parameterHelp
@@ -734,6 +735,34 @@ export default function SettingsPage() {
             <Wrench size={16} />
             Test Exchange Credential Path
           </button>
+        </section>
+
+        <section className="settings-panel settings-panel-wide glass">
+          <div className="panel-title">
+            <Shield size={17} />
+            <span>Strategy Knobs</span>
+            <button disabled={commandState !== "IDLE" || !settings} onClick={() => void saveRisk()}>
+              <Save size={16} />
+              Apply Knobs
+            </button>
+          </div>
+          <div className="strategy-knob-grid">
+            {STRATEGY_KNOBS.map((param) => (
+              <ParameterControl
+                key={param.key}
+                param={param}
+                value={riskDraft[param.key] ?? settings?.config[param.key]}
+                onChange={(value) => updateRiskDraft(param.key, value)}
+              />
+            ))}
+          </div>
+          <div className="transport-explainer">
+            <strong>Agent gates are hot-swapped through KV and refreshed by the Durable Object.</strong>
+            <span>
+              Disabling Croupier or Pit Boss is fail-closed: telemetry continues, but new
+              executable quote or trade dispatch is blocked.
+            </span>
+          </div>
         </section>
 
         <section className="settings-panel settings-panel-wide glass">

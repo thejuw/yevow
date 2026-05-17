@@ -4,6 +4,12 @@ export const GLOBAL_RISK_SETTINGS_KEY = "global_risk_settings";
 
 export const defaultConfig: GlobalRiskConfig = {
   TRADING_ENABLED: false,
+  ORACLE_ENABLED: true,
+  SENTIMENT_ENABLED: true,
+  PROFILER_ENABLED: true,
+  CROUPIER_ENABLED: true,
+  PIT_BOSS_ENABLED: true,
+  MARKET_MAKING_MODE: "BALANCED",
   MAX_POSITION_SIZE: 0,
   MAX_POSITION_PCT: 0,
   MAX_INVENTORY_UNITS: 0,
@@ -107,6 +113,18 @@ function extractConfigUpdate(
   const direct: GlobalRiskConfigUpdate = { ...nested };
   const tradingEnabled =
     "TRADING_ENABLED" in update ? update.TRADING_ENABLED : nested.TRADING_ENABLED;
+  const oracleEnabled =
+    "ORACLE_ENABLED" in update ? update.ORACLE_ENABLED : nested.ORACLE_ENABLED;
+  const sentimentEnabled =
+    "SENTIMENT_ENABLED" in update ? update.SENTIMENT_ENABLED : nested.SENTIMENT_ENABLED;
+  const profilerEnabled =
+    "PROFILER_ENABLED" in update ? update.PROFILER_ENABLED : nested.PROFILER_ENABLED;
+  const croupierEnabled =
+    "CROUPIER_ENABLED" in update ? update.CROUPIER_ENABLED : nested.CROUPIER_ENABLED;
+  const pitBossEnabled =
+    "PIT_BOSS_ENABLED" in update ? update.PIT_BOSS_ENABLED : nested.PIT_BOSS_ENABLED;
+  const marketMakingMode =
+    "MARKET_MAKING_MODE" in update ? update.MARKET_MAKING_MODE : nested.MARKET_MAKING_MODE;
   const maxPositionSize =
     "MAX_POSITION_SIZE" in update
       ? update.MAX_POSITION_SIZE
@@ -181,6 +199,24 @@ function extractConfigUpdate(
   if (tradingEnabled !== undefined) {
     direct.TRADING_ENABLED = tradingEnabled;
   }
+  if (oracleEnabled !== undefined) {
+    direct.ORACLE_ENABLED = oracleEnabled;
+  }
+  if (sentimentEnabled !== undefined) {
+    direct.SENTIMENT_ENABLED = sentimentEnabled;
+  }
+  if (profilerEnabled !== undefined) {
+    direct.PROFILER_ENABLED = profilerEnabled;
+  }
+  if (croupierEnabled !== undefined) {
+    direct.CROUPIER_ENABLED = croupierEnabled;
+  }
+  if (pitBossEnabled !== undefined) {
+    direct.PIT_BOSS_ENABLED = pitBossEnabled;
+  }
+  if (marketMakingMode !== undefined) {
+    direct.MARKET_MAKING_MODE = marketMakingMode;
+  }
   if (maxPositionSize !== undefined) {
     direct.MAX_POSITION_SIZE = maxPositionSize;
   }
@@ -248,6 +284,12 @@ function extractConfigUpdate(
 function normalizeConfig(value: Partial<GlobalRiskConfig>): GlobalRiskConfig {
   return {
     TRADING_ENABLED: value.TRADING_ENABLED === true,
+    ORACLE_ENABLED: value.ORACLE_ENABLED !== false,
+    SENTIMENT_ENABLED: value.SENTIMENT_ENABLED !== false,
+    PROFILER_ENABLED: value.PROFILER_ENABLED !== false,
+    CROUPIER_ENABLED: value.CROUPIER_ENABLED !== false,
+    PIT_BOSS_ENABLED: value.PIT_BOSS_ENABLED !== false,
+    MARKET_MAKING_MODE: normalizeMarketMakingMode(value.MARKET_MAKING_MODE),
     MAX_POSITION_SIZE: nonNegativeNumber(value.MAX_POSITION_SIZE),
     MAX_POSITION_PCT: boundedNumber(value.MAX_POSITION_PCT, 0, 1, defaultConfig.MAX_POSITION_PCT),
     MAX_INVENTORY_UNITS: nonNegativeNumber(value.MAX_INVENTORY_UNITS),
@@ -368,6 +410,16 @@ function normalizeGovernanceMode(value: unknown): GlobalRiskConfig["ORACLE_GOVER
   return value === "MANUAL" || value === "AUTONOMOUS" || value === "HYBRID"
     ? value
     : defaultConfig.ORACLE_GOVERNANCE_MODE;
+}
+
+function normalizeMarketMakingMode(value: unknown): GlobalRiskConfig["MARKET_MAKING_MODE"] {
+  return value === "OFF" ||
+    value === "PASSIVE" ||
+    value === "BALANCED" ||
+    value === "AGGRESSIVE" ||
+    value === "INVENTORY_SKEW_ONLY"
+    ? value
+    : defaultConfig.MARKET_MAKING_MODE;
 }
 
 function normalizeColoCsv(value: unknown): string {
