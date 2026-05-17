@@ -904,7 +904,7 @@ class ExchangeStreamController {
       let settled = false;
       let watchdog: ReturnType<typeof setTimeout> | null = null;
       const heartbeat =
-        this.config.source === "BINANCE"
+        !shouldSendApplicationHeartbeat(this.config)
           ? null
           : setInterval(() => {
               try {
@@ -3762,6 +3762,24 @@ function isDwellirGrpcRawConfig(config: ExchangeStreamConfig, env: Env): boolean
     typeof endpoint === "string" &&
     endpoint.includes("dwellir.com")
   ) || (config.grpcService ?? env.RPC_GRPC_SERVICE ?? "").startsWith("hyperliquid_l1_gateway.");
+}
+
+function shouldSendApplicationHeartbeat(config: ResolvedExchangeStreamConfig): boolean {
+  if (config.source === "BINANCE") {
+    return false;
+  }
+
+  const profile = config.subscriptionProfile;
+  const streamUrl = config.streamUrl.toLowerCase();
+  if (
+    config.transport === "websocket" &&
+    profile?.provider === "DWELLIR" &&
+    streamUrl.includes("orderbook.n.dwellir.com")
+  ) {
+    return false;
+  }
+
+  return true;
 }
 
 function isOrderbookStreamKind(value: string): boolean {
