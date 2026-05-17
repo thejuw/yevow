@@ -28,12 +28,10 @@ body {
 body {
   margin: 0;
   background:
-    radial-gradient(circle at top left, rgba(216, 198, 143, 0.08), transparent 34rem),
-    radial-gradient(circle at 82% 12%, rgba(133, 188, 255, 0.08), transparent 26rem),
     linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px),
     linear-gradient(rgba(255, 255, 255, 0.014) 1px, transparent 1px),
     var(--bg);
-  background-size: auto, auto, 32px 32px, 32px 32px;
+  background-size: 32px 32px, 32px 32px;
   color: var(--text);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   letter-spacing: 0;
@@ -147,7 +145,7 @@ output {
 
 .command-rail {
   min-height: auto;
-  padding: 12px 18px;
+  padding: 10px 16px;
   border-right: 0;
   border-bottom: 1px solid var(--line-cold);
   background: rgba(7, 9, 12, 0.86);
@@ -164,12 +162,12 @@ output {
   display: flex;
   align-items: center;
   gap: 12px;
-  min-width: 270px;
+  min-width: 250px;
 }
 
 .sigil {
-  width: 44px;
-  height: 44px;
+  width: 40px;
+  height: 40px;
   display: grid;
   place-items: center;
   border: 1px solid var(--line);
@@ -181,7 +179,7 @@ output {
 .brand-lockup h1 {
   margin: 0;
   font-family: "Bodoni 72", Didot, Georgia, serif;
-  font-size: 28px;
+  font-size: 25px;
   line-height: 1;
   letter-spacing: 0;
 }
@@ -224,13 +222,21 @@ output {
 .session-card {
   border: 1px solid var(--line-cold);
   border-radius: 8px;
-  padding: 8px;
+  padding: 7px;
   background: rgba(6, 8, 11, 0.34);
   display: grid;
   grid-template-columns: minmax(240px, 320px) 112px max-content max-content;
   align-items: end;
   gap: 8px;
   margin-left: auto;
+}
+
+.session-card.unlocked {
+  grid-template-columns: 112px max-content max-content;
+}
+
+.session-card.unlocked label {
+  display: none;
 }
 
 .session-card label {
@@ -368,14 +374,14 @@ output {
 }
 
 .grand-grid {
-  width: min(1920px, 100%);
+  width: min(1680px, 100%);
   margin: 0 auto;
-  padding: 16px 18px 24px;
+  padding: 12px 16px 22px;
   display: grid;
   grid-template-columns: repeat(12, minmax(0, 1fr));
   grid-auto-flow: dense;
-  grid-auto-rows: minmax(74px, auto);
-  gap: 14px;
+  grid-auto-rows: minmax(58px, auto);
+  gap: 10px;
 }
 
 .settings-shell {
@@ -517,11 +523,11 @@ output {
 
 .glass {
   border: 1px solid var(--line-cold);
-  background: var(--panel);
-  backdrop-filter: blur(16px);
+  background: rgba(13, 16, 22, 0.84);
+  backdrop-filter: blur(12px);
   border-radius: 8px;
-  box-shadow: var(--shadow);
-  padding: 13px;
+  box-shadow: 0 12px 38px rgba(0, 0, 0, 0.26);
+  padding: 11px;
   min-width: 0;
 }
 
@@ -533,13 +539,13 @@ output {
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 32px;
+  min-height: 28px;
   color: #dacb9f;
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  margin-bottom: 12px;
-  padding-bottom: 9px;
+  margin-bottom: 9px;
+  padding-bottom: 7px;
   border-bottom: 1px solid rgba(150, 165, 188, 0.12);
 }
 
@@ -572,12 +578,12 @@ output {
   grid-column: span 8;
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
+  gap: 8px;
 }
 
 .shadow-queue-panel {
-  order: 3;
-  grid-column: span 8;
+  order: 4;
+  grid-column: span 12;
 }
 
 .shadow-light {
@@ -640,8 +646,8 @@ output {
 }
 
 .liquidation-panel {
-  order: 9;
-  grid-column: span 8;
+  order: 5;
+  grid-column: span 7;
   grid-row: span 3;
 }
 
@@ -827,15 +833,14 @@ output {
 }
 
 .matrix-panel {
-  order: 4;
-  grid-column: span 8;
+  order: 5;
+  grid-column: span 5;
   grid-row: span 4;
 }
 
 .moltworker-panel {
-  order: 5;
+  order: 6;
   grid-column: span 4;
-  grid-row: span 3;
 }
 
 .system-panel,
@@ -845,24 +850,24 @@ output {
 }
 
 .efficacy-panel {
-  order: 8;
+  order: 6;
 }
 
 .trade-panel {
-  order: 10;
-  grid-column: span 7;
+  order: 7;
+  grid-column: span 8;
   grid-row: span 3;
 }
 
 .cctv-panel {
-  order: 11;
-  grid-column: span 5;
+  order: 7;
+  grid-column: span 4;
   grid-row: span 4;
 }
 
 .state-panel {
-  order: 12;
-  grid-column: span 7;
+  order: 8;
+  grid-column: span 12;
   grid-row: span 4;
 }
 
@@ -990,11 +995,13 @@ output {
 }
 
 .readiness-strip {
+  order: 3;
+  grid-column: span 8;
   display: grid;
-  grid-template-columns: 180px minmax(0, 1fr);
-  gap: 10px;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 8px;
   align-items: center;
-  padding: 12px;
+  padding: 10px 11px;
 }
 
 .readiness-strip > div:first-child {
@@ -1033,18 +1040,18 @@ output {
 
 .readiness-checks {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
   gap: 6px;
 }
 
 .readiness-checks span {
-  min-height: 28px;
+  min-height: 25px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: 1px solid var(--line-cold);
   border-radius: 6px;
-  padding: 5px 7px;
+  padding: 4px 6px;
   font-family: "SFMono-Regular", Consolas, monospace;
   font-size: 10px;
   overflow: hidden;
@@ -1068,8 +1075,8 @@ output {
 }
 
 .metric {
-  min-height: 68px;
-  padding: 10px 11px;
+  min-height: 56px;
+  padding: 8px 9px;
   border: 1px solid var(--line-cold);
   border-radius: 7px;
   background: var(--panel-soft);
@@ -1083,14 +1090,14 @@ output {
   align-items: center;
   gap: 6px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
 
 .metric strong {
   font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 16px;
+  font-size: 14px;
   color: var(--text);
   overflow-wrap: anywhere;
 }
@@ -1099,6 +1106,10 @@ output {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
+}
+
+.matrix-panel .param-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .param-control {
@@ -1274,6 +1285,10 @@ output {
   grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
   gap: 8px;
   margin-bottom: 10px;
+}
+
+.shadow-queue-panel .trade-summary {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
 }
 
 .paper-pnl-grid {
@@ -1530,6 +1545,7 @@ output {
   }
 
   .market-strip,
+  .readiness-strip,
   .shadow-queue-panel,
   .hunt-grid,
   .mode-panel,
@@ -1574,17 +1590,20 @@ output {
   }
 
   .market-strip,
+  .readiness-strip,
   .shadow-queue-panel,
   .hunt-grid,
   .mode-grid,
   .mode-readout,
   .bridge-metrics,
-    .trade-summary,
-    .shadow-queue-readout,
-    .alert-summary,
-    .settings-form.two-col,
-    .settings-metrics,
-    .param-grid,
+  .trade-summary,
+  .shadow-queue-panel .trade-summary,
+  .shadow-queue-readout,
+  .readiness-checks,
+  .alert-summary,
+  .settings-form.two-col,
+  .settings-metrics,
+  .param-grid,
   .heatmap-row,
   .cascade-card,
   .driver-row,

@@ -340,18 +340,14 @@ export default function CommandCenterPage() {
   const ingestSettings = isJsonRecord(settings?.backend.ingest)
     ? settings.backend.ingest
     : null;
-  const ingestReadMode = String(ingestSettings?.readMode ?? "DWELLIR_GRPC_FILLS_L4_BOOK_WS");
-  const orderbookTransportActive = String(
-    ingestSettings?.dwellirOrderbookTransportEffective ??
-      ingestSettings?.dwellirOrderbookTransport ??
-      "websocket"
-  ).toUpperCase();
   const readiness = liveReadiness?.readiness ?? null;
   const failedReadinessChecks = readiness?.checks.filter((check) => !check.ok) ?? [];
   const pureGrpcBookActive = ingestSettings?.pureGrpcOrderbookActive === true;
-  const dwellirStatusLabel = pureGrpcBookActive
-    ? "[ DWELLIR gRPC FILLS + gRPC BOOK: ACTIVE ]"
-    : "[ DWELLIR gRPC FILLS + L4 BOOK WS: ACTIVE ]";
+  const dwellirStatusLabel = "DWELLIR L1 ACTIVE";
+  const transportSummary = pureGrpcBookActive
+    ? "Fills gRPC + Book gRPC"
+    : "Fills gRPC + Book WS";
+  const transportMode = pureGrpcBookActive ? "PURE" : "HYBRID";
   const shadowModeActive =
     engineState?.citadel?.shadowMode === true ||
     executionSettings?.shadowMode === true ||
@@ -606,8 +602,10 @@ export default function CommandCenterPage() {
     () => normalizeAssetMatrix(engineState?.assetMatrix),
     [engineState?.assetMatrix]
   );
-  const displayEquity =
+  const seededEquity =
     numberOrNull(engineState?.bankroll.equity) ?? numberOrNull(pulse?.total_equity) ?? 0;
+  const paperEquity =
+    paperPnl.paperMtm === null ? seededEquity : roundDisplay(seededEquity + paperPnl.paperMtm);
   const drawdown = pulse?.active_drawdown ?? engineState?.riskMetrics.rollingDrawdownPct ?? 0;
   const imbalance = pulse?.current_imbalance ?? engineState?.microstructure.weightedImbalance ?? null;
   const regime = pulse?.regime ?? engineState?.oracle.regime ?? "UNKNOWN";
@@ -662,7 +660,7 @@ export default function CommandCenterPage() {
                 onChange={(event) => setPassword(event.target.value)}
               />
             </label>
-            <button className="primary-action" disabled={!password.trim()} type="submit">
+            <button className="primary-action" type="submit">
               <KeyRound size={16} />
               Unlock Admin
             </button>
@@ -704,7 +702,7 @@ export default function CommandCenterPage() {
           </div>
         </div>
 
-        <div className="session-card">
+        <div className={isUnlocked ? "session-card unlocked" : "session-card"}>
           <label>
             API
             <input value={apiBase} onChange={(event) => setApiBase(event.target.value)} />
@@ -738,8 +736,8 @@ export default function CommandCenterPage() {
           <strong>{compact.format(dwellirReceiptLatencyMs)}ms</strong>
         </div>
         <div className={pureGrpcBookActive ? "transport-state grpc" : "transport-state hybrid"}>
-          <span>{ingestReadMode}</span>
-          <strong>{orderbookTransportActive}</strong>
+          <span>{transportSummary}</span>
+          <strong>{transportMode}</strong>
         </div>
 
         {error ? (
@@ -823,13 +821,13 @@ export default function CommandCenterPage() {
         </section>
 
         <section className="market-strip glass">
-          <Metric label="Equity" value={currency.format(displayEquity)} icon={<Gauge size={17} />} />
+          <Metric label="Paper Equity" value={currency.format(paperEquity)} icon={<Gauge size={17} />} />
+          <Metric label="Seed Equity" value={currency.format(seededEquity)} />
           <Metric label="Drawdown" value={`${compact.format(drawdown * 100)}%`} icon={<Shield size={17} />} />
-          <Metric label="Imbalance" value={imbalance === null ? "n/a" : compact.format(imbalance)} icon={<Zap size={17} />} />
-          <Metric label="Regime" value={regime.replace("REGIME_", "")} icon={<RadioTower size={17} />} />
           <Metric label="Dwellir Receipt Δ" value={`${compact.format(dwellirReceiptLatencyMs)}ms`} />
+          <Metric label="Regime" value={regime.replace("REGIME_", "")} icon={<RadioTower size={17} />} />
+          <Metric label="Imbalance" value={imbalance === null ? "n/a" : compact.format(imbalance)} icon={<Zap size={17} />} />
           <Metric label="Jitter" value={`${compact.format(pulse?.jitter_ms ?? engineState?.executionProfile.jitterMs ?? 0)}ms`} />
-          <Metric label="VPIN" value={compact.format(pulse?.toxicity_score ?? engineState?.toxicityScore ?? 0)} />
           <Metric label="Quotes" value={engineState?.quoteState.status ?? "n/a"} />
         </section>
 
