@@ -3477,14 +3477,19 @@ function augmentDwellirHyperliquidReadStreams(
     instrumentCode: `${coin.toLowerCase()}-usd`,
     subscriptionProfile,
     subscriptions: [
-      {
-        method: "subscribe",
-        subscription: {
-          type: subscriptionProfile.l4BookEnabled ? "l4Book" : "l2Book",
-          coin,
-          nLevels: subscriptionProfile.bookDepth
-        }
-      }
+	      {
+	        method: "subscribe",
+	        subscription: {
+	          type: subscriptionProfile.l4BookEnabled ? "l4Book" : "l2Book",
+	          coin,
+	          ...(subscriptionProfile.l4BookEnabled
+	            ? {}
+	            : {
+	                nSigFigs: 5,
+	                strict: true
+	              })
+	        }
+	      }
     ]
   }));
 
@@ -3578,14 +3583,17 @@ function resolveDwellirSubscriptionProfile(
 ): MarketDataSubscriptionProfile {
   const tier = normalizeDwellirSubscriptionTier(env.DWELLIR_SUBSCRIPTION_TIER);
   const orderbookTransport = dwellirOrderbookTransport(env);
-  const maxBookDepth = tier === "PUBLIC" ? HYPERLIQUID_PUBLIC_L2_DEPTH_LIMIT : DWELLIR_MAX_L2_DEPTH_LIMIT;
+  const l4Requested = booleanEnv(env.DWELLIR_ENABLE_L4_BOOK);
+  const maxBookDepth =
+    tier === "PUBLIC" || (orderbookTransport === "websocket" && !l4Requested)
+      ? HYPERLIQUID_PUBLIC_L2_DEPTH_LIMIT
+      : DWELLIR_MAX_L2_DEPTH_LIMIT;
   const bookDepth = readPositiveInteger(
     env.DWELLIR_ORDERBOOK_DEPTH,
     maxBookDepth,
     1,
     maxBookDepth
   );
-  const l4Requested = booleanEnv(env.DWELLIR_ENABLE_L4_BOOK);
   const l4BookEnabled = l4Requested && tier !== "PUBLIC";
   const optimization =
     bookDepth >= maxBookDepth && !l4Requested

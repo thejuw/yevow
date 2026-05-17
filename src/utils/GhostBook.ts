@@ -67,6 +67,26 @@ export class GhostBook {
     this.fillIdBySlot = new Array<string>(config.capacity).fill("");
   }
 
+  reset(): void {
+    this.stateBySlot.fill(EMPTY);
+    this.sideBySlot.fill(0);
+    this.numeric.fill(0);
+    this.priceBySlot.fill(0);
+    this.sequenceBySlot.fill(0);
+    this.createdAtMsBySlot.fill(0);
+    this.instrumentBySlot.fill("");
+    this.fillIdBySlot.fill("");
+    this.writeCursor = 0;
+    this.ghostFills = 0;
+    this.greenLights = 0;
+    this.redLights = 0;
+    this.noEdgeSignals = 0;
+    this.invertedSignals = 0;
+    this.confirmedSignals = 0;
+    this.lastFill = null;
+    this.lastDecision = null;
+  }
+
   hydrate(state: ShadowQueueState | undefined): void {
     if (!state) {
       return;

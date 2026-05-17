@@ -40,11 +40,15 @@ describe("IngestWorker poison payload isolation", () => {
     expect(ethBook?.subscriptions).toHaveLength(1);
     expect(book?.subscriptionProfile?.tier).toBe("ENTERPRISE");
     expect(book?.subscriptionProfile?.optimization).toBe("MAXIMIZED");
-    expect(book?.subscriptionProfile?.bookDepth).toBe(100);
+    expect(book?.subscriptionProfile?.bookDepth).toBe(20);
+    expect(
+      (book?.subscriptions?.[0] as { subscription?: { nSigFigs?: number; strict?: boolean; nLevels?: number } } | undefined)
+        ?.subscription
+    ).toMatchObject({ nSigFigs: 5, strict: true });
     expect(
       (book?.subscriptions?.[0] as { subscription?: { nLevels?: number } } | undefined)
         ?.subscription?.nLevels
-    ).toBe(100);
+    ).toBeUndefined();
   });
 
   it("keeps the order book on Dwellir gRPC for non-public Dwellir routes", () => {

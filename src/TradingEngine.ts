@@ -118,12 +118,12 @@ const TOPOLOGY_HEADER_PREFIX = "x-sovereign-topology-";
 const WARM_UP_INTERVAL_MS = 60_000;
 const DEFAULT_HIGH_LATENCY_COLO_RISK_MULTIPLIER = 0.5;
 const SIGNAL_BUFFER_LIMIT = 500;
-const TELEMETRY_FLUSH_INTERVAL_MS = 5_000;
+const DEFAULT_TELEMETRY_FLUSH_INTERVAL_MS = 30_000;
 const TELEMETRY_BUFFER_LIMIT = 1_000;
 const ADMIN_STREAM_PULSE_INTERVAL_MS = 500;
 const AGENT_SNAPSHOT_TICK_INTERVAL = 1_000;
-const HOT_STORAGE_SNAPSHOT_INTERVAL_MS = 15_000;
-const HOT_STORAGE_SNAPSHOT_TICK_INTERVAL = 1_000;
+const DEFAULT_HOT_STORAGE_SNAPSHOT_INTERVAL_MS = 60_000;
+const DEFAULT_HOT_STORAGE_SNAPSHOT_TICK_INTERVAL = 5_000;
 const STORAGE_WRITE_BACKOFF_MS = 60_000;
 const BOOK_SNAPSHOT_TOP_LEVELS = 100;
 const TOP_OF_BOOK_CROSS_CHECK_INTERVAL_MS = 60_000;
@@ -177,12 +177,13 @@ const DEFAULT_QUOTE_REFRESH_MIN_INTERVAL_MS = 750;
 const DEFAULT_QUOTE_REFRESH_MIN_PRICE_TICKS = 1;
 const DEFAULT_MARKET_TICK_JOURNAL_INTERVAL = 100;
 const DEFAULT_MARKET_TICK_MAX_ROWS = 100_000;
-const DEFAULT_SHADOW_VLO_CAPACITY = 2_048;
+const DEFAULT_SHADOW_VLO_CAPACITY = 512;
 const DEFAULT_SHADOW_VLO_DRIFT_TRADES = 3;
 const DEFAULT_SHADOW_VLO_QUEUE_DEPTH_MULTIPLIER = 1;
 const DEFAULT_SHADOW_VLO_BASE_SPREAD_BPS = 1;
 const DEFAULT_SHADOW_VLO_LATENCY_BUDGET_MS = 5;
 const DEFAULT_SHADOW_VLO_MIN_SIZE = 0.00000001;
+const DEFAULT_SHADOW_QUEUE_NO_EDGE_LOG_INTERVAL_MS = 60_000;
 const DEFAULT_VAR_CONFIDENCE_Z = 2.326;
 const TARGET_ASSET_MATRIX = [
   { coin: "BTC", instrumentCode: "btc-usd" },
@@ -502,6 +503,7 @@ export class TradingEngine {
     }
   >();
   private quoteRefreshThrottleLogAt = new Map<string, number>();
+  private shadowQueueNoEdgeLogAt = new Map<string, number>();
   private latencyHistory: LatencyMetrics[] = [];
   private processingLatencySamples: number[] = [];
   private domWallHistory: LiquidityWall[] = [];
@@ -831,9 +833,7 @@ export class TradingEngine {
         ),
         riskMetrics: baseState.riskMetrics ?? defaultRiskMetrics(bankroll.equity, now),
         quoteState: baseState.quoteState ?? defaultQuoteState(),
-        shadowQueue:
-          baseState.shadowQueue ??
-          this.ghostBook.snapshot(now),
+        shadowQueue: this.ghostBook.snapshot(now),
         lastTradeIntent: baseState.lastTradeIntent ?? null,
         inventoryGuard:
           baseState.inventoryGuard ??
@@ -1012,6 +1012,7 @@ export class TradingEngine {
             clearQuoteState?: boolean;
             clearLatency?: boolean;
             resetPaperPortfolio?: boolean;
+            clearShadowQueue?: boolean;
           }>(request)) ?? {};
         const recovery = await this.recoverEngineState(payload);
 
@@ -1852,9 +1853,9 @@ export class TradingEngine {
   ): Promise<void> {
     const now = Date.now();
     const tickCount = this.engineState.processedTicks;
-    const dueByTime = now - this.lastHotStorageSnapshotAt >= HOT_STORAGE_SNAPSHOT_INTERVAL_MS;
+    const dueByTime = now - this.lastHotStorageSnapshotAt >= this.hotStorageSnapshotIntervalMs();
     const dueByTicks =
-      tickCount - this.lastHotStorageSnapshotTick >= HOT_STORAGE_SNAPSHOT_TICK_INTERVAL;
+      tickCount - this.lastHotStorageSnapshotTick >= this.hotStorageSnapshotTickInterval();
 
     if (!dueByTime && !dueByTicks) {
       return;
@@ -1863,6 +1864,24 @@ export class TradingEngine {
     this.lastHotStorageSnapshotAt = now;
     this.lastHotStorageSnapshotTick = tickCount;
     await this.safeStoragePut(entries, reason);
+  }
+
+  private hotStorageSnapshotIntervalMs(): number {
+    return readPositiveInteger(
+      this.env.HOT_STORAGE_SNAPSHOT_INTERVAL_MS,
+      DEFAULT_HOT_STORAGE_SNAPSHOT_INTERVAL_MS,
+      1_000,
+      300_000
+    );
+  }
+
+  private hotStorageSnapshotTickInterval(): number {
+    return readPositiveInteger(
+      this.env.HOT_STORAGE_SNAPSHOT_TICK_INTERVAL,
+      DEFAULT_HOT_STORAGE_SNAPSHOT_TICK_INTERVAL,
+      1,
+      100_000
+    );
   }
 
   private handleStorageWriteFailure(reason: string, error: unknown): void {
@@ -2861,6 +2880,7 @@ export class TradingEngine {
     clearQuoteState?: boolean;
     clearLatency?: boolean;
     resetPaperPortfolio?: boolean;
+    clearShadowQueue?: boolean;
   }): Promise<JsonRecord> {
     const observedAt = new Date().toISOString();
     const reason =
@@ -2886,6 +2906,12 @@ export class TradingEngine {
 
     if (payload.clearLatency !== false) {
       this.resetLatencyBaseline(observedAt, reason);
+    }
+
+    const shouldClearShadowQueue = payload.clearShadowQueue !== false;
+    if (shouldClearShadowQueue) {
+      this.ghostBook.reset();
+      this.shadowQueueNoEdgeLogAt.clear();
     }
 
     const prunedProfilerStorageKeys = await this.deleteRetiredProfilerStorage();
@@ -2954,6 +2980,7 @@ export class TradingEngine {
       staleTickCount: 0,
       quoteState: nextQuoteState,
       assetQuoteStates: nextAssetQuoteStates,
+      shadowQueue: this.ghostBook.snapshot(observedAt),
       citadel: nextCitadel,
       riskMetrics: nextRiskMetrics,
       risk: nextRisk,
@@ -2986,6 +3013,7 @@ export class TradingEngine {
       clearQuoteState: payload.clearQuoteState !== false,
       clearLatency: payload.clearLatency !== false,
       resetPaperPortfolio: payload.resetPaperPortfolio === true,
+      clearShadowQueue: shouldClearShadowQueue,
       prunedProfilerStorageKeys,
       tradingEnabled: this.cachedConfig.TRADING_ENABLED,
       observedAt
@@ -2998,6 +3026,7 @@ export class TradingEngine {
       clearQuoteState: payload.clearQuoteState !== false,
       clearLatency: payload.clearLatency !== false,
       resetPaperPortfolio: payload.resetPaperPortfolio === true,
+      clearShadowQueue: shouldClearShadowQueue,
       prunedProfilerStorageKeyCount: prunedProfilerStorageKeys.length,
       tradingEnabled: this.cachedConfig.TRADING_ENABLED,
       observedAt
@@ -4682,7 +4711,7 @@ export class TradingEngine {
       }
     }
 
-    await this.persistHotStorageSnapshot(writes, "HOT_PATH_TICK_SNAPSHOT");
+    this.state.waitUntil(this.persistHotStorageSnapshot(writes, "HOT_PATH_TICK_SNAPSHOT"));
     if (this.shouldJournalMarketTick()) {
       this.logger.recordMarketTick(tick);
     }
@@ -5002,14 +5031,17 @@ export class TradingEngine {
     observedAt: string
   ): ShadowQueueDecision {
     if (decision.action === "NO_EDGE" || decision.dispatchSide === null) {
-      this.logger.info("SHADOW_QUEUE_NO_EDGE", "Virtual fill drift stayed inside one tick", {
-        decisionId: decision.decisionId,
-        fillId: decision.fillId,
-        instrumentCode: decision.instrumentCode,
-        microDrift: decision.microDrift,
-        tickThreshold: decision.tickThreshold,
-        driftTrades: decision.driftTrades
-      });
+      if (this.shouldLogShadowQueueNoEdge(decision.instrumentCode)) {
+        this.logger.info("SHADOW_QUEUE_NO_EDGE", "Virtual fill drift stayed inside one tick", {
+          decisionId: decision.decisionId,
+          fillId: decision.fillId,
+          instrumentCode: decision.instrumentCode,
+          microDrift: decision.microDrift,
+          tickThreshold: decision.tickThreshold,
+          driftTrades: decision.driftTrades,
+          sampled: true
+        });
+      }
       this.publish("SHADOW_QUEUE_NO_EDGE", decision as unknown as Record<string, unknown>, decision.decisionId);
       return decision;
     }
@@ -5091,6 +5123,24 @@ export class TradingEngine {
     }
 
     return updatedDecision;
+  }
+
+  private shouldLogShadowQueueNoEdge(instrumentCode: string): boolean {
+    const now = Date.now();
+    const previous = this.shadowQueueNoEdgeLogAt.get(instrumentCode) ?? 0;
+    const intervalMs = readPositiveInteger(
+      this.env.SHADOW_QUEUE_NO_EDGE_LOG_INTERVAL_MS,
+      DEFAULT_SHADOW_QUEUE_NO_EDGE_LOG_INTERVAL_MS,
+      1_000,
+      300_000
+    );
+
+    if (now - previous < intervalMs) {
+      return false;
+    }
+
+    this.shadowQueueNoEdgeLogAt.set(instrumentCode, now);
+    return true;
   }
 
   private createShadowQueueTradeIntent(
@@ -7454,8 +7504,11 @@ export class TradingEngine {
       tick.exchangeTimestamp;
     const providerTimestamp = tick.providerTimestamp ?? sourceTimestamp;
     const sourceTime = parseTimestampMs(sourceTimestamp, "source_timestamp");
-    const ingestTime = parseTimestampMs(tick.receivedAt, "ingest_timestamp");
+    const rawIngestTime = parseTimestampMs(tick.receivedAt, "ingest_timestamp");
     const brainTime = parseTimestampMs(brainTimestamp, "brain_timestamp");
+    const ingestClockSkewMs = Math.max(0, rawIngestTime - brainTime);
+    const ingestTime = ingestClockSkewMs > 0 ? brainTime : rawIngestTime;
+    const ingestTimestamp = ingestClockSkewMs > 0 ? brainTimestamp : tick.receivedAt;
     const networkLatencyMs = Math.max(0, ingestTime - sourceTime);
     const processingLatencyMs = Math.max(0, brainTime - ingestTime);
 
@@ -7468,9 +7521,9 @@ export class TradingEngine {
       sequence: tick.sequence,
       providerTimestamp,
       sourceTimestamp,
-      ingestTimestamp: tick.receivedAt,
+      ingestTimestamp,
       brainTimestamp,
-      clockOffsetMs: tick.clockOffsetMs,
+      clockOffsetMs: tick.clockOffsetMs + ingestClockSkewMs,
       networkLatencyMs,
       processingLatencyMs,
       totalLatencyMs: networkLatencyMs + processingLatencyMs,
@@ -8135,7 +8188,7 @@ export class TradingEngine {
           firstObservedAt: aggregate.firstObservedAt,
           lastObservedAt: aggregate.lastObservedAt,
           latestPayload: aggregate.latestPayload,
-          flushIntervalMs: TELEMETRY_FLUSH_INTERVAL_MS
+          flushIntervalMs: this.telemetryFlushIntervalMs()
         }
       });
     }
@@ -8289,7 +8342,7 @@ export class TradingEngine {
           aggregate.timeToBookSamples > 0
             ? roundLatency(aggregate.sumTimeToBookMs / aggregate.timeToBookSamples)
             : null,
-        flushIntervalMs: TELEMETRY_FLUSH_INTERVAL_MS
+        flushIntervalMs: this.telemetryFlushIntervalMs()
       }
     };
   }
@@ -8326,6 +8379,15 @@ export class TradingEngine {
     this.scheduleTelemetryFlush();
   }
 
+  private telemetryFlushIntervalMs(): number {
+    return readPositiveInteger(
+      this.env.TELEMETRY_FLUSH_INTERVAL_MS,
+      DEFAULT_TELEMETRY_FLUSH_INTERVAL_MS,
+      1_000,
+      300_000
+    );
+  }
+
   private scheduleTelemetryFlush(): void {
     if (this.telemetryFlushScheduled) {
       return;
@@ -8343,7 +8405,7 @@ export class TradingEngine {
             );
             resolve();
           });
-      }, TELEMETRY_FLUSH_INTERVAL_MS);
+      }, this.telemetryFlushIntervalMs());
     });
 
     this.state.waitUntil(flush);
@@ -9195,9 +9257,12 @@ function nativeHyperliquidLatencyMetrics(input: {
   sampleCount: number;
   location: EngineLocation;
 }): LatencyMetrics {
-  const ingestMs = parseTimestampMs(input.receivedAt, "ingest_timestamp");
+  const rawIngestMs = parseTimestampMs(input.receivedAt, "ingest_timestamp");
   const sourceMs = parseTimestampMs(input.exchangeTimestamp, "provider_timestamp");
   const brainMs = parseTimestampMs(input.brainTimestamp, "brain_timestamp");
+  const ingestClockSkewMs = Math.max(0, rawIngestMs - brainMs);
+  const ingestMs = ingestClockSkewMs > 0 ? brainMs : rawIngestMs;
+  const ingestTimestamp = ingestClockSkewMs > 0 ? input.brainTimestamp : input.receivedAt;
   const totalLatencyMs = roundLatency(Math.max(0, input.totalLatencyMs));
 
   return {
@@ -9209,9 +9274,9 @@ function nativeHyperliquidLatencyMetrics(input: {
     sequence: input.sequence,
     providerTimestamp: input.exchangeTimestamp,
     sourceTimestamp: input.exchangeTimestamp,
-    ingestTimestamp: input.receivedAt,
+    ingestTimestamp,
     brainTimestamp: input.brainTimestamp,
-    clockOffsetMs: 0,
+    clockOffsetMs: ingestClockSkewMs,
     networkLatencyMs: roundLatency(Math.max(0, ingestMs - sourceMs)),
     processingLatencyMs: roundLatency(Math.max(0, brainMs - ingestMs)),
     totalLatencyMs,
@@ -10537,12 +10602,17 @@ function aggregateQuoteState(
   const values = Object.values(states);
   const suspended = values.filter((state) => isQuoteSuspendedAt(state, observedAt));
   const active = values.filter((state) => !isQuoteSuspendedAt(state, observedAt));
+  const previousLastQuote =
+    previous.lastQuote && isTargetInstrument(previous.lastQuote.instrumentCode)
+      ? previous.lastQuote
+      : null;
   const lastQuote =
     values
       .map((state) => state.lastQuote)
+      .filter((quote) => !quote || isTargetInstrument(quote.instrumentCode))
       .filter((quote): quote is NonNullable<EngineState["quoteState"]["lastQuote"]> => Boolean(quote))
       .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))[0] ??
-    previous.lastQuote;
+    previousLastQuote;
 
   if (values.length > 0 && active.length === 0 && suspended.length > 0) {
     const indefinite = suspended.find((state) => !state.suspendedUntil);

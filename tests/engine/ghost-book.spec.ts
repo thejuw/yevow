@@ -79,6 +79,35 @@ describe("GhostBook shadow queue matrix", () => {
       dispatchSide: "SELL"
     });
   });
+
+  it("resets active virtual orders and counters for controlled recovery", () => {
+    const ghostBook = new GhostBook({
+      capacity: 16,
+      driftTradeDelay: 1,
+      queueDepthMultiplier: 0,
+      baseSpreadBps: 1,
+      latencyBudgetMs: 5,
+      minSize: 0.00000001
+    });
+
+    ghostBook.injectBbo(
+      sampleBook({ midPrice: 100.5, bestBid: 100, bestAsk: 101 }),
+      "2026-05-16T00:00:00.000Z"
+    );
+    expect(ghostBook.snapshot("2026-05-16T00:00:00.001Z").activeOrders).toBe(2);
+
+    ghostBook.reset();
+    const snapshot = ghostBook.snapshot("2026-05-16T00:00:00.002Z");
+
+    expect(snapshot).toMatchObject({
+      activeOrders: 0,
+      pendingDrifts: 0,
+      ghostFills: 0,
+      greenLights: 0,
+      redLights: 0,
+      noEdgeSignals: 0
+    });
+  });
 });
 
 function sampleBook(input: {

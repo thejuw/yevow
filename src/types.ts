@@ -170,6 +170,9 @@ export interface Env {
   NEWS_FEEDS?: string;
   JANITOR_LOG_RETENTION_DAYS?: string;
   JANITOR_TELEMETRY_MAX_ROWS?: string;
+  TELEMETRY_FLUSH_INTERVAL_MS?: string;
+  HOT_STORAGE_SNAPSHOT_INTERVAL_MS?: string;
+  HOT_STORAGE_SNAPSHOT_TICK_INTERVAL?: string;
   MARKET_TICK_JOURNAL_INTERVAL?: string;
   MARKET_TICK_MAX_ROWS?: string;
   MOLTWORKER_HEALTH_URL?: string;
@@ -193,6 +196,7 @@ export interface Env {
   SHADOW_VLO_BASE_SPREAD_BPS?: string;
   SHADOW_VLO_LATENCY_BUDGET_MS?: string;
   SHADOW_VLO_MIN_SIZE?: string;
+  SHADOW_QUEUE_NO_EDGE_LOG_INTERVAL_MS?: string;
 }
 
 export type ISO8601 = string;
