@@ -8,6 +8,51 @@ Sovereign-Sigma is a Cloudflare-native trading engine and command center.
 - UI: Next.js static export deployed to Cloudflare Pages
 - Storage: D1 for audit/trade logs, KV for global config and risk controls
 
+## Public Architecture
+
+```mermaid
+flowchart LR
+  operator["Operator / Admin"] --> pages["Cloudflare Pages\nNext.js Command Center"]
+  pages --> gateway["Gateway Worker\napi.yevow.co"]
+  gateway --> auth["JWT Auth\n/admin/* guard"]
+  auth --> engine["TradingEngine\nDurable Object singleton"]
+
+  dwellir["Dwellir Hyperliquid\nL1 data stream"] --> ingest["Ingest Worker\nfills + order book feed"]
+  ingest --> engine
+
+  engine --> d1["Cloudflare D1\nlogs, trades, decisions,\nexecution quality"]
+  engine --> kv["Workers KV\nrisk config, strategy knobs,\nkill switch"]
+  engine --> vault["RISK_VAULT / Secrets\ncredential indirection"]
+  engine --> executioner["Executioner Worker\nHyperliquid adapter"]
+  executioner --> hyperliquid["Hyperliquid\nInfo + Exchange APIs"]
+
+  moltworker["Moltworker Supervisor\nSystem 2 governance"] --> gateway
+  gateway --> pages
+```
+
+The public deployment is split into three Worker roles:
+
+- `sovereign-sigma-core`: authenticated API gateway plus the `TradingEngine` Durable Object brain.
+- `sovereign-sigma-ingest`: market-data coordinator that forwards normalized Hyperliquid/Dwellir events into the Durable Object.
+- `sovereign-sigma-executioner`: exchange adapter for signed order, cancel, account, and shadow-execution flows.
+
+The command center is intentionally static and talks to the API over authenticated REST and WebSocket routes. Strategy controls and raw inspection tables live in `/settings`; the dashboard is reserved for live operating telemetry.
+
+## Agent Overview
+
+| Agent | Responsibility | Output |
+| --- | --- | --- |
+| Oracle | Classifies regime, estimates volatility, and produces posterior price distributions. | Regime state, skepticism multiplier, posterior PDF, ensemble vote. |
+| Profiler | Tracks AM-VPIN, order-book imbalance, whale prints, spoofing, and cascade risk. | Toxicity state, quote halt signals, defensive alerts. |
+| Croupier | Computes expected value and builds post-only market-making quotes using inventory-aware skew. | Trade intent, reservation price, quote orders. |
+| Pit Boss | Applies Kelly sizing, inventory caps, drawdown controls, asset allocation, and final risk approval. | Approved/rejected execution plan and risk rationale. |
+| Sentiment | Optional Workers AI or rule-based headline bias. | Sentiment score, confidence, cost/latency telemetry. |
+| Executioner | Converts approved intents into exchange-compatible signed or shadow orders. | Execution reports, fill/ack state, slippage inputs. |
+| Governor | Applies Moltworker/admin macro bias and temporary overrides. | Effective config, strategic bias, override audit trail. |
+| Janitor | Keeps hot state, D1 rows, telemetry buffers, and order maps clean. | Cleanup reports and retention enforcement. |
+
+All agents emit structured telemetry into the internal bus and D1 audit trail. The engine is designed to keep market-data ingestion alive even when execution is disabled, so paper/shadow replay can continue while live capital remains gated.
+
 ## Live Surfaces
 
 - API: `https://api.yevow.co`
