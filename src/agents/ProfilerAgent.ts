@@ -28,6 +28,8 @@ const DEFAULT_TOXIC_THRESHOLD = 0.75;
 const DEFAULT_CRITICAL_THRESHOLD = 0.85;
 const DEFAULT_CRITICAL_OBI = 0.8;
 const DEFAULT_CRITICAL_HALT_MS = 60_000;
+const DEFAULT_CONTESTED_SPREAD_MULTIPLIER = 1.5;
+const DEFAULT_TOXIC_SPREAD_MULTIPLIER = 3;
 const VOLUME_EPSILON = 0.00000001;
 
 export interface ProfilerAgentConfig {
@@ -43,6 +45,8 @@ export interface ProfilerAgentConfig {
   criticalThreshold?: number;
   criticalObi?: number;
   criticalHaltMs?: number;
+  contestedSpreadMultiplier?: number;
+  toxicSpreadMultiplier?: number;
 }
 
 export interface ProfilerContext {
@@ -87,6 +91,8 @@ export class ProfilerAgent {
   private criticalThreshold: number;
   private criticalObi: number;
   private criticalHaltMs: number;
+  private contestedSpreadMultiplier: number;
+  private toxicSpreadMultiplier: number;
   private readonly whalePrintZThreshold: number;
   private readonly quoteHibernateMs: number;
   private buyVolumes: Float32Array;
@@ -140,6 +146,14 @@ export class ProfilerAgent {
       config.criticalHaltMs,
       DEFAULT_CRITICAL_HALT_MS
     );
+    this.contestedSpreadMultiplier = positiveNumber(
+      config.contestedSpreadMultiplier,
+      DEFAULT_CONTESTED_SPREAD_MULTIPLIER
+    );
+    this.toxicSpreadMultiplier = positiveNumber(
+      config.toxicSpreadMultiplier,
+      DEFAULT_TOXIC_SPREAD_MULTIPLIER
+    );
     this.whalePrintZThreshold = positiveNumber(
       config.whalePrintZThreshold,
       DEFAULT_WHALE_Z_THRESHOLD
@@ -188,6 +202,22 @@ export class ProfilerAgent {
     this.criticalHaltMs = positiveInteger(
       config.AM_VPIN_QUOTE_HALT_MS,
       this.criticalHaltMs
+    );
+    this.contestedSpreadMultiplier = clamp(
+      positiveNumber(
+        config.AM_VPIN_CONTESTED_SPREAD_MULTIPLIER,
+        this.contestedSpreadMultiplier
+      ),
+      1,
+      10
+    );
+    this.toxicSpreadMultiplier = clamp(
+      positiveNumber(
+        config.AM_VPIN_TOXIC_SPREAD_MULTIPLIER,
+        this.toxicSpreadMultiplier
+      ),
+      1,
+      10
     );
 
     if (nextBucketSize !== this.bucketSize || nextRollingWindow !== this.rollingWindow) {
@@ -534,7 +564,9 @@ export class ProfilerAgent {
       toxicThreshold: this.toxicThreshold,
       criticalThreshold: this.criticalThreshold,
       criticalObi: this.criticalObi,
-      criticalHaltMs: this.criticalHaltMs
+      criticalHaltMs: this.criticalHaltMs,
+      contestedSpreadMultiplier: this.contestedSpreadMultiplier,
+      toxicSpreadMultiplier: this.toxicSpreadMultiplier
     });
 
     this.buyVolumes[this.ringIndex] = this.activeBuyVolume;
@@ -1243,6 +1275,8 @@ function classifyToxicity(input: {
   criticalThreshold: number;
   criticalObi: number;
   criticalHaltMs: number;
+  contestedSpreadMultiplier: number;
+  toxicSpreadMultiplier: number;
 }): AmVpinConsensus {
   const pressureSign = signOf(input.directionalImbalance);
   const obiSign = signOf(input.obi ?? 0);
@@ -1267,7 +1301,7 @@ function classifyToxicity(input: {
     return {
       state: "CONTESTED",
       pressureSide,
-      spreadMultiplier: 1,
+      spreadMultiplier: input.contestedSpreadMultiplier,
       reservationShiftBps: 0,
       haltMs: null,
       structuralConsensus
@@ -1292,8 +1326,8 @@ function classifyToxicity(input: {
     return {
       state: "TOXIC",
       pressureSide,
-      spreadMultiplier: 1,
-      reservationShiftBps: 0,
+      spreadMultiplier: input.toxicSpreadMultiplier,
+      reservationShiftBps: Math.max(0, (input.toxicSpreadMultiplier - 1) * 2),
       haltMs: null,
       structuralConsensus
     };
@@ -1302,7 +1336,7 @@ function classifyToxicity(input: {
   return {
     state: "CONTESTED",
     pressureSide,
-    spreadMultiplier: 1,
+    spreadMultiplier: input.contestedSpreadMultiplier,
     reservationShiftBps: 0,
     haltMs: null,
     structuralConsensus

@@ -340,8 +340,18 @@ function normalizeConfig(value: Partial<GlobalRiskConfig>): GlobalRiskConfig {
       1,
       defaultConfig.AM_VPIN_CRITICAL_OBI
     ),
-    AM_VPIN_CONTESTED_SPREAD_MULTIPLIER: 1,
-    AM_VPIN_TOXIC_SPREAD_MULTIPLIER: 1,
+    AM_VPIN_CONTESTED_SPREAD_MULTIPLIER: boundedNumber(
+      value.AM_VPIN_CONTESTED_SPREAD_MULTIPLIER,
+      1,
+      10,
+      defaultConfig.AM_VPIN_CONTESTED_SPREAD_MULTIPLIER
+    ),
+    AM_VPIN_TOXIC_SPREAD_MULTIPLIER: boundedNumber(
+      value.AM_VPIN_TOXIC_SPREAD_MULTIPLIER,
+      1,
+      10,
+      defaultConfig.AM_VPIN_TOXIC_SPREAD_MULTIPLIER
+    ),
     AM_VPIN_QUOTE_HALT_MS: positiveInteger(
       value.AM_VPIN_QUOTE_HALT_MS,
       defaultConfig.AM_VPIN_QUOTE_HALT_MS

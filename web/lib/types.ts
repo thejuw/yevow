@@ -35,6 +35,8 @@ export interface GlobalRiskConfig {
   AM_VPIN_CRITICAL_THRESHOLD: number;
   AM_VPIN_OBI_DEPTH: number;
   AM_VPIN_CRITICAL_OBI: number;
+  AM_VPIN_CONTESTED_SPREAD_MULTIPLIER: number;
+  AM_VPIN_TOXIC_SPREAD_MULTIPLIER: number;
   AM_VPIN_QUOTE_HALT_MS: number;
   VAR_CONFIDENCE_Z: number;
   ORACLE_GOVERNANCE_MODE: GovernanceMode;
@@ -135,6 +137,8 @@ export interface ProfilerState {
   latestDirectionalImbalance?: number;
   toxicityState?: ToxicityState;
   pressureSide?: ToxicityPressureSide;
+  spreadMultiplier?: number;
+  reservationShiftBps?: number;
   quoteHaltUntil?: string | null;
   amVpinBucketCompletions?: number;
   amVpinMean?: number;

@@ -185,6 +185,26 @@ export const PARAMETER_MATRIX: ParameterDescriptor[] = [
     step: 0.001
   },
   {
+    key: "AM_VPIN_CONTESTED_SPREAD_MULTIPLIER",
+    label: "Contested Width",
+    group: "Profiler",
+    kind: "number",
+    min: 1,
+    max: 10,
+    step: 0.05,
+    help: "Spread multiplier applied when AM-VPIN is elevated but L2 liquidity is absorbing the flow. Keeps quotes live while charging more for adverse selection."
+  },
+  {
+    key: "AM_VPIN_TOXIC_SPREAD_MULTIPLIER",
+    label: "Toxic Width",
+    group: "Profiler",
+    kind: "number",
+    min: 1,
+    max: 10,
+    step: 0.05,
+    help: "Spread multiplier applied when AM-VPIN and OBI agree that flow is toxic. Raises the price of liquidity before the critical quote-halt threshold."
+  },
+  {
     key: "AM_VPIN_QUOTE_HALT_MS",
     label: "Critical Halt",
     group: "Profiler",

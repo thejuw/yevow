@@ -87,6 +87,12 @@ CREATE INDEX IF NOT EXISTS idx_trades_executed_at
 CREATE INDEX IF NOT EXISTS idx_trades_status_executed_at
   ON trades (status, executed_at);
 
+CREATE INDEX IF NOT EXISTS idx_trades_created_at
+  ON trades (created_at);
+
+CREATE INDEX IF NOT EXISTS idx_trades_asset_created_at
+  ON trades (asset, created_at);
+
 CREATE INDEX IF NOT EXISTS idx_trades_asset
   ON trades (asset);
 

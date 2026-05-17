@@ -4304,6 +4304,8 @@ export class TradingEngine {
       ),
       profilerToxicityState: profilerResult.state.toxicityState,
       profilerPressureSide: profilerResult.state.pressureSide,
+      profilerSpreadMultiplier: profilerResult.state.spreadMultiplier,
+      profilerReservationShiftBps: profilerResult.state.reservationShiftBps,
       macroBias: this.macroBias,
       observedAt: metrics.brainTimestamp
     });
@@ -5367,6 +5369,26 @@ export class TradingEngine {
     );
     const suspendedUntil = previous.suspendedUntil;
 
+    if (!this.cachedConfig.TRADING_ENABLED) {
+      return {
+        status: "SUSPENDED",
+        reason: "TRADING_DISABLED",
+        suspendedUntil: null,
+        lastQuote: previous.lastQuote,
+        updatedAt: observedAt
+      };
+    }
+
+    if (!isInstrumentSelectedByMoltworker(instrumentCode, this.macroBias)) {
+      return {
+        status: "SUSPENDED",
+        reason: "MOLTWORKER_NOT_SELECTED",
+        suspendedUntil: null,
+        lastQuote: previous.lastQuote,
+        updatedAt: observedAt
+      };
+    }
+
     if (pullAllQuotes) {
       return {
         status: "SUSPENDED",
@@ -5444,6 +5466,21 @@ export class TradingEngine {
       return;
     }
 
+    const assetRuntimeState = this.engineState.assetMatrix?.[quote.instrumentCode];
+    if (
+      !isInstrumentSelectedByMoltworker(quote.instrumentCode, this.macroBias) ||
+      assetRuntimeState?.quoteEligible === false
+    ) {
+      this.logger.info("QUOTE_DISPATCH_BLOCKED", "Skipped quote for inactive Moltworker asset", {
+        quoteSignalId: quote.signalId,
+        instrumentCode: quote.instrumentCode,
+        selectedByMoltworker: assetRuntimeState?.selectedByMoltworker ?? null,
+        quoteEligible: assetRuntimeState?.quoteEligible ?? null,
+        reason: assetRuntimeState?.quoteReason ?? "MOLTWORKER_NOT_SELECTED"
+      });
+      return;
+    }
+
     if (
       isQuoteSuspendedAt(
         quoteStateForInstrumentState(
@@ -5458,10 +5495,51 @@ export class TradingEngine {
       return;
     }
 
-    const intents = quote.orders.map((order): TradeIntent => {
-      const action = order.side === "BID" ? "BUY" : "SELL";
+    const intents: TradeIntent[] = [];
+    const bankroll = Math.max(
+      0,
+      this.engineState.bankroll.equity,
+      this.engineState.bankroll.cash
+    );
+    const maxPositionPct =
+      this.cachedConfig.MAX_POSITION_PCT > 0
+        ? this.cachedConfig.MAX_POSITION_PCT
+        : readPositiveNumber(this.env.MAX_POSITION_PCT, DEFAULT_MAX_POSITION_PCT);
+    const assetAllocation =
+      this.engineState.assetMatrix?.[quote.instrumentCode]?.capitalAllocationPct ?? 1;
+    const maxBudgetFromPct =
+      bankroll *
+      Math.max(0, maxPositionPct) *
+      Math.min(1, Math.max(0, assetAllocation)) *
+      Math.max(0, this.engineState.location.positionSizeMultiplier);
+    const maxBudgetFromConfig =
+      this.cachedConfig.MAX_POSITION_SIZE > 0
+        ? this.cachedConfig.MAX_POSITION_SIZE *
+          Math.max(0, this.engineState.location.positionSizeMultiplier)
+        : Number.POSITIVE_INFINITY;
+    const maxOrderNotional = Math.min(maxBudgetFromConfig, maxBudgetFromPct);
 
-      return {
+    for (const order of quote.orders) {
+      const action = order.side === "BID" ? "BUY" : "SELL";
+      const maxSize =
+        Number.isFinite(maxOrderNotional) && order.price > 0
+          ? maxOrderNotional / order.price
+          : order.size;
+      const approvedSize = roundCrypto(Math.min(order.size, Math.max(0, maxSize)));
+
+      if (approvedSize <= 0) {
+        this.logger.warn("QUOTE_ORDER_RISK_CAP_ZERO", "Skipped quote order with no remaining risk budget", {
+          quoteSignalId: quote.signalId,
+          instrumentCode: quote.instrumentCode,
+          side: action,
+          requestedSize: order.size,
+          price: order.price,
+          maxOrderNotional
+        });
+        continue;
+      }
+
+      intents.push({
         schemaVersion: "trade-intent.v1",
         intentId: order.clientOrderId,
         traceId: `${this.engineState.engineId}:quote:${quote.signalId}:${order.clientOrderId}`,
@@ -5476,7 +5554,7 @@ export class TradingEngine {
         intendedPrice: order.price,
         expectedPrice: order.price,
         requestedSize: order.size,
-        approvedSize: order.size,
+        approvedSize,
         probabilityWin: 0.5,
         probabilityLoss: 0.5,
         profit: 0,
@@ -5490,16 +5568,18 @@ export class TradingEngine {
         rationale:
           order.strategy === "LIQUIDATION_ABSORPTION"
             ? `Post-only liquidation absorption quote from signal ${quote.signalId}; cluster ${order.clusterId ?? "unknown"}`
-            : `AMM quote child order from signal ${quote.signalId}`,
+            : `AMM quote child order from signal ${quote.signalId}; risk-capped notional=${roundMetric(approvedSize * order.price, 8)}`,
         createdAt: quote.createdAt
-      };
-    });
+      });
+    }
 
     for (const intent of intents) {
       await this.dispatchExecution(intent);
     }
 
-    this.rememberDispatchedQuote(quote);
+    if (intents.length > 0) {
+      this.rememberDispatchedQuote(quote);
+    }
   }
 
   private shouldThrottleQuoteDispatch(
@@ -9608,6 +9688,22 @@ function selectedMoltworkerInstruments(macroBias: MacroBias): Set<string> {
     (macroBias.instruments ?? [])
       .filter((instrument) => typeof instrument === "string" && instrument.trim().length > 0)
       .map((instrument) => normalizeNativeInstrumentCode(instrument))
+  );
+}
+
+function isInstrumentSelectedByMoltworker(
+  instrumentCode: string,
+  macroBias: MacroBias
+): boolean {
+  const selected = selectedMoltworkerInstruments(macroBias);
+  const normalized = normalizeNativeInstrumentCode(instrumentCode);
+  const coin = normalized.split("-")[0];
+
+  return (
+    selected.size === 0 ||
+    selected.has(normalized) ||
+    selected.has(coin) ||
+    selected.has(`${coin}-perp`)
   );
 }
 

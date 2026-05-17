@@ -47,6 +47,8 @@ export interface CroupierInput {
   predatoryOrderOffsetBps?: number;
   profilerToxicityState?: ToxicityState;
   profilerPressureSide?: ToxicityPressureSide;
+  profilerSpreadMultiplier?: number;
+  profilerReservationShiftBps?: number;
   macroBias?: MacroBias;
   observedAt: string;
 }
@@ -203,7 +205,9 @@ export class CroupierAgent {
         `fundingHourly=${round(fundingRateHourly, 8)} fundingCarry=${round(fundingCarryCost, 8)} ` +
         `reservation=${round(reservationPrice ?? mid, 8)} gamma=${round(riskAversionFactor, 8)} ` +
         `macroBias=${input.macroBias?.direction ?? "NEUTRAL"} score=${round(macroScore, 4)} ` +
-        `amVpinState=${input.profilerToxicityState ?? "NORMAL"} discretePostOnly=true`,
+        `amVpinState=${input.profilerToxicityState ?? "NORMAL"} ` +
+        `spreadMultiplier=${round(Math.max(1, finiteNumber(input.profilerSpreadMultiplier, 1)), 4)} ` +
+        `discretePostOnly=true`,
       createdAt: input.observedAt
     };
   }
@@ -247,13 +251,29 @@ class AMMEngine {
     const currentDelta =
       input.inventory.current_inventory_delta ?? input.inventory.netDelta;
     const inventoryDisplacement = currentDelta - fundingTargetDelta;
+    const profilerReservationShiftBps = finiteNumber(
+      input.profilerReservationShiftBps,
+      0
+    );
+    const pressureShift =
+      input.profilerPressureSide === "BUY"
+        ? mid * profilerReservationShiftBps / 10_000
+        : input.profilerPressureSide === "SELL"
+          ? -mid * profilerReservationShiftBps / 10_000
+          : 0;
     const reservationPrice =
       mid -
-      inventoryDisplacement * riskAversionFactor * variance;
+      inventoryDisplacement * riskAversionFactor * variance +
+      pressureShift;
+    const spreadMultiplier = Math.max(
+      1,
+      finiteNumber(input.profilerSpreadMultiplier, 1)
+    );
     const halfSpread =
       (Math.max(input.book.spread ?? mid * 0.0001, mid * input.oracle.volatility * 0.25) *
         liquidityTightening +
-        adverseSelectionCost * mid);
+        adverseSelectionCost * mid) *
+      spreadMultiplier;
     const rawBid = reservationPrice - halfSpread;
     const rawAsk = reservationPrice + halfSpread;
     const bid = snapGueantDiscretePrice(rawBid, "BID", input);
