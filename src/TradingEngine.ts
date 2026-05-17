@@ -5658,6 +5658,17 @@ export class TradingEngine {
       return;
     }
 
+    if (!isInstrumentSelectedByMoltworker(intent.instrumentCode, this.macroBias)) {
+      this.logger.info("EXECUTION_DISPATCH_BLOCKED", "Skipped execution intent for inactive Moltworker asset", {
+        intentId: intent.intentId,
+        instrumentCode: intent.instrumentCode,
+        action: intent.action,
+        orderType: intent.orderType,
+        selectedInstruments: [...selectedMoltworkerInstruments(this.macroBias)]
+      });
+      return;
+    }
+
     if (intent.orderType !== "LIMIT" || intent.postOnly !== true) {
       this.logger.warn("TAKER_EXECUTION_SUPPRESSED", "Non-post-only execution suppressed by passive inventory protocol", {
         intentId: intent.intentId,
