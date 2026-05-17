@@ -3988,6 +3988,15 @@ export class TradingEngine {
         this.engineState = {
           ...this.engineState,
           processedTicks: this.engineState.processedTicks + 1,
+          quoteState: this.cachedConfig.TRADING_ENABLED
+            ? {
+                status: "SUSPENDED",
+                reason: "ORDER_BOOK_NOT_READY",
+                suspendedUntil: null,
+                lastQuote: this.engineState.quoteState.lastQuote,
+                updatedAt: metrics.brainTimestamp
+              }
+            : this.engineState.quoteState,
           maxLatencyMs: this.maxLatencyMs,
           heartbeatAt: metrics.brainTimestamp,
           updatedAt: metrics.brainTimestamp

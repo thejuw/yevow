@@ -42,6 +42,7 @@ import type {
   AlertPriority,
   AlertTestResponse,
   GlobalRiskConfig,
+  JsonRecord,
   NotificationSettings,
   NotificationSettingsUpdate,
   VaultKeyName
@@ -126,6 +127,9 @@ export default function SettingsPage() {
     () => flattenState(settings?.backend ?? {}, "backend").slice(0, 180),
     [settings]
   );
+  const ingestSettings = isJsonRecord(settings?.backend.ingest)
+    ? settings.backend.ingest
+    : {};
   const activeNotifications = settings?.notifications;
   const effectiveNotifications = {
     ...activeNotifications,
@@ -421,6 +425,23 @@ export default function SettingsPage() {
           <StatusPill status={status} />
           {commandStatus ? <CommandMessage message={commandStatus} /> : null}
           {error ? <Fault message={error} /> : null}
+        </section>
+
+        <section className="settings-panel glass">
+          <div className="panel-title">
+            <RadioTower size={17} />
+            <span>Market Data Transport</span>
+          </div>
+          <div className="settings-metrics">
+            <Metric label="Read Mode" value={settingString(ingestSettings.readMode, "n/a")} />
+            <Metric label="Book Transport" value={settingString(ingestSettings.dwellirOrderbookTransportEffective, "n/a").toUpperCase()} />
+            <Metric label="Pure gRPC Book" value={ingestSettings.pureGrpcOrderbookActive === true ? "ACTIVE" : "INACTIVE"} />
+            <Metric label="Depth" value={settingString(ingestSettings.dwellirOrderbookDepth, "n/a")} />
+          </div>
+          <div className="transport-explainer">
+            <strong>{settingString(ingestSettings.readArchitecture, "Dwellir read path unavailable")}</strong>
+            <span>{settingString(ingestSettings.pureGrpcOrderbookRequirement, "No provider transport note returned")}</span>
+          </div>
         </section>
 
         <section className="settings-panel glass">
@@ -847,6 +868,22 @@ function CommandMessage({ message }: { message: string }) {
 function formatClock(value: string): string {
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? new Date(parsed).toLocaleTimeString() : value;
+}
+
+function isJsonRecord(value: unknown): value is JsonRecord {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function settingString(value: unknown, fallback: string): string {
+  if (typeof value === "string" && value.trim()) {
+    return value;
+  }
+
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+
+  return fallback;
 }
 
 function errorMessage(error: unknown): string {

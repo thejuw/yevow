@@ -3616,7 +3616,7 @@ function resolveDwellirSubscriptionProfile(
 function dwellirOrderbookTransport(env: Env): "grpc" | "websocket" {
   const normalized = normalizeString(env.DWELLIR_ORDERBOOK_TRANSPORT);
   const tier = normalizeDwellirSubscriptionTier(env.DWELLIR_SUBSCRIPTION_TIER);
-  return normalized === "GRPC" && tier === "DEDICATED" ? "grpc" : "websocket";
+  return normalized === "GRPC" && tier !== "PUBLIC" ? "grpc" : "websocket";
 }
 
 function mergeGrpcStreamTypes(

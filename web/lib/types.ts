@@ -479,7 +479,13 @@ export interface PaperPnlSummary {
 export interface TradeHistoryResponse {
   ok: boolean;
   data: TradeHistoryEntry[];
+  paperTrades?: TradeHistoryEntry[];
   paperPnl?: PaperPnlSummary;
+  statusBreakdown?: Array<{
+    status: TradeHistoryEntry["status"];
+    count: number;
+    latestExecutedAt: string | null;
+  }>;
   pagination: {
     page: number;
     limit: number;

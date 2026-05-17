@@ -47,11 +47,11 @@ describe("IngestWorker poison payload isolation", () => {
     ).toBe(100);
   });
 
-  it("keeps the order book on Dwellir gRPC only for dedicated Dwellir routes", () => {
+  it("keeps the order book on Dwellir gRPC for non-public Dwellir routes", () => {
     const configs = __test__.loadStreamConfigs({
       DWELLIR_GRPC_URL: "https://api-hyperliquid-mainnet-grpc.n.dwellir.com/test-route-token",
       DWELLIR_ORDERBOOK_TRANSPORT: "grpc",
-      DWELLIR_SUBSCRIPTION_TIER: "DEDICATED",
+      DWELLIR_SUBSCRIPTION_TIER: "ENTERPRISE",
       INGEST_TRANSPORT: "grpc",
       HL_ASSETS: "BTC,ETH",
       MARKET_STREAMS: JSON.stringify([
@@ -78,13 +78,13 @@ describe("IngestWorker poison payload isolation", () => {
     expect(configs[0]?.subscriptionProfile?.readMode).toBe("DWELLIR_GRPC_FILLS_L2_BOOK_GRPC");
   });
 
-  it("falls back to the Dwellir L4 book socket on non-dedicated routes", () => {
+  it("falls back to the Dwellir L2 book socket on public routes", () => {
     const configs = __test__.loadStreamConfigs({
       DWELLIR_GRPC_URL: "https://api-hyperliquid-mainnet-grpc.n.dwellir.com/test-route-token",
       DWELLIR_GRPC_STREAMS: "ORDERBOOK_SNAPSHOT,FILLS",
       DWELLIR_ORDERBOOK_TRANSPORT: "grpc",
       DWELLIR_ENABLE_L4_BOOK: "true",
-      DWELLIR_SUBSCRIPTION_TIER: "ENTERPRISE",
+      DWELLIR_SUBSCRIPTION_TIER: "PUBLIC",
       INGEST_TRANSPORT: "grpc",
       HL_ASSETS: "BTC,ETH,HYPE,SOL",
       MARKET_STREAMS: JSON.stringify([
@@ -107,8 +107,8 @@ describe("IngestWorker poison payload isolation", () => {
     expect(grpc?.grpcStreamTypes).toEqual(["FILLS"]);
     expect(grpc?.subscriptionProfile?.assetCount).toBe(4);
     expect(books).toHaveLength(4);
-    expect(books.every((config) => config.subscriptionProfile?.l4BookEnabled)).toBe(true);
-    expect(books.every((config) => config.subscriptionProfile?.readMode === "DWELLIR_GRPC_FILLS_L4_BOOK_WS")).toBe(true);
+    expect(books.every((config) => !config.subscriptionProfile?.l4BookEnabled)).toBe(true);
+    expect(books.every((config) => config.subscriptionProfile?.readMode === "DWELLIR_GRPC_FILLS_L2_BOOK_WS")).toBe(true);
   });
 
   it("aggregates Dwellir L4 order-level snapshots into engine L2 frames", () => {

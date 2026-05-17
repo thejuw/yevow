@@ -126,6 +126,12 @@ interface PaperPnlAggregateRow {
   last_seen: string | null;
 }
 
+interface TradeStatusBreakdownRow {
+  status: string;
+  count: number;
+  latest_executed_at: string | null;
+}
+
 interface AgentTraceRow {
   decision_id: string;
   signal_id: string;
@@ -1560,23 +1566,40 @@ async function readTradeHistory(env: Env, url: URL): Promise<Response> {
     ORDER BY t.executed_at DESC, t.created_at DESC
     LIMIT ? OFFSET ?`;
   const countQuery = `SELECT COUNT(*) AS total ${fromSql} ${whereSql}`;
-  const [rows, count, paperPnl] = await Promise.all([
+  const paperLimit = clampInteger(
+    url.searchParams.get("paperLimit") ?? url.searchParams.get("paper_limit"),
+    75,
+    1,
+    250
+  );
+  const [rows, count, paperPnl, paperTrades, statusBreakdown] = await Promise.all([
     env.TRADING_DB.prepare(dataQuery)
       .bind(...filters.bindings, limit, offset)
       .all<TradeHistoryRow>(),
     env.TRADING_DB.prepare(countQuery)
       .bind(...filters.bindings)
       .first<{ total: number }>(),
-    readPaperPnlSummary(env)
+    readPaperPnlSummary(env),
+    readPaperTrades(env, paperLimit),
+    readTradeStatusBreakdown(env)
   ]);
   const total = Number(count?.total ?? 0);
 
   return json({
     ok: true,
     data: (rows.results ?? []).map(formatTradeRow),
+    paperTrades: (paperTrades.results ?? []).map(formatTradeRow),
     paperPnl,
+    statusBreakdown: (statusBreakdown.results ?? []).map((row) => ({
+      status: row.status,
+      count: Number(row.count ?? 0),
+      latestExecutedAt: row.latest_executed_at
+    })),
     pagination: pagination(page, limit, total),
-    filters: filters.publicFilters
+    filters: {
+      ...filters.publicFilters,
+      paperLimit
+    }
   });
 }
 
@@ -1607,7 +1630,7 @@ async function readPaperPnlSummary(env: Env): Promise<JsonRecord> {
        MAX(executed_at) AS last_seen
      FROM trades
      WHERE status = 'GHOST_FILL'
-       AND raw_execution_json LIKE '%"paperSizer":"shadowQueueKellySize"%'
+       AND ${paperTradeWhereSql()}
        ${timeFilterSql}
      GROUP BY asset
      ORDER BY asset`
@@ -1680,6 +1703,67 @@ async function readPaperPnlSummary(env: Env): Promise<JsonRecord> {
     },
     generatedAt: new Date().toISOString()
   };
+}
+
+async function readPaperTrades(
+  env: Env,
+  limit: number
+): Promise<D1Result<TradeHistoryRow>> {
+  return env.TRADING_DB.prepare(
+    `SELECT
+       t.trade_id,
+       t.order_id,
+       t.signal_id,
+       t.venue,
+       t.asset,
+       t.side,
+       t.order_type,
+       t.price,
+       t.size,
+       t.notional,
+       t.ev_at_execution,
+       t.slippage_bps,
+       t.resulting_pnl,
+       t.primary_driver,
+       t.fees,
+       t.status,
+       t.exchange_trade_id,
+       t.raw_execution_json,
+       t.executed_at,
+       t.created_at,
+       d.agent_name,
+       d.trace_id
+     FROM trades t
+     LEFT JOIN agent_decisions d ON d.signal_id = t.signal_id
+     WHERE t.status = 'GHOST_FILL'
+       AND ${paperTradeWhereSql("t")}
+     ORDER BY t.executed_at DESC, t.created_at DESC
+     LIMIT ?`
+  ).bind(limit).all<TradeHistoryRow>();
+}
+
+async function readTradeStatusBreakdown(
+  env: Env
+): Promise<D1Result<TradeStatusBreakdownRow>> {
+  return env.TRADING_DB.prepare(
+    `SELECT
+       status,
+       COUNT(*) AS count,
+       MAX(executed_at) AS latest_executed_at
+     FROM trades
+     GROUP BY status
+     ORDER BY count DESC`
+  ).all<TradeStatusBreakdownRow>();
+}
+
+function paperTradeWhereSql(alias?: string): string {
+  const prefix = alias ? `${alias}.` : "";
+
+  return `(
+    ${prefix}trade_id LIKE 'shadow-queue:%'
+    OR ${prefix}order_id LIKE 'vlo:%'
+    OR ${prefix}raw_execution_json LIKE '%"paperSizer":"shadowQueueKellySize"%'
+  )`;
 }
 
 async function readAgentTrace(env: Env, url: URL): Promise<Response> {
@@ -2091,6 +2175,24 @@ async function vaultStatus(env: Env): Promise<JsonRecord> {
 }
 
 function backendSettings(env: Env): JsonRecord {
+  const dwellirTier = env.DWELLIR_SUBSCRIPTION_TIER ?? null;
+  const requestedOrderbookTransport = env.DWELLIR_ORDERBOOK_TRANSPORT ?? "websocket";
+  const normalizedDwellirTier = String(dwellirTier ?? "ENTERPRISE").toUpperCase();
+  const grpcOrderbookEligible = normalizedDwellirTier !== "PUBLIC";
+  const effectiveOrderbookTransport =
+    requestedOrderbookTransport.toLowerCase() === "grpc" && grpcOrderbookEligible
+      ? "grpc"
+      : "websocket";
+  const l4Enabled = String(env.DWELLIR_ENABLE_L4_BOOK ?? "true").toLowerCase() !== "false";
+  const readMode =
+    effectiveOrderbookTransport === "grpc"
+      ? l4Enabled
+        ? "DWELLIR_GRPC_FILLS_L4_BOOK_GRPC"
+        : "DWELLIR_GRPC_FILLS_L2_BOOK_GRPC"
+      : l4Enabled
+        ? "DWELLIR_GRPC_FILLS_L4_BOOK_WS"
+        : "DWELLIR_GRPC_FILLS_L2_BOOK_WS";
+
   return {
     api: {
       gatewayRoute: "https://api.yevow.co",
@@ -2102,6 +2204,20 @@ function backendSettings(env: Env): JsonRecord {
     ingest: {
       nativeSource: "DWELLIR_HYPERLIQUID_GRPC",
       transport: env.INGEST_TRANSPORT ?? "grpc",
+      readMode,
+      readArchitecture:
+        effectiveOrderbookTransport === "grpc"
+          ? "Dwellir gRPC fills plus Dwellir gRPC order-book snapshots"
+          : "Dwellir gRPC fills plus Dwellir L4 order-book WebSocket",
+      providerRecommendedBookTransport:
+        effectiveOrderbookTransport === "grpc"
+          ? "dwellir-grpc-orderbook-snapshots"
+          : "dwellir-orderbook-websocket",
+      pureGrpcOrderbookActive: effectiveOrderbookTransport === "grpc",
+      pureGrpcOrderbookRequirement:
+        effectiveOrderbookTransport === "grpc"
+          ? "Active: non-public Dwellir gRPC tier with DWELLIR_ORDERBOOK_TRANSPORT=grpc."
+          : "Inactive: set DWELLIR_ORDERBOOK_TRANSPORT=grpc on a non-public Dwellir gRPC tier; public or unauthenticated routes stay on the Orderbook WebSocket.",
       dwellirGrpcUrl: redactedEndpoint(
         env.DWELLIR_GRPC_URL ?? env.DWELLIR_GRPC_ENDPOINT ?? env.RPC_GRPC_ENDPOINT
       ),
@@ -2110,9 +2226,10 @@ function backendSettings(env: Env): JsonRecord {
       ),
       dwellirGrpcService: env.RPC_GRPC_SERVICE ?? null,
       dwellirGrpcStreams: env.DWELLIR_GRPC_STREAMS ?? env.RPC_GRPC_STREAM_TYPES ?? null,
-      dwellirSubscriptionTier: env.DWELLIR_SUBSCRIPTION_TIER ?? null,
+      dwellirSubscriptionTier: dwellirTier,
       dwellirOrderbookDepth: stringNumber(env.DWELLIR_ORDERBOOK_DEPTH),
-      dwellirOrderbookTransport: env.DWELLIR_ORDERBOOK_TRANSPORT ?? "websocket",
+      dwellirOrderbookTransportRequested: requestedOrderbookTransport,
+      dwellirOrderbookTransportEffective: effectiveOrderbookTransport,
       dwellirL4BookEnabled: env.DWELLIR_ENABLE_L4_BOOK ?? "true",
       hyperliquidWsUrl: env.HL_WS_URL ?? null,
       heartbeatIntervalMs: stringNumber(env.HL_HEARTBEAT_INTERVAL_MS),

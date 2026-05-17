@@ -304,6 +304,11 @@ export default function CommandCenterPage() {
     [visibleAttributionDrivers]
   );
   const tradeSummary = useMemo(() => summarizeTrades(tradeHistory?.data ?? []), [tradeHistory]);
+  const paperTradeRows = tradeHistory?.paperTrades ?? [];
+  const statusSummary = useMemo(
+    () => summarizeTradeStatuses(tradeHistory?.statusBreakdown ?? []),
+    [tradeHistory?.statusBreakdown]
+  );
   const totalOrderEvents = tradeHistory?.pagination.total ?? tradeSummary.count;
   const paperPnl = useMemo(
     () => summarizePaperPnl(tradeHistory?.paperPnl, engineState),
@@ -319,6 +324,19 @@ export default function CommandCenterPage() {
   const executionSettings = isJsonRecord(settings?.backend.execution)
     ? settings.backend.execution
     : null;
+  const ingestSettings = isJsonRecord(settings?.backend.ingest)
+    ? settings.backend.ingest
+    : null;
+  const ingestReadMode = String(ingestSettings?.readMode ?? "DWELLIR_GRPC_FILLS_L4_BOOK_WS");
+  const orderbookTransportActive = String(
+    ingestSettings?.dwellirOrderbookTransportEffective ??
+      ingestSettings?.dwellirOrderbookTransport ??
+      "websocket"
+  ).toUpperCase();
+  const pureGrpcBookActive = ingestSettings?.pureGrpcOrderbookActive === true;
+  const dwellirStatusLabel = pureGrpcBookActive
+    ? "[ DWELLIR gRPC FILLS + gRPC BOOK: ACTIVE ]"
+    : "[ DWELLIR gRPC FILLS + L4 BOOK WS: ACTIVE ]";
   const shadowModeActive =
     engineState?.citadel?.shadowMode === true ||
     executionSettings?.shadowMode === true ||
@@ -573,7 +591,8 @@ export default function CommandCenterPage() {
     () => normalizeAssetMatrix(engineState?.assetMatrix),
     [engineState?.assetMatrix]
   );
-  const displayEquity = pulse?.total_equity ?? engineState?.bankroll.equity ?? 0;
+  const displayEquity =
+    numberOrNull(engineState?.bankroll.equity) ?? numberOrNull(pulse?.total_equity) ?? 0;
   const drawdown = pulse?.active_drawdown ?? engineState?.riskMetrics.rollingDrawdownPct ?? 0;
   const imbalance = pulse?.current_imbalance ?? engineState?.microstructure.weightedImbalance ?? null;
   const regime = pulse?.regime ?? engineState?.oracle.regime ?? "UNKNOWN";
@@ -700,8 +719,12 @@ export default function CommandCenterPage() {
 
         <div className="dwellir-stream-state">
           <RadioTower size={14} />
-          <span>[ DWELLIR ENTERPRISE gRPC FILLS + L4 BOOK: ACTIVE ]</span>
+          <span>{dwellirStatusLabel}</span>
           <strong>{compact.format(dwellirReceiptLatencyMs)}ms</strong>
+        </div>
+        <div className={pureGrpcBookActive ? "transport-state grpc" : "transport-state hybrid"}>
+          <span>{ingestReadMode}</span>
+          <strong>{orderbookTransportActive}</strong>
         </div>
 
         {error ? (
@@ -769,8 +792,8 @@ export default function CommandCenterPage() {
             ))}
           </div>
           <div className="bridge-metrics">
-            <Metric label="Shadow MTM" value={formatNullableCurrency(paperPnl.paperMtm)} />
-            <Metric label="Shadow Return" value={formatBps(paperPnl.returnBps)} />
+            <Metric label="Paper MTM" value={formatNullableCurrency(paperPnl.paperMtm)} />
+            <Metric label="Paper Return" value={formatBps(paperPnl.returnBps)} />
             <Metric label="κ Regime" value={compact.format(pulse?.regimeCoefficient ?? engineState?.oracle.skepticismMultiplier ?? 0)} />
             <Metric label="Bias Power" value={compact.format((macroBias?.intensity ?? 0) * (macroBias?.confidence ?? 0))} />
             <Metric label="Realized Alpha" value={currency.format(realizedAlpha)} />
@@ -1150,11 +1173,16 @@ export default function CommandCenterPage() {
           </div>
           <div className="trade-summary">
             <Metric label="Order Events" value={compact.format(totalOrderEvents)} />
-            <Metric label="Ghost Fills" value={compact.format(paperPnl.tradeCount || tradeSummary.filled)} />
-            <Metric label="Shadow MTM" value={formatNullableCurrency(paperPnl.paperMtm)} />
-            <Metric label="Expected EV" value={currency.format(paperPnl.totalEv)} />
+            <Metric label="Open Intents" value={compact.format(statusSummary.ACCEPTED)} />
+            <Metric label="Paper Fills" value={compact.format(paperPnl.tradeCount || paperTradeRows.length)} />
+            <Metric label="Paper MTM" value={formatNullableCurrency(paperPnl.paperMtm)} />
+            <Metric label="Paper Return" value={formatBps(paperPnl.returnBps)} />
             <Metric label="Gross Notional" value={currency.format(paperPnl.grossNotional)} />
-            <Metric label="Fees" value={currency.format(paperPnl.totalFees || tradeSummary.fees)} />
+            <Metric label="Rejected" value={compact.format(statusSummary.REJECTED)} />
+          </div>
+          <div className="execution-ledger-note">
+            <span>Paper fills are risk-capped shadow queue fills only.</span>
+            <code>{statusSummary.GHOST_FILL} total ghost fills · {statusSummary.ACCEPTED} open shadow quote intents</code>
           </div>
           {paperPnl.assets.length > 0 ? (
             <div className="paper-pnl-grid" aria-label="Shadow mark-to-market by asset">
@@ -1172,6 +1200,32 @@ export default function CommandCenterPage() {
               ))}
             </div>
           ) : null}
+          <div className="ledger-heading">
+            <span>Paper Fill Ledger</span>
+            <code>{paperTradeRows.length} latest</code>
+          </div>
+          <div className="trade-table paper-fill-table">
+            {paperTradeRows.length > 0 ? (
+              paperTradeRows.map((trade) => (
+                <div className="trade-row ghost_fill" key={`paper:${trade.tradeId}`}>
+                  <span>{formatClock(trade.executedAt)}</span>
+                  <strong>{trade.asset}</strong>
+                  <span>{trade.side}</span>
+                  <span>{trade.status}</span>
+                  <span>{compact.format(trade.size)}</span>
+                  <span>{currency.format(trade.price)}</span>
+                  <span>{currency.format(trade.resultingPnl ?? 0)}</span>
+                  <code>{displayDriverName(trade.primaryDriver ?? trade.agentName ?? "PROFILER")}</code>
+                </div>
+              ))
+            ) : (
+              <div className="empty-row">NO PAPER FILLS IN CURRENT WINDOW</div>
+            )}
+          </div>
+          <div className="ledger-heading">
+            <span>Execution Event Stream</span>
+            <code>accepted/rejected/cancelled/fill events</code>
+          </div>
           <div className="trade-table">
             {(tradeHistory?.data ?? []).length > 0 ? (
               (tradeHistory?.data ?? []).map((trade) => (
@@ -1459,6 +1513,24 @@ function summarizeTrades(trades: TradeHistoryEntry[]) {
     }),
     { count: 0, filled: 0, pnl: 0, fees: 0 }
   );
+}
+
+function summarizeTradeStatuses(
+  breakdown: NonNullable<TradeHistoryResponse["statusBreakdown"]>
+): Record<TradeHistoryEntry["status"], number> {
+  const initial: Record<TradeHistoryEntry["status"], number> = {
+    ACCEPTED: 0,
+    FILLED: 0,
+    PARTIAL: 0,
+    REJECTED: 0,
+    CANCELLED: 0,
+    GHOST_FILL: 0
+  };
+
+  return breakdown.reduce((summary, row) => {
+    summary[row.status] = Number(row.count ?? 0);
+    return summary;
+  }, initial);
 }
 
 function summarizePaperPnl(

@@ -310,6 +310,35 @@ output {
   font-size: 12px;
 }
 
+.transport-state {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-cold);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--muted);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.transport-state strong {
+  color: var(--text);
+}
+
+.transport-state.grpc {
+  border-color: rgba(102, 227, 161, 0.36);
+  color: var(--green);
+}
+
+.transport-state.hybrid {
+  border-color: rgba(233, 196, 106, 0.34);
+  color: #f2d68a;
+}
+
 .shadow-mode-banner {
   width: min(1920px, 100%);
   margin: 12px auto 0;
@@ -459,6 +488,27 @@ output {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+}
+
+.transport-explainer {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 9px 10px;
+  border: 1px solid rgba(233, 196, 106, 0.25);
+  border-radius: 7px;
+  background: rgba(233, 196, 106, 0.05);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+}
+
+.transport-explainer strong {
+  color: var(--text);
+}
+
+.transport-explainer span {
+  color: var(--muted);
+  line-height: 1.45;
 }
 
 .settings-state-table {
@@ -1178,6 +1228,43 @@ output {
 .paper-pnl-row.negative span:nth-child(2),
 .paper-pnl-row.negative code {
   color: var(--red);
+}
+
+.execution-ledger-note,
+.ledger-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  margin: 8px 0;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+}
+
+.execution-ledger-note {
+  min-height: 32px;
+  padding: 7px 9px;
+  border: 1px solid rgba(233, 196, 106, 0.26);
+  border-radius: 7px;
+  background: rgba(233, 196, 106, 0.055);
+  color: #f2d68a;
+}
+
+.execution-ledger-note code,
+.ledger-heading code {
+  color: var(--muted);
+  text-align: right;
+}
+
+.ledger-heading {
+  color: var(--text);
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.paper-fill-table {
+  max-height: 212px;
+  margin-bottom: 10px;
 }
 
 .trade-table {
