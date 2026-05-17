@@ -885,7 +885,7 @@ export default function CommandCenterPage() {
                     </div>
                   ))
                 ) : (
-                  <div className="empty-row">NO WATCHLIST LIQUIDATION CLUSTERS</div>
+                  <div className="empty-row">NO PROVIDER LIQUIDATION EVENTS</div>
                 )}
               </div>
             </div>
@@ -905,8 +905,8 @@ export default function CommandCenterPage() {
                 value={liquidationHeatmap?.nearestCascade?.isCascadeRisk ? "ARMED" : "CLEAR"}
               />
               <Metric
-                label="Watchlist"
-                value={compact.format(liquidationHeatmap?.sampledWalletCount ?? 0)}
+                label="Provider Events"
+                value={compact.format(liquidationHeatmap?.recentEvents?.length ?? 0)}
               />
               <Metric
                 label="Updated"

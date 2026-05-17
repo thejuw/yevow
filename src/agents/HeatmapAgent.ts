@@ -1,6 +1,5 @@
 import type {
   ISO8601,
-  JsonRecord,
   LiquidationCascadeCluster,
   LiquidationEventRecord,
   LiquidationHeatmapLevel,
@@ -17,20 +16,12 @@ const MAX_LEVELS = 80;
 const MAX_RECENT_EVENTS = 100;
 
 export interface HeatmapAgentConfig {
-  infoUrl?: string;
-  wallets?: string[];
   coin?: string;
   instrumentCode?: string;
   sourceExchange?: string;
   binSize?: number;
   clusterThresholdUsd?: number;
   cascadeDistancePct?: number;
-  maxWallets?: number;
-}
-
-export interface HeatmapSampleContext {
-  midPrices: Record<string, number | null>;
-  observedAt: ISO8601;
 }
 
 export interface LiquidationEventContext {
@@ -41,20 +32,15 @@ export interface LiquidationEventContext {
 }
 
 export class HeatmapAgent {
-  private readonly infoUrl: string;
-  private readonly wallets: string[];
   private readonly coin: string;
   private readonly instrumentCode: string;
   private readonly sourceExchange: string;
   private readonly binSize: number;
   private readonly clusterThresholdUsd: number;
   private readonly cascadeDistancePct: number;
-  private readonly maxWallets: number;
   private state: LiquidationHeatmapState;
 
   constructor(config: HeatmapAgentConfig = {}) {
-    this.infoUrl = config.infoUrl ?? "https://api.hyperliquid.xyz/info";
-    this.wallets = sanitizeWallets(config.wallets ?? []);
     this.coin = (config.coin ?? "BTC").toUpperCase();
     this.instrumentCode = (config.instrumentCode ?? `${this.coin.toLowerCase()}-usd`).toLowerCase();
     this.sourceExchange = normalizeSourceExchange(config.sourceExchange);
@@ -67,7 +53,6 @@ export class HeatmapAgent {
       config.cascadeDistancePct,
       DEFAULT_CASCADE_DISTANCE_PCT
     );
-    this.maxWallets = Math.max(0, Math.floor(positiveNumber(config.maxWallets, 10)));
     this.state = defaultLiquidationHeatmapState(
       this.instrumentCode,
       this.sourceExchange,
@@ -81,6 +66,9 @@ export class HeatmapAgent {
     if (!persisted || persisted.schemaVersion !== "liquidation-heatmap.v1") {
       return;
     }
+
+    const levels = eventBackedLevels(sanitizeLevels(persisted.levels)).slice(0, MAX_LEVELS);
+    const clusters = eventBackedClusters(sanitizeClusters(persisted.clusters)).slice(0, MAX_LEVELS);
 
     this.state = {
       ...defaultLiquidationHeatmapState(
@@ -102,43 +90,20 @@ export class HeatmapAgent {
         persisted.cascadeDistancePct,
         this.cascadeDistancePct
       ),
-      levels: sanitizeLevels(persisted.levels).slice(0, MAX_LEVELS),
-      clusters: sanitizeClusters(persisted.clusters).slice(0, MAX_LEVELS),
+      levels,
+      clusters,
       nearestCascade: persisted.nearestCascade
-        ? sanitizeCluster(persisted.nearestCascade)
-        : null,
-      recentEvents: sanitizeEvents(persisted.recentEvents).slice(-MAX_RECENT_EVENTS)
+        ? eventBackedCluster(sanitizeCluster(persisted.nearestCascade)) ??
+          nearestCluster(clusters, this.instrumentCode, null)
+        : nearestCluster(clusters, this.instrumentCode, null),
+      recentEvents: sanitizeEvents(persisted.recentEvents).slice(-MAX_RECENT_EVENTS),
+      totalEstimatedNotionalUsd: roundMetric(
+        levels.reduce((sum, level) => sum + level.estimatedNotionalUsd, 0),
+        2
+      ),
+      sampledWalletCount: 0,
+      lastSampleAt: null
     };
-  }
-
-  async sampleKnownWallets(context: HeatmapSampleContext): Promise<LiquidationHeatmapState> {
-    const wallets = this.wallets.slice(0, this.maxWallets);
-    const levels: LiquidationHeatmapLevel[] = [];
-    const sampledAt = context.observedAt;
-
-    for (const wallet of wallets) {
-      try {
-        const state = await this.fetchClearinghouseState(wallet);
-        levels.push(...this.levelsFromClearinghouseState(state, wallet, context));
-      } catch (error) {
-        console.error(
-          JSON.stringify({
-            event: "LIQUIDATION_HEATMAP_SAMPLE_FAILED",
-            wallet,
-            message: error instanceof Error ? error.message : "UNKNOWN_ERROR"
-          })
-        );
-      }
-    }
-
-    const merged = mergeLevels(
-      [...this.state.levels.filter((level) => level.source === "USER_EVENT"), ...levels],
-      this.binSize,
-      sampledAt
-    );
-    const next = this.rebuildState(merged, context.midPrices, sampledAt, wallets.length);
-    this.state = next;
-    return this.snapshot();
   }
 
   recordLiquidationEvent(
@@ -180,8 +145,7 @@ export class HeatmapAgent {
           [context.instrumentCode ?? this.instrumentCode]:
             context.midPrice ?? this.state.nearestCascade?.centerPrice ?? null
         },
-        context.observedAt,
-        this.state.sampledWalletCount
+        context.observedAt
       ),
       recentEvents: [event, ...this.state.recentEvents].slice(0, MAX_RECENT_EVENTS)
     };
@@ -210,94 +174,10 @@ export class HeatmapAgent {
     };
   }
 
-  private async fetchClearinghouseState(wallet: string): Promise<Record<string, unknown>> {
-    const response = await fetch(this.infoUrl, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        accept: "application/json"
-      },
-      body: JSON.stringify({ type: "clearinghouseState", user: wallet })
-    });
-
-    if (!response.ok) {
-      throw new Error(`HL_INFO_${response.status}`);
-    }
-
-    const body = await response.json<unknown>();
-    return isRecord(body) ? body : {};
-  }
-
-  private levelsFromClearinghouseState(
-    state: Record<string, unknown>,
-    wallet: string,
-    context: HeatmapSampleContext
-  ): LiquidationHeatmapLevel[] {
-    const positions = Array.isArray(state.assetPositions) ? state.assetPositions : [];
-    const observedAt = context.observedAt;
-    const levels: LiquidationHeatmapLevel[] = [];
-
-    for (const item of positions) {
-      const position = isRecord(item) && isRecord(item.position) ? item.position : null;
-
-      if (!position) {
-        continue;
-      }
-
-      const coin = stringField(position, ["coin"])?.toUpperCase();
-      if (coin && coin !== this.coin) {
-        continue;
-      }
-
-      const szi = numericField(position, ["szi", "size", "positionSize"]);
-      if (szi === null || szi === 0) {
-        continue;
-      }
-
-      const side: LiquidationSide = szi > 0 ? "LONG" : "SHORT";
-      const instrumentCode = coin ? `${coin.toLowerCase()}-usd` : this.instrumentCode;
-      const midPrice = context.midPrices[instrumentCode] ?? context.midPrices[this.instrumentCode] ?? null;
-      const markPrice =
-        numericField(position, ["markPx", "markPrice"]) ?? midPrice ?? numericField(position, ["entryPx", "entryPrice"]);
-      const liquidationPrice = liquidationPriceFromPosition(position, side);
-
-      if (liquidationPrice === null || liquidationPrice <= 0 || markPrice === null || markPrice <= 0) {
-        continue;
-      }
-
-      const notional =
-        Math.abs(numericField(position, ["positionValue", "notional", "marginUsed"]) ?? 0) ||
-        Math.abs(szi) * markPrice;
-      const start = bucketStart(liquidationPrice, this.binSize);
-
-      levels.push({
-        levelId: `liq:state:${instrumentCode}:${side}:${start}`,
-        instrumentCode,
-        source_exchange: this.sourceExchange,
-        side,
-        priceStart: roundPrice(start),
-        priceEnd: roundPrice(start + this.binSize),
-        centerPrice: roundPrice(start + this.binSize / 2),
-        estimatedNotionalUsd: roundMetric(notional, 2),
-        estimatedBaseSize: roundMetric(Math.abs(szi), 8),
-        walletCount: 1,
-        eventCount: 0,
-        confidence: hasNativeLiquidationPrice(position) ? 0.9 : 0.35,
-        source: "CLEARINGHOUSE_STATE",
-        updatedAt: observedAt
-      });
-
-      void wallet;
-    }
-
-    return levels;
-  }
-
   private rebuildState(
     levels: LiquidationHeatmapLevel[],
     midPrices: Record<string, number | null>,
-    observedAt: ISO8601,
-    sampledWalletCount: number
+    observedAt: ISO8601
   ): LiquidationHeatmapState {
     const clusters = levels
       .filter((level) => level.estimatedNotionalUsd > 0)
@@ -337,8 +217,8 @@ export class HeatmapAgent {
         levels.reduce((sum, level) => sum + level.estimatedNotionalUsd, 0),
         2
       ),
-      sampledWalletCount,
-      lastSampleAt: observedAt,
+      sampledWalletCount: 0,
+      lastSampleAt: null,
       updatedAt: observedAt
     };
   }
@@ -368,28 +248,6 @@ export function defaultLiquidationHeatmapState(
     lastSampleAt: null,
     updatedAt: now
   };
-}
-
-export function parseLiquidationWallets(value: string | undefined): string[] {
-  if (!value) {
-    return [];
-  }
-
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return [];
-  }
-
-  try {
-    const parsed = JSON.parse(trimmed) as unknown;
-    if (Array.isArray(parsed)) {
-      return sanitizeWallets(parsed.map(String));
-    }
-  } catch {
-    // Fall through to CSV parsing.
-  }
-
-  return sanitizeWallets(trimmed.split(/[,\s]+/));
 }
 
 function parseLiquidationEvent(
@@ -500,49 +358,6 @@ function nearestCluster(
   )[0] ?? null;
 }
 
-function liquidationPriceFromPosition(
-  position: Record<string, unknown>,
-  side: LiquidationSide
-): number | null {
-  const native = numericField(position, [
-    "liquidationPx",
-    "liquidationPrice",
-    "liqPx",
-    "liqPrice"
-  ]);
-
-  if (native !== null && native > 0) {
-    return native;
-  }
-
-  const entry = numericField(position, ["entryPx", "entryPrice"]);
-  const leverage = numericField(position, ["leverage.value", "leverage", "maxLeverage"]);
-
-  if (entry === null || leverage === null || leverage <= 0) {
-    return null;
-  }
-
-  const maintenanceHaircut = 0.5 / leverage;
-  return side === "LONG"
-    ? roundPrice(entry * (1 - maintenanceHaircut))
-    : roundPrice(entry * (1 + maintenanceHaircut));
-}
-
-function hasNativeLiquidationPrice(position: Record<string, unknown>): boolean {
-  return numericField(position, [
-    "liquidationPx",
-    "liquidationPrice",
-    "liqPx",
-    "liqPrice"
-  ]) !== null;
-}
-
-function sanitizeWallets(values: string[]): string[] {
-  return [...new Set(values.map((value) => value.trim().toLowerCase()))].filter(
-    (value) => /^0x[a-f0-9]{40}$/.test(value)
-  );
-}
-
 function sanitizeLevels(value: unknown): LiquidationHeatmapLevel[] {
   if (!Array.isArray(value)) {
     return [];
@@ -581,6 +396,22 @@ function sanitizeLevels(value: unknown): LiquidationHeatmapLevel[] {
       updatedAt: stringField(item, ["updatedAt"]) ?? new Date().toISOString()
     }];
   });
+}
+
+function eventBackedLevels(levels: LiquidationHeatmapLevel[]): LiquidationHeatmapLevel[] {
+  return levels.filter((level) => level.source !== "CLEARINGHOUSE_STATE");
+}
+
+function eventBackedClusters(
+  clusters: LiquidationCascadeCluster[]
+): LiquidationCascadeCluster[] {
+  return clusters.filter((cluster) => cluster.source !== "CLEARINGHOUSE_STATE");
+}
+
+function eventBackedCluster(
+  cluster: LiquidationCascadeCluster
+): LiquidationCascadeCluster | null {
+  return cluster.source === "CLEARINGHOUSE_STATE" ? null : cluster;
 }
 
 function sanitizeClusters(value: unknown): LiquidationCascadeCluster[] {

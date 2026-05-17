@@ -15,8 +15,7 @@ import { CroupierAgent } from "./agents/CroupierAgent";
 import {
   HeatmapAgent,
   LIQUIDATION_HEATMAP_STORAGE_KEY,
-  defaultLiquidationHeatmapState,
-  parseLiquidationWallets
+  defaultLiquidationHeatmapState
 } from "./agents/HeatmapAgent";
 import { JanitorAgent } from "./agents/JanitorAgent";
 import { OracleAgent, defaultOracleState } from "./agents/OracleAgent";
@@ -156,7 +155,6 @@ const DEFAULT_RISK_AVERSION_FACTOR = 0.01;
 const DEFAULT_FUNDING_BIAS_THRESHOLD = 0.00001;
 const DEFAULT_FUNDING_INVENTORY_BIAS = 0;
 const DEFAULT_AMM_MIN_TICK_CHANGE = 0.00000001;
-const DEFAULT_HEATMAP_SAMPLE_INTERVAL_MS = 60_000;
 const DEFAULT_HEATMAP_PRICE_BIN_SIZE = 100;
 const DEFAULT_HEATMAP_CLUSTER_NOTIONAL_USD = 10_000_000;
 const DEFAULT_CASCADE_DISTANCE_PCT = 0.005;
@@ -465,7 +463,6 @@ export class TradingEngine {
   private activeTemporaryOverride: TemporaryGovernanceOverride | null = null;
   private killSwitchLogged = false;
   private lastConfigRefreshAttemptAt = 0;
-  private lastHeatmapSampleAttemptAt = 0;
   private warmedColo: string | null = null;
   private warmedAt = 0;
   private storageWriteDisabledUntil = 0;
@@ -546,8 +543,6 @@ export class TradingEngine {
       )
     });
     this.heatmapAgent = new HeatmapAgent({
-      infoUrl: env.HL_INFO_URL ?? `${env.EXCHANGE_BASE_URL ?? "https://api.hyperliquid.xyz"}/info`,
-      wallets: parseLiquidationWallets(env.HL_LIQUIDATION_WALLETS),
       coin: env.HL_ASSET ?? "BTC",
       instrumentCode: `${(env.HL_ASSET ?? "BTC").toLowerCase()}-usd`,
       sourceExchange: "hyperliquid",
@@ -816,7 +811,6 @@ export class TradingEngine {
   async alarm(): Promise<void> {
     await this.initialized;
     await this.refreshConfig("ALARM");
-    await this.refreshLiquidationHeatmap("ALARM");
     await this.drainExecutionQueue();
     await this.runJanitor("ALARM");
     this.maybeResumeQuotes(new Date().toISOString());
@@ -1836,7 +1830,7 @@ export class TradingEngine {
         totalEstimatedNotionalUsd: this.engineState.liquidationHeatmap.totalEstimatedNotionalUsd,
         clusterCount: this.engineState.liquidationHeatmap.clusters.length,
         nearestCascade: this.engineState.liquidationHeatmap.nearestCascade,
-        sampledWalletCount: this.engineState.liquidationHeatmap.sampledWalletCount,
+        providerEventCount: this.engineState.liquidationHeatmap.recentEvents.length,
         updatedAt: this.engineState.liquidationHeatmap.updatedAt
       },
       AgentLogicTrace: latestSignals,
@@ -7509,79 +7503,6 @@ export class TradingEngine {
 
     this.lastConfigRefreshAttemptAt = now;
     await this.refreshConfig(source);
-  }
-
-  private async refreshLiquidationHeatmap(source: "ALARM" | "ADMIN_SIGNAL"): Promise<void> {
-    const nowMs = Date.now();
-    const intervalMs = readPositiveInteger(
-      this.env.HL_HEATMAP_SAMPLE_INTERVAL_MS,
-      DEFAULT_HEATMAP_SAMPLE_INTERVAL_MS,
-      5_000,
-      3_600_000
-    );
-
-    if (
-      source === "ALARM" &&
-      nowMs - this.lastHeatmapSampleAttemptAt < intervalMs
-    ) {
-      return;
-    }
-
-    this.lastHeatmapSampleAttemptAt = nowMs;
-    const observedAt = new Date(nowMs).toISOString();
-    const heatmap = await this.heatmapAgent.sampleKnownWallets({
-      midPrices: this.currentHeatmapMidPrices(),
-      observedAt
-    });
-
-    this.engineState = {
-      ...this.engineState,
-      liquidationHeatmap: heatmap,
-      heartbeatAt: observedAt,
-      updatedAt: observedAt
-    };
-
-    await this.safeStoragePut({
-      [ENGINE_STATE_KEY]: this.engineState,
-      [LIQUIDATION_HEATMAP_STORAGE_KEY]: heatmap
-    }, "LIQUIDATION_HEATMAP_REFRESH");
-
-    this.publish("LIQUIDATION_HEATMAP_REFRESHED", {
-      source,
-      levelCount: heatmap.levels.length,
-      clusterCount: heatmap.clusters.length,
-      totalEstimatedNotionalUsd: heatmap.totalEstimatedNotionalUsd,
-      nearestCascade: heatmap.nearestCascade,
-      sampledWalletCount: heatmap.sampledWalletCount,
-      observedAt
-    });
-
-    if (heatmap.clusters.some((cluster) => cluster.isCascadeRisk)) {
-      this.logger.warn("LIQUIDATION_CASCADE_RISK", "Liquidation cluster inside cascade threshold", {
-        source,
-        totalEstimatedNotionalUsd: heatmap.totalEstimatedNotionalUsd,
-        clusterCount: heatmap.clusters.length,
-        nearestCascade: toJsonValue(heatmap.nearestCascade)
-      });
-    }
-  }
-
-  private currentHeatmapMidPrices(): Record<string, number | null> {
-    const midPrices: Record<string, number | null> = {};
-
-    for (const book of this.orderBook.values()) {
-      midPrices[book.instrumentCode] = book.midPrice;
-    }
-
-    if (
-      this.engineState.microstructure.instrumentCode &&
-      !(this.engineState.microstructure.instrumentCode in midPrices)
-    ) {
-      midPrices[this.engineState.microstructure.instrumentCode] =
-        this.engineState.microstructure.midPrice;
-    }
-
-    return midPrices;
   }
 
   private async scheduleConfigRefresh(): Promise<void> {

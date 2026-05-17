@@ -563,7 +563,7 @@ export interface DashboardPulse {
     totalEstimatedNotionalUsd: number;
     clusterCount: number;
     nearestCascade: LiquidationCascadeCluster | null;
-    sampledWalletCount: number;
+    providerEventCount: number;
     updatedAt: string;
   };
   AgentLogicTrace: JsonRecord[];
