@@ -128,6 +128,13 @@ interface HyperliquidBookLevelSet {
   asks: Set<string>;
 }
 
+interface DwellirL4OrderState {
+  side: "buy" | "sell";
+  price: string;
+  size: number;
+  updatedAt: string;
+}
+
 type HawkesFlowSide = "BUY" | "SELL" | "UNKNOWN";
 
 interface HawkesFlowObservation {
@@ -640,6 +647,7 @@ class ExchangeStreamController {
   private providerSequence: number | null = null;
   private awaitingProviderBridge = false;
   private readonly hyperliquidBookLevels = new Map<string, HyperliquidBookLevelSet>();
+  private readonly dwellirL4Orders = new Map<string, DwellirL4OrderState>();
   private readonly hawkesTracker: HawkesFlowTracker;
   private streamReady = false;
   private hasConnectedOnce = false;
@@ -1380,6 +1388,13 @@ class ExchangeStreamController {
       const streamTasks: Promise<void>[] = [];
       if (streams.has("ORDERBOOK_SNAPSHOT")) {
         streamTasks.push(client.streamOrderbookSnapshots(onUpdate, controller.signal));
+        streamTasks.push(
+          this.pollDwellirGrpcOrderbookSnapshots(
+            client,
+            onUpdate,
+            controller.signal
+          )
+        );
       }
       if (streams.has("FILLS")) {
         streamTasks.push(client.streamFills(onUpdate, controller.signal));
@@ -1388,7 +1403,10 @@ class ExchangeStreamController {
         streamTasks.push(client.streamBlocks(onUpdate, controller.signal));
       }
 
-      Promise.race(streamTasks.length > 0 ? streamTasks : [Promise.reject(new Error("DWELLIR_NO_STREAMS_CONFIGURED"))])
+      // Snapshot streams may complete after a fresh book frame. Keep the
+      // long-lived fills/block stream alive instead of recycling the whole
+      // coordinator and repeatedly resetting the engine book.
+      Promise.all(streamTasks.length > 0 ? streamTasks : [Promise.reject(new Error("DWELLIR_NO_STREAMS_CONFIGURED"))])
         .then(() => finish())
         .catch((error) => fail("DWELLIR_GRPC_STREAM_ERROR", error));
     });
@@ -1477,8 +1495,15 @@ class ExchangeStreamController {
     }
 
     if (this.config.source === "HYPERLIQUID") {
-      this.observeHawkesFlow(raw, this.lastMessageAt ?? new Date().toISOString());
-      await this.forwardHyperliquidRaw(raw, this.lastMessageAt ?? new Date().toISOString());
+      const receivedAt = this.lastMessageAt ?? new Date().toISOString();
+      const normalizedRaw = this.normalizeHyperliquidRawForEngine(raw, receivedAt);
+
+      if (!normalizedRaw) {
+        return;
+      }
+
+      this.observeHawkesFlow(normalizedRaw, receivedAt);
+      await this.forwardHyperliquidRaw(normalizedRaw, receivedAt);
       return;
     }
 
@@ -1552,8 +1577,14 @@ class ExchangeStreamController {
     }
 
     if (this.config.source === "HYPERLIQUID") {
-      this.observeHawkesFlow(raw, update.receivedAt);
-      await this.forwardHyperliquidRaw(raw, update.receivedAt);
+      const normalizedRaw = this.normalizeHyperliquidRawForEngine(raw, update.receivedAt);
+
+      if (!normalizedRaw) {
+        return;
+      }
+
+      this.observeHawkesFlow(normalizedRaw, update.receivedAt);
+      await this.forwardHyperliquidRaw(normalizedRaw, update.receivedAt);
       return;
     }
 
@@ -1607,8 +1638,90 @@ class ExchangeStreamController {
     }
 
     for (const raw of rawMessages) {
-      this.observeHawkesFlow(raw, update.receivedAt);
-      await this.forwardHyperliquidRaw(raw, update.receivedAt, "grpc");
+      const normalizedRaw = this.normalizeHyperliquidRawForEngine(raw, update.receivedAt);
+
+      if (!normalizedRaw) {
+        continue;
+      }
+
+      this.observeHawkesFlow(normalizedRaw, update.receivedAt);
+      await this.forwardHyperliquidRaw(normalizedRaw, update.receivedAt, "grpc");
+    }
+  }
+
+  private normalizeHyperliquidRawForEngine(raw: unknown, receivedAt: string): unknown | null {
+    if (!isRecord(raw) || normalizeString(raw.channel) !== "L4BOOK") {
+      return raw;
+    }
+
+    const normalized = normalizeDwellirL4BookForEngine(
+      raw,
+      this.config,
+      this.dwellirL4Orders,
+      receivedAt,
+      readNumber(this.env.DWELLIR_L4_ORDER_CACHE_LIMIT, 10_000)
+    );
+
+    if (!normalized) {
+      this.ticksDropped += 1;
+
+      if (this.ticksDropped <= 5 || this.ticksDropped % 100 === 0) {
+        this.logger.warn("DWELLIR_L4_PACKET_DROPPED", "Dropped unsupported Dwellir L4 book packet", {
+          streamId: this.config.id,
+          source: this.config.source,
+          source_exchange: this.config.source_exchange,
+          connectionId: this.connectionId,
+          reason: "UNSUPPORTED_L4BOOK_PAYLOAD"
+        });
+      }
+    }
+
+    return normalized;
+  }
+
+  private async pollDwellirGrpcOrderbookSnapshots(
+    client: DwellirHyperliquidGrpcClient,
+    onUpdate: (update: DwellirGrpcPayload) => Promise<void>,
+    signal: AbortSignal
+  ): Promise<void> {
+    const pollIntervalMs = Math.max(
+      250,
+      readNumber(this.env.DWELLIR_GRPC_SNAPSHOT_POLL_MS, 1_000)
+    );
+    let consecutiveFailures = 0;
+
+    while (!signal.aborted) {
+      try {
+        const snapshot = await client.getOrderBookSnapshot(Date.now(), signal);
+        await onUpdate(snapshot);
+        consecutiveFailures = 0;
+      } catch (error) {
+        if (signal.aborted) {
+          return;
+        }
+
+        consecutiveFailures += 1;
+        this.logger.warn(
+          "DWELLIR_GRPC_SNAPSHOT_POLL_FAILED",
+          "Dwellir gRPC order-book snapshot poll failed",
+          {
+            streamId: this.config.id,
+            source: this.config.source,
+            source_exchange: this.config.source_exchange,
+            connectionId: this.connectionId,
+            consecutiveFailures,
+            reason: error instanceof Error ? error.message : "UNKNOWN_ERROR"
+          }
+        );
+
+        if (consecutiveFailures >= 3) {
+          throw error instanceof Error
+            ? error
+            : new Error("DWELLIR_GRPC_SNAPSHOT_POLL_FAILED");
+        }
+      }
+
+      await delay(pollIntervalMs, signal);
     }
   }
 
@@ -2445,7 +2558,12 @@ function aggregateSubscriptionProfile(
 
   return {
     ...primary,
-    readMode: l4BookEnabled ? "DWELLIR_GRPC_FILLS_L4_BOOK_WS" : primary.readMode,
+    readMode: l4BookEnabled
+      ? primary.readMode === "DWELLIR_GRPC_FILLS_L2_BOOK_GRPC" ||
+        primary.readMode === "DWELLIR_GRPC_FILLS_L4_BOOK_GRPC"
+        ? "DWELLIR_GRPC_FILLS_L4_BOOK_GRPC"
+        : "DWELLIR_GRPC_FILLS_L4_BOOK_WS"
+      : primary.readMode,
     bookDepth,
     maxBookDepth,
     l4BookEnabled,
@@ -3452,7 +3570,7 @@ function resolveDwellirSubscriptionProfile(
     maxBookDepth
   );
   const l4Requested = booleanEnv(env.DWELLIR_ENABLE_L4_BOOK);
-  const l4BookEnabled = false;
+  const l4BookEnabled = l4Requested && tier !== "PUBLIC";
   const optimization =
     bookDepth >= maxBookDepth && !l4Requested
       ? "MAXIMIZED"
@@ -3465,25 +3583,34 @@ function resolveDwellirSubscriptionProfile(
     tier,
     readMode:
       orderbookTransport === "grpc"
-        ? "DWELLIR_GRPC_FILLS_L2_BOOK_GRPC"
-        : "DWELLIR_GRPC_FILLS_L2_BOOK_WS",
+        ? l4BookEnabled
+          ? "DWELLIR_GRPC_FILLS_L4_BOOK_GRPC"
+          : "DWELLIR_GRPC_FILLS_L2_BOOK_GRPC"
+        : l4BookEnabled
+          ? "DWELLIR_GRPC_FILLS_L4_BOOK_WS"
+          : "DWELLIR_GRPC_FILLS_L2_BOOK_WS",
     bookDepth,
     maxBookDepth,
     l4BookEnabled,
     assetCount,
     optimization,
     normalMode: true,
-    reason: l4Requested
-      ? `Dwellir ${tier} detected; L4 requested but the hot path is L2-aggregate, so normal mode is maximized at ${bookDepth}/${maxBookDepth} L2 levels.`
-      : orderbookTransport === "grpc"
-        ? `Dwellir ${tier} detected; normal mode is maximized at ${bookDepth}/${maxBookDepth} L2 levels with gRPC fills plus gRPC order-book snapshots.`
-        : `Dwellir ${tier} detected; normal mode is maximized at ${bookDepth}/${maxBookDepth} L2 levels with gRPC fills plus order-book WebSocket.`
+    reason: l4BookEnabled
+      ? orderbookTransport === "grpc"
+        ? `Dwellir ${tier} detected; L4 depth is enabled and carried through gRPC order-book snapshots before aggregation into the engine book.`
+        : `Dwellir ${tier} detected; L4 depth is enabled on the Dwellir order-book WebSocket.`
+      : l4Requested
+        ? `Dwellir ${tier} detected; L4 was requested but is unavailable on the public tier, so the engine is using ${bookDepth}/${maxBookDepth} L2 levels.`
+        : orderbookTransport === "grpc"
+          ? `Dwellir ${tier} detected; normal mode is maximized at ${bookDepth}/${maxBookDepth} L2 levels with gRPC fills plus gRPC order-book snapshots.`
+          : `Dwellir ${tier} detected; normal mode is maximized at ${bookDepth}/${maxBookDepth} L2 levels with gRPC fills plus order-book WebSocket.`
   };
 }
 
 function dwellirOrderbookTransport(env: Env): "grpc" | "websocket" {
   const normalized = normalizeString(env.DWELLIR_ORDERBOOK_TRANSPORT);
-  return normalized === "GRPC" ? "grpc" : "websocket";
+  const tier = normalizeDwellirSubscriptionTier(env.DWELLIR_SUBSCRIPTION_TIER);
+  return normalized === "GRPC" && tier === "DEDICATED" ? "grpc" : "websocket";
 }
 
 function mergeGrpcStreamTypes(
@@ -4097,6 +4224,483 @@ function dwellirFillMessages(
   ));
 
   return normalized.length > 0 ? [{ channel: "trades", data: normalized }] : [];
+}
+
+function normalizeDwellirL4BookForEngine(
+  raw: Record<string, unknown>,
+  config: ResolvedExchangeStreamConfig,
+  orderCache: Map<string, DwellirL4OrderState>,
+  receivedAt: string,
+  maxCacheOrders: number
+): Record<string, unknown> | null {
+  const envelope = isRecord(raw.data) ? raw.data : raw;
+  const data =
+    isRecord(envelope.Snapshot)
+      ? envelope.Snapshot
+      : isRecord(envelope.Updates)
+        ? envelope.Updates
+        : envelope;
+  const coin =
+    readDwellirL4Coin(data) ??
+    config.instrumentCode?.replace(/-usd$/i, "").toUpperCase();
+
+  if (!coin) {
+    return null;
+  }
+
+  const exchangeTime =
+    coerceExchangeTime(readField(data, ["time", "timestamp", "ts", "blockTime"])) ??
+    receivedAt;
+  const sequence =
+    readField(data, ["sequence", "seq", "block", "height", "time"]) ?? Date.parse(exchangeTime);
+
+  let mutated = applyDwellirL4Snapshot(data, orderCache, receivedAt, maxCacheOrders);
+  mutated = applyDwellirL4Deltas(data, orderCache, receivedAt) || mutated;
+
+  if (!mutated && orderCache.size === 0) {
+    return null;
+  }
+
+  pruneDwellirL4Cache(orderCache, Math.max(100, maxCacheOrders));
+
+  const depthLimit = resolveBookDepthLimit(config);
+  const bidLevels = buildDwellirL4AggregatedLevels(orderCache, "buy", depthLimit);
+  const askLevels = buildDwellirL4AggregatedLevels(orderCache, "sell", depthLimit);
+
+  if (bidLevels.length === 0 && askLevels.length === 0) {
+    return null;
+  }
+
+  return {
+    channel: "l2Book",
+    data: {
+      coin: coin.toUpperCase(),
+      time: exchangeTime,
+      sequence,
+      levels: [bidLevels, askLevels],
+      sourceChannel: "l4Book"
+    }
+  };
+}
+
+function applyDwellirL4Snapshot(
+  data: Record<string, unknown>,
+  orderCache: Map<string, DwellirL4OrderState>,
+  receivedAt: string,
+  maxCacheOrders: number
+): boolean {
+  const levels = readField(data, ["levels", "book", "orderBook"]);
+  const bids =
+    isRecord(levels)
+      ? readField(levels, ["bids", "bid", "buy"])
+      : readField(data, ["bids", "bidOrders", "buy"]);
+  const asks =
+    isRecord(levels)
+      ? readField(levels, ["asks", "ask", "sell"])
+      : readField(data, ["asks", "askOrders", "sell"]);
+
+  if (Array.isArray(levels) && (Array.isArray(levels[0]) || Array.isArray(levels[1]))) {
+    orderCache.clear();
+    const sideLimit = Math.max(1, Math.floor(maxCacheOrders / 2));
+    applyDwellirL4OrderList(levels[0], "buy", orderCache, receivedAt, "snapshot:bid", sideLimit);
+    applyDwellirL4OrderList(levels[1], "sell", orderCache, receivedAt, "snapshot:ask", sideLimit);
+    return true;
+  }
+
+  if (Array.isArray(bids) || Array.isArray(asks)) {
+    orderCache.clear();
+    const sideLimit = Math.max(1, Math.floor(maxCacheOrders / 2));
+    applyDwellirL4OrderList(bids, "buy", orderCache, receivedAt, "snapshot:bid", sideLimit);
+    applyDwellirL4OrderList(asks, "sell", orderCache, receivedAt, "snapshot:ask", sideLimit);
+    return true;
+  }
+
+  return false;
+}
+
+function applyDwellirL4Deltas(
+  data: Record<string, unknown>,
+  orderCache: Map<string, DwellirL4OrderState>,
+  receivedAt: string
+): boolean {
+  let mutated = false;
+  const deltaContainers = [
+    readField(data, ["book_diffs", "bookDiffs"]),
+    readField(data, ["diffs", "deltas", "updates", "changes", "orders", "orderUpdates"])
+  ];
+
+  for (const container of deltaContainers) {
+    if (!Array.isArray(container)) {
+      continue;
+    }
+
+    for (let index = 0; index < container.length; index += 1) {
+      if (
+        applyDwellirL4OrderMutation(
+          container[index],
+          null,
+          orderCache,
+          receivedAt,
+          `delta:${index}`
+        )
+      ) {
+        mutated = true;
+      }
+    }
+  }
+
+  const statusContainers = [
+    readField(data, ["order_statuses", "orderStatuses", "statuses", "events"])
+  ];
+
+  for (const container of statusContainers) {
+    if (!Array.isArray(container)) {
+      continue;
+    }
+
+    for (let index = 0; index < container.length; index += 1) {
+      const source = normalizeDwellirL4OrderSource(container[index], null);
+
+      if (!source || !isDwellirL4Delete(source, readDwellirL4Size(source))) {
+        continue;
+      }
+
+      if (
+        applyDwellirL4OrderMutation(
+          container[index],
+          null,
+          orderCache,
+          receivedAt,
+          `status:${index}`
+        )
+      ) {
+        mutated = true;
+      }
+    }
+  }
+
+  return mutated;
+}
+
+function applyDwellirL4OrderList(
+  value: unknown,
+  side: "buy" | "sell",
+  orderCache: Map<string, DwellirL4OrderState>,
+  receivedAt: string,
+  fallbackPrefix: string,
+  limit = Number.POSITIVE_INFINITY
+): void {
+  if (!Array.isArray(value)) {
+    return;
+  }
+
+  for (let index = 0; index < value.length && index < limit; index += 1) {
+    applyDwellirL4OrderMutation(
+      value[index],
+      side,
+      orderCache,
+      receivedAt,
+      `${fallbackPrefix}:${index}`
+    );
+  }
+}
+
+function applyDwellirL4OrderMutation(
+  value: unknown,
+  sideHint: "buy" | "sell" | null,
+  orderCache: Map<string, DwellirL4OrderState>,
+  receivedAt: string,
+  fallbackId: string
+): boolean {
+  const source = normalizeDwellirL4OrderSource(value, sideHint);
+
+  if (!source) {
+    return false;
+  }
+
+  const orderId = readDwellirL4OrderId(source, fallbackId);
+  const existing = orderCache.get(orderId);
+  const side = readDwellirL4Side(source, sideHint ?? existing?.side ?? null);
+  const price = readDwellirL4Price(source) ?? existing?.price ?? null;
+  const size = readDwellirL4Size(source);
+
+  if (isDwellirL4Delete(source, size)) {
+    return orderCache.delete(orderId);
+  }
+
+  if (!side || !price || size === null || size < 0) {
+    return false;
+  }
+
+  orderCache.set(orderId, {
+    side,
+    price,
+    size,
+    updatedAt: receivedAt
+  });
+  return true;
+}
+
+function normalizeDwellirL4OrderSource(
+  value: unknown,
+  sideHint: "buy" | "sell" | null
+): Record<string, unknown> | null {
+  if (isRecord(value)) {
+    const nested = readField(value, ["order", "restingOrder", "bookOrder", "data"]);
+
+    if (isRecord(nested)) {
+      return {
+        ...value,
+        ...nested,
+        status: readField(value, ["status", "type", "event", "state"]) ?? readField(nested, ["status"])
+      };
+    }
+
+    return value;
+  }
+
+  if (!Array.isArray(value)) {
+    return null;
+  }
+
+  if (isRecord(value[1])) {
+    return {
+      oid: value[0],
+      ...value[1]
+    };
+  }
+
+  if (sideHint) {
+    return {
+      side: sideHint,
+      px: value[0],
+      sz: value[1],
+      oid: value[2]
+    };
+  }
+
+  return {
+    side: value[0],
+    px: value[1],
+    sz: value[2],
+    oid: value[3]
+  };
+}
+
+function readDwellirL4OrderId(
+  source: Record<string, unknown>,
+  fallbackId: string
+): string {
+  const id = readField(source, [
+    "oid",
+    "orderId",
+    "order_id",
+    "id",
+    "hash",
+    "tid",
+    "cloid",
+    "clientOrderId"
+  ]);
+
+  return stringifyOrNull(id) ?? `${fallbackId}:${readDwellirL4Price(source) ?? "unknown"}`;
+}
+
+function readDwellirL4Coin(source: Record<string, unknown>): string | null {
+  const direct = stringifyOrNull(readField(source, ["coin", "asset", "symbol"]));
+
+  if (direct) {
+    return direct.toUpperCase();
+  }
+
+  const bookDiffs = readField(source, ["book_diffs", "bookDiffs", "diffs", "updates"]);
+  if (Array.isArray(bookDiffs)) {
+    for (const item of bookDiffs) {
+      const record = normalizeDwellirL4OrderSource(item, null);
+      const coin = record ? stringifyOrNull(readField(record, ["coin", "asset", "symbol"])) : null;
+
+      if (coin) {
+        return coin.toUpperCase();
+      }
+    }
+  }
+
+  const statuses = readField(source, ["order_statuses", "orderStatuses", "statuses"]);
+  if (Array.isArray(statuses)) {
+    for (const item of statuses) {
+      const record = normalizeDwellirL4OrderSource(item, null);
+      const coin = record ? stringifyOrNull(readField(record, ["coin", "asset", "symbol"])) : null;
+
+      if (coin) {
+        return coin.toUpperCase();
+      }
+    }
+  }
+
+  return null;
+}
+
+function readDwellirL4Price(source: Record<string, unknown>): string | null {
+  const rawPrice = readField(source, ["limitPx", "px", "price", "p"]);
+  const price = Number(rawPrice);
+
+  if (!Number.isFinite(price) || price < 0) {
+    return null;
+  }
+
+  return formatPriceKey(price);
+}
+
+function readDwellirL4Size(source: Record<string, unknown>): number | null {
+  const rawBookDiff = readField(source, ["raw_book_diff", "rawBookDiff", "bookDiff"]);
+  const newDiff = isRecord(rawBookDiff) && isRecord(rawBookDiff.new) ? rawBookDiff.new : null;
+  const rawSize =
+    readField(source, ["sz", "size", "qty", "quantity", "q", "remainingSize"]) ??
+    (newDiff ? readField(newDiff, ["sz", "size", "qty", "quantity", "q"]) : undefined);
+  const size = Number(rawSize);
+  return Number.isFinite(size) ? size : null;
+}
+
+function readDwellirL4Side(
+  source: Record<string, unknown>,
+  fallback: "buy" | "sell" | null
+): "buy" | "sell" | null {
+  if (typeof source.isBuy === "boolean") {
+    return source.isBuy ? "buy" : "sell";
+  }
+
+  if (typeof source.isBid === "boolean") {
+    return source.isBid ? "buy" : "sell";
+  }
+
+  if (typeof source.isAsk === "boolean") {
+    return source.isAsk ? "sell" : "buy";
+  }
+
+  const side = normalizeString(readField(source, ["side", "s", "bookSide", "dir", "direction"]));
+
+  if (side === "B" || side === "BUY" || side === "BID" || side === "LONG") {
+    return "buy";
+  }
+
+  if (side === "A" || side === "ASK" || side === "SELL" || side === "S" || side === "SHORT") {
+    return "sell";
+  }
+
+  return fallback;
+}
+
+function isDwellirL4Delete(
+  source: Record<string, unknown>,
+  size: number | null
+): boolean {
+  const status = normalizeString(readField(source, ["status", "type", "event", "state", "action"]));
+  const rawBookDiff = readField(source, ["raw_book_diff", "rawBookDiff", "bookDiff"]);
+  const rawBookDiffStatus = normalizeString(rawBookDiff);
+  const rawBookDiffNew = isRecord(rawBookDiff) ? rawBookDiff.new : undefined;
+
+  return (
+    size === 0 ||
+    rawBookDiffNew === null ||
+    rawBookDiffStatus === "DELETE" ||
+    rawBookDiffStatus === "DELETED" ||
+    rawBookDiffStatus === "REMOVE" ||
+    rawBookDiffStatus === "REMOVED" ||
+    status === "CANCEL" ||
+    status === "CANCELED" ||
+    status === "CANCELLED" ||
+    status === "DELETE" ||
+    status === "DELETED" ||
+    status === "REMOVE" ||
+    status === "REMOVED" ||
+    status === "FILL" ||
+    status === "FILLED" ||
+    status === "EXPIRE" ||
+    status === "EXPIRED"
+  );
+}
+
+function buildDwellirL4AggregatedLevels(
+  orderCache: Map<string, DwellirL4OrderState>,
+  side: "buy" | "sell",
+  depthLimit: number
+): Array<{ px: string; sz: string; n: number; updatedAt: string }> {
+  const byPrice = new Map<string, { price: number; size: number; count: number; updatedAt: string }>();
+
+  for (const order of orderCache.values()) {
+    if (order.side !== side || order.size <= 0) {
+      continue;
+    }
+
+    const price = Number(order.price);
+    if (!Number.isFinite(price)) {
+      continue;
+    }
+
+    const aggregate = byPrice.get(order.price) ?? {
+      price,
+      size: 0,
+      count: 0,
+      updatedAt: order.updatedAt
+    };
+    aggregate.size += order.size;
+    aggregate.count += 1;
+    aggregate.updatedAt = order.updatedAt > aggregate.updatedAt ? order.updatedAt : aggregate.updatedAt;
+    byPrice.set(order.price, aggregate);
+  }
+
+  const sorted = Array.from(byPrice.entries());
+  sorted.sort((left, right) =>
+    side === "buy" ? right[1].price - left[1].price : left[1].price - right[1].price
+  );
+
+  const levels: Array<{ px: string; sz: string; n: number; updatedAt: string }> = [];
+  const cappedDepth = Math.max(1, depthLimit);
+
+  for (let index = 0; index < sorted.length && levels.length < cappedDepth; index += 1) {
+    const [price, aggregate] = sorted[index];
+    levels.push({
+      px: price,
+      sz: String(roundTo(aggregate.size, 8)),
+      n: aggregate.count,
+      updatedAt: aggregate.updatedAt
+    });
+  }
+
+  return levels;
+}
+
+function pruneDwellirL4Cache(
+  orderCache: Map<string, DwellirL4OrderState>,
+  maxCacheOrders: number
+): void {
+  if (orderCache.size <= maxCacheOrders) {
+    return;
+  }
+
+  const bids: Array<[string, DwellirL4OrderState]> = [];
+  const asks: Array<[string, DwellirL4OrderState]> = [];
+
+  for (const entry of orderCache.entries()) {
+    if (entry[1].side === "buy") {
+      bids.push(entry);
+    } else {
+      asks.push(entry);
+    }
+  }
+
+  bids.sort((left, right) => Number(right[1].price) - Number(left[1].price));
+  asks.sort((left, right) => Number(left[1].price) - Number(right[1].price));
+
+  orderCache.clear();
+  const sideLimit = Math.max(1, Math.floor(maxCacheOrders / 2));
+
+  for (let index = 0; index < bids.length && index < sideLimit; index += 1) {
+    orderCache.set(bids[index][0], bids[index][1]);
+  }
+
+  for (let index = 0; index < asks.length && index < sideLimit; index += 1) {
+    orderCache.set(asks[index][0], asks[index][1]);
+  }
 }
 
 function isDwellirPacketFresh(
@@ -4866,6 +5470,24 @@ function closeSocket(socket: WebSocket | null, code: number, reason: string): vo
   }
 }
 
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        resolve();
+      },
+      { once: true }
+    );
+  });
+}
+
 function readNumber(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -4975,5 +5597,6 @@ export const __test__ = {
   classifyDwellirMalformedPayload,
   dwellirPayloadToHyperliquidRawMessages,
   loadStreamConfigs,
+  normalizeDwellirL4BookForEngine,
   resolveDwellirOrderbookWsUrl
 };

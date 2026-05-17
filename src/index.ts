@@ -2109,7 +2109,7 @@ function backendSettings(env: Env): JsonRecord {
       dwellirSubscriptionTier: env.DWELLIR_SUBSCRIPTION_TIER ?? null,
       dwellirOrderbookDepth: stringNumber(env.DWELLIR_ORDERBOOK_DEPTH),
       dwellirOrderbookTransport: env.DWELLIR_ORDERBOOK_TRANSPORT ?? "websocket",
-      dwellirL4BookEnabled: env.DWELLIR_ENABLE_L4_BOOK ?? "false",
+      dwellirL4BookEnabled: env.DWELLIR_ENABLE_L4_BOOK ?? "true",
       hyperliquidWsUrl: env.HL_WS_URL ?? null,
       heartbeatIntervalMs: stringNumber(env.HL_HEARTBEAT_INTERVAL_MS),
       staleAfterMs: stringNumber(env.HL_STALE_AFTER_MS),

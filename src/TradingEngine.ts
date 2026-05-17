@@ -2097,7 +2097,10 @@ export class TradingEngine {
       parseTimestampMs(brainTimestamp, "brain_timestamp") -
         parseTimestampMs(exchangeTimestamp, "exchange_timestamp")
     );
-    const nativeMaxLatencyMs = this.resolveNativeHyperliquidMaxLatencyMs(payload.transport);
+    const nativeMaxLatencyMs = this.resolveNativeHyperliquidMaxLatencyMs(
+      payload.transport,
+      payload.streamId
+    );
 
     if (totalLatencyMs > nativeMaxLatencyMs) {
       const book =
@@ -6432,8 +6435,13 @@ export class TradingEngine {
     });
   }
 
-  private resolveNativeHyperliquidMaxLatencyMs(transport?: MarketTransport): number {
-    if (transport === "grpc") {
+  private resolveNativeHyperliquidMaxLatencyMs(
+    transport?: MarketTransport,
+    streamId?: string | null
+  ): number {
+    const streamKey = streamId?.toLowerCase() ?? "";
+
+    if (transport === "grpc" || streamKey.startsWith("dwellir-")) {
       return readPositiveNumber(
         this.env.DWELLIR_MAX_LATENCY_MS ?? this.env.HL_STALE_AFTER_MS,
         DEFAULT_DWELLIR_NATIVE_HL_MAX_LATENCY_MS

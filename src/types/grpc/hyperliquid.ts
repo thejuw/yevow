@@ -99,7 +99,7 @@ export const hyperliquidGrpcProtoFiles = [
   "proto/hyperliquid/dwellir_l1_gateway.proto"
 ] as const;
 
-export const hyperliquidGrpcGeneratedAt = "2026-05-16T03:32:50.414Z" as const;
+export const hyperliquidGrpcGeneratedAt = "2026-05-16T23:28:08.716Z" as const;
 
 export function hasHyperliquidGrpcDescriptor(): boolean {
   return Object.keys(hyperliquidGrpcDescriptor.nested ?? {}).length > 0;
