@@ -11,6 +11,9 @@ import type {
   LoginResponse,
   MacroBiasDirection,
   NotificationSettingsUpdate,
+  ReplayResponse,
+  ReplayStatusResponse,
+  StrategyVaultResponse,
   TemporaryGovernanceOverride,
   TradeHistoryResponse,
   TraceResponse,
@@ -77,6 +80,82 @@ export async function readTradeHistory(apiBase: string, token: string): Promise<
     "/admin/history?status=ALL&limit=250",
     token
   );
+}
+
+export async function startReplay(
+  apiBase: string,
+  token: string,
+  payload: {
+    limit?: number;
+    shadowBankroll?: number;
+    speedMultiplier?: number;
+    scenario?: "BASELINE" | "FLASH_CRASH" | "DELEVERAGING_2022" | "LATENCY_SHOCK";
+    latencyMs?: number;
+    slippageBps?: number;
+    feeBps?: number;
+    exitAfterTicks?: number;
+    walkForward?: boolean;
+    sentimentAblation?: boolean;
+    strategyVersionId?: string | null;
+  } = {}
+): Promise<ReplayResponse> {
+  return apiFetch<ReplayResponse>(apiBase, "/admin/replay", token, {
+    method: "POST",
+    body: JSON.stringify({
+      actor: "command-center",
+      limit: 1000,
+      shadowBankroll: 5000,
+      speedMultiplier: 100,
+      scenario: "BASELINE",
+      latencyMs: 10,
+      slippageBps: 1,
+      feeBps: 0,
+      exitAfterTicks: 10,
+      walkForward: true,
+      sentimentAblation: true,
+      ...payload
+    })
+  });
+}
+
+export async function readReplayStatus(
+  apiBase: string,
+  token: string
+): Promise<ReplayStatusResponse> {
+  return apiFetch<ReplayStatusResponse>(apiBase, "/admin/replay/status", token);
+}
+
+export async function readStrategyVault(
+  apiBase: string,
+  token: string
+): Promise<StrategyVaultResponse> {
+  return apiFetch<StrategyVaultResponse>(apiBase, "/admin/strategy", token);
+}
+
+export async function createStrategyVersion(
+  apiBase: string,
+  token: string,
+  payload: {
+    name: string;
+    description?: string;
+    config?: GlobalRiskConfig;
+  }
+): Promise<unknown> {
+  return apiFetch(apiBase, "/admin/strategy", token, {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function activateStrategyVersion(
+  apiBase: string,
+  token: string,
+  versionId: string
+): Promise<unknown> {
+  return apiFetch(apiBase, "/admin/strategy/activate", token, {
+    method: "POST",
+    body: JSON.stringify({ versionId })
+  });
 }
 
 export async function readAlerts(apiBase: string, token: string): Promise<AlertingResponse> {

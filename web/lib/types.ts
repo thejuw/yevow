@@ -343,6 +343,16 @@ export interface EngineState {
     updatedAt: string | null;
   };
   oracle: OracleState;
+  ensemble?: {
+    schemaVersion: "ensemble.v1";
+    confidence: number;
+    kellyMultiplier: number;
+    regimeMultiplier: number;
+    anomalyCircuitBreaker: boolean;
+    votes: JsonRecord[];
+    rationale: string;
+    updatedAt: string | null;
+  };
   inventory: {
     netDelta: number;
     current_inventory_delta: number;
@@ -425,7 +435,38 @@ export interface AttributionResponse {
     profitFactor: number | null;
     averageConfidence: number;
   }>;
+  byAsset?: JsonRecord[];
+  byRegime?: JsonRecord[];
+  byAgentAsset?: JsonRecord[];
   timeline: JsonRecord[];
+}
+
+export interface ReplayStatus {
+  replayId: string | null;
+  status: "IDLE" | "RUNNING" | "COMPLETED" | "FAILED";
+  ticksTotal: number;
+  ticksProcessed: number;
+  progressPct: number;
+  speedMultiplier: number;
+  shadowBankroll: number;
+  dateFrom: string | null;
+  dateTo: string | null;
+  scenario?: string;
+  error: string | null;
+  startedAt: string | null;
+  updatedAt: string;
+  completedAt: string | null;
+}
+
+export interface ReplayResponse {
+  ok: boolean;
+  replay: JsonRecord;
+  state?: EngineState;
+}
+
+export interface ReplayStatusResponse {
+  ok: boolean;
+  replay: ReplayStatus;
 }
 
 export interface TradeHistoryEntry {
@@ -630,6 +671,29 @@ export interface AdminSettingsResponse {
   alerting: AlertingResponse["alerting"];
   vault: VaultStatus;
   backend: JsonRecord;
+  strategyVault?: StrategyVaultResponse["strategyVault"];
+}
+
+export interface StrategyVersion {
+  versionId: string;
+  name: string;
+  description: string | null;
+  status: "DRAFT" | "ACTIVE" | "ARCHIVED";
+  config: GlobalRiskConfig;
+  parameters: JsonRecord;
+  performance: JsonRecord | null;
+  createdBy: string;
+  activatedBy: string | null;
+  createdAt: string;
+  activatedAt: string | null;
+}
+
+export interface StrategyVaultResponse {
+  ok: boolean;
+  strategyVault: {
+    active: StrategyVersion | null;
+    versions: StrategyVersion[];
+  };
 }
 
 export interface LiveReadinessCheck {

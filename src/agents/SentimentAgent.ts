@@ -35,15 +35,36 @@ export class SentimentAgent {
       return this.snapshot();
     }
 
+    const startedAt = performance.now();
+    const lexical = lexicalScore(cleanHeadline);
     const aiScore = env.AI ? await this.scoreWithWorkersAi(cleanHeadline, env) : null;
-    const score = aiScore ?? lexicalScore(cleanHeadline);
+    const latencyMs = roundMetric(performance.now() - startedAt, 3);
+    const fallbackUsed = aiScore === null;
+    const score = fallbackUsed ? lexical : aiScore;
+    const estimatedCostUsd = env.AI
+      ? nonNegativeNumber(env.WORKERS_AI_SENTIMENT_COST_USD, 0)
+      : 0;
     this.state = {
       schemaVersion: "sentiment.v1",
       score,
       bias: score > 0.15 ? "BULLISH" : score < -0.15 ? "BEARISH" : "NEUTRAL",
       confidence: Math.min(1, Math.abs(score) + 0.25),
       headline: cleanHeadline,
-      model: env.AI ? MODEL : "lexical-fallback",
+      model: fallbackUsed ? "lexical-fallback" : MODEL,
+      provider: fallbackUsed ? "LEXICAL" : "WORKERS_AI",
+      fallbackUsed,
+      latencyMs,
+      estimatedCostUsd,
+      ablation: {
+        enabled: true,
+        lexicalScore: lexical,
+        aiScore,
+        edgeAfterCostsBps:
+          aiScore === null
+            ? 0
+            : roundMetric((Math.abs(aiScore) - Math.abs(lexical)) * 10_000 - estimatedCostUsd, 4),
+        evaluatedAt: observedAt
+      },
       updatedAt: observedAt
     };
 
@@ -91,6 +112,17 @@ export function defaultSentimentState(): SentimentState {
     confidence: 0,
     headline: null,
     model: MODEL,
+    provider: "LEXICAL",
+    fallbackUsed: true,
+    latencyMs: null,
+    estimatedCostUsd: 0,
+    ablation: {
+      enabled: false,
+      lexicalScore: 0,
+      aiScore: null,
+      edgeAfterCostsBps: null,
+      evaluatedAt: null
+    },
     updatedAt: null
   };
 }
@@ -106,4 +138,14 @@ function lexicalScore(headline: string): number {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+function nonNegativeNumber(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function roundMetric(value: number, decimalPlaces: number): number {
+  const factor = 10 ** decimalPlaces;
+  return Math.round(value * factor) / factor;
 }

@@ -7,6 +7,7 @@ import {
   readNotificationSettings,
   writeNotificationSettings
 } from "./NotificationSettings";
+import { StrategyVault } from "./StrategyVault";
 import { TradingEngine } from "./TradingEngine";
 import { Notifier, type AlertPriority } from "./utils/Notifier";
 import { SignatureEngine } from "./utils/SignatureEngine";
@@ -595,6 +596,24 @@ async function handleAdminRequest(
     return updateNotificationSettings(request, env, logger, topology, auth);
   }
 
+  if (url.pathname === "/admin/strategy") {
+    if (request.method === "GET") {
+      return readStrategyVault(env);
+    }
+    if (request.method === "POST") {
+      return createStrategyVersion(request, env, logger, topology, auth, configManager);
+    }
+    return json({ ok: false, error: "Method not allowed" }, 405);
+  }
+
+  if (url.pathname === "/admin/strategy/activate") {
+    if (request.method !== "POST") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+
+    return activateStrategyVersion(request, env, logger, topology, auth);
+  }
+
   if (url.pathname === "/admin/diagnostics") {
     if (request.method !== "GET") {
       return json({ ok: false, error: "Method not allowed" }, 405);
@@ -1056,12 +1075,15 @@ async function readAdminSettings(
   configManager: ConfigManager
 ): Promise<Response> {
   const notifier = new Notifier(env, () => undefined);
-  const [config, alerting, vault, notifications, hyperliquidSecrets] = await Promise.all([
+  const strategyVault = new StrategyVault(env.TRADING_DB, env.CONFIG_STORE);
+  const [config, alerting, vault, notifications, hyperliquidSecrets, strategies, activeStrategy] = await Promise.all([
     configManager.fetchConfig(),
     notifier.statusAsync(),
     vaultStatus(env),
     readNotificationSettings(env),
-    evaluateHyperliquidSecrets(env)
+    evaluateHyperliquidSecrets(env),
+    strategyVault.listVersions(20).catch(() => []),
+    strategyVault.activeVersion().catch(() => null)
   ]);
 
   return json({
@@ -1080,8 +1102,113 @@ async function readAdminSettings(
         metadata: hyperliquidSecrets.metadata
       }
     },
-    backend: backendSettings(env)
+    backend: backendSettings(env),
+    strategyVault: {
+      active: activeStrategy,
+      versions: strategies
+    }
   });
+}
+
+async function readStrategyVault(env: Env): Promise<Response> {
+  const vault = new StrategyVault(env.TRADING_DB, env.CONFIG_STORE);
+  const [versions, active] = await Promise.all([
+    vault.listVersions(50),
+    vault.activeVersion()
+  ]);
+
+  return json({
+    ok: true,
+    strategyVault: {
+      active,
+      versions
+    }
+  });
+}
+
+async function createStrategyVersion(
+  request: Request,
+  env: Env,
+  logger: Logger,
+  topology: EdgeTopology,
+  admin: AuthenticatedAdmin,
+  configManager: ConfigManager
+): Promise<Response> {
+  const body = (await readJsonBody<{
+    name?: string;
+    description?: string;
+    config?: GlobalRiskConfig;
+    parameters?: JsonRecord;
+    performance?: JsonRecord;
+  }>(request)) ?? {};
+  const currentConfig = await configManager.fetchConfig();
+  const vault = new StrategyVault(env.TRADING_DB, env.CONFIG_STORE);
+  const version = await vault.createVersion({
+    name: typeof body.name === "string" ? body.name : `Strategy ${new Date().toISOString()}`,
+    description: typeof body.description === "string" ? body.description : null,
+    config: body.config ?? currentConfig,
+    parameters: body.parameters ?? {
+      source: "settings-console",
+      configVersion: currentConfig.version,
+      capturedAt: new Date().toISOString()
+    },
+    performance: body.performance ?? null,
+    createdBy: admin.subject
+  });
+
+  logger.warn("STRATEGY_VERSION_CREATED", "Admin snapshotted a strategy version", {
+    actor: admin.subject,
+    versionId: version.versionId,
+    name: version.name,
+    colo: topology.colo,
+    placement: topology.placement
+  });
+
+  return json({ ok: true, version });
+}
+
+async function activateStrategyVersion(
+  request: Request,
+  env: Env,
+  logger: Logger,
+  topology: EdgeTopology,
+  admin: AuthenticatedAdmin
+): Promise<Response> {
+  const body = (await readJsonBody<{ versionId?: string }>(request)) ?? {};
+  const versionId = typeof body.versionId === "string" ? body.versionId.trim() : "";
+  if (!versionId) {
+    return json({ ok: false, error: "STRATEGY_VERSION_REQUIRED" }, 400);
+  }
+
+  const vault = new StrategyVault(env.TRADING_DB, env.CONFIG_STORE);
+  const version = await vault.activateVersion(versionId, admin.subject);
+  const refreshResponse = await routeToEngine(
+    new Request(new URL("/admin/config", request.url), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        signal: "REFRESH_CONFIG",
+        config: version.config
+      } satisfies AdminConfigUpdate)
+    }),
+    env,
+    topology
+  );
+
+  logger.warn("STRATEGY_VERSION_ACTIVATED", "Admin hot-swapped active strategy version", {
+    actor: admin.subject,
+    versionId: version.versionId,
+    name: version.name,
+    refreshStatus: refreshResponse.status,
+    colo: topology.colo,
+    placement: topology.placement
+  });
+
+  return json({
+    ok: refreshResponse.ok,
+    version,
+    engineRefreshStatus: refreshResponse.status
+  }, refreshResponse.ok ? 200 : 502);
 }
 
 async function runDiagnostics(
@@ -2119,12 +2246,18 @@ async function readAttribution(env: Env, url: URL): Promise<Response> {
   ).bind(...bindings, limit).all<AttributionRow>();
   const trades = (rows.results ?? []).map(formatAttributionTrade).reverse();
   const byDriver = calculateAttributionByDriver(trades);
+  const byAsset = calculateAttributionByAsset(trades);
+  const byRegime = calculateAttributionByRegime(trades);
+  const byAgentAsset = calculateAttributionByAgentAsset(trades);
   const timeline = calculateAttributionTimeline(trades);
 
   return json({
     ok: true,
     trades,
     byDriver,
+    byAsset,
+    byRegime,
+    byAgentAsset,
     timeline,
     filters: {
       dateRange,
@@ -2267,6 +2400,7 @@ interface AttributionTrade {
   tradeId: string;
   driver: string;
   asset: string;
+  regime: string;
   side: string;
   pnl: number;
   evAtExecution: number;
@@ -2294,6 +2428,11 @@ function formatAttributionTrade(row: AttributionRow): AttributionTrade {
     tradeId: row.trade_id,
     driver: primaryDriver,
     asset: row.asset,
+    regime:
+      readString(rawExecution, "regime") ??
+      readString(rawExecution, "oracleRegime") ??
+      readString(rawExecution, "marketRegime") ??
+      "UNKNOWN",
     side: row.side,
     pnl,
     evAtExecution: row.ev_at_execution,
@@ -2304,13 +2443,38 @@ function formatAttributionTrade(row: AttributionRow): AttributionTrade {
 }
 
 function calculateAttributionByDriver(trades: AttributionTrade[]): JsonRecord[] {
+  return calculateAttributionBuckets(trades, (trade) => trade.driver, "driver");
+}
+
+function calculateAttributionByAsset(trades: AttributionTrade[]): JsonRecord[] {
+  return calculateAttributionBuckets(trades, (trade) => trade.asset, "asset");
+}
+
+function calculateAttributionByRegime(trades: AttributionTrade[]): JsonRecord[] {
+  return calculateAttributionBuckets(trades, (trade) => trade.regime, "regime");
+}
+
+function calculateAttributionByAgentAsset(trades: AttributionTrade[]): JsonRecord[] {
+  return calculateAttributionBuckets(
+    trades,
+    (trade) => `${trade.driver}:${trade.asset}`,
+    "bucket"
+  );
+}
+
+function calculateAttributionBuckets(
+  trades: AttributionTrade[],
+  keyFn: (trade: AttributionTrade) => string,
+  keyName: string
+): JsonRecord[] {
   const buckets = new Map<string, AttributionTrade[]>();
 
   for (const trade of trades) {
-    buckets.set(trade.driver, [...(buckets.get(trade.driver) ?? []), trade]);
+    const key = keyFn(trade);
+    buckets.set(key, [...(buckets.get(key) ?? []), trade]);
   }
 
-  return [...buckets.entries()].map(([driver, bucket]) => {
+  return [...buckets.entries()].map(([key, bucket]) => {
     const pnls = bucket.map((trade) => trade.pnl);
     const grossProfit = pnls.filter((pnl) => pnl > 0).reduce((sum, pnl) => sum + pnl, 0);
     const grossLoss = Math.abs(pnls.filter((pnl) => pnl < 0).reduce((sum, pnl) => sum + pnl, 0));
@@ -2321,8 +2485,8 @@ function calculateAttributionByDriver(trades: AttributionTrade[]): JsonRecord[] 
         : 0;
     const sigma = Math.sqrt(variance);
 
-    return {
-      driver,
+    const row: JsonRecord = {
+      [keyName]: key,
       tradeCount: bucket.length,
       cumulativePnl: round(pnls.reduce((sum, pnl) => sum + pnl, 0), 8),
       averagePnl: round(mean, 8),
@@ -2335,6 +2499,10 @@ function calculateAttributionByDriver(trades: AttributionTrade[]): JsonRecord[] 
         6
       )
     };
+    if (keyName === "driver") {
+      row.driver = key;
+    }
+    return row;
   });
 }
 

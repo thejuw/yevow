@@ -21,6 +21,8 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   DEFAULT_API_BASE,
+  activateStrategyVersion,
+  createStrategyVersion,
   login,
   readSettings,
   resetLatencyBaseline,
@@ -45,6 +47,7 @@ import type {
   JsonRecord,
   NotificationSettings,
   NotificationSettingsUpdate,
+  StrategyVersion,
   VaultKeyName
 } from "@/lib/types";
 
@@ -83,6 +86,8 @@ export default function SettingsPage() {
   const [vaultKey, setVaultKey] = useState<VaultKeyName>("TELEGRAM_BOT_TOKEN");
   const [vaultSecret, setVaultSecret] = useState("");
   const [rotationReason, setRotationReason] = useState("settings-page-rotation");
+  const [strategyName, setStrategyName] = useState("BTC-HYPE Quant Stack");
+  const [strategyDescription, setStrategyDescription] = useState("Operator-reviewed parameter snapshot");
   const [pendingFields, setPendingFields] = useState<string[]>([]);
   const [confirmText, setConfirmText] = useState("");
   const riskDirtyRef = useRef(false);
@@ -319,6 +324,49 @@ export default function SettingsPage() {
     } catch (caught: unknown) {
       setError(errorMessage(caught));
       setCommandStatus("Latency reset failed.");
+    } finally {
+      setCommandState("IDLE");
+    }
+  }
+
+  async function snapshotStrategy() {
+    if (!settings) {
+      return;
+    }
+
+    setCommandState("SAVING");
+    setError(null);
+    setCommandStatus("Snapshotting strategy version...");
+
+    try {
+      await createStrategyVersion(apiBase, token, {
+        name: strategyName,
+        description: strategyDescription,
+        config: settings.config
+      });
+      await refresh();
+      setCommandStatus("Strategy version saved.");
+    } catch (caught: unknown) {
+      setError(errorMessage(caught));
+      setCommandStatus("Strategy snapshot failed.");
+    } finally {
+      setCommandState("IDLE");
+    }
+  }
+
+  async function activateStrategy(version: StrategyVersion) {
+    setCommandState("SAVING");
+    setError(null);
+    setCommandStatus(`Activating ${version.name}...`);
+
+    try {
+      await activateStrategyVersion(apiBase, token, version.versionId);
+      riskDirtyRef.current = false;
+      await refresh();
+      setCommandStatus("Strategy hot-swap applied to the engine.");
+    } catch (caught: unknown) {
+      setError(errorMessage(caught));
+      setCommandStatus("Strategy activation failed.");
     } finally {
       setCommandState("IDLE");
     }
@@ -657,6 +705,48 @@ export default function SettingsPage() {
                 onChange={(value) => updateRiskDraft(param.key, value)}
               />
             ))}
+          </div>
+        </section>
+
+        <section className="settings-panel settings-panel-wide glass">
+          <div className="panel-title">
+            <DatabaseZap size={17} />
+            <span>Strategy Vault</span>
+            <button disabled={commandState !== "IDLE" || !settings} onClick={() => void snapshotStrategy()}>
+              <Save size={16} />
+              Snapshot
+            </button>
+          </div>
+          <div className="settings-form two-col">
+            <label>
+              Version Name
+              <input value={strategyName} onChange={(event) => setStrategyName(event.target.value)} />
+            </label>
+            <label>
+              Description
+              <input value={strategyDescription} onChange={(event) => setStrategyDescription(event.target.value)} />
+            </label>
+          </div>
+          <div className="vault-table strategy-table">
+            {(settings?.strategyVault?.versions ?? []).map((version) => (
+              <div className={`vault-row ${version.status.toLowerCase()}`} key={version.versionId}>
+                <code>{version.name}</code>
+                <span>{version.status}</span>
+                <span>{version.activatedAt ? formatClock(version.activatedAt) : formatClock(version.createdAt)}</span>
+                <button
+                  disabled={commandState !== "IDLE" || version.status === "ACTIVE"}
+                  onClick={() => void activateStrategy(version)}
+                >
+                  Activate
+                </button>
+              </div>
+            ))}
+            {(settings?.strategyVault?.versions ?? []).length === 0 ? (
+              <div className="vault-row">
+                <code>NO_STRATEGY_VERSIONS</code>
+                <span>Snapshot the current matrix before the next tuning pass.</span>
+              </div>
+            ) : null}
           </div>
         </section>
 

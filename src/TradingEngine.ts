@@ -84,6 +84,7 @@ import type {
   ProfilerState,
   ReplayResult,
   RiskLimits,
+  SentimentState,
   ShadowQueueDecision,
   ShadowQueueFill,
   ShadowQueueState,
@@ -384,10 +385,25 @@ interface ReplayStatus {
   shadowBankroll: number;
   dateFrom: string | null;
   dateTo: string | null;
+  scenario?: ReplayScenario;
   error: string | null;
   startedAt: string | null;
   updatedAt: string;
   completedAt: string | null;
+}
+
+type ReplayScenario = "BASELINE" | "FLASH_CRASH" | "DELEVERAGING_2022" | "LATENCY_SHOCK";
+
+interface ReplayOptions {
+  scenario: ReplayScenario;
+  latencyMs: number;
+  slippageBps: number;
+  feeBps: number;
+  exitAfterTicks: number;
+  walkForward: boolean;
+  sentimentAblation: boolean;
+  strategyVersionId: string | null;
+  actor: string;
 }
 
 interface ReplayTradeRow {
@@ -795,6 +811,7 @@ export class TradingEngine {
           this.calculatePriceDiscovery(baseState.microstructure?.instrumentCode, now),
         oracle: baseState.oracle ?? defaultOracleState(),
         sentiment: baseState.sentiment ?? defaultSentimentState(),
+        ensemble: baseState.ensemble ?? defaultEnsembleState(now),
         leadLag: baseState.leadLag ?? defaultLeadLagMetrics(),
         inventory: normalizeInventoryState(
           baseState.inventory,
@@ -1069,6 +1086,15 @@ export class TradingEngine {
           dateTo?: string;
           from?: string;
           to?: string;
+          scenario?: string;
+          latencyMs?: number;
+          slippageBps?: number;
+          feeBps?: number;
+          exitAfterTicks?: number;
+          walkForward?: boolean;
+          sentimentAblation?: boolean;
+          strategyVersionId?: string | null;
+          actor?: string;
         }>(request);
         const result = await this.runHistoricalReplay(
           clampInteger(
@@ -1085,7 +1111,29 @@ export class TradingEngine {
             1
           ),
           sanitizeReplayDate(payload?.dateFrom ?? payload?.from),
-          sanitizeReplayDate(payload?.dateTo ?? payload?.to)
+          sanitizeReplayDate(payload?.dateTo ?? payload?.to),
+          {
+            scenario: sanitizeReplayScenario(payload?.scenario),
+            latencyMs: nonNegativeFiniteNumber(payload?.latencyMs, 10),
+            slippageBps: nonNegativeFiniteNumber(payload?.slippageBps, 1),
+            feeBps: nonNegativeFiniteNumber(payload?.feeBps, this.cachedConfig.EXCHANGE_FEE_BPS),
+            exitAfterTicks: clampInteger(
+              payload?.exitAfterTicks === undefined ? null : String(payload.exitAfterTicks),
+              10,
+              1,
+              500
+            ),
+            walkForward: payload?.walkForward === true,
+            sentimentAblation: payload?.sentimentAblation !== false,
+            strategyVersionId:
+              typeof payload?.strategyVersionId === "string" && payload.strategyVersionId.trim()
+                ? payload.strategyVersionId.trim()
+                : null,
+            actor:
+              typeof payload?.actor === "string" && payload.actor.trim()
+                ? payload.actor.trim().slice(0, 100)
+                : "admin"
+          }
         );
         return json({ ok: true, replay: result, state: this.engineState });
       }
@@ -4309,10 +4357,21 @@ export class TradingEngine {
       macroBias: this.macroBias,
       observedAt: metrics.brainTimestamp
     });
+    const ensemble = this.calculateEnsembleState(
+      croupierDecision.intent,
+      profilerResult.state,
+      oracleResult.state,
+      this.engineState.sentiment,
+      anomalyResult.status,
+      metrics.brainTimestamp
+    );
     const executionPlan = this.prepareExecutionPlan(
       croupierDecision.intent,
       metrics.brainTimestamp,
-      { stateOverride: { ...this.engineState, assetMatrix } }
+      {
+        stateOverride: { ...this.engineState, assetMatrix, ensemble },
+        kellyFractionOverride: this.cachedConfig.KELLY_FRACTION * ensemble.kellyMultiplier
+      }
     );
     let executionPlans = [executionPlan].filter(
       (plan): plan is NonNullable<typeof executionPlan> => plan !== null
@@ -4329,7 +4388,24 @@ export class TradingEngine {
       profilerSignalType === "SUSPEND_QUOTES" ||
       profilerSignalType === "AM_VPIN_CRITICAL";
 
-    if (isProfilerQuoteHalt) {
+    if (ensemble.anomalyCircuitBreaker) {
+      executionPlans = [];
+      assetQuoteState = {
+        status: "SUSPENDED",
+        reason: "ENSEMBLE_ANOMALY_CIRCUIT_BREAKER",
+        suspendedUntil: new Date(Date.parse(metrics.brainTimestamp) + 60_000).toISOString(),
+        lastQuote: assetQuoteState.lastQuote,
+        updatedAt: metrics.brainTimestamp
+      };
+      this.publish("SUSPEND_QUOTES", {
+        instrumentCode: tick.instrumentCode,
+        reason: ensemble.rationale,
+        ...quoteStateTelemetry(assetQuoteState)
+      });
+      if (!options.shadowReplay && this.cachedConfig.TRADING_ENABLED) {
+        this.state.waitUntil(this.cancelAllQuotes(tick.instrumentCode, "ENSEMBLE_CIRCUIT_BREAKER"));
+      }
+    } else if (isProfilerQuoteHalt) {
       executionPlans = [];
       const suspendedUntil =
         typeof profilerResult.signal?.featureVector.suspendedUntil === "string"
@@ -4385,6 +4461,7 @@ export class TradingEngine {
       internalOrderBookDepth: countBookLevels(this.bids, this.asks),
       microstructure: microstructureFromBook(book),
       oracle: oracleResult.state,
+      ensemble,
       leadLag,
       inventory,
       current_inventory_delta: inventory.current_inventory_delta,
@@ -5251,12 +5328,118 @@ export class TradingEngine {
     };
   }
 
+  private calculateEnsembleState(
+    intent: TradeIntent | null,
+    profilerState: ProfilerState,
+    oracleState: EngineState["oracle"],
+    sentimentState: EngineState["sentiment"],
+    anomalyStatus: EngineState["anomaly"],
+    observedAt: string
+  ): EngineState["ensemble"] {
+    const anomalyScore = Math.max(
+      anomalyStatus.status === "ANOMALY" ? 1 : 0,
+      Math.min(1, Math.abs(anomalyStatus.priceZScore ?? 0) / 8),
+      Math.min(1, Math.abs(anomalyStatus.volumeZScore ?? 0) / 8),
+      Math.min(1, anomalyStatus.cancellationToExecutionRatio / 12)
+    );
+    const anomalyCircuitBreaker = anomalyScore >= 0.85 || profilerState.toxicityState === "CRITICAL";
+    const profilerConfidence =
+      profilerState.toxicityState === "CRITICAL"
+        ? 0
+        : profilerState.toxicityState === "TOXIC"
+          ? 0.15
+          : profilerState.toxicityState === "CONTESTED"
+            ? 0.55
+            : 0.85;
+    const oracleConfidence =
+      oracleState.regime === "REGIME_CRISIS"
+        ? 0.25
+        : oracleState.regime === "REGIME_TREND"
+          ? 0.7
+          : 0.62;
+    const sentimentDirectionMatches =
+      !intent ||
+      sentimentState.bias === "NEUTRAL" ||
+      (intent.direction === "LONG" && sentimentState.bias === "BULLISH") ||
+      (intent.direction === "SHORT" && sentimentState.bias === "BEARISH");
+    const sentimentConfidence = sentimentDirectionMatches
+      ? Math.max(0.35, sentimentState.confidence)
+      : Math.max(0.1, 1 - sentimentState.confidence);
+    const croupierConfidence = intent
+      ? Math.min(
+          1,
+          Math.max(
+            0,
+            (intent.confidence + Math.min(1, Math.max(0, intent.expectedValue / Math.max(1, intent.executionCosts + intent.adverseSelectionCost)))) /
+              2
+          )
+        )
+      : 0;
+    const votes: EngineState["ensemble"]["votes"] = [
+      {
+        agent: "ORACLE",
+        confidence: roundMetric(oracleConfidence, 6),
+        weight: 0.3,
+        contribution: roundMetric(oracleConfidence * 0.3, 6),
+        rationale: oracleState.regime
+      },
+      {
+        agent: "PROFILER",
+        confidence: roundMetric(profilerConfidence, 6),
+        weight: 0.3,
+        contribution: roundMetric(profilerConfidence * 0.3, 6),
+        rationale: profilerState.toxicityState ?? "NORMAL"
+      },
+      {
+        agent: "CROUPIER",
+        confidence: roundMetric(croupierConfidence, 6),
+        weight: 0.25,
+        contribution: roundMetric(croupierConfidence * 0.25, 6),
+        rationale: intent ? `EV=${roundMetric(intent.expectedValue, 8)}` : "NO_INTENT"
+      },
+      {
+        agent: "SENTIMENT",
+        confidence: roundMetric(sentimentConfidence, 6),
+        weight: 0.15,
+        contribution: roundMetric(sentimentConfidence * 0.15, 6),
+        rationale: `${sentimentState.provider ?? "LEXICAL"}:${sentimentState.bias}`
+      }
+    ];
+    const weightedConfidence = votes.reduce((sum, vote) => sum + vote.contribution, 0);
+    const regimeMultiplier =
+      oracleState.regime === "REGIME_CRISIS"
+        ? 0.25
+        : oracleState.regime === "REGIME_TREND"
+          ? 0.8
+          : 1;
+    const confidence = anomalyCircuitBreaker
+      ? 0
+      : Math.min(1, Math.max(0, weightedConfidence * (1 - anomalyScore * 0.75)));
+    const kellyMultiplier = anomalyCircuitBreaker
+      ? 0
+      : Math.min(1, Math.max(0, confidence * regimeMultiplier));
+
+    return {
+      schemaVersion: "ensemble.v1",
+      confidence: roundMetric(confidence, 6),
+      kellyMultiplier: roundMetric(kellyMultiplier, 6),
+      regimeMultiplier,
+      anomalyCircuitBreaker,
+      votes,
+      rationale: anomalyCircuitBreaker
+        ? "ANOMALY_CIRCUIT_BREAKER"
+        : `ENSEMBLE_WEIGHTED_CONFIDENCE:${roundMetric(confidence, 6)}`,
+      updatedAt: observedAt
+    };
+  }
+
   private prepareExecutionPlan(
     intent: EngineState["lastTradeIntent"],
     observedAt: string,
     options: {
       bypassQuoteSuspension?: boolean;
       stateOverride?: EngineState;
+      kellyFractionOverride?: number;
     } = {}
   ):
     | {
@@ -5291,7 +5474,7 @@ export class TradingEngine {
       this.cachedConfig.MAX_POSITION_PCT > 0
         ? this.cachedConfig.MAX_POSITION_PCT
         : readPositiveNumber(this.env.MAX_POSITION_PCT, DEFAULT_MAX_POSITION_PCT),
-      this.cachedConfig.KELLY_FRACTION
+      options.kellyFractionOverride ?? this.cachedConfig.KELLY_FRACTION
     );
 
     if (!pitBossDecision.approved) {
@@ -6462,7 +6645,18 @@ export class TradingEngine {
     shadowBankroll: number,
     speedMultiplier: number,
     dateFrom: string | null = null,
-    dateTo: string | null = null
+    dateTo: string | null = null,
+    replayOptions: ReplayOptions = {
+      scenario: "BASELINE",
+      latencyMs: 10,
+      slippageBps: 1,
+      feeBps: 0,
+      exitAfterTicks: 10,
+      walkForward: false,
+      sentimentAblation: true,
+      strategyVersionId: null,
+      actor: "admin"
+    }
   ): Promise<ReplayResult> {
     const startedAt = new Date().toISOString();
     const replayId = crypto.randomUUID();
@@ -6476,13 +6670,21 @@ export class TradingEngine {
       shadowBankroll,
       dateFrom,
       dateTo,
+      scenario: replayOptions.scenario,
       error: null,
       startedAt,
       updatedAt: startedAt,
       completedAt: null
     });
     const liveSnapshot = this.captureReplaySnapshot();
-    const ticks = await this.loadReplayTicks(limit, dateFrom, dateTo);
+    const sourceTicks = await this.loadReplayTicks(limit, dateFrom, dateTo);
+    const ticks = sourceTicks.map((tick, index) =>
+      applyReplayScenarioToTick(tick, replayOptions.scenario, index, sourceTicks.length)
+    );
+    const initialShadowBankroll =
+      shadowBankroll > 0
+        ? shadowBankroll
+        : Math.max(this.engineState.bankroll.equity, this.engineState.bankroll.cash, DEFAULT_PAPER_BANKROLL_USD);
     await this.writeReplayStatus({
       replayId,
       status: "RUNNING",
@@ -6490,9 +6692,10 @@ export class TradingEngine {
       ticksProcessed: 0,
       progressPct: 0,
       speedMultiplier,
-      shadowBankroll,
+      shadowBankroll: initialShadowBankroll,
       dateFrom,
       dateTo,
+      scenario: replayOptions.scenario,
       error: null,
       startedAt,
       updatedAt: new Date().toISOString(),
@@ -6503,13 +6706,14 @@ export class TradingEngine {
         ? await this.loadReplayTrades(ticks[0].receivedAt, ticks.at(-1)!.receivedAt)
         : [];
     const shadowTrades = this.markHistoricalTrades(historicalTrades, ticks);
+    const modeledTrades: ReplayResult["shadowTrades"] = [];
     let ticksReplayed = 0;
     let generatedIntentCount = 0;
 
     this.cachedConfig = {
       ...this.cachedConfig,
       TRADING_ENABLED: true,
-      MAX_POSITION_SIZE: this.cachedConfig.MAX_POSITION_SIZE || shadowBankroll,
+      MAX_POSITION_SIZE: this.cachedConfig.MAX_POSITION_SIZE || initialShadowBankroll,
       MAX_POSITION_PCT: this.cachedConfig.MAX_POSITION_PCT || DEFAULT_MAX_POSITION_PCT,
       MAX_INVENTORY_UNITS: this.cachedConfig.MAX_INVENTORY_UNITS || DEFAULT_MAX_INVENTORY_UNITS,
       updatedAt: startedAt,
@@ -6528,8 +6732,8 @@ export class TradingEngine {
       ...defaultEngineState(`${this.engineState.engineId}:shadow:${replayId}`),
       bankroll: {
         ...this.engineState.bankroll,
-        cash: shadowBankroll,
-        equity: shadowBankroll,
+        cash: initialShadowBankroll,
+        equity: initialShadowBankroll,
         realizedPnl: 0,
         updatedAt: startedAt
       },
@@ -6565,6 +6769,17 @@ export class TradingEngine {
         const nextIntentId = this.engineState.lastTradeIntent?.intentId ?? null;
         if (nextIntentId && nextIntentId !== previousIntentId) {
           generatedIntentCount += 1;
+          const modeled = modelReplayIntentTrade(
+            this.engineState.lastTradeIntent,
+            tick,
+            ticks,
+            index,
+            replayOptions,
+            this.engineState.oracle.regime
+          );
+          if (modeled) {
+            modeledTrades.push(modeled);
+          }
         }
 
         if (index === ticks.length - 1 || index % 25 === 0) {
@@ -6575,9 +6790,10 @@ export class TradingEngine {
             ticksProcessed: index + 1,
             progressPct: ticks.length > 0 ? roundMetric(((index + 1) / ticks.length) * 100, 2) : 100,
             speedMultiplier,
-            shadowBankroll,
+            shadowBankroll: initialShadowBankroll + modeledTrades.reduce((sum, trade) => sum + trade.theoreticalPnl, 0),
             dateFrom,
             dateTo,
+            scenario: replayOptions.scenario,
             error: null,
             startedAt,
             updatedAt: new Date().toISOString(),
@@ -6595,9 +6811,10 @@ export class TradingEngine {
         ticksProcessed: ticksReplayed,
         progressPct: ticks.length > 0 ? roundMetric((ticksReplayed / ticks.length) * 100, 2) : 0,
         speedMultiplier,
-        shadowBankroll,
+        shadowBankroll: initialShadowBankroll,
         dateFrom,
         dateTo,
+        scenario: replayOptions.scenario,
         error: error instanceof Error ? error.message : "UNKNOWN_REPLAY_ERROR",
         startedAt,
         updatedAt: new Date().toISOString(),
@@ -6608,18 +6825,63 @@ export class TradingEngine {
       await this.restoreReplaySnapshot(liveSnapshot);
     }
 
-    const theoreticalPnl = shadowTrades.reduce((sum, trade) => sum + trade.theoreticalPnl, 0);
+    const theoreticalPnl = modeledTrades.reduce((sum, trade) => sum + trade.theoreticalPnl, 0);
+    const baselinePnl = shadowTrades.reduce((sum, trade) => sum + trade.theoreticalPnl, 0);
+    const attribution = buildReplayAttribution(modeledTrades);
+    const equityCurve = buildReplayEquityCurve(initialShadowBankroll, modeledTrades);
+    const maxDrawdown = calculateMaxDrawdown(equityCurve);
+    const sharpe = calculateReplaySharpe(modeledTrades.map((trade) => trade.theoreticalPnl));
+    const winRate = calculateWinRate(modeledTrades);
+    const stressResults = replayOptions.scenario === "BASELINE"
+      ? buildStressSummary(modeledTrades, generatedIntentCount)
+      : [
+          {
+            scenario: replayOptions.scenario,
+            pnl: roundMetric(theoreticalPnl, 8),
+            maxDrawdown,
+            generatedIntentCount,
+            simulatedTradeCount: modeledTrades.length
+          }
+        ];
+    const walkForward = replayOptions.walkForward
+      ? buildReplayWalkForward(modeledTrades, 4)
+      : [];
+    const ablation = replayOptions.sentimentAblation
+      ? buildReplayAblation(modeledTrades, this.engineState.sentiment)
+      : null;
     const completedAt = new Date().toISOString();
     const result: ReplayResult = {
       replayId,
+      strategyVersionId: replayOptions.strategyVersionId,
+      scenario: replayOptions.scenario,
       ticksReplayed,
-      shadowBankroll: shadowBankroll + theoreticalPnl,
+      shadowBankroll: initialShadowBankroll + theoreticalPnl,
       theoreticalPnl,
-      baselinePnl: 0,
+      baselinePnl,
       actualTradeCount: historicalTrades.length,
       generatedIntentCount,
+      simulatedTradeCount: modeledTrades.length,
       speedMultiplier,
-      shadowTrades,
+      maxDrawdown,
+      sharpe,
+      winRate,
+      latencyModel: {
+        type: replayOptions.scenario === "LATENCY_SHOCK" ? "fixed-plus-shock" : "fixed",
+        latencyMs: replayOptions.latencyMs
+      },
+      slippageModel: {
+        type: "side-aware-bps",
+        slippageBps: replayOptions.slippageBps
+      },
+      feeModel: {
+        type: "round-trip-bps",
+        feeBps: replayOptions.feeBps
+      },
+      attribution,
+      stressResults,
+      walkForward,
+      ablation,
+      shadowTrades: modeledTrades,
       startedAt,
       completedAt
     };
@@ -6630,9 +6892,16 @@ export class TradingEngine {
       actualTradeCount: historicalTrades.length,
       generatedIntentCount,
       theoreticalPnl,
+      baselinePnl,
+      simulatedTradeCount: modeledTrades.length,
+      maxDrawdown,
+      sharpe,
+      winRate,
+      scenario: replayOptions.scenario,
       speedMultiplier,
       liveStateRestored: true
     });
+    await this.recordBacktestRun(result, replayOptions, dateFrom, dateTo);
     await this.writeReplayStatus({
       replayId,
       status: "COMPLETED",
@@ -6643,6 +6912,7 @@ export class TradingEngine {
       shadowBankroll: result.shadowBankroll,
       dateFrom,
       dateTo,
+      scenario: replayOptions.scenario,
       error: null,
       startedAt,
       updatedAt: completedAt,
@@ -6694,6 +6964,7 @@ export class TradingEngine {
       shadowBankroll: 0,
       dateFrom: null,
       dateTo: null,
+      scenario: "BASELINE",
       error: null,
       startedAt: null,
       updatedAt: new Date().toISOString(),
@@ -6712,6 +6983,7 @@ export class TradingEngine {
       speedMultiplier: status.speedMultiplier,
       dateFrom: status.dateFrom,
       dateTo: status.dateTo,
+      scenario: status.scenario ?? "BASELINE",
       error: status.error,
       updatedAt: status.updatedAt,
       completedAt: status.completedAt
@@ -6897,6 +7169,55 @@ export class TradingEngine {
         closedAt: exitTick?.receivedAt ?? null
       };
     });
+  }
+
+  private async recordBacktestRun(
+    result: ReplayResult,
+    options: ReplayOptions,
+    dateFrom: string | null,
+    dateTo: string | null
+  ): Promise<void> {
+    try {
+      await this.env.TRADING_DB.prepare(
+        `INSERT INTO backtest_runs (
+           run_id, strategy_version_id, scenario, asset_filter, date_from, date_to,
+           ticks_replayed, generated_intent_count, simulated_trade_count,
+           theoretical_pnl, max_drawdown, sharpe, win_rate,
+           latency_model_json, slippage_model_json, fee_model_json,
+           attribution_json, stress_json, ablation_json, created_by, started_at, completed_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+        .bind(
+          result.replayId,
+          options.strategyVersionId,
+          options.scenario,
+          null,
+          dateFrom,
+          dateTo,
+          result.ticksReplayed,
+          result.generatedIntentCount,
+          result.simulatedTradeCount ?? 0,
+          result.theoreticalPnl,
+          result.maxDrawdown ?? 0,
+          result.sharpe,
+          result.winRate,
+          JSON.stringify(result.latencyModel ?? {}),
+          JSON.stringify(result.slippageModel ?? {}),
+          JSON.stringify(result.feeModel ?? {}),
+          JSON.stringify(result.attribution ?? {}),
+          JSON.stringify(result.stressResults ?? []),
+          JSON.stringify(result.ablation ?? {}),
+          options.actor,
+          result.startedAt,
+          result.completedAt
+        )
+        .run();
+    } catch (error) {
+      this.logger.warn("BACKTEST_RUN_JOURNAL_FAILED", "Replay completed but D1 backtest journal failed", {
+        replayId: result.replayId,
+        error: error instanceof Error ? error.message : "UNKNOWN_D1_ERROR"
+      });
+    }
   }
 
   private calculateMicrostructure(
@@ -8780,6 +9101,7 @@ function defaultEngineState(engineId: string): EngineState {
     priceDiscovery: defaultPriceDiscovery(),
     oracle: defaultOracleState(),
     sentiment: defaultSentimentState(),
+    ensemble: defaultEnsembleState(now),
     leadLag: defaultLeadLagMetrics(),
     inventory: defaultInventoryState(DEFAULT_MAX_INVENTORY_UNITS),
     riskMetrics: defaultRiskMetrics(0, now),
@@ -8802,6 +9124,19 @@ function defaultEngineState(engineId: string): EngineState {
     anomaly: defaultAnomalyStatus(),
     heartbeatAt: now,
     updatedAt: now
+  };
+}
+
+function defaultEnsembleState(observedAt: string): EngineState["ensemble"] {
+  return {
+    schemaVersion: "ensemble.v1",
+    confidence: 0,
+    kellyMultiplier: 0,
+    regimeMultiplier: 1,
+    anomalyCircuitBreaker: false,
+    votes: [],
+    rationale: "ENSEMBLE_NOT_EVALUATED",
+    updatedAt: observedAt
   };
 }
 
@@ -11061,6 +11396,302 @@ function sanitizeReplayDate(value: string | undefined): string | null {
 
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+}
+
+function sanitizeReplayScenario(value: string | undefined): ReplayScenario {
+  return value === "FLASH_CRASH" ||
+    value === "DELEVERAGING_2022" ||
+    value === "LATENCY_SHOCK" ||
+    value === "BASELINE"
+    ? value
+    : "BASELINE";
+}
+
+function nonNegativeFiniteNumber(value: number | undefined, fallback: number): number {
+  return Number.isFinite(value) && Number(value) >= 0 ? Number(value) : fallback;
+}
+
+function applyReplayScenarioToTick(
+  tick: MarketTick,
+  scenario: ReplayScenario,
+  index: number,
+  total: number
+): MarketTick {
+  if (scenario === "BASELINE" || tick.price <= 0 || total <= 0) {
+    return tick;
+  }
+
+  const progress = index / Math.max(1, total - 1);
+  let priceMultiplier = 1;
+  let sizeMultiplier = 1;
+
+  if (scenario === "FLASH_CRASH" && progress > 0.35 && progress < 0.55) {
+    const crashProgress = (progress - 0.35) / 0.2;
+    priceMultiplier = 1 - 0.08 * Math.sin(Math.PI * crashProgress);
+    sizeMultiplier = 3;
+  } else if (scenario === "DELEVERAGING_2022") {
+    priceMultiplier = 1 - 0.18 * progress;
+    sizeMultiplier = 1.4 + progress;
+  } else if (scenario === "LATENCY_SHOCK") {
+    priceMultiplier = 1 + Math.sin(progress * Math.PI * 12) * 0.0025;
+    sizeMultiplier = 1.15;
+  }
+
+  return {
+    ...tick,
+    price: roundCrypto(tick.price * priceMultiplier),
+    size: roundCrypto(tick.size * sizeMultiplier),
+    raw: {
+      ...(tick.raw ?? {}),
+      replayScenario: scenario
+    }
+  };
+}
+
+function modelReplayIntentTrade(
+  intent: TradeIntent | null,
+  tick: MarketTick,
+  ticks: MarketTick[],
+  index: number,
+  options: ReplayOptions,
+  regime: ReplayResult["shadowTrades"][number]["regime"]
+): ReplayResult["shadowTrades"][number] | null {
+  if (!intent) {
+    return null;
+  }
+
+  const size = intent.approvedSize ?? intent.requestedSize;
+  const referencePrice = intent.expectedPrice > 0 ? intent.expectedPrice : tick.price;
+  if (size <= 0 || referencePrice <= 0) {
+    return null;
+  }
+
+  const exitTick = findReplayExitTick(ticks, intent.instrumentCode, index, options.exitAfterTicks);
+  if (!exitTick || exitTick.price <= 0) {
+    return null;
+  }
+
+  const latencyPenaltyBps = options.scenario === "LATENCY_SHOCK"
+    ? Math.max(options.latencyMs * 0.02, 2)
+    : options.latencyMs * 0.005;
+  const effectiveSlippageBps = options.slippageBps + latencyPenaltyBps;
+  const entrySlippage = effectiveSlippageBps / 10_000;
+  const entryPrice = intent.action === "BUY"
+    ? referencePrice * (1 + entrySlippage)
+    : referencePrice * (1 - entrySlippage);
+  const exitPrice = exitTick.price;
+  const grossPnl =
+    intent.action === "BUY"
+      ? (exitPrice - entryPrice) * size
+      : (entryPrice - exitPrice) * size;
+  const fees = ((entryPrice + exitPrice) * size * options.feeBps) / 10_000;
+
+  return {
+    tradeId: `replay:${intent.intentId}`,
+    instrumentCode: intent.instrumentCode,
+    side: intent.action,
+    entryPrice: roundCrypto(entryPrice),
+    exitPrice: roundCrypto(exitPrice),
+    size: roundCrypto(size),
+    theoreticalPnl: roundMetric(grossPnl - fees, 8),
+    fees: roundMetric(fees, 8),
+    slippageBps: roundMetric(effectiveSlippageBps, 4),
+    driver: inferIntentDriver(intent),
+    regime: regime ?? "UNKNOWN",
+    openedAt: tick.receivedAt,
+    closedAt: exitTick.receivedAt
+  };
+}
+
+function findReplayExitTick(
+  ticks: MarketTick[],
+  instrumentCode: string,
+  index: number,
+  exitAfterTicks: number
+): MarketTick | null {
+  let seen = 0;
+  for (let cursor = index + 1; cursor < ticks.length; cursor += 1) {
+    const candidate = ticks[cursor];
+    if (candidate.instrumentCode !== instrumentCode) {
+      continue;
+    }
+    seen += 1;
+    if (seen >= exitAfterTicks) {
+      return candidate;
+    }
+  }
+
+  for (let cursor = ticks.length - 1; cursor > index; cursor -= 1) {
+    if (ticks[cursor].instrumentCode === instrumentCode) {
+      return ticks[cursor];
+    }
+  }
+
+  return null;
+}
+
+function inferIntentDriver(intent: TradeIntent): AgentName | "UNATTRIBUTED" {
+  const text = intent.rationale.toUpperCase();
+  if (text.includes("PROFILER") || text.includes("VPIN")) {
+    return "PROFILER";
+  }
+  if (text.includes("ORACLE") || text.includes("REGIME")) {
+    return "ORACLE";
+  }
+  if (text.includes("SENTIMENT")) {
+    return "SENTIMENT";
+  }
+  if (text.includes("MOLTWORKER")) {
+    return "MOLTWORKER";
+  }
+  return "CROUPIER";
+}
+
+function buildReplayAttribution(
+  trades: ReplayResult["shadowTrades"]
+): NonNullable<ReplayResult["attribution"]> {
+  return {
+    byAgent: bucketReplayTrades(trades, (trade) => trade.driver ?? "UNATTRIBUTED"),
+    byAsset: bucketReplayTrades(trades, (trade) => trade.instrumentCode),
+    byRegime: bucketReplayTrades(trades, (trade) => trade.regime ?? "UNKNOWN")
+  };
+}
+
+function bucketReplayTrades(
+  trades: ReplayResult["shadowTrades"],
+  keyFn: (trade: ReplayResult["shadowTrades"][number]) => string
+): NonNullable<ReplayResult["attribution"]>["byAgent"] {
+  const buckets = new Map<string, ReplayResult["shadowTrades"]>();
+  for (const trade of trades) {
+    const key = keyFn(trade);
+    const bucket = buckets.get(key) ?? [];
+    bucket.push(trade);
+    buckets.set(key, bucket);
+  }
+
+  return [...buckets.entries()].map(([key, bucket]) => {
+    const pnl = bucket.map((trade) => trade.theoreticalPnl);
+    const grossProfit = pnl.filter((value) => value > 0).reduce((sum, value) => sum + value, 0);
+    const grossLoss = Math.abs(pnl.filter((value) => value < 0).reduce((sum, value) => sum + value, 0));
+    return {
+      key,
+      tradeCount: bucket.length,
+      pnl: roundMetric(pnl.reduce((sum, value) => sum + value, 0), 8),
+      grossProfit: roundMetric(grossProfit, 8),
+      grossLoss: roundMetric(grossLoss, 8),
+      winRate: calculateWinRate(bucket),
+      sharpe: calculateReplaySharpe(pnl)
+    };
+  });
+}
+
+function buildReplayEquityCurve(
+  initialBankroll: number,
+  trades: ReplayResult["shadowTrades"]
+): number[] {
+  const curve = [initialBankroll];
+  let equity = initialBankroll;
+  for (const trade of trades) {
+    equity += trade.theoreticalPnl;
+    curve.push(equity);
+  }
+  return curve;
+}
+
+function calculateMaxDrawdown(equityCurve: number[]): number {
+  let peak = equityCurve[0] ?? 0;
+  let maxDrawdown = 0;
+  for (const equity of equityCurve) {
+    peak = Math.max(peak, equity);
+    if (peak > 0) {
+      maxDrawdown = Math.max(maxDrawdown, (peak - equity) / peak);
+    }
+  }
+  return roundMetric(maxDrawdown, 8);
+}
+
+function calculateReplaySharpe(pnls: number[]): number | null {
+  if (pnls.length < 2) {
+    return null;
+  }
+  const mean = pnls.reduce((sum, pnl) => sum + pnl, 0) / pnls.length;
+  const variance =
+    pnls.reduce((sum, pnl) => sum + (pnl - mean) ** 2, 0) / (pnls.length - 1);
+  const sigma = Math.sqrt(variance);
+  return sigma > 0 ? roundMetric((mean / sigma) * Math.sqrt(pnls.length), 6) : null;
+}
+
+function calculateWinRate(trades: ReplayResult["shadowTrades"]): number | null {
+  return trades.length > 0
+    ? roundMetric(
+        trades.filter((trade) => trade.theoreticalPnl > 0).length / trades.length,
+        6
+      )
+    : null;
+}
+
+function buildStressSummary(
+  trades: ReplayResult["shadowTrades"],
+  generatedIntentCount: number
+): ReplayResult["stressResults"] {
+  const equity = buildReplayEquityCurve(0, trades);
+  return [
+    {
+      scenario: "BASELINE",
+      pnl: roundMetric(trades.reduce((sum, trade) => sum + trade.theoreticalPnl, 0), 8),
+      maxDrawdown: calculateMaxDrawdown(equity),
+      generatedIntentCount,
+      simulatedTradeCount: trades.length
+    }
+  ];
+}
+
+function buildReplayWalkForward(
+  trades: ReplayResult["shadowTrades"],
+  segments: number
+): NonNullable<ReplayResult["walkForward"]> {
+  if (trades.length === 0) {
+    return [];
+  }
+
+  const safeSegments = Math.min(segments, trades.length);
+  const chunkSize = Math.ceil(trades.length / safeSegments);
+  const rows: NonNullable<ReplayResult["walkForward"]> = [];
+  for (let segment = 0; segment < safeSegments; segment += 1) {
+    const bucket = trades.slice(segment * chunkSize, (segment + 1) * chunkSize);
+    if (bucket.length === 0) {
+      continue;
+    }
+    const pnl = bucket.reduce((sum, trade) => sum + trade.theoreticalPnl, 0);
+    rows.push({
+      segment: segment + 1,
+      dateFrom: bucket[0].openedAt,
+      dateTo: bucket.at(-1)?.closedAt ?? bucket.at(-1)?.openedAt ?? null,
+      pnl: roundMetric(pnl, 8),
+      sharpe: calculateReplaySharpe(bucket.map((trade) => trade.theoreticalPnl)),
+      maxDrawdown: calculateMaxDrawdown(buildReplayEquityCurve(0, bucket)),
+      tradeCount: bucket.length
+    });
+  }
+  return rows;
+}
+
+function buildReplayAblation(
+  trades: ReplayResult["shadowTrades"],
+  sentiment: SentimentState
+): ReplayResult["ablation"] {
+  const sentimentTrades = trades.filter((trade) => trade.driver === "SENTIMENT");
+  const sentimentEnabledPnl = trades.reduce((sum, trade) => sum + trade.theoreticalPnl, 0);
+  const sentimentContribution = sentimentTrades.reduce((sum, trade) => sum + trade.theoreticalPnl, 0);
+  const estimatedAiCostUsd = Number(sentiment.estimatedCostUsd ?? 0);
+  const sentimentDisabledPnl = sentimentEnabledPnl - sentimentContribution;
+  return {
+    sentimentEnabledPnl: roundMetric(sentimentEnabledPnl, 8),
+    sentimentDisabledPnl: roundMetric(sentimentDisabledPnl, 8),
+    deltaPnl: roundMetric(sentimentContribution, 8),
+    estimatedAiCostUsd,
+    netEdgeAfterCosts: roundMetric(sentimentContribution - estimatedAiCostUsd, 8)
+  };
 }
 
 function readPositiveInteger(

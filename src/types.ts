@@ -6,6 +6,7 @@ export interface Env {
   RISK_VAULT: KVNamespace;
   SECRET_VAULT?: KVNamespace;
   AI?: Ai;
+  WORKERS_AI_SENTIMENT_COST_USD?: string;
   EXECUTIONER?: Fetcher;
   ENGINE_OBJECT_NAME?: string;
   ENGINE_LOCATION_HINT?: string;
@@ -499,6 +500,7 @@ export interface EngineState {
   priceDiscovery: PriceDiscoveryMetrics;
   oracle: OracleState;
   sentiment: SentimentState;
+  ensemble: EnsembleState;
   leadLag: LeadLagMetrics;
   inventory: InventoryState;
   riskMetrics: RiskMetrics;
@@ -1344,6 +1346,36 @@ export interface SentimentState {
   confidence: number;
   headline: string | null;
   model: string;
+  provider?: "WORKERS_AI" | "LEXICAL";
+  fallbackUsed?: boolean;
+  latencyMs?: number | null;
+  estimatedCostUsd?: number;
+  ablation?: {
+    enabled: boolean;
+    lexicalScore: number;
+    aiScore: number | null;
+    edgeAfterCostsBps: number | null;
+    evaluatedAt: ISO8601 | null;
+  };
+  updatedAt: ISO8601 | null;
+}
+
+export interface EnsembleAgentVote {
+  agent: AgentName;
+  confidence: number;
+  weight: number;
+  contribution: number;
+  rationale: string;
+}
+
+export interface EnsembleState {
+  schemaVersion: "ensemble.v1";
+  confidence: number;
+  kellyMultiplier: number;
+  regimeMultiplier: number;
+  anomalyCircuitBreaker: boolean;
+  votes: EnsembleAgentVote[];
+  rationale: string;
   updatedAt: ISO8601 | null;
 }
 
@@ -1543,19 +1575,76 @@ export interface ShadowTrade {
   exitPrice: number | null;
   size: number;
   theoreticalPnl: number;
+  fees?: number;
+  slippageBps?: number;
+  driver?: AgentName | "UNATTRIBUTED";
+  regime?: MarketRegime | "UNKNOWN";
   openedAt: ISO8601;
   closedAt: ISO8601 | null;
 }
 
+export interface ReplayAttributionBucket {
+  key: string;
+  tradeCount: number;
+  pnl: number;
+  grossProfit: number;
+  grossLoss: number;
+  winRate: number | null;
+  sharpe: number | null;
+}
+
+export interface ReplayStressResult {
+  scenario: "BASELINE" | "FLASH_CRASH" | "DELEVERAGING_2022" | "LATENCY_SHOCK";
+  pnl: number;
+  maxDrawdown: number;
+  generatedIntentCount: number;
+  simulatedTradeCount: number;
+}
+
+export interface ReplayWalkForwardResult {
+  segment: number;
+  dateFrom: ISO8601 | null;
+  dateTo: ISO8601 | null;
+  pnl: number;
+  sharpe: number | null;
+  maxDrawdown: number;
+  tradeCount: number;
+}
+
+export interface ReplayAblationResult {
+  sentimentEnabledPnl: number;
+  sentimentDisabledPnl: number;
+  deltaPnl: number;
+  estimatedAiCostUsd: number;
+  netEdgeAfterCosts: number;
+}
+
 export interface ReplayResult {
   replayId: string;
+  strategyVersionId?: string | null;
+  scenario?: "BASELINE" | "FLASH_CRASH" | "DELEVERAGING_2022" | "LATENCY_SHOCK";
   ticksReplayed: number;
   shadowBankroll: number;
   theoreticalPnl: number;
   baselinePnl: number;
   actualTradeCount: number;
   generatedIntentCount: number;
+  simulatedTradeCount?: number;
   speedMultiplier: number;
+  maxDrawdown?: number;
+  sharpe?: number | null;
+  winRate?: number | null;
+  latencyModel?: JsonRecord;
+  slippageModel?: JsonRecord;
+  feeModel?: JsonRecord;
+  attribution?: {
+    byAgent: ReplayAttributionBucket[];
+    byAsset: ReplayAttributionBucket[];
+    byRegime: ReplayAttributionBucket[];
+  };
+  stressResults?: ReplayStressResult[];
+  walkForward?: ReplayWalkForwardResult[];
+  ablation?: ReplayAblationResult | null;
   shadowTrades: ShadowTrade[];
   startedAt: ISO8601;
   completedAt: ISO8601;

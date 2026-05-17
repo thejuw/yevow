@@ -137,3 +137,56 @@ CREATE INDEX IF NOT EXISTS idx_execution_quality_observed_at
 
 CREATE INDEX IF NOT EXISTS idx_execution_quality_instrument_observed_at
   ON execution_quality (instrument_code, observed_at);
+
+CREATE TABLE IF NOT EXISTS strategy_versions (
+  version_id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT,
+  status TEXT NOT NULL CHECK (status IN ('DRAFT', 'ACTIVE', 'ARCHIVED')),
+  config_json TEXT NOT NULL,
+  parameter_json TEXT NOT NULL,
+  performance_json TEXT,
+  created_by TEXT NOT NULL,
+  activated_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  activated_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_strategy_versions_status_created_at
+  ON strategy_versions (status, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_strategy_versions_created_at
+  ON strategy_versions (created_at);
+
+CREATE TABLE IF NOT EXISTS backtest_runs (
+  run_id TEXT PRIMARY KEY,
+  strategy_version_id TEXT,
+  scenario TEXT NOT NULL,
+  asset_filter TEXT,
+  date_from TEXT,
+  date_to TEXT,
+  ticks_replayed INTEGER NOT NULL,
+  generated_intent_count INTEGER NOT NULL,
+  simulated_trade_count INTEGER NOT NULL,
+  theoretical_pnl REAL NOT NULL,
+  max_drawdown REAL NOT NULL,
+  sharpe REAL,
+  win_rate REAL,
+  latency_model_json TEXT NOT NULL,
+  slippage_model_json TEXT NOT NULL,
+  fee_model_json TEXT NOT NULL,
+  attribution_json TEXT NOT NULL,
+  stress_json TEXT NOT NULL,
+  ablation_json TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  completed_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  FOREIGN KEY (strategy_version_id) REFERENCES strategy_versions(version_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_runs_created_at
+  ON backtest_runs (created_at);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_runs_scenario_created_at
+  ON backtest_runs (scenario, created_at);

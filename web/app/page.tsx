@@ -32,7 +32,9 @@ import {
   readState,
   readTradeHistory,
   readTrace,
+  readReplayStatus,
   resetLatencyBaseline,
+  startReplay,
   toWebSocketUrl,
   updateConfig,
   updateTradingMode
@@ -60,6 +62,7 @@ import type {
   LiquidationHeatmapState,
   MacroBiasDirection,
   PaperPnlAsset,
+  ReplayStatus,
   TradeHistoryEntry,
   TradeHistoryResponse,
   TraceResponse
@@ -143,6 +146,9 @@ export default function CommandCenterPage() {
   const [isRunningDiagnostics, setIsRunningDiagnostics] = useState(false);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsResponse | null>(null);
   const [liveReadiness, setLiveReadiness] = useState<LiveReadinessResponse | null>(null);
+  const [replayStatus, setReplayStatus] = useState<ReplayStatus | null>(null);
+  const [lastReplay, setLastReplay] = useState<JsonRecord | null>(null);
+  const [isRunningReplay, setIsRunningReplay] = useState(false);
   const [transport, setTransport] = useState<DraftTransportSettings>(DEFAULT_TRANSPORT_SETTINGS);
   const [moltworker, setMoltworker] = useState<MoltworkerDraft>({
     direction: "RISK_OFF" as MacroBiasDirection,
@@ -171,7 +177,8 @@ export default function CommandCenterPage() {
       attributionResult,
       historyResult,
       settingsResult,
-      liveReadinessResult
+      liveReadinessResult,
+      replayStatusResult
     ] = await Promise.all([
       readState(apiBase, token),
       readConfig(apiBase, token),
@@ -179,7 +186,8 @@ export default function CommandCenterPage() {
       readAttribution(apiBase, token),
       readTradeHistory(apiBase, token),
       readSettings(apiBase, token),
-      readLiveReadiness(apiBase, token)
+      readLiveReadiness(apiBase, token),
+      readReplayStatus(apiBase, token)
     ]);
 
     setEngineState(stateResult.state);
@@ -193,6 +201,7 @@ export default function CommandCenterPage() {
     setTradeHistory(historyResult);
     setSettings(settingsResult);
     setLiveReadiness(liveReadinessResult);
+    setReplayStatus(replayStatusResult.replay);
   }, [apiBase, token]);
 
   const connectStream = useCallback(() => {
@@ -591,6 +600,40 @@ export default function CommandCenterPage() {
     }
   }
 
+  async function runShadowReplay(scenario: "BASELINE" | "FLASH_CRASH" | "DELEVERAGING_2022" | "LATENCY_SHOCK" = "BASELINE") {
+    if (!token) {
+      return;
+    }
+
+    setError(null);
+    setIsRunningReplay(true);
+    setCommandStatus(`Running ${scenario.replaceAll("_", " ").toLowerCase()} replay...`);
+
+    try {
+      const response = await startReplay(apiBase, token, {
+        scenario,
+        strategyVersionId: settings?.strategyVault?.active?.versionId ?? null,
+        shadowBankroll: paperEquity || 5000,
+        limit: scenario === "BASELINE" ? 1200 : 800,
+        speedMultiplier: 250,
+        latencyMs: scenario === "LATENCY_SHOCK" ? 75 : 10,
+        slippageBps: scenario === "FLASH_CRASH" ? 4 : 1,
+        feeBps: Number(config?.EXCHANGE_FEE_BPS ?? 0),
+        walkForward: true,
+        sentimentAblation: true
+      });
+      setLastReplay(response.replay);
+      const statusResponse = await readReplayStatus(apiBase, token);
+      setReplayStatus(statusResponse.replay);
+      setCommandStatus("Shadow replay completed and journaled.");
+    } catch (caught: unknown) {
+      setError(errorMessage(caught));
+      setCommandStatus("Shadow replay failed.");
+    } finally {
+      setIsRunningReplay(false);
+    }
+  }
+
   const macroBias = pulse?.macroBias ?? engineState?.macroBias ?? null;
   const temporaryOverride = pulse?.temporaryOverride ?? engineState?.temporaryOverride ?? null;
   const governanceMode =
@@ -814,6 +857,8 @@ export default function CommandCenterPage() {
             <Metric label="Paper MTM" value={formatNullableCurrency(paperPnl.paperMtm)} />
             <Metric label="Paper Return" value={formatBps(paperPnl.returnBps)} />
             <Metric label="κ Regime" value={compact.format(pulse?.regimeCoefficient ?? engineState?.oracle.skepticismMultiplier ?? 0)} />
+            <Metric label="Ensemble" value={`${compact.format((engineState?.ensemble?.confidence ?? 0) * 100)}%`} />
+            <Metric label="Kelly Mult" value={compact.format(engineState?.ensemble?.kellyMultiplier ?? 0)} />
             <Metric label="Bias Power" value={compact.format((macroBias?.intensity ?? 0) * (macroBias?.confidence ?? 0))} />
             <Metric label="Realized Alpha" value={currency.format(realizedAlpha)} />
             <Metric label="Effective Gov" value={engineState?.cachedConfig.ORACLE_GOVERNANCE_MODE ?? "HYBRID"} />
@@ -1200,6 +1245,53 @@ export default function CommandCenterPage() {
             ) : (
               <div className="empty-row">NO ACTIVE AGENT ATTRIBUTION</div>
             )}
+          </div>
+        </section>
+
+        <section className="system-panel glass">
+          <div className="panel-title">
+            <Brain size={17} />
+            <span>Replay Lab & Attribution</span>
+            <button disabled={!token || isRunningReplay} onClick={() => void runShadowReplay("BASELINE")}>
+              {isRunningReplay ? "Running" : "Run Replay"}
+            </button>
+          </div>
+          <div className="trade-summary">
+            <Metric label="Replay Status" value={replayStatus?.status ?? "IDLE"} />
+            <Metric label="Progress" value={`${compact.format(replayStatus?.progressPct ?? 0)}%`} />
+            <Metric label="Scenario" value={String(lastReplay?.scenario ?? replayStatus?.scenario ?? "BASELINE")} />
+            <Metric label="Replay PnL" value={formatNullableCurrency(numberOrNull(lastReplay?.theoreticalPnl))} />
+            <Metric label="Max DD" value={formatBps(numberOrNull(lastReplay?.maxDrawdown) === null ? null : Number(lastReplay?.maxDrawdown) * 10_000)} />
+            <Metric label="Sharpe" value={lastReplay?.sharpe === null || lastReplay?.sharpe === undefined ? "n/a" : compact.format(Number(lastReplay.sharpe))} />
+          </div>
+          <div className="mode-strip">
+            <button disabled={isRunningReplay} onClick={() => void runShadowReplay("FLASH_CRASH")}>Flash Crash</button>
+            <button disabled={isRunningReplay} onClick={() => void runShadowReplay("DELEVERAGING_2022")}>Deleveraging</button>
+            <button disabled={isRunningReplay} onClick={() => void runShadowReplay("LATENCY_SHOCK")}>Latency Shock</button>
+          </div>
+          <div className="efficacy-grid">
+            {(lastReplay?.attribution as JsonRecord | undefined)?.byAgent instanceof Array ? (
+              (((lastReplay?.attribution as JsonRecord | undefined)?.byAgent ?? []) as JsonRecord[]).slice(0, 6).map((bucket) => (
+                <div className="driver-row" key={String(bucket.key)}>
+                  <strong>{displayDriverName(String(bucket.key))}</strong>
+                  <span>{currency.format(Number(bucket.pnl ?? 0))}</span>
+                  <span>{compact.format(Number(bucket.tradeCount ?? 0))} trades</span>
+                  <span>SR {bucket.sharpe === null ? "n/a" : compact.format(Number(bucket.sharpe ?? 0))}</span>
+                </div>
+              ))
+            ) : (
+              <div className="empty-row">RUN A REPLAY TO ATTRIBUTE AGENT EDGE</div>
+            )}
+          </div>
+          <div className="paper-pnl-grid">
+            {(attribution?.byAsset ?? []).slice(0, 4).map((asset) => (
+              <div className="paper-pnl-row" key={String(asset.asset ?? asset.key)}>
+                <strong>{String(asset.asset ?? asset.key)}</strong>
+                <span>{currency.format(Number(asset.cumulativePnl ?? 0))}</span>
+                <span>{compact.format(Number(asset.tradeCount ?? 0))} fills</span>
+                <code>PF {asset.profitFactor === null ? "n/a" : compact.format(Number(asset.profitFactor ?? 0))}</code>
+              </div>
+            ))}
           </div>
         </section>
 
