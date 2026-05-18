@@ -1,6 +1,7 @@
 import { defaultConfig } from "../../ConfigManager";
 import type { GlobalRiskConfig, JsonRecord } from "../../types";
 import { AbsorptionAnalyzer } from "./AbsorptionAnalyzer";
+import { parseCascadeAssetProfiles, resolveCascadeAssetProfile } from "./AssetProfiles";
 import { CascadeDetector } from "./CascadeDetector";
 import {
   CascadeRecoverySignalEngine,
@@ -32,6 +33,7 @@ export interface BacktestConfig {
   cascadeWindowMs: number;
   cascadeNotionalThresholdUsd: number;
   cascadeZScoreThreshold: number;
+  cascadeAssetProfiles: string;
   cascadeLookbackHours: number;
   cascadeDirectionalPct: number;
   cascadeMinPriceMoveAtr: number;
@@ -523,6 +525,9 @@ function processLiquidation(
 ): CascadeEvent | null {
   const recent = recentCandles(runtime, liquidation.instrumentCode, liquidation.observedAt, 64);
   const atr1h = calculateAtr(recent, 14) ?? liquidation.price * 0.01;
+  runtime.detector.configure(
+    detectorConfigForInstrument(runtime.config, liquidation.instrumentCode)
+  );
   const cascade = runtime.detector.observe(liquidation, {
     observedAt: liquidation.observedAt,
     atr1h,
@@ -577,14 +582,25 @@ function processCandle(
   }
 
   const signal = signalResult.signal;
+  const assetProfile = resolveCascadeAssetProfile(
+    signal.instrumentCode,
+    runtime.config.cascadeAssetProfiles,
+    {
+      notionalThresholdUsd: runtime.config.cascadeNotionalThresholdUsd,
+      zScoreThreshold: runtime.config.cascadeZScoreThreshold,
+      minPriceMoveAtr: runtime.config.cascadeMinPriceMoveAtr,
+      maxPositionNotionalPct: runtime.config.maxPositionNotionalPct,
+      assetLiquidityCapUsd: runtime.config.assetLiquidityCapUsd
+    }
+  );
   const currentHeat = runtime.heatManager.currentHeat(runtime.positionManager.snapshot());
   const sizeDecision = calculatePositionSize({
     equity,
     riskPerTradePct: runtime.config.riskPerTradePct,
     entryPrice: signal.entryPrice,
     stopPrice: signal.stopPrice,
-    maxPositionNotionalPct: runtime.config.maxPositionNotionalPct,
-    assetLiquidityCap: runtime.config.assetLiquidityCapUsd,
+    maxPositionNotionalPct: assetProfile.maxPositionNotionalPct,
+    assetLiquidityCap: assetProfile.assetLiquidityCapUsd,
     currentHeat,
     heatCapPct: runtime.config.heatCapPct
   });
@@ -820,6 +836,9 @@ function normalizeConfig(config: Partial<BacktestConfig>): BacktestConfig {
       config.cascadeZScoreThreshold,
       defaultConfig.CASCADE_ZSCORE_THRESHOLD
     ),
+    cascadeAssetProfiles: JSON.stringify(
+      parseCascadeAssetProfiles(config.cascadeAssetProfiles ?? defaultConfig.CASCADE_ASSET_PROFILES)
+    ),
     cascadeLookbackHours: positive(
       config.cascadeLookbackHours,
       defaultConfig.CASCADE_LOOKBACK_HOURS
@@ -891,6 +910,29 @@ function normalizeConfig(config: Partial<BacktestConfig>): BacktestConfig {
     ),
     heatCapPct: bounded(config.heatCapPct, 0.0001, 0.25, defaultConfig.HEAT_CAP_PCT),
     missingOpenInterestPolicy: config.missingOpenInterestPolicy ?? "BLOCK"
+  };
+}
+
+function detectorConfigForInstrument(
+  config: BacktestConfig,
+  instrumentCode: string
+): Parameters<CascadeDetector["configure"]>[0] {
+  const profile = resolveCascadeAssetProfile(instrumentCode, config.cascadeAssetProfiles, {
+    notionalThresholdUsd: config.cascadeNotionalThresholdUsd,
+    zScoreThreshold: config.cascadeZScoreThreshold,
+    minPriceMoveAtr: config.cascadeMinPriceMoveAtr
+  });
+
+  return {
+    windowMs: config.cascadeWindowMs,
+    notionalThresholdUsd: profile.notionalThresholdUsd,
+    zScoreThreshold: profile.zScoreThreshold,
+    lookbackHours: config.cascadeLookbackHours,
+    directionalPct: config.cascadeDirectionalPct,
+    minPriceMoveAtr: profile.minPriceMoveAtr,
+    minBaselineWindows: config.cascadeMinBaselineWindows,
+    minCascadeSeparationMs: config.cascadeMinSeparationMs,
+    maxEventsPerInstrument: 100_000
   };
 }
 

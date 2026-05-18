@@ -79,12 +79,13 @@ HL_STALE_AFTER_MS = "150"
 HL_BOOK_TIMESTAMP_MAX_DRIFT_MS = "100"
 HL_SEQUENCE_GAP_MS = "5000"
 HL_ASSETS = "BTC,ETH,SOL,HYPE"
-# Cascade recovery operational defaults. Ingest keeps HYPE available, but the
-# cascade strategy defaults to the original BTC/ETH/SOL spec and can be toggled
-# from the command center.
+# Cascade recovery operational defaults. The active book is intentionally
+# BTC/HYPE-focused. ETH/SOL stay available in ingest and can be toggled on from
+# settings, but each asset has its own cascade threshold and sizing profile.
 STRATEGY_MODE = "CASCADE_RECOVERY"
 CASCADE_TAKER_ENABLED = "false"
-CASCADE_INSTRUMENTS = "BTC,ETH,SOL"
+CASCADE_INSTRUMENTS = "BTC,HYPE"
+CASCADE_ASSET_PROFILES = "{\"BTC\":{\"asset\":\"BTC\",\"notionalThresholdUsd\":50000000,\"zScoreThreshold\":3,\"minPriceMoveAtr\":1.5,\"maxPositionNotionalPct\":0.25,\"assetLiquidityCapUsd\":25000,\"maxSlippageBps\":8,\"rationale\":\"Deepest cascade venue; large absolute liquidation threshold.\"},\"ETH\":{\"asset\":\"ETH\",\"notionalThresholdUsd\":25000000,\"zScoreThreshold\":3,\"minPriceMoveAtr\":1.6,\"maxPositionNotionalPct\":0.18,\"assetLiquidityCapUsd\":15000,\"maxSlippageBps\":9,\"rationale\":\"High-liquidity secondary major with lower notional shock floor than BTC.\"},\"SOL\":{\"asset\":\"SOL\",\"notionalThresholdUsd\":8000000,\"zScoreThreshold\":3.25,\"minPriceMoveAtr\":1.8,\"maxPositionNotionalPct\":0.12,\"assetLiquidityCapUsd\":7500,\"maxSlippageBps\":12,\"rationale\":\"Higher beta, thinner liquidity; requires stronger ATR confirmation.\"},\"HYPE\":{\"asset\":\"HYPE\",\"notionalThresholdUsd\":2500000,\"zScoreThreshold\":3.5,\"minPriceMoveAtr\":2.25,\"maxPositionNotionalPct\":0.08,\"assetLiquidityCapUsd\":3000,\"maxSlippageBps\":15,\"rationale\":\"Explicitly enabled but treated as small-cap/high-beta: lower notional trigger, stricter sizing, wider slippage guard.\"}}"
 CASCADE_NOTIONAL_THRESHOLD_USD = "50000000"
 CASCADE_WINDOW_MS = "300000"
 CASCADE_ZSCORE_THRESHOLD = "3.0"
@@ -181,7 +182,7 @@ QUOTE_REFRESH_MIN_PRICE_TICKS = "1"
 LIVE_READINESS_MIN_PAPER_TRADES = "500"
 LIVE_READINESS_MIN_PAPER_PNL_USD = "0"
 LIVE_READINESS_REQUIRE_SINGLE_ASSET = "true"
-LIVE_READINESS_ALLOW_HYPE = "false"
+LIVE_READINESS_ALLOW_HYPE = "true"
 SHADOW_VLO_CAPACITY = "512"
 SHADOW_VLO_DRIFT_TRADES = "3"
 SHADOW_VLO_QUEUE_DEPTH_MULTIPLIER = "1"

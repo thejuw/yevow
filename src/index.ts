@@ -37,6 +37,7 @@ const DEFAULT_MOLTWORKER_HEARTBEAT_MAX_AGE_MS = 300_000;
 const PAPER_SESSION_STARTED_AT_KEY = "paper:session_started_at";
 const CASCADE_PAPER_ARMED_AT_KEY = "cascade:paper_armed_at";
 const CASCADE_LAST_CONFIG_CHANGE_AT_KEY = "cascade:last_config_change_at";
+const CASCADE_LAST_BACKTEST_REPORT_KEY = "cascade:last_backtest_report";
 const CASCADE_TWO_PERSON_READ_APPROVAL_KEY = "cascade:two_person:read_approval";
 const CASCADE_TWO_PERSON_APPROVAL_WINDOW_MS = 5 * 60_000;
 const CASCADE_CONFIG_FREEZE_HOURS = 72;
@@ -1648,12 +1649,14 @@ async function evaluateCascadeLiveReadinessFromState(
   config: GlobalRiskConfig,
   admin?: AuthenticatedAdmin
 ): Promise<LiveReadinessReport> {
-  const [paperArmedAt, lastCascadeConfigChangeAt, readApproval, paperEvidence] = await Promise.all([
-    env.CONFIG_STORE.get(CASCADE_PAPER_ARMED_AT_KEY),
-    env.CONFIG_STORE.get(CASCADE_LAST_CONFIG_CHANGE_AT_KEY),
-    readCascadeTwoPersonApproval(env),
-    readCascadePaperEvidence(env, config)
-  ]);
+  const [paperArmedAt, lastCascadeConfigChangeAt, readApproval, paperEvidence, backtestEvidence] =
+    await Promise.all([
+      env.CONFIG_STORE.get(CASCADE_PAPER_ARMED_AT_KEY),
+      env.CONFIG_STORE.get(CASCADE_LAST_CONFIG_CHANGE_AT_KEY),
+      readCascadeTwoPersonApproval(env),
+      readCascadePaperEvidence(env, config),
+      readCascadeBacktestEvidence(env)
+    ]);
   const minPaperTrades = Math.max(
     1,
     Math.floor(positiveNumber(env.CASCADE_LIVE_READINESS_MIN_PAPER_TRADES, 30))
@@ -1668,6 +1671,10 @@ async function evaluateCascadeLiveReadinessFromState(
     minPaperTrades,
     paperPnlR: paperEvidence.pnlR,
     minPaperPnlR,
+    backtestPositiveExpectancy: backtestEvidence.positiveExpectancy,
+    backtestTradeCount: backtestEvidence.tradeCount,
+    backtestTotalPnl: backtestEvidence.totalPnl,
+    backtestReportId: backtestEvidence.reportId,
     lastCascadeConfigChangeAt,
     configFreezeHours: CASCADE_CONFIG_FREEZE_HOURS,
     readApproval,
@@ -1696,9 +1703,43 @@ async function evaluateCascadeLiveReadinessFromState(
         ...check.metadata,
         topologyColo: topology.colo,
         paperPnlUsd: paperEvidence.pnlUsd,
-        paperRiskUnitUsd: paperEvidence.riskUnitUsd
+        paperRiskUnitUsd: paperEvidence.riskUnitUsd,
+        backtestGeneratedAt: backtestEvidence.generatedAt
       }
     }))
+  };
+}
+
+async function readCascadeBacktestEvidence(env: Env): Promise<{
+  reportId: string | null;
+  generatedAt: string | null;
+  tradeCount: number;
+  totalPnl: number;
+  positiveExpectancy: boolean;
+}> {
+  const stored = await env.CONFIG_STORE.get<JsonRecord>(CASCADE_LAST_BACKTEST_REPORT_KEY, "json");
+  if (!stored) {
+    return {
+      reportId: null,
+      generatedAt: null,
+      tradeCount: 0,
+      totalPnl: 0,
+      positiveExpectancy: false
+    };
+  }
+
+  const tradeCount = Number(stored.tradeCount ?? 0);
+  const totalPnl = Number(stored.totalPnl ?? 0);
+  const validationOk = stored.validationOk === true;
+  const positiveExpectancy =
+    stored.positiveExpectancy === true && validationOk && tradeCount > 0 && totalPnl > 0;
+
+  return {
+    reportId: typeof stored.reportId === "string" ? stored.reportId : null,
+    generatedAt: typeof stored.generatedAt === "string" ? stored.generatedAt : null,
+    tradeCount: Number.isFinite(tradeCount) ? tradeCount : 0,
+    totalPnl: Number.isFinite(totalPnl) ? round(totalPnl, 8) : 0,
+    positiveExpectancy
   };
 }
 
@@ -4248,6 +4289,7 @@ function diffConfig(
     "HEDGE_MAX_SLIPPAGE_BPS",
     "CASCADE_TAKER_ENABLED",
     "CASCADE_INSTRUMENTS",
+    "CASCADE_ASSET_PROFILES",
     "MAX_SPREAD_BPS_FOR_TAKER",
     "MAX_SINGLE_ORDER_NOTIONAL_USD",
     "SLICE_NOTIONAL_THRESHOLD_USD",
@@ -4353,6 +4395,7 @@ function requiresHighImpactConfirmation(
     "GOLDEN_COLOS",
     "CASCADE_TAKER_ENABLED",
     "CASCADE_INSTRUMENTS",
+    "CASCADE_ASSET_PROFILES",
     "RISK_PER_TRADE_PCT",
     "HEAT_CAP_PCT",
     "DAILY_LOSS_LIMIT_PCT",
@@ -4372,7 +4415,10 @@ function requiresHighImpactConfirmation(
 function requestsCascadeLivePromotion(current: GlobalRiskConfig, next: GlobalRiskConfig): boolean {
   return (
     (current.STRATEGY_MODE !== "BOTH_LIVE" && next.STRATEGY_MODE === "BOTH_LIVE") ||
-    (current.CASCADE_TAKER_ENABLED !== true && next.CASCADE_TAKER_ENABLED === true)
+    (current.CASCADE_TAKER_ENABLED !== true && next.CASCADE_TAKER_ENABLED === true) ||
+    (current.TRADING_ENABLED !== true &&
+      next.TRADING_ENABLED === true &&
+      next.STRATEGY_MODE === "CASCADE_RECOVERY")
   );
 }
 
@@ -4450,6 +4496,9 @@ function hasRiskConfigMutation(update: AdminConfigUpdate): boolean {
     update.RISK_AVERSION_FACTOR !== undefined ||
     update.FUNDING_BIAS_THRESHOLD !== undefined ||
     update.FUNDING_INVENTORY_BIAS !== undefined ||
+    update.CASCADE_TAKER_ENABLED !== undefined ||
+    update.CASCADE_INSTRUMENTS !== undefined ||
+    update.CASCADE_ASSET_PROFILES !== undefined ||
     update.QUOTE_HIBERNATE_MS !== undefined ||
     update.VAR_CONFIDENCE_Z !== undefined ||
     update.ORACLE_GOVERNANCE_MODE !== undefined ||
@@ -4529,6 +4578,7 @@ function configTelemetry(config: GlobalRiskConfig): Record<string, boolean | num
     FUNDING_BIAS_THRESHOLD: config.FUNDING_BIAS_THRESHOLD,
     FUNDING_INVENTORY_BIAS: config.FUNDING_INVENTORY_BIAS,
     CASCADE_INSTRUMENTS: config.CASCADE_INSTRUMENTS,
+    CASCADE_ASSET_PROFILES: config.CASCADE_ASSET_PROFILES,
     CASCADE_TAKER_ENABLED: config.CASCADE_TAKER_ENABLED,
     QUOTE_HIBERNATE_MS: config.QUOTE_HIBERNATE_MS,
     VAR_CONFIDENCE_Z: config.VAR_CONFIDENCE_Z,
@@ -5014,3 +5064,7 @@ function corsHeaders(): Record<string, string> {
     "access-control-max-age": "86400"
   };
 }
+
+export const __test__ = {
+  requestsCascadeLivePromotion
+};

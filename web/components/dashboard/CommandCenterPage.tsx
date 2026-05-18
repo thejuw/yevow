@@ -396,7 +396,7 @@ export default function CommandCenterPage() {
   const activeStrategyMode =
     config?.STRATEGY_MODE ?? engineState?.cachedConfig.STRATEGY_MODE ?? "OFF";
   const activeCascadeAssets = parseCascadeAssets(
-    config?.CASCADE_INSTRUMENTS ?? engineState?.cachedConfig.CASCADE_INSTRUMENTS ?? "BTC,ETH,SOL"
+    config?.CASCADE_INSTRUMENTS ?? engineState?.cachedConfig.CASCADE_INSTRUMENTS ?? "BTC,HYPE"
   );
   const isCascadeStrategyMode =
     activeStrategyMode === "CASCADE_RECOVERY" ||
@@ -1840,10 +1840,7 @@ export default function CommandCenterPage() {
               value={compact.format(paperLedger?.summary.fillCount ?? paperPnl.tradeCount)}
             />
             <Metric label="Realized Net" value={currency.format(paperPnl.realizedNetPnl)} />
-            <Metric
-              label="Open MTM"
-              value={formatNullableCurrency(paperPnl.openUnrealizedPnl)}
-            />
+            <Metric label="Open MTM" value={formatNullableCurrency(paperPnl.openUnrealizedPnl)} />
             <Metric label="MTM Return" value={formatBps(paperPnl.returnBps)} />
             <Metric label="Gross Notional" value={currency.format(paperPnl.grossNotional)} />
             <Metric
@@ -1944,7 +1941,9 @@ export default function CommandCenterPage() {
                   .map((event) => (
                     <div
                       className={
-                        event.realizedPnl < 0 ? "trade-row ghost_fill negative" : "trade-row ghost_fill"
+                        event.realizedPnl < 0
+                          ? "trade-row ghost_fill negative"
+                          : "trade-row ghost_fill"
                       }
                       key={event.eventId}
                     >
@@ -2162,7 +2161,9 @@ function summarizePaperPnl(
 ): PaperPnlDisplay {
   const sourceAssets = summary?.assets ?? [];
   const ledgerAssets = new Map((ledger?.assets ?? []).map((asset) => [asset.asset, asset]));
-  const ledgerPositions = new Map((ledger?.positions ?? []).map((position) => [position.asset, position]));
+  const ledgerPositions = new Map(
+    (ledger?.positions ?? []).map((position) => [position.asset, position])
+  );
   const assetKeys = new Set<string>([
     ...sourceAssets.map((asset) => asset.asset),
     ...(ledger?.assets ?? []).map((asset) => asset.asset)
@@ -2200,7 +2201,9 @@ function summarizePaperPnl(
     const ledgerAsset = ledgerAssets.get(asset.asset);
     const ledgerPosition = ledgerPositions.get(asset.asset);
     const midPrice = findAssetMarkPrice(asset.asset, state);
-    const grossUsd = Number(ledger ? ledger?.summary.grossNotional ?? 0 : asset.grossNotional ?? 0);
+    const grossUsd = Number(
+      ledger ? (ledger?.summary.grossNotional ?? 0) : (asset.grossNotional ?? 0)
+    );
     const fees = Number(ledgerAsset?.totalFees ?? asset.totalFees ?? 0);
     const ledgerRealizedNet = Number(ledgerAsset?.realizedNetPnl ?? 0);
     const fallbackRealizedNet = Number(asset.realizedPnl ?? 0) - fees;
@@ -2217,7 +2220,9 @@ function summarizePaperPnl(
           )
         : midPrice === null
           ? null
-          : roundDisplay(Number(asset.cashPnl ?? 0) + Number(asset.netQuantity ?? 0) * midPrice - fees);
+          : roundDisplay(
+              Number(asset.cashPnl ?? 0) + Number(asset.netQuantity ?? 0) * midPrice - fees
+            );
     const markToMarketPnl =
       openUnrealized === null ? null : roundDisplay(realizedNetForAsset + openUnrealized);
     const returnBps =
@@ -2259,8 +2264,12 @@ function summarizePaperPnl(
   });
 
   const totals = summary?.totals;
-  const totalGross = Number(ledger?.summary.grossNotional ?? totals?.grossNotional ?? grossNotional);
-  const totalRealized = Number(ledger?.summary.realizedGrossPnl ?? totals?.realizedPnl ?? realizedPnl);
+  const totalGross = Number(
+    ledger?.summary.grossNotional ?? totals?.grossNotional ?? grossNotional
+  );
+  const totalRealized = Number(
+    ledger?.summary.realizedGrossPnl ?? totals?.realizedPnl ?? realizedPnl
+  );
   const totalFeesValue = Number(ledger?.summary.totalFees ?? totals?.totalFees ?? totalFees);
   const paperMtm = hasMarks ? roundDisplay(markedPnl) : null;
 

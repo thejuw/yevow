@@ -1,4 +1,8 @@
 import type { AdminConfigUpdate, Env, GlobalRiskConfig, GlobalRiskConfigUpdate } from "./types";
+import {
+  parseCascadeAssetProfiles,
+  serializedDefaultCascadeAssetProfiles
+} from "./strategy/cascade/AssetProfiles";
 
 export const GLOBAL_RISK_SETTINGS_KEY = "global_risk_settings";
 
@@ -29,7 +33,8 @@ export const defaultConfig: GlobalRiskConfig = {
   HEDGE_COOLDOWN_MS: 30_000,
   HEDGE_MAX_SLIPPAGE_BPS: 8,
   CASCADE_TAKER_ENABLED: false,
-  CASCADE_INSTRUMENTS: "BTC,ETH,SOL",
+  CASCADE_INSTRUMENTS: "BTC,HYPE",
+  CASCADE_ASSET_PROFILES: serializedDefaultCascadeAssetProfiles(),
   MAX_SPREAD_BPS_FOR_TAKER: 10,
   MAX_SINGLE_ORDER_NOTIONAL_USD: 500_000,
   SLICE_NOTIONAL_THRESHOLD_USD: 100_000,
@@ -175,7 +180,7 @@ const STRATEGY_BOOLEAN_CONFIG_KEYS = [
 ] as const;
 
 const STRATEGY_SELECT_CONFIG_KEYS = ["TRAILING_STOP_TYPE"] as const;
-const STRATEGY_STRING_CONFIG_KEYS = ["CASCADE_INSTRUMENTS"] as const;
+const STRATEGY_STRING_CONFIG_KEYS = ["CASCADE_INSTRUMENTS", "CASCADE_ASSET_PROFILES"] as const;
 
 export function configDefaultsFromEnv(env: Env): GlobalRiskConfigUpdate {
   const defaults: GlobalRiskConfigUpdate = {};
@@ -552,6 +557,7 @@ function normalizeConfig(value: Partial<GlobalRiskConfig>): GlobalRiskConfig {
     ),
     CASCADE_TAKER_ENABLED: value.CASCADE_TAKER_ENABLED === true,
     CASCADE_INSTRUMENTS: normalizeInstrumentCsv(value.CASCADE_INSTRUMENTS),
+    CASCADE_ASSET_PROFILES: normalizeCascadeAssetProfiles(value.CASCADE_ASSET_PROFILES),
     MAX_SPREAD_BPS_FOR_TAKER: boundedNumber(
       value.MAX_SPREAD_BPS_FOR_TAKER,
       0.1,
@@ -946,6 +952,18 @@ function normalizeInstrumentCsv(value: unknown): string {
     .filter((asset, index, assets) => assets.indexOf(asset) === index);
 
   return instruments.length > 0 ? instruments.join(",") : defaultConfig.CASCADE_INSTRUMENTS;
+}
+
+function normalizeCascadeAssetProfiles(value: unknown): string {
+  if (typeof value === "string") {
+    return JSON.stringify(parseCascadeAssetProfiles(value));
+  }
+
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return JSON.stringify(parseCascadeAssetProfiles(JSON.stringify(value)));
+  }
+
+  return defaultConfig.CASCADE_ASSET_PROFILES;
 }
 
 function nonNegativeNumber(value: unknown): number {

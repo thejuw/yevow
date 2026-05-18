@@ -24,10 +24,10 @@ Sovereign-Sigma cascade recovery is a Hyperliquid-only, rule-based strategy that
 Liquidation windows are evaluated per instrument. A cascade requires:
 
 ```text
-notional(window) >= CASCADE_NOTIONAL_THRESHOLD_USD
-zscore(window_notional, historical_baseline) >= CASCADE_ZSCORE_THRESHOLD
+notional(window) >= CASCADE_ASSET_PROFILES[asset].notionalThresholdUsd
+zscore(window_notional, historical_baseline) >= CASCADE_ASSET_PROFILES[asset].zScoreThreshold
 dominant_side_notional / total_notional >= CASCADE_DIRECTIONAL_PCT
-abs(price_at_peak - price_at_start) / ATR_1H >= CASCADE_MIN_PRICE_MOVE_ATR
+abs(price_at_peak - price_at_start) / ATR_1H >= CASCADE_ASSET_PROFILES[asset].minPriceMoveAtr
 ```
 
 The baseline excludes the current window so the shock does not dilute its own z-score.
@@ -66,6 +66,8 @@ notional_units = equity * MAX_POSITION_NOTIONAL_PCT / entry
 liquidity_units = ASSET_LIQUIDITY_CAP_USD / entry
 heat_units = remaining_heat_budget / risk_per_unit
 ```
+
+`MAX_POSITION_NOTIONAL_PCT` and `ASSET_LIQUIDITY_CAP_USD` are legacy/global fallbacks. Production sizing uses the per-asset values inside `CASCADE_ASSET_PROFILES`, so HYPE can be enabled with a much lower liquidity cap and tighter notional cap than BTC.
 
 The heat manager computes same-direction correlated heat and separates long and short books. A heat-cap rejection is a critical operational event because it indicates the portfolio was already at the cascade risk limit.
 

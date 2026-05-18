@@ -105,7 +105,29 @@ function unwrapLiquidation(value: unknown): Record<string, unknown> | null {
     return value;
   }
 
+  if (hasDirectLiquidationShape(value)) {
+    return value;
+  }
+
   return null;
+}
+
+function hasDirectLiquidationShape(value: Record<string, unknown>): boolean {
+  const hasInstrument = stringField(value, ["coin", "asset", "symbol"]) !== null;
+  const hasPrice = numericField(value, ["markPx", "price", "px"]) !== null;
+  const hasNotional =
+    numericField(value, [
+      "liquidated_ntl_pos",
+      "notionalUsd",
+      "notionalUSD",
+      "notional",
+      "accountValue"
+    ]) !== null;
+  const hasSide =
+    stringField(value, ["side", "liquidationSide", "liqSide", "positionSide"]) !== null ||
+    numericField(value, ["szi", "size", "sz"]) !== null;
+
+  return hasInstrument && hasPrice && hasNotional && hasSide;
 }
 
 function dedupeRecords(records: Record<string, unknown>[]): Record<string, unknown>[] {

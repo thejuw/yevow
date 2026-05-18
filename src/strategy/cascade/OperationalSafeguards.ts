@@ -29,6 +29,10 @@ export interface CascadeLiveReadinessInput {
   minPaperTrades: number;
   paperPnlR: number;
   minPaperPnlR: number;
+  backtestPositiveExpectancy: boolean;
+  backtestTradeCount: number;
+  backtestTotalPnl: number;
+  backtestReportId: string | null;
   lastCascadeConfigChangeAt: string | null;
   configFreezeHours: number;
   readApproval: TwoPersonApproval | null;
@@ -125,6 +129,19 @@ export function evaluateCascadeLiveReadiness(
     input.writeToken.scopes.includes("CONFIG:WRITE");
 
   const checks = [
+    check(
+      "cascade_backtest_expectancy",
+      "Cascade Backtest Expectancy",
+      input.backtestPositiveExpectancy && input.backtestTradeCount > 0,
+      input.backtestPositiveExpectancy
+        ? `Latest cascade backtest is positive with ${input.backtestTradeCount} trade(s).`
+        : "A positive-expectancy cascade backtest is required before live promotion.",
+      {
+        reportId: input.backtestReportId,
+        tradeCount: input.backtestTradeCount,
+        totalPnl: round(input.backtestTotalPnl, 8)
+      }
+    ),
     check(
       "cascade_paper_duration",
       "Cascade Paper Duration",

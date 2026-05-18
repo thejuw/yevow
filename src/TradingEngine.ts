@@ -42,6 +42,11 @@ import { Notifier } from "./utils/Notifier";
 import { evaluateGrpcDrop, isShadowMode } from "./utils/CitadelProtocol";
 import { GhostBook, type GhostBookConfig, type GhostBookObservation } from "./utils/GhostBook";
 import { AbsorptionAnalyzer } from "./strategy/cascade/AbsorptionAnalyzer";
+import {
+  cascadeAssetProfilesToJsonRecord,
+  resolveCascadeAssetProfile,
+  type CascadeAssetProfile
+} from "./strategy/cascade/AssetProfiles";
 import { Backtester, type BacktestInput } from "./strategy/cascade/Backtester";
 import { CascadeCandleAggregator } from "./strategy/cascade/CandleAggregator";
 import { CascadeDetector } from "./strategy/cascade/CascadeDetector";
@@ -133,6 +138,7 @@ const ORDER_BOOK_PREFIX = "book:";
 const PERFORMANCE_HISTORY_KEY = "performance:latency-history";
 const CASCADE_POSITIONS_KEY = "cascade:positions";
 const CASCADE_PAPER_ARMED_AT_KEY = "cascade:paper_armed_at";
+const CASCADE_LAST_BACKTEST_REPORT_KEY = "cascade:last_backtest_report";
 const REPLAY_STATUS_KEY = "replay:status";
 const RISK_LIMITS_KEY = "risk:limits";
 const CONFIG_KEY = "engine:config";
@@ -1277,6 +1283,7 @@ export class TradingEngine {
             cascadeWindowMs: this.cachedConfig.CASCADE_WINDOW_MS,
             cascadeNotionalThresholdUsd: this.cachedConfig.CASCADE_NOTIONAL_THRESHOLD_USD,
             cascadeZScoreThreshold: this.cachedConfig.CASCADE_ZSCORE_THRESHOLD,
+            cascadeAssetProfiles: this.cachedConfig.CASCADE_ASSET_PROFILES,
             cascadeLookbackHours: this.cachedConfig.CASCADE_LOOKBACK_HOURS,
             cascadeDirectionalPct: this.cachedConfig.CASCADE_DIRECTIONAL_PCT,
             cascadeMinPriceMoveAtr: this.cachedConfig.CASCADE_MIN_PRICE_MOVE_ATR,
@@ -1317,11 +1324,37 @@ export class TradingEngine {
             ...payload.config
           }
         });
+        const entryTradeCount = report.trades.filter((trade) => trade.status === "ENTRY").length;
+        const backtestSummary = {
+          schemaVersion: "cascade.backtest-readiness.v1",
+          reportId: `backtest:${Date.now()}`,
+          generatedAt: new Date().toISOString(),
+          fromDate: report.fromDate,
+          toDate: report.toDate,
+          instruments: report.instruments,
+          tradeCount: entryTradeCount,
+          totalPnl: report.totalPnl,
+          maxDrawdownPct: report.maxDrawdownPct,
+          validationOk: report.validation.ok,
+          positiveExpectancy: report.validation.ok && report.totalPnl > 0 && entryTradeCount > 0,
+          dataQuality: report.dataQuality as unknown as JsonRecord,
+          perAssetStats: report.perAssetStats as unknown as JsonRecord
+        };
+        this.state.waitUntil(
+          this.env.CONFIG_STORE.put(
+            CASCADE_LAST_BACKTEST_REPORT_KEY,
+            JSON.stringify(backtestSummary)
+          )
+        );
         return json({ ok: true, report });
       }
 
       if (request.method === "GET" && url.pathname === "/admin/cascade/active") {
-        return json({ ok: true, cascades: this.currentCascadeActiveSnapshot() });
+        return json({
+          ok: true,
+          cascades: this.currentCascadeActiveSnapshot(),
+          assetProfiles: cascadeAssetProfilesToJsonRecord(this.cachedConfig.CASCADE_ASSET_PROFILES)
+        });
       }
 
       if (request.method === "GET" && url.pathname === "/admin/cascade/signals") {
@@ -2829,7 +2862,6 @@ export class TradingEngine {
     observedAt: string
   ): CascadeEvent[] {
     const cascades: CascadeEvent[] = [];
-    this.cascadeDetector.configure(this.currentCascadeDetectorConfig());
     this.absorptionAnalyzer.configure(this.currentAbsorptionAnalyzerConfig());
 
     for (const event of events) {
@@ -2837,6 +2869,7 @@ export class TradingEngine {
         continue;
       }
 
+      this.cascadeDetector.configure(this.currentCascadeDetectorConfig(event.instrumentCode));
       const cascade = this.cascadeDetector.observe(event, {
         observedAt,
         atr1h: this.resolveCascadeAtr1h(event)
@@ -2869,6 +2902,7 @@ export class TradingEngine {
         zScore: cascade.zScore,
         directionalPct: cascade.directionalPct,
         priceMoveAtr: cascade.priceMoveAtr,
+        assetProfile: this.cascadeAssetProfile(cascade.instrumentCode) as unknown as JsonRecord,
         detectedAt: cascade.detectedAt
       });
       this.emitCascadeOperationalAlert(
@@ -3157,14 +3191,15 @@ export class TradingEngine {
     );
   }
 
-  private currentCascadeDetectorConfig(): CascadeDetectorConfig {
+  private currentCascadeDetectorConfig(instrumentCode: string): CascadeDetectorConfig {
+    const profile = this.cascadeAssetProfile(instrumentCode);
     return {
       windowMs: this.cachedConfig.CASCADE_WINDOW_MS,
-      notionalThresholdUsd: this.cachedConfig.CASCADE_NOTIONAL_THRESHOLD_USD,
-      zScoreThreshold: this.cachedConfig.CASCADE_ZSCORE_THRESHOLD,
+      notionalThresholdUsd: profile.notionalThresholdUsd,
+      zScoreThreshold: profile.zScoreThreshold,
       lookbackHours: this.cachedConfig.CASCADE_LOOKBACK_HOURS,
       directionalPct: this.cachedConfig.CASCADE_DIRECTIONAL_PCT,
-      minPriceMoveAtr: this.cachedConfig.CASCADE_MIN_PRICE_MOVE_ATR,
+      minPriceMoveAtr: profile.minPriceMoveAtr,
       minBaselineWindows: readPositiveInteger(this.env.CASCADE_MIN_BASELINE_WINDOWS, 12, 0, 10_000),
       minCascadeSeparationMs: readPositiveInteger(
         this.env.CASCADE_MIN_SEPARATION_MS,
@@ -3179,6 +3214,17 @@ export class TradingEngine {
         100_000
       )
     };
+  }
+
+  private cascadeAssetProfile(instrumentCode: string): CascadeAssetProfile {
+    return resolveCascadeAssetProfile(instrumentCode, this.cachedConfig.CASCADE_ASSET_PROFILES, {
+      notionalThresholdUsd: this.cachedConfig.CASCADE_NOTIONAL_THRESHOLD_USD,
+      zScoreThreshold: this.cachedConfig.CASCADE_ZSCORE_THRESHOLD,
+      minPriceMoveAtr: this.cachedConfig.CASCADE_MIN_PRICE_MOVE_ATR,
+      maxPositionNotionalPct: this.cachedConfig.MAX_POSITION_NOTIONAL_PCT,
+      assetLiquidityCapUsd: this.cachedConfig.ASSET_LIQUIDITY_CAP_USD,
+      maxSlippageBps: this.cachedConfig.HEDGE_MAX_SLIPPAGE_BPS
+    });
   }
 
   private currentAbsorptionAnalyzerConfig(): AbsorptionAnalyzerConfig {
@@ -3445,6 +3491,7 @@ export class TradingEngine {
     signal: CascadeRecoverySignal,
     observedAt: string
   ): Promise<void> {
+    const assetProfile = this.cascadeAssetProfile(signal.instrumentCode);
     const currentHeat = this.cascadeHeatManager.currentHeat(this.cascadePositionManager.snapshot());
     this.emitCascadeOperationalAlert(
       "SIGNAL_EMITTED",
@@ -3466,8 +3513,8 @@ export class TradingEngine {
       riskPerTradePct: this.cachedConfig.RISK_PER_TRADE_PCT,
       entryPrice: signal.entryPrice,
       stopPrice: signal.stopPrice,
-      maxPositionNotionalPct: this.cachedConfig.MAX_POSITION_NOTIONAL_PCT,
-      assetLiquidityCap: this.cachedConfig.ASSET_LIQUIDITY_CAP_USD,
+      maxPositionNotionalPct: assetProfile.maxPositionNotionalPct,
+      assetLiquidityCap: assetProfile.assetLiquidityCapUsd,
       currentHeat,
       heatCapPct: this.cachedConfig.HEAT_CAP_PCT
     });
@@ -3523,6 +3570,7 @@ export class TradingEngine {
           outcome: "TAKEN",
           cascadeId: signal.cascadeId,
           positionId: position.positionId,
+          assetProfile: assetProfile as unknown as JsonRecord,
           sizeDecision: sizeDecision as unknown as JsonRecord
         },
         createdAt: observedAt
@@ -3544,6 +3592,7 @@ export class TradingEngine {
       featureVector: signal.context,
       riskSnapshot: {
         positionId: position.positionId,
+        assetProfile: assetProfile as unknown as JsonRecord,
         sizeDecision: sizeDecision as unknown as JsonRecord
       },
       rawSignal: signal as unknown as JsonRecord,
@@ -3638,7 +3687,7 @@ export class TradingEngine {
       expectedValue:
         signal.confidence * signal.rDistance * 2 - (1 - signal.confidence) * signal.rDistance,
       minEvThreshold: 0,
-      maxSlippageBps: this.cachedConfig.HEDGE_MAX_SLIPPAGE_BPS,
+      maxSlippageBps: this.cascadeAssetProfile(signal.instrumentCode).maxSlippageBps,
       confidence: signal.confidence,
       rationale: `cascade recovery ${signal.triggerType} ${signal.cascadeId}`,
       createdAt: observedAt
@@ -3675,7 +3724,7 @@ export class TradingEngine {
       adverseSelectionCost: 0,
       expectedValue: 0,
       minEvThreshold: 0,
-      maxSlippageBps: this.cachedConfig.HEDGE_MAX_SLIPPAGE_BPS,
+      maxSlippageBps: this.cascadeAssetProfile(intent.instrumentCode).maxSlippageBps,
       confidence: 1,
       rationale: `cascade ${intent.closeReason ?? "close"} ${isStop ? "stop_loss" : "partial"} reduce-only`,
       createdAt: observedAt

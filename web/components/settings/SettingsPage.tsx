@@ -243,7 +243,7 @@ export default function SettingsPage() {
     effectiveStrategyMode === "BOTH_SHADOW" ||
     effectiveStrategyMode === "BOTH_LIVE";
   const cascadeAssets = parseCascadeAssets(
-    String(riskDraft.CASCADE_INSTRUMENTS ?? settings?.config.CASCADE_INSTRUMENTS ?? "BTC,ETH,SOL")
+    String(riskDraft.CASCADE_INSTRUMENTS ?? settings?.config.CASCADE_INSTRUMENTS ?? "BTC,HYPE")
   );
   const allParameterControls = [...STRATEGY_KNOBS, ...PARAMETER_MATRIX];
   const cascadeDetectionParams = allParameterControls.filter((param) =>

@@ -52,6 +52,7 @@ export interface GlobalRiskConfig {
   HEDGE_MAX_SLIPPAGE_BPS: number;
   CASCADE_TAKER_ENABLED: boolean;
   CASCADE_INSTRUMENTS: string;
+  CASCADE_ASSET_PROFILES: string;
   MAX_SPREAD_BPS_FOR_TAKER: number;
   MAX_SINGLE_ORDER_NOTIONAL_USD: number;
   SLICE_NOTIONAL_THRESHOLD_USD: number;

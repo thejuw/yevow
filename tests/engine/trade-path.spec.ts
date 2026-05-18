@@ -102,6 +102,96 @@ describe("execution risk gates", () => {
     expect(disabled.ok).toBe(false);
     expect(disabled.reason).toBe("TRADING_DISABLED");
   });
+
+  it("covers hedge-specific and notional risk branches", () => {
+    const hedge = hedgeIntent();
+    expect(
+      evaluateExecutionRisk(hedge, {
+        ...defaultConfig,
+        TRADING_ENABLED: true,
+        HEDGE_ENABLED: false
+      }).reason
+    ).toBe("HEDGE_DISABLED");
+    expect(
+      evaluateExecutionRisk(tradeIntent({ requestedSize: 0, approvedSize: 0 }), {
+        ...defaultConfig,
+        TRADING_ENABLED: true
+      }).reason
+    ).toBe("INVALID_ORDER_NOTIONAL");
+    expect(
+      evaluateExecutionRisk(
+        tradeIntent({ requestedSize: 2, approvedSize: 2, expectedPrice: 100 }),
+        {
+          ...defaultConfig,
+          TRADING_ENABLED: true,
+          MAX_POSITION_SIZE: 0,
+          MAX_INVENTORY_UNITS: 1,
+          MAX_INVENTORY_DELTA: 0,
+          MAX_POSITION_PCT: 0
+        }
+      ).reason
+    ).toBe("MAX_INVENTORY_UNITS_EXCEEDED");
+    expect(
+      evaluateExecutionRisk(
+        tradeIntent({ requestedSize: 2, approvedSize: 2, expectedPrice: 100 }),
+        {
+          ...defaultConfig,
+          TRADING_ENABLED: true,
+          MAX_POSITION_SIZE: 0,
+          MAX_INVENTORY_UNITS: 0,
+          MAX_INVENTORY_DELTA: 1,
+          MAX_POSITION_PCT: 0
+        }
+      ).reason
+    ).toBe("MAX_INVENTORY_DELTA_EXCEEDED");
+    expect(
+      evaluateExecutionRisk(
+        tradeIntent({ requestedSize: 2, approvedSize: 2, expectedPrice: 100 }),
+        {
+          ...defaultConfig,
+          TRADING_ENABLED: true,
+          MAX_POSITION_SIZE: 0,
+          MAX_INVENTORY_UNITS: 0,
+          MAX_INVENTORY_DELTA: 0,
+          MAX_POSITION_PCT: 0.1
+        },
+        1_000
+      ).reason
+    ).toBe("MAX_POSITION_PCT_EXCEEDED");
+    expect(
+      evaluateExecutionRisk(
+        tradeIntent({
+          requestedSize: 2,
+          approvedSize: 2,
+          expectedPrice: 100,
+          executionStyle: "SLICED_TWAP"
+        }),
+        {
+          ...defaultConfig,
+          TRADING_ENABLED: true,
+          MAX_POSITION_SIZE: 0,
+          MAX_INVENTORY_UNITS: 0,
+          MAX_INVENTORY_DELTA: 0,
+          MAX_POSITION_PCT: 0,
+          MAX_SINGLE_ORDER_NOTIONAL_USD: 50
+        }
+      ).ok
+    ).toBe(true);
+    expect(
+      evaluateExecutionRisk(
+        tradeIntent({ requestedSize: 2, approvedSize: 2, expectedPrice: 100 }),
+        {
+          ...defaultConfig,
+          TRADING_ENABLED: true,
+          MAX_POSITION_SIZE: 0,
+          MAX_INVENTORY_UNITS: 0,
+          MAX_INVENTORY_DELTA: 0,
+          MAX_POSITION_PCT: 0,
+          MAX_SINGLE_ORDER_NOTIONAL_USD: 50
+        }
+      ).reason
+    ).toBe("MAX_SINGLE_ORDER_NOTIONAL_EXCEEDED");
+  });
 });
 
 describe("execution idempotency", () => {

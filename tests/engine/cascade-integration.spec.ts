@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { Backtester, type BacktestConfig } from "../../src/strategy/cascade/Backtester";
+import {
+  HyperliquidLiquidationStream,
+  isHyperliquidLiquidationMessage
+} from "../../src/strategy/cascade/LiquidationStream";
 import { CASCADE_NEWS_CALENDAR_KEY, NewsCalendar } from "../../src/strategy/cascade/NewsCalendar";
 import type { Candle, LiquidationEvent, OpenInterestPoint } from "../../src/strategy/cascade/types";
 
@@ -37,6 +41,131 @@ describe("cascade news calendar", () => {
     expect(calendar.isWithinBlackout(new Date("2026-05-18T20:00:00.000Z"), "BTC")).toEqual({
       blocked: false
     });
+  });
+
+  it("normalizes ad-hoc operator blackouts and ignores malformed calendar rows", async () => {
+    const calendar = new NewsCalendar(
+      mockKv({
+        [CASCADE_NEWS_CALENDAR_KEY]: {
+          schemaVersion: "cascade.news-calendar.v1",
+          updatedAt: "2026-05-18T00:00:00.000Z",
+          events: [
+            {
+              eventId: "bad-window",
+              title: "invalid",
+              category: "FOMC",
+              impact: "HIGH",
+              startsAt: "2026-05-18T19:00:00.000Z",
+              endsAt: "2026-05-18T18:00:00.000Z",
+              assets: ["BTC"],
+              source: "OPERATOR",
+              createdAt: "2026-05-18T00:00:00.000Z",
+              createdBy: "test"
+            }
+          ]
+        }
+      })
+    );
+
+    const payload = await calendar.addAdHocBlackout({
+      title: "HYPE unlock volatility",
+      startsAt: "2026-05-18T18:00:00.000Z",
+      endsAt: "2026-05-18T18:30:00.000Z",
+      assets: ["hype", "HYPE", " "],
+      createdBy: "moltworker"
+    });
+
+    expect(payload.events).toHaveLength(1);
+    expect(payload.events[0]).toMatchObject({
+      title: "HYPE unlock volatility",
+      impact: "HIGH",
+      assets: ["HYPE"],
+      createdBy: "moltworker"
+    });
+    expect(calendar.isWithinBlackout(new Date("2026-05-18T18:05:00.000Z"), "HYPE").blocked).toBe(
+      true
+    );
+  });
+});
+
+describe("hyperliquid liquidation stream", () => {
+  it("parses, sanitizes, and deduplicates liquidation payload shapes", () => {
+    const stream = new HyperliquidLiquidationStream();
+    const raw = {
+      channel: "events",
+      data: {
+        liquidations: [
+          {
+            lid: "liq-1",
+            coin: "BTC",
+            side: "sell",
+            markPx: "94.25",
+            liquidated_ntl_pos: "2000000",
+            time: Date.parse("2026-05-18T12:00:00.000Z")
+          },
+          {
+            lid: "liq-1",
+            coin: "BTC",
+            side: "sell",
+            markPx: "94.25",
+            liquidated_ntl_pos: "2000000",
+            time: Date.parse("2026-05-18T12:00:00.000Z")
+          },
+          {
+            eventId: "liq-2",
+            liquidatedPositions: [{ coin: "ETH", szi: "-25" }],
+            price: 3_200,
+            notionalUsd: 80_000,
+            timestamp: "2026-05-18T12:00:01.000Z"
+          }
+        ]
+      }
+    };
+
+    expect(isHyperliquidLiquidationMessage(raw)).toBe(true);
+    const events = stream.ingest(raw, {
+      observedAt: "2026-05-18T12:00:02.000Z",
+      sourceExchange: "hyperliquid"
+    });
+
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({
+      eventId: "liq:liq-1",
+      instrumentCode: "btc-usd",
+      side: "LONG",
+      forcedFlowSide: "SELL",
+      price: 94.25,
+      notionalUsd: 2_000_000
+    });
+    expect(events[1]).toMatchObject({
+      eventId: "liq:liq-2",
+      instrumentCode: "eth-usd",
+      side: "SHORT",
+      forcedFlowSide: "BUY"
+    });
+  });
+
+  it("rejects non-liquidation and incomplete records without throwing", () => {
+    const stream = new HyperliquidLiquidationStream();
+
+    expect(isHyperliquidLiquidationMessage({ channel: "trades", data: [] })).toBe(false);
+    expect(
+      stream.ingest(
+        {
+          data: {
+            events: [
+              { type: "liquidation", coin: "BTC", side: "buy", price: 0, notionalUsd: 1_000 },
+              { delta: { type: "liquidation", coin: "BTC", szi: 2 } }
+            ]
+          }
+        },
+        {
+          instrumentCode: "btc-usd",
+          fallbackPrice: 100,
+          observedAt: "2026-05-18T12:00:00.000Z"
+        }
+      )
+    ).toHaveLength(1);
   });
 });
 
@@ -219,6 +348,17 @@ function replayConfig(overrides: Partial<BacktestConfig> = {}): Partial<Backtest
     cascadeWindowMs: 300_000,
     cascadeNotionalThresholdUsd: 1_000_000,
     cascadeZScoreThreshold: 1,
+    cascadeAssetProfiles: JSON.stringify({
+      BTC: {
+        notionalThresholdUsd: 1_000_000,
+        zScoreThreshold: 1,
+        minPriceMoveAtr: 1,
+        maxPositionNotionalPct: 0.2,
+        assetLiquidityCapUsd: 50_000,
+        maxSlippageBps: 8,
+        rationale: "unit test cascade profile"
+      }
+    }),
     cascadeLookbackHours: 1,
     cascadeDirectionalPct: 0.7,
     cascadeMinPriceMoveAtr: 1,

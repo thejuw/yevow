@@ -7,7 +7,8 @@ All percentage-style risk values are stored internally as fractions. The config 
 | `STRATEGY_MODE`                           |          `OFF` | Strategy router. Cascade recovery is inactive unless set to `CASCADE_RECOVERY`, `BOTH_SHADOW`, or `BOTH_LIVE`. | `OFF`, `MARKET_MAKING`, `CASCADE_RECOVERY`, `BOTH_SHADOW`, `BOTH_LIVE` |
 | `CASCADE_TAKER_ENABLED`                   |        `false` | Independent switch for cascade IOC/taker execution.                                                            | `false` until live readiness passes                                    |
 | `CASCADE_INSTRUMENTS`                     |     `BTC,HYPE` | Operator-selected cascade universe for this deployment.                                                        | BTC/HYPE for current focus                                             |
-| `CASCADE_NOTIONAL_THRESHOLD_USD`          |     `50000000` | Minimum liquidation notional in the detection window.                                                          | 5M to 100M                                                             |
+| `CASCADE_ASSET_PROFILES`                  |   JSON profile | Per-asset cascade thresholds, ATR gates, liquidity caps, notional caps, and slippage guards.                   | Edit as one JSON object; do not split into per-key KV writes           |
+| `CASCADE_NOTIONAL_THRESHOLD_USD`          |     `50000000` | Legacy/global fallback liquidation notional in the detection window. Per-asset profiles override it.           | 5M to 100M                                                             |
 | `CASCADE_WINDOW_MS`                       |       `300000` | Rolling window used to cluster liquidation events.                                                             | 1m to 60m                                                              |
 | `CASCADE_ZSCORE_THRESHOLD`                |          `3.0` | Required shock versus historical liquidation baseline.                                                         | 2 to 6                                                                 |
 | `CASCADE_LOOKBACK_HOURS`                  |          `168` | Baseline lookback for z-score calculation.                                                                     | 24 to 168                                                              |
@@ -50,3 +51,16 @@ All percentage-style risk values are stored internally as fractions. The config 
 | `CASCADE_LIVE_READINESS_MIN_PAPER_TRADES` |           `30` | Minimum cascade paper fills before live taker path.                                                            | 30+                                                                    |
 | `CASCADE_LIVE_READINESS_MIN_PAPER_PNL_R`  |           `10` | Minimum paper PnL in R units before live taker path.                                                           | 10R+                                                                   |
 | `CASCADE_LIVE_READINESS_MIN_DAYS_PAPER`   |           `30` | Minimum paper-mode duration before live taker path.                                                            | 30 days+                                                               |
+
+## Per-Asset Cascade Profiles
+
+The cascade detector no longer relies on a single global `$50M` threshold. `CASCADE_ASSET_PROFILES` is the production source of truth. The global detection keys remain as compatibility fallbacks for unknown assets or legacy clients.
+
+| Asset  | Notional Gate | Z-Score | ATR Move | Max Notional | Liquidity Cap | Slippage Guard | Decision                                                                     |
+| ------ | ------------: | ------: | -------: | -----------: | ------------: | -------------: | ---------------------------------------------------------------------------- |
+| `BTC`  |        `$50M` |   `3.0` |    `1.5` |        `25%` |        `$25k` |        `8 bps` | Deepest book; standard cascade profile.                                      |
+| `ETH`  |        `$25M` |   `3.0` |    `1.6` |        `18%` |        `$15k` |        `9 bps` | Supported but not enabled by default in the BTC/HYPE deployment.             |
+| `SOL`  |         `$8M` |  `3.25` |    `1.8` |        `12%` |       `$7.5k` |       `12 bps` | Supported but requires stronger confirmation due higher beta/thinner depth.  |
+| `HYPE` |       `$2.5M` |   `3.5` |   `2.25` |         `8%` |         `$3k` |       `15 bps` | Explicitly included; stricter sizing and stronger ATR confirmation are used. |
+
+HYPE is not a half-enabled asset anymore: ingest, UI toggles, config normalization, detector thresholds, position sizing, and cascade slippage guards all understand it. Live promotion still requires the cascade readiness gate: positive backtest, at least 30 days of paper mode, at least 30 cascade paper trades, paper PnL evidence, config freeze, and two-person approval.

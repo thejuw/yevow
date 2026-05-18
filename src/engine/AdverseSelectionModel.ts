@@ -74,14 +74,18 @@ export class AdverseSelectionModel {
     observedAt: string
   ): AdverseSelectionPenalty {
     const specificKey = this.bucketKey(instrumentCode, side, regime, observedAt);
-    const fallbackKey = this.bucketKey(instrumentCode, side, "ALL", observedAt);
+    const hourlyFallbackKey = this.bucketKey(instrumentCode, side, "ALL", observedAt);
+    const globalFallbackKey = `${instrumentCode}:${side}:ALL:ALL`;
     const specific = this.percentile(specificKey, 0.75);
 
     if (specific.sampleCount >= 8) {
       return specific;
     }
 
-    const fallback = this.percentile(fallbackKey, 0.75);
+    const hourlyFallback = this.percentile(hourlyFallbackKey, 0.75);
+    const globalFallback = this.percentile(globalFallbackKey, 0.75);
+    const fallback =
+      globalFallback.sampleCount > hourlyFallback.sampleCount ? globalFallback : hourlyFallback;
     return fallback.sampleCount > specific.sampleCount ? fallback : specific;
   }
 

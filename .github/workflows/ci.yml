@@ -47,6 +47,10 @@ jobs:
       - name: Lint Workers and Command Center
         run: npm run lint
 
+      - name: Whole-codebase ESLint visibility
+        run: npm run lint:all:visible
+        continue-on-error: true
+
       - name: Check formatting
         run: npm run format:check
 

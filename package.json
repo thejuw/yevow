@@ -10,6 +10,7 @@
     "format": "prettier --write src/execution src/engine src/strategy tests/engine eslint.config.mjs vitest.config.ts",
     "format:check": "prettier --check src/execution src/engine src/strategy tests/engine eslint.config.mjs vitest.config.ts",
     "lint": "eslint src/execution src/engine src/strategy tests/engine",
+    "lint:all:visible": "eslint \"src/**/*.ts\" --max-warnings 9999 || true",
     "moltworker:local": "node scripts/moltworker_supervisor_loop.mjs",
     "moltworker:once": "MOLTWORKER_ONCE=true node scripts/moltworker_supervisor_loop.mjs",
     "proto:compile": "node scripts/compile-protos.mjs",

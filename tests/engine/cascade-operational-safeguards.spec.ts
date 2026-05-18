@@ -16,12 +16,16 @@ describe("cascade operational live-readiness gates", () => {
       paperArmedAt: "2026-05-17T12:00:00.000Z",
       paperTradeCount: 12,
       paperPnlR: 2,
+      backtestPositiveExpectancy: false,
+      backtestTradeCount: 0,
+      backtestTotalPnl: -1,
       lastCascadeConfigChangeAt: "2026-05-18T10:00:00.000Z",
       readApproval: null
     });
 
     expect(report.ok).toBe(false);
     expect(failedIds(report.checks)).toEqual([
+      "cascade_backtest_expectancy",
       "cascade_paper_duration",
       "cascade_paper_trades",
       "cascade_paper_pnl_r",
@@ -153,6 +157,10 @@ function readyInput(): CascadeLiveReadinessInput {
     minPaperTrades: 30,
     paperPnlR: 12.5,
     minPaperPnlR: 10,
+    backtestPositiveExpectancy: true,
+    backtestTradeCount: 18,
+    backtestTotalPnl: 430.25,
+    backtestReportId: "backtest-ready",
     lastCascadeConfigChangeAt: "2026-05-14T11:00:00.000Z",
     configFreezeHours: 72,
     readApproval: {
