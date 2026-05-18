@@ -285,6 +285,7 @@ const ROUTE_CATALOG = [
   "GET|POST /admin/topology/calibrate",
   "GET /admin/performance",
   "GET /admin/metrics/performance",
+  "POST /admin/maintenance/prune-logs",
   "POST /admin/maintenance/recover",
   "GET /admin/slippage",
   "GET /admin/history",
@@ -568,6 +569,7 @@ async function handleAdminRequest(
         "GET|POST /admin/topology/calibrate",
         "GET /admin/performance",
         "GET /admin/metrics/performance",
+        "POST /admin/maintenance/prune-logs",
         "POST /admin/maintenance/recover",
         "GET /admin/slippage",
         "GET /admin/history",
@@ -741,6 +743,21 @@ async function handleAdminRequest(
     });
 
     return routeToEngine(remapRequestPath(request, "/maintenance/recover"), env, topology);
+  }
+
+  if (url.pathname === "/admin/maintenance/prune-logs") {
+    if (request.method !== "POST") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+
+    logger.warn("ADMIN_LOG_PRUNE_REQUESTED", "Admin requested stale operational log cleanup", {
+      actor: auth.subject,
+      sourceIp: sourceIp(request),
+      colo: topology.colo,
+      placement: topology.placement
+    });
+
+    return routeToEngine(remapRequestPath(request, "/maintenance/prune-logs"), env, topology);
   }
 
   if (url.pathname === "/admin/slippage") {

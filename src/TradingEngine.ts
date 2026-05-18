@@ -19,6 +19,12 @@ import { evaluateIntentDispatchGate } from "./engine/IntentGeneration";
 import { countOrderBookLevels } from "./engine/OrderBookState";
 import { AdverseSelectionModel, adversePenaltyForQuoteSide } from "./engine/AdverseSelectionModel";
 import {
+  LOW_VALUE_OPERATIONAL_EVENT_TYPES,
+  operationalEventPlaceholders,
+  resolveLogRetentionPolicy,
+  type LogPruneReport
+} from "./engine/LogRetention";
+import {
   MultiScaleVolatilityModel,
   type MultiScaleVolatilitySnapshot
 } from "./engine/MultiScaleVolatility";
@@ -1138,6 +1144,15 @@ export class TradingEngine {
         const recovery = await this.recoverEngineState(payload);
 
         return json(recovery);
+      }
+
+      if (request.method === "POST" && url.pathname === "/maintenance/prune-logs") {
+        const report = await this.pruneOperationalLogs();
+        this.logger.warn("ADMIN_LOG_PRUNE_APPLIED", "Admin-triggered stale log cleanup completed", {
+          report: logPruneReportToJson(report)
+        });
+
+        return json({ ok: true, report });
       }
 
       if (request.method === "GET" && url.pathname === "/book/snapshot") {
@@ -8131,14 +8146,14 @@ export class TradingEngine {
       }
     }
 
-    const prunedTelemetryCount = await this.pruneTelemetryLogs();
+    const pruneReport = await this.pruneOperationalLogs();
     const report = {
       ...baseReport,
       orphanExchangeOrders,
       reconciledOrders,
       cancelledOrders: [...new Set(cancelledOrders)],
       dustCloseIntents,
-      prunedTelemetryCount
+      prunedTelemetryCount: pruneReport.totalRows
     };
 
     if (
@@ -8154,7 +8169,8 @@ export class TradingEngine {
         cancelledOrders: report.cancelledOrders,
         dustPositions: report.dustPositions,
         dustCloseIntents: report.dustCloseIntents,
-        prunedTelemetryCount: report.prunedTelemetryCount
+        prunedTelemetryCount: report.prunedTelemetryCount,
+        pruneReport: logPruneReportToJson(pruneReport)
       });
     }
 
@@ -8254,21 +8270,17 @@ export class TradingEngine {
     return null;
   }
 
-  private async pruneTelemetryLogs(): Promise<number> {
-    const retentionDays = readPositiveInteger(this.env.JANITOR_LOG_RETENTION_DAYS, 7, 1, 3650);
-    const maxTelemetryRows = readPositiveInteger(
-      this.env.JANITOR_TELEMETRY_MAX_ROWS,
-      50_000,
-      1_000,
-      1_000_000
-    );
-    const maxMarketTickRows = readPositiveInteger(
-      this.env.MARKET_TICK_MAX_ROWS,
-      DEFAULT_MARKET_TICK_MAX_ROWS,
-      1_000,
-      1_000_000
-    );
-    const cutoff = new Date(Date.now() - retentionDays * 86_400_000).toISOString();
+  private async pruneOperationalLogs(): Promise<LogPruneReport> {
+    const policy = resolveLogRetentionPolicy(this.env);
+    const placeholders = operationalEventPlaceholders();
+    const emptyReport: LogPruneReport = {
+      policy,
+      telemetryRows: 0,
+      lowValueOperationalRows: 0,
+      cappedOperationalInfoRows: 0,
+      marketTickRows: 0,
+      totalRows: 0
+    };
 
     try {
       const retentionResult = await this.env.TRADING_DB.prepare(
@@ -8276,7 +8288,7 @@ export class TradingEngine {
          WHERE event_type = 'TELEMETRY'
            AND created_at < ?`
       )
-        .bind(cutoff)
+        .bind(policy.telemetryCutoff)
         .run();
       const capResult = await this.env.TRADING_DB.prepare(
         `DELETE FROM logs
@@ -8289,13 +8301,40 @@ export class TradingEngine {
              LIMIT ?
            )`
       )
-        .bind(maxTelemetryRows)
+        .bind(policy.maxTelemetryRows)
+        .run();
+      const lowValueResult = await this.env.TRADING_DB.prepare(
+        `DELETE FROM logs
+         WHERE created_at < ?
+           AND level IN ('DEBUG', 'INFO')
+           AND (
+             event_type IN (${placeholders})
+             OR event_type LIKE '%HEARTBEAT%'
+             OR event_type LIKE '%TELEMETRY%'
+             OR event_type LIKE 'STREAM_%'
+             OR event_type LIKE 'INGEST_%'
+           )`
+      )
+        .bind(policy.lowValueCutoff, ...LOW_VALUE_OPERATIONAL_EVENT_TYPES)
+        .run();
+      const infoCapResult = await this.env.TRADING_DB.prepare(
+        `DELETE FROM logs
+         WHERE level IN ('DEBUG', 'INFO')
+           AND id NOT IN (
+             SELECT id
+             FROM logs
+             WHERE level IN ('DEBUG', 'INFO')
+             ORDER BY created_at DESC, id DESC
+             LIMIT ?
+           )`
+      )
+        .bind(policy.maxOperationalInfoRows)
         .run();
       const tickRetentionResult = await this.env.TRADING_DB.prepare(
         `DELETE FROM market_ticks
          WHERE received_at < ?`
       )
-        .bind(cutoff)
+        .bind(policy.marketTickCutoff)
         .run();
       const tickCapResult = await this.env.TRADING_DB.prepare(
         `DELETE FROM market_ticks
@@ -8306,22 +8345,31 @@ export class TradingEngine {
            LIMIT ?
          )`
       )
-        .bind(maxMarketTickRows)
+        .bind(policy.maxMarketTickRows)
         .run();
-      return (
+      const telemetryRows =
         Number(retentionResult.meta?.changes ?? 0) +
-        Number(capResult.meta?.changes ?? 0) +
+        Number(capResult.meta?.changes ?? 0);
+      const lowValueOperationalRows = Number(lowValueResult.meta?.changes ?? 0);
+      const cappedOperationalInfoRows = Number(infoCapResult.meta?.changes ?? 0);
+      const marketTickRows =
         Number(tickRetentionResult.meta?.changes ?? 0) +
-        Number(tickCapResult.meta?.changes ?? 0)
-      );
+        Number(tickCapResult.meta?.changes ?? 0);
+      return {
+        policy,
+        telemetryRows,
+        lowValueOperationalRows,
+        cappedOperationalInfoRows,
+        marketTickRows,
+        totalRows:
+          telemetryRows + lowValueOperationalRows + cappedOperationalInfoRows + marketTickRows
+      };
     } catch (error) {
-      this.logger.error("JANITOR_LOG_PRUNE_FAILED", "Failed to prune old telemetry logs", {
-        cutoff,
-        maxTelemetryRows,
-        maxMarketTickRows,
+      this.logger.error("JANITOR_LOG_PRUNE_FAILED", "Failed to prune stale operational logs", {
+        policy: logRetentionPolicyToJson(policy),
         error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
       });
-      return 0;
+      return emptyReport;
     }
   }
 
@@ -11588,6 +11636,32 @@ function defaultJanitorState(): EngineState["janitor"] {
     dustCloseIntents: [],
     prunedTelemetryCount: 0,
     updatedAt: null
+  };
+}
+
+function logPruneReportToJson(report: LogPruneReport): JsonRecord {
+  return {
+    policy: logRetentionPolicyToJson(report.policy),
+    telemetryRows: report.telemetryRows,
+    lowValueOperationalRows: report.lowValueOperationalRows,
+    cappedOperationalInfoRows: report.cappedOperationalInfoRows,
+    marketTickRows: report.marketTickRows,
+    totalRows: report.totalRows
+  };
+}
+
+function logRetentionPolicyToJson(policy: LogPruneReport["policy"]): JsonRecord {
+  return {
+    generatedAt: policy.generatedAt,
+    telemetryRetentionDays: policy.telemetryRetentionDays,
+    lowValueRetentionDays: policy.lowValueRetentionDays,
+    marketTickRetentionDays: policy.marketTickRetentionDays,
+    maxTelemetryRows: policy.maxTelemetryRows,
+    maxOperationalInfoRows: policy.maxOperationalInfoRows,
+    maxMarketTickRows: policy.maxMarketTickRows,
+    telemetryCutoff: policy.telemetryCutoff,
+    lowValueCutoff: policy.lowValueCutoff,
+    marketTickCutoff: policy.marketTickCutoff
   };
 }
 
