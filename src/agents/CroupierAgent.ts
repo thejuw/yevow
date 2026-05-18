@@ -9,12 +9,14 @@ import type {
   OracleState,
   QuoteOrder,
   QuoteSignal,
+  SentimentAlphaMode,
   SentimentState,
   ToxicityPressureSide,
   ToxicityState,
   TradeDirection,
   TradeIntent
 } from "../types";
+import type { MultiScaleVolatilitySnapshot } from "../engine/MultiScaleVolatility";
 
 const DEFAULT_MIN_EV_THRESHOLD = 0;
 const DEFAULT_FEE_BPS = 5;
@@ -42,14 +44,22 @@ export interface CroupierInput {
   fundingRateHourly?: number;
   fundingHorizonHours?: number;
   riskAversionFactor?: number;
+  adverseSelectionPenaltyBps?: number;
+  multiScaleVolatility?: MultiScaleVolatilitySnapshot | null;
   fundingBiasThreshold?: number;
   fundingInventoryBias?: number;
+  fundingPreSettlementWindowMs?: number;
+  fundingPreSettlementBiasMultiplier?: number;
   liquidationHeatmap?: LiquidationHeatmapState | null;
   predatoryOrderOffsetBps?: number;
   profilerToxicityState?: ToxicityState;
   profilerPressureSide?: ToxicityPressureSide;
   profilerSpreadMultiplier?: number;
   profilerReservationShiftBps?: number;
+  layeredQuoteLevels?: number;
+  layeredQuoteSizeDecay?: number;
+  layeredQuoteSpreadStepBps?: number;
+  sentimentAlphaMode?: SentimentAlphaMode;
   macroBias?: MacroBias;
   marketMakingMode?: MarketMakingMode;
   observedAt: string;
@@ -87,7 +97,10 @@ export class CroupierAgent {
       };
     }
 
-    const adverseSelectionCost = this.calculateInformationPremium(input.toxicityScore);
+    const adverseSelectionCost = this.calculateInformationPremium(
+      input.toxicityScore,
+      input.adverseSelectionPenaltyBps
+    );
     const pullAllQuotes = input.profilerToxicityState === "CRITICAL";
     const baseMinEvThreshold = finiteNumber(input.minEvThreshold, this.minEvThreshold);
     const macroThresholdMultiplier = macroBiasThresholdMultiplier(
@@ -97,7 +110,7 @@ export class CroupierAgent {
     );
     const minEvThreshold =
       baseMinEvThreshold *
-      sentimentMultiplier(input.sentiment, preferredDirection(input)) *
+      sentimentMultiplier(input.sentiment, preferredDirection(input), input.sentimentAlphaMode) *
       macroThresholdMultiplier;
     const quote = pullAllQuotes ? null : this.amm.quote(input, adverseSelectionCost);
     const intent = pullAllQuotes
@@ -118,8 +131,10 @@ export class CroupierAgent {
     };
   }
 
-  calculateInformationPremium(vpinScore: number): number {
-    return vpinScore >= 1 ? ADVERSE_SELECTION_CRITICAL_COST : 0;
+  calculateInformationPremium(vpinScore: number, empiricalPenaltyBps = 0): number {
+    const empiricalCost = Math.max(0, finiteNumber(empiricalPenaltyBps, 0)) / 10_000;
+    const binaryToxicityCost = vpinScore >= 1 ? ADVERSE_SELECTION_CRITICAL_COST : 0;
+    return Math.max(empiricalCost, binaryToxicityCost);
   }
 
   private createIntent(
@@ -149,8 +164,12 @@ export class CroupierAgent {
       direction,
       input.book.instrumentCode
     );
+    const sentimentScore =
+      input.sentimentAlphaMode === "CONTINUOUS"
+        ? sentimentDirectionalScore(input.sentiment, direction) * 0.04
+        : 0;
     const probabilityWin = boundProbability(
-      probabilityForDirection(input.oracle, direction, mid) + macroScore * 0.05
+      probabilityForDirection(input.oracle, direction, mid) + macroScore * 0.05 + sentimentScore
     );
     const probabilityLoss = 1 - probabilityWin;
     const profit = mid * input.oracle.profitTargetBps / 10_000;
@@ -216,6 +235,7 @@ export class CroupierAgent {
         `Croupier EV calculation with toxicity, sentiment, AS reservation price, inventory, slippage, funding, lead-lag and macro bias inputs. ` +
         `fundingHourly=${round(fundingRateHourly, 8)} fundingCarry=${round(fundingCarryCost, 8)} ` +
         `reservation=${round(reservationPrice ?? mid, 8)} gamma=${round(riskAversionFactor, 8)} ` +
+        `empiricalASBps=${round(finiteNumber(input.adverseSelectionPenaltyBps, 0), 4)} ` +
         `macroBias=${input.macroBias?.direction ?? "NEUTRAL"} score=${round(macroScore, 4)} ` +
         `amVpinState=${input.profilerToxicityState ?? "NORMAL"} ` +
         `spreadMultiplier=${round(Math.max(1, finiteNumber(input.profilerSpreadMultiplier, 1)), 4)} ` +
@@ -248,7 +268,11 @@ class AMMEngine {
     }
 
     this.lastQuoteMid = mid;
-    const variance = input.oracle.volatility ** 2;
+    const volatility = Math.max(
+      input.oracle.volatility,
+      input.multiScaleVolatility?.maxVol ?? 0
+    );
+    const variance = volatility ** 2;
     const riskAversionFactor = finiteNumber(
       input.riskAversionFactor,
       this.riskAversionFactor
@@ -289,7 +313,7 @@ class AMMEngine {
         marketMakingSpreadMultiplier(input.marketMakingMode)
     );
     const halfSpread =
-      (Math.max(input.book.spread ?? mid * 0.0001, mid * input.oracle.volatility * 0.25) *
+      (Math.max(input.book.spread ?? mid * 0.0001, mid * volatility * 0.25) *
         liquidityTightening +
         adverseSelectionCost * mid) *
       spreadMultiplier;
@@ -313,24 +337,20 @@ class AMMEngine {
     const allowAsk = !inventorySkewOnly || currentDelta > 0;
 
     if (!boundaryOnly && allowBid && !input.inventory.stopBid && !suppressBid) {
-      orders.push({
-        clientOrderId: crypto.randomUUID(),
+      appendLayeredOrders(orders, {
+        input,
         side: "BID",
-        price: bid,
-        size: quoteSize.bid,
-        postOnly: true,
-        strategy: "AMM"
+        basePrice: bid,
+        baseSize: quoteSize.bid
       });
     }
 
     if (!boundaryOnly && allowAsk && !input.inventory.stopAsk && !suppressAsk) {
-      orders.push({
-        clientOrderId: crypto.randomUUID(),
+      appendLayeredOrders(orders, {
+        input,
         side: "ASK",
-        price: ask,
-        size: quoteSize.ask,
-        postOnly: true,
-        strategy: "AMM"
+        basePrice: ask,
+        baseSize: quoteSize.ask
       });
     }
 
@@ -389,7 +409,22 @@ function probabilityForDirection(
   return direction === "LONG" ? probabilityAbove : 1 - probabilityAbove;
 }
 
-function sentimentMultiplier(sentiment: SentimentState, direction: TradeDirection): number {
+function sentimentMultiplier(
+  sentiment: SentimentState,
+  direction: TradeDirection,
+  mode: SentimentAlphaMode | undefined
+): number {
+  if (mode === "OFF" || mode === "EVENT_RISK_ONLY") {
+    if (sentiment.confidence >= 0.8 && Math.abs(sentiment.score) >= 0.75) {
+      const adverse =
+        (direction === "LONG" && sentiment.score < 0) ||
+        (direction === "SHORT" && sentiment.score > 0);
+      return adverse ? 2 : 1;
+    }
+
+    return 1;
+  }
+
   if (direction === "LONG" && sentiment.score < 0) {
     return 1 + Math.abs(sentiment.score) * 1.5;
   }
@@ -399,6 +434,14 @@ function sentimentMultiplier(sentiment: SentimentState, direction: TradeDirectio
   }
 
   return 1;
+}
+
+function sentimentDirectionalScore(
+  sentiment: SentimentState,
+  direction: TradeDirection
+): number {
+  const directional = direction === "LONG" ? sentiment.score : -sentiment.score;
+  return directional * Math.max(0, Math.min(1, sentiment.confidence));
 }
 
 function macroBiasDirectionalScore(
@@ -467,6 +510,51 @@ function calculateQuoteSize(input: CroupierInput): { bid: number; ask: number } 
     bid: round(Math.max(0.00000001, Math.min(bidRoom, Math.max(0.00000001, bidDepth * 0.02 * sizeMultiplier))), 8),
     ask: round(Math.max(0.00000001, Math.min(askRoom, Math.max(0.00000001, askDepth * 0.02 * sizeMultiplier))), 8)
   };
+}
+
+function appendLayeredOrders(
+  orders: QuoteOrder[],
+  params: {
+    input: CroupierInput;
+    side: QuoteOrder["side"];
+    basePrice: number;
+    baseSize: number;
+  }
+): void {
+  const levels = Math.max(1, Math.min(5, Math.floor(finiteNumber(params.input.layeredQuoteLevels, 1))));
+  const decay = Math.max(0.1, Math.min(1, finiteNumber(params.input.layeredQuoteSizeDecay, 1)));
+  const spreadStepBps = Math.max(0, finiteNumber(params.input.layeredQuoteSpreadStepBps, 0));
+  const mid = params.input.book.midPrice ?? params.basePrice;
+  const tickSize = normalizeTickSize(params.input.book.tickSize);
+
+  for (let level = 0; level < levels; level += 1) {
+    const priceOffset = mid * spreadStepBps * level / 10_000;
+    const rawPrice =
+      params.side === "BID"
+        ? params.basePrice - priceOffset
+        : params.basePrice + priceOffset;
+    const price = snapGueantDiscretePrice(rawPrice, params.side, params.input);
+    const size = round(params.baseSize * decay ** level, 8);
+
+    if (price <= 0 || size <= 0) {
+      continue;
+    }
+
+    const last = orders[orders.length - 1];
+    if (last?.side === params.side && Math.abs(last.price - price) < tickSize / 2) {
+      last.size = round(last.size + size, 8);
+      continue;
+    }
+
+    orders.push({
+      clientOrderId: crypto.randomUUID(),
+      side: params.side,
+      price,
+      size,
+      postOnly: true,
+      strategy: "AMM"
+    });
+  }
 }
 
 function marketMakingSpreadMultiplier(mode: MarketMakingMode | undefined): number {
@@ -558,9 +646,12 @@ function fundingInventoryTargetDelta(input: CroupierInput): number {
     return 0;
   }
 
+  const maxBiasMultiplier = isFundingSettlementWindow(input)
+    ? Math.max(1, finiteNumber(input.fundingPreSettlementBiasMultiplier, 1))
+    : 1;
   const maxBias =
     configuredBias > 0
-      ? configuredBias
+      ? configuredBias * maxBiasMultiplier
       : Math.max(0, input.inventory.maxInventoryDelta * 0.25);
 
   if (maxBias <= 0) {
@@ -573,6 +664,21 @@ function fundingInventoryTargetDelta(input: CroupierInput): number {
   return fundingRateHourly > 0 ? -maxBias * scaled : maxBias * scaled;
 }
 
+function isFundingSettlementWindow(input: CroupierInput): boolean {
+  const windowMs = Math.max(0, finiteNumber(input.fundingPreSettlementWindowMs, 0));
+  if (windowMs <= 0) {
+    return false;
+  }
+
+  const observedAtMs = Date.parse(input.observedAt);
+  if (!Number.isFinite(observedAtMs)) {
+    return false;
+  }
+
+  const msIntoHour = observedAtMs % 3_600_000;
+  return 3_600_000 - msIntoHour <= windowMs;
+}
+
 function predatoryLiquidationOrder(
   input: CroupierInput,
   quoteSize: { bid: number; ask: number },
@@ -583,7 +689,8 @@ function predatoryLiquidationOrder(
   }
 
   const offsetBps = Math.max(0, finiteNumber(input.predatoryOrderOffsetBps, 2));
-  const offsetMultiplier = offsetBps / 10_000;
+  const wickOvershootMultiplier = cluster.isCascadeRisk ? 2 : 1;
+  const offsetMultiplier = offsetBps * wickOvershootMultiplier / 10_000;
 
   if (cluster.side === "LONG") {
     if (input.inventory.stopBid) {

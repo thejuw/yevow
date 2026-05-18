@@ -5,8 +5,14 @@ import type {
   AlertPriority,
   AlertTestResponse,
   AttributionResponse,
+  CascadeActiveResponse,
+  CascadeHeatResponse,
+  CascadeLiveApprovalResponse,
+  CascadePositionsResponse,
+  CascadeSignalsResponse,
   CostBudgetSettings,
   CostDashboardResponse,
+  CascadeBacktestResponse,
   DiagnosticsResponse,
   ExecutionQualityResponse,
   GlobalRiskConfig,
@@ -65,7 +71,10 @@ export async function readState(apiBase: string, token: string): Promise<AdminSt
   return apiFetch<AdminStateResponse>(apiBase, "/admin/state", token);
 }
 
-export async function readConfig(apiBase: string, token: string): Promise<{ ok: true; config: GlobalRiskConfig }> {
+export async function readConfig(
+  apiBase: string,
+  token: string
+): Promise<{ ok: true; config: GlobalRiskConfig }> {
   return apiFetch<{ ok: true; config: GlobalRiskConfig }>(apiBase, "/admin/config", token);
 }
 
@@ -73,16 +82,96 @@ export async function readTrace(apiBase: string, token: string): Promise<TraceRe
   return apiFetch<TraceResponse>(apiBase, "/admin/trace?limit=50", token);
 }
 
-export async function readAttribution(apiBase: string, token: string): Promise<AttributionResponse> {
+export async function readAttribution(
+  apiBase: string,
+  token: string
+): Promise<AttributionResponse> {
   return apiFetch<AttributionResponse>(apiBase, "/admin/attribution?limit=1000", token);
 }
 
-export async function readTradeHistory(apiBase: string, token: string): Promise<TradeHistoryResponse> {
-  return apiFetch<TradeHistoryResponse>(
+export async function readTradeHistory(
+  apiBase: string,
+  token: string
+): Promise<TradeHistoryResponse> {
+  return apiFetch<TradeHistoryResponse>(apiBase, "/admin/history?status=ALL&limit=250", token);
+}
+
+export async function readCascadeActive(
+  apiBase: string,
+  token: string
+): Promise<CascadeActiveResponse> {
+  return apiFetch<CascadeActiveResponse>(apiBase, "/admin/cascade/active", token);
+}
+
+export async function readCascadeSignals(
+  apiBase: string,
+  token: string,
+  limit = 50
+): Promise<CascadeSignalsResponse> {
+  return apiFetch<CascadeSignalsResponse>(apiBase, `/admin/cascade/signals?limit=${limit}`, token);
+}
+
+export async function readCascadePositions(
+  apiBase: string,
+  token: string
+): Promise<CascadePositionsResponse> {
+  return apiFetch<CascadePositionsResponse>(apiBase, "/admin/cascade/positions", token);
+}
+
+export async function readCascadeHeat(
+  apiBase: string,
+  token: string
+): Promise<CascadeHeatResponse> {
+  return apiFetch<CascadeHeatResponse>(apiBase, "/admin/cascade/heat", token);
+}
+
+export async function runCascadeBacktest(
+  apiBase: string,
+  token: string,
+  payload: {
+    fromDate: string;
+    toDate: string;
+    instruments: string[];
+    startingEquity: number;
+  }
+): Promise<CascadeBacktestResponse> {
+  return apiFetch<CascadeBacktestResponse>(apiBase, "/admin/backtest/cascade", token, {
+    method: "POST",
+    body: JSON.stringify({
+      ...payload,
+      config: {
+        strategyMode: "CASCADE_RECOVERY"
+      }
+    })
+  });
+}
+
+export async function closeCascadePosition(
+  apiBase: string,
+  token: string,
+  positionId: string,
+  reason = "operator-request"
+): Promise<unknown> {
+  return apiFetch(
     apiBase,
-    "/admin/history?status=ALL&limit=250",
-    token
+    `/admin/cascade/positions/${encodeURIComponent(positionId)}/close`,
+    token,
+    {
+      method: "POST",
+      body: JSON.stringify({ actor: "command-center", reason })
+    }
   );
+}
+
+export async function addCascadeBlackout(
+  apiBase: string,
+  token: string,
+  payload: { title: string; startsAt: string; endsAt: string; assets: string[] }
+): Promise<unknown> {
+  return apiFetch(apiBase, "/admin/cascade/blackout", token, {
+    method: "POST",
+    body: JSON.stringify({ ...payload, createdBy: "command-center" })
+  });
 }
 
 export async function readExecutionQuality(
@@ -213,10 +302,16 @@ export async function readLiveReadiness(
   });
 }
 
-export async function readSettings(
+export async function approveCascadeLiveReadiness(
   apiBase: string,
   token: string
-): Promise<AdminSettingsResponse> {
+): Promise<CascadeLiveApprovalResponse> {
+  return apiFetch<CascadeLiveApprovalResponse>(apiBase, "/admin/live-readiness/approve", token, {
+    method: "POST"
+  });
+}
+
+export async function readSettings(apiBase: string, token: string): Promise<AdminSettingsResponse> {
   return apiFetch<AdminSettingsResponse>(apiBase, "/admin/settings", token);
 }
 
@@ -258,10 +353,7 @@ export async function rotateVaultSecret(
   });
 }
 
-export async function testVaultConnection(
-  apiBase: string,
-  token: string
-): Promise<unknown> {
+export async function testVaultConnection(apiBase: string, token: string): Promise<unknown> {
   return apiFetch(apiBase, "/admin/vault/test", token, {
     method: "POST",
     body: JSON.stringify({})
@@ -377,10 +469,7 @@ export async function clearOverride(
   });
 }
 
-export async function resetLatencyBaseline(
-  apiBase: string,
-  token: string
-): Promise<unknown> {
+export async function resetLatencyBaseline(apiBase: string, token: string): Promise<unknown> {
   return apiFetch(apiBase, "/admin/maintenance/reset-latency", token, {
     method: "POST",
     body: JSON.stringify({})

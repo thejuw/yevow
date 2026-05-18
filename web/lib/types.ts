@@ -16,9 +16,17 @@ export type TradeAlertMode = "ALL" | "FILLED_ONLY" | "NONE";
 export type ToxicityState = "NORMAL" | "CONTESTED" | "TOXIC" | "CRITICAL";
 export type ToxicityPressureSide = "BUY" | "SELL" | "NEUTRAL";
 export type CitadelOperationalStatus = "NOMINAL" | "WATCH" | "CRITICAL";
+export type SentimentAlphaMode = "OFF" | "EVENT_RISK_ONLY" | "CONTINUOUS";
+export type StrategyMode =
+  | "OFF"
+  | "MARKET_MAKING"
+  | "CASCADE_RECOVERY"
+  | "BOTH_SHADOW"
+  | "BOTH_LIVE";
 
 export interface GlobalRiskConfig {
   TRADING_ENABLED: boolean;
+  STRATEGY_MODE: StrategyMode;
   ORACLE_ENABLED: boolean;
   SENTIMENT_ENABLED: boolean;
   PROFILER_ENABLED: boolean;
@@ -38,6 +46,30 @@ export interface GlobalRiskConfig {
   RISK_AVERSION_FACTOR: number;
   FUNDING_BIAS_THRESHOLD: number;
   FUNDING_INVENTORY_BIAS: number;
+  HEDGE_ENABLED: boolean;
+  HEDGE_TRIGGER_INVENTORY_PCT: number;
+  HEDGE_COOLDOWN_MS: number;
+  HEDGE_MAX_SLIPPAGE_BPS: number;
+  CASCADE_TAKER_ENABLED: boolean;
+  CASCADE_INSTRUMENTS: string;
+  MAX_SPREAD_BPS_FOR_TAKER: number;
+  MAX_SINGLE_ORDER_NOTIONAL_USD: number;
+  SLICE_NOTIONAL_THRESHOLD_USD: number;
+  SLICE_NOTIONAL_PER_CHUNK: number;
+  SLICE_INTERVAL_MS: number;
+  SLICE_JITTER_MS: number;
+  MIN_FILL_RATIO: number;
+  LAYERED_QUOTE_LEVELS: number;
+  LAYERED_QUOTE_SIZE_DECAY: number;
+  LAYERED_QUOTE_SPREAD_STEP_BPS: number;
+  CVAR_CONFIDENCE: number;
+  CVAR_MAX_TAIL_LOSS_BPS: number;
+  CVAR_LOOKBACK_TRADES: number;
+  SENTIMENT_ALPHA_MODE: SentimentAlphaMode;
+  TOXICITY_CLASSIFIER_ENABLED: boolean;
+  TOXICITY_CLASSIFIER_THRESHOLD: number;
+  FUNDING_PRE_SETTLEMENT_WINDOW_MS: number;
+  FUNDING_PRE_SETTLEMENT_BIAS_MULTIPLIER: number;
   QUOTE_HIBERNATE_MS: number;
   AM_VPIN_BUCKET_VOLUME: number;
   AM_VPIN_ROLLING_WINDOW: number;
@@ -50,6 +82,38 @@ export interface GlobalRiskConfig {
   AM_VPIN_CONTESTED_SPREAD_MULTIPLIER: number;
   AM_VPIN_TOXIC_SPREAD_MULTIPLIER: number;
   AM_VPIN_QUOTE_HALT_MS: number;
+  CASCADE_WINDOW_MS: number;
+  CASCADE_NOTIONAL_THRESHOLD_USD: number;
+  CASCADE_ZSCORE_THRESHOLD: number;
+  CASCADE_LOOKBACK_HOURS: number;
+  CASCADE_DIRECTIONAL_PCT: number;
+  CASCADE_MIN_PRICE_MOVE_ATR: number;
+  ABSORPTION_WINDOW_MS: number;
+  ABSORPTION_PRICE_BAND_BPS: number;
+  ABSORPTION_MIN_HOLD_SECONDS: number;
+  ENTRY_WINDOW_SECONDS: number;
+  IMPULSIVE_BAR_BODY_ATR: number;
+  IMPULSIVE_BAR_VOLUME_MULT: number;
+  STOP_BUFFER_ATR: number;
+  MIN_STOP_DISTANCE_BPS: number;
+  MAX_STOP_DISTANCE_BPS: number;
+  MIN_TIME_SINCE_LAST_CASCADE_SECONDS: number;
+  NEWS_BLACKOUT_MINUTES: number;
+  MAX_REALIZED_VOL_PERCENTILE: number;
+  CASCADE_TIME_STOP_HOURS: number;
+  PARTIAL_1_R: number;
+  PARTIAL_1_SIZE_PCT: number;
+  PARTIAL_2_R: number;
+  PARTIAL_2_SIZE_PCT: number;
+  TRAILING_STOP_TYPE: "ATR" | "EMA";
+  TRAILING_STOP_PARAM: number;
+  RISK_PER_TRADE_PCT: number;
+  HEAT_CAP_PCT: number;
+  MAX_POSITION_NOTIONAL_PCT: number;
+  ASSET_LIQUIDITY_CAP_USD: number;
+  DAILY_LOSS_LIMIT_PCT: number;
+  WEEKLY_LOSS_LIMIT_PCT: number;
+  MAX_CONSECUTIVE_LOSSES: number;
   VAR_CONFIDENCE_Z: number;
   ORACLE_GOVERNANCE_MODE: GovernanceMode;
   ORACLE_MANUAL_SKEPTICISM: number;
@@ -318,13 +382,16 @@ export interface EngineState {
     realizedPnl: number;
     updatedAt: string;
   };
-  openPositions: Record<string, {
-    instrumentCode: string;
-    quantity: number;
-    markPrice: number;
-    unrealizedPnl: number;
-    realizedPnl: number;
-  }>;
+  openPositions: Record<
+    string,
+    {
+      instrumentCode: string;
+      quantity: number;
+      markPrice: number;
+      unrealizedPnl: number;
+      realizedPnl: number;
+    }
+  >;
   riskMetrics: {
     highWaterMark: number;
     rollingDrawdownPct: number;
@@ -332,13 +399,16 @@ export interface EngineState {
     isTradingEnabled: boolean;
     updatedAt: string | null;
   };
-  agentHealth?: Record<string, {
-    status: "GREEN" | "YELLOW" | "RED" | "DISABLED";
-    heartbeatAt: string;
-    latencyMs: number;
-    lastSignalId?: string | null;
-    failures24h: number;
-  }>;
+  agentHealth?: Record<
+    string,
+    {
+      status: "GREEN" | "YELLOW" | "RED" | "DISABLED";
+      heartbeatAt: string;
+      latencyMs: number;
+      lastSignalId?: string | null;
+      failures24h: number;
+    }
+  >;
   processedTicks: number;
   acceptedSignals: number;
   averageLatency: number;
@@ -388,12 +458,15 @@ export interface EngineState {
     reason: string | null;
     suspendedUntil: string | null;
   };
-  assetQuoteStates?: Record<string, {
-    status: "ACTIVE" | "SUSPENDED";
-    reason: string | null;
-    suspendedUntil: string | null;
-    updatedAt: string | null;
-  }>;
+  assetQuoteStates?: Record<
+    string,
+    {
+      status: "ACTIVE" | "SUSPENDED";
+      reason: string | null;
+      suspendedUntil: string | null;
+      updatedAt: string | null;
+    }
+  >;
   shadowQueue?: ShadowQueueState;
   executionProfile: {
     status: "STABLE" | "UNSTABLE";
@@ -497,6 +570,79 @@ export interface CostDashboardResponse {
   };
 }
 
+export interface CascadeActiveResponse {
+  ok: boolean;
+  cascades: CascadeActiveItem[];
+}
+
+export interface CascadeActiveItem {
+  cascadeId: string;
+  instrumentCode: string;
+  direction: string;
+  phase: "DETECTED" | "ABSORPTION_CONFIRMED" | "POSITION_OPEN" | "POSITION_CLOSED";
+  liquidationNotional: number;
+  liquidationCount: number;
+  zScore: number;
+  directionalPct: number;
+  priceMoveAtr: number;
+  detectedAt: string;
+  absorption?: JsonRecord | null;
+  position?: JsonRecord | null;
+}
+
+export interface CascadeSignalsResponse {
+  ok: boolean;
+  signals: JsonRecord[];
+}
+
+export interface CascadePositionsResponse {
+  ok: boolean;
+  positions: CascadePositionItem[];
+}
+
+export interface CascadePositionItem {
+  positionId: string;
+  signalId: string;
+  cascadeId: string;
+  instrumentCode: string;
+  direction: "LONG" | "SHORT";
+  status: string;
+  entryPrice: number;
+  currentStopPrice: number;
+  initialStopPrice: number;
+  totalSize: number;
+  remainingSize: number;
+  initialRiskPct: number;
+  rDistance: number;
+  targets: JsonRecord;
+  timeStopAt: string;
+  firstTargetTaken: boolean;
+  secondTargetTaken: boolean;
+  enteredAt: string | null;
+  updatedAt: string;
+  markPrice: number | null;
+  unrealizedPnl: number | null;
+  unrealizedR: number | null;
+  timeToTimeStopMs: number | null;
+}
+
+export interface CascadeHeatResponse {
+  ok: boolean;
+  heat: {
+    currentHeatPct: number;
+    heatCapPct: number;
+    percentOfCap: number;
+    openPositionCount: number;
+    remainingRiskUsd: number;
+    updatedAt: string;
+  };
+}
+
+export interface CascadeBacktestResponse {
+  ok: boolean;
+  report: JsonRecord;
+}
+
 export interface ReplayStatus {
   replayId: string | null;
   status: "IDLE" | "RUNNING" | "COMPLETED" | "FAILED";
@@ -587,11 +733,85 @@ export interface PaperPnlSummary {
   generatedAt: string;
 }
 
+export type PaperLedgerSide = "LONG" | "SHORT";
+export type PaperLedgerEventType = "ENTRY" | "INCREASE" | "REDUCE" | "EXIT" | "FLIP";
+
+export interface PaperLedgerEvent {
+  eventId: string;
+  type: PaperLedgerEventType;
+  asset: string;
+  side: PaperLedgerSide;
+  fillTradeId: string;
+  entryTradeId: string | null;
+  quantity: number;
+  entryPrice: number | null;
+  exitPrice: number | null;
+  grossPnl: number;
+  fees: number;
+  realizedPnl: number;
+  positionQuantityAfter: number;
+  averageEntryPriceAfter: number | null;
+  openedAt: string | null;
+  executedAt: string;
+}
+
+export interface PaperLedgerPosition {
+  asset: string;
+  side: PaperLedgerSide;
+  quantity: number;
+  averageEntryPrice: number;
+  openNotional: number;
+  entryFeesRemaining: number;
+  lotCount: number;
+  openedAt: string;
+  updatedAt: string;
+}
+
+export interface PaperLedgerAssetSummary {
+  asset: string;
+  fillCount: number;
+  buyCount: number;
+  sellCount: number;
+  entryCount: number;
+  exitCount: number;
+  buySize: number;
+  sellSize: number;
+  realizedGrossPnl: number;
+  realizedNetPnl: number;
+  totalFees: number;
+  openQuantity: number;
+  openSide: PaperLedgerSide | null;
+  averageEntryPrice: number | null;
+  openedAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface PaperLedger {
+  schemaVersion: "paper-ledger.v1";
+  mode: "FIFO_AVERAGE_COST";
+  generatedAt: string;
+  events: PaperLedgerEvent[];
+  positions: PaperLedgerPosition[];
+  assets: PaperLedgerAssetSummary[];
+  summary: {
+    fillCount: number;
+    entryCount: number;
+    exitCount: number;
+    openPositionCount: number;
+    realizedGrossPnl: number;
+    realizedNetPnl: number;
+    totalFees: number;
+    openFees: number;
+    grossNotional: number;
+  };
+}
+
 export interface TradeHistoryResponse {
   ok: boolean;
   data: TradeHistoryEntry[];
   paperTrades?: TradeHistoryEntry[];
   paperPnl?: PaperPnlSummary;
+  paperLedger?: PaperLedger;
   statusBreakdown?: Array<{
     status: TradeHistoryEntry["status"];
     count: number;
@@ -767,6 +987,16 @@ export interface LiveReadinessResponse {
     ok: boolean;
     generatedAt: string;
     checks: LiveReadinessCheck[];
+  };
+}
+
+export interface CascadeLiveApprovalResponse {
+  ok: boolean;
+  approval: {
+    subject: string;
+    scopes: string[];
+    observedAt: string;
+    expiresInMs: number;
   };
 }
 

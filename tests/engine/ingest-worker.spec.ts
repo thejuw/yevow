@@ -42,8 +42,11 @@ describe("IngestWorker poison payload isolation", () => {
     expect(book?.subscriptionProfile?.optimization).toBe("MAXIMIZED");
     expect(book?.subscriptionProfile?.bookDepth).toBe(20);
     expect(
-      (book?.subscriptions?.[0] as { subscription?: { nSigFigs?: number; strict?: boolean; nLevels?: number } } | undefined)
-        ?.subscription
+      (
+        book?.subscriptions?.[0] as
+          | { subscription?: { nSigFigs?: number; strict?: boolean; nLevels?: number } }
+          | undefined
+      )?.subscription
     ).toMatchObject({ nSigFigs: 5, strict: true });
     expect(
       (book?.subscriptions?.[0] as { subscription?: { nLevels?: number } } | undefined)
@@ -76,10 +79,15 @@ describe("IngestWorker poison payload isolation", () => {
       ])
     } as never);
 
-    expect(configs).toHaveLength(1);
-    expect(configs[0]?.transport).toBe("grpc");
-    expect(configs[0]?.grpcStreamTypes).toEqual(["FILLS", "ORDERBOOK_SNAPSHOT"]);
-    expect(configs[0]?.subscriptionProfile?.readMode).toBe("DWELLIR_GRPC_FILLS_L2_BOOK_GRPC");
+    const grpc = configs.find((config) => config.transport === "grpc");
+    const liquidations = configs.filter((config) =>
+      config.id.startsWith("hyperliquid-liquidations-")
+    );
+
+    expect(grpc?.grpcStreamTypes).toEqual(["FILLS", "ORDERBOOK_SNAPSHOT"]);
+    expect(grpc?.subscriptionProfile?.readMode).toBe("DWELLIR_GRPC_FILLS_L2_BOOK_GRPC");
+    expect(liquidations).toHaveLength(2);
+    expect(liquidations.every((config) => config.transport === "websocket")).toBe(true);
   });
 
   it("falls back to the Dwellir L2 book socket on public routes", () => {
@@ -106,13 +114,23 @@ describe("IngestWorker poison payload isolation", () => {
     } as never);
 
     const grpc = configs.find((config) => config.transport === "grpc");
-    const books = configs.filter((config) => config.transport === "websocket");
+    const books = configs.filter((config) =>
+      config.id.startsWith("dwellir-hyperliquid-orderbook-")
+    );
+    const liquidations = configs.filter((config) =>
+      config.id.startsWith("hyperliquid-liquidations-")
+    );
 
     expect(grpc?.grpcStreamTypes).toEqual(["FILLS"]);
     expect(grpc?.subscriptionProfile?.assetCount).toBe(4);
     expect(books).toHaveLength(4);
+    expect(liquidations).toHaveLength(4);
     expect(books.every((config) => !config.subscriptionProfile?.l4BookEnabled)).toBe(true);
-    expect(books.every((config) => config.subscriptionProfile?.readMode === "DWELLIR_GRPC_FILLS_L2_BOOK_WS")).toBe(true);
+    expect(
+      books.every(
+        (config) => config.subscriptionProfile?.readMode === "DWELLIR_GRPC_FILLS_L2_BOOK_WS"
+      )
+    ).toBe(true);
   });
 
   it("aggregates Dwellir L4 order-level snapshots into engine L2 frames", () => {
@@ -173,10 +191,7 @@ describe("IngestWorker poison payload isolation", () => {
       data: {
         coin: "BTC",
         sequence: 123,
-        levels: [
-          [{ px: "100000", sz: "0.3", n: 2 }],
-          [{ px: "100001", sz: "0.3", n: 1 }]
-        ]
+        levels: [[{ px: "100000", sz: "0.3", n: 2 }], [{ px: "100001", sz: "0.3", n: 1 }]]
       }
     });
   });
@@ -327,10 +342,7 @@ describe("IngestWorker poison payload isolation", () => {
       data: {
         coin: "HYPE",
         crossedLevelsPruned: 2,
-        levels: [
-          [{ px: "41.498", sz: "2", n: 1 }],
-          [{ px: "41.501", sz: "2", n: 1 }]
-        ]
+        levels: [[{ px: "41.498", sz: "2", n: 1 }], [{ px: "41.501", sz: "2", n: 1 }]]
       }
     });
   });
@@ -363,7 +375,9 @@ describe("IngestWorker poison payload isolation", () => {
         5000
       )
     ).not.toThrow();
-    expect(__test__.classifyDwellirMalformedPayload(update)).toBe("INVALID_DWELLIR_PROTO_JSON_PAYLOAD");
+    expect(__test__.classifyDwellirMalformedPayload(update)).toBe(
+      "INVALID_DWELLIR_PROTO_JSON_PAYLOAD"
+    );
   });
 
   it("passes a valid fresh fill directly into the normalized raw-message path", () => {
@@ -371,22 +385,24 @@ describe("IngestWorker poison payload isolation", () => {
     const update = {
       kind: "FILLS" as const,
       receivedAt,
-      data: new TextEncoder().encode(JSON.stringify({
-        events: [
-          [
-            "0xabc",
-            {
-              coin: "BTC",
-              px: "100000",
-              sz: "0.01",
-              side: "B",
-              time: "2026-05-16T00:00:00.000Z",
-              tid: "trade-001",
-              crossed: true
-            }
+      data: new TextEncoder().encode(
+        JSON.stringify({
+          events: [
+            [
+              "0xabc",
+              {
+                coin: "BTC",
+                px: "100000",
+                sz: "0.01",
+                side: "B",
+                time: "2026-05-16T00:00:00.000Z",
+                tid: "trade-001",
+                crossed: true
+              }
+            ]
           ]
-        ]
-      }))
+        })
+      )
     };
 
     const messages = __test__.dwellirPayloadToHyperliquidRawMessages(

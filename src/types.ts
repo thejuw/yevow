@@ -82,6 +82,18 @@ export interface Env {
   HAWKES_DECAY_ALPHA?: string;
   HAWKES_THRESHOLD_QUANTILE?: string;
   HAWKES_SIGNAL_COOLDOWN_MS?: string;
+  STRATEGY_MODE?: string;
+  MARKET_MAKING_MODE?: string;
+  SENTIMENT_ALPHA_MODE?: string;
+  CASCADE_TAKER_ENABLED?: string;
+  CASCADE_INSTRUMENTS?: string;
+  MAX_SPREAD_BPS_FOR_TAKER?: string;
+  MAX_SINGLE_ORDER_NOTIONAL_USD?: string;
+  SLICE_NOTIONAL_THRESHOLD_USD?: string;
+  SLICE_NOTIONAL_PER_CHUNK?: string;
+  SLICE_INTERVAL_MS?: string;
+  SLICE_JITTER_MS?: string;
+  MIN_FILL_RATIO?: string;
   HL_INFO_URL?: string;
   HL_EXCHANGE_URL?: string;
   HL_ASSET?: string;
@@ -98,6 +110,46 @@ export interface Env {
   HL_HEATMAP_PRICE_BIN_SIZE?: string;
   HL_HEATMAP_CLUSTER_NOTIONAL_USD?: string;
   HL_CASCADE_DISTANCE_PCT?: string;
+  CASCADE_WINDOW_MS?: string;
+  CASCADE_NOTIONAL_THRESHOLD_USD?: string;
+  CASCADE_ZSCORE_THRESHOLD?: string;
+  CASCADE_LOOKBACK_HOURS?: string;
+  CASCADE_DIRECTIONAL_PCT?: string;
+  CASCADE_MIN_PRICE_MOVE_ATR?: string;
+  CASCADE_MIN_BASELINE_WINDOWS?: string;
+  CASCADE_MIN_SEPARATION_MS?: string;
+  CASCADE_MAX_EVENTS_PER_INSTRUMENT?: string;
+  CASCADE_ATR_FALLBACK_USD?: string;
+  CASCADE_ATR_FALLBACK_PCT?: string;
+  ABSORPTION_WINDOW_MS?: string;
+  ABSORPTION_PRICE_BAND_BPS?: string;
+  ABSORPTION_MIN_HOLD_SECONDS?: string;
+  ABSORPTION_OI_STABILITY_BPS?: string;
+  ABSORPTION_MAX_ACTIVE_CASCADES?: string;
+  ENTRY_WINDOW_SECONDS?: string;
+  IMPULSIVE_BAR_BODY_ATR?: string;
+  IMPULSIVE_BAR_VOLUME_MULT?: string;
+  STOP_BUFFER_ATR?: string;
+  MIN_STOP_DISTANCE_BPS?: string;
+  MAX_STOP_DISTANCE_BPS?: string;
+  MIN_TIME_SINCE_LAST_CASCADE_SECONDS?: string;
+  NEWS_BLACKOUT_MINUTES?: string;
+  MAX_REALIZED_VOL_PERCENTILE?: string;
+  MIN_ADX_FOR_REGIME?: string;
+  CASCADE_TIME_STOP_HOURS?: string;
+  PARTIAL_1_R?: string;
+  PARTIAL_1_SIZE_PCT?: string;
+  PARTIAL_2_R?: string;
+  PARTIAL_2_SIZE_PCT?: string;
+  TRAILING_STOP_TYPE?: string;
+  TRAILING_STOP_PARAM?: string;
+  RISK_PER_TRADE_PCT?: string;
+  HEAT_CAP_PCT?: string;
+  MAX_POSITION_NOTIONAL_PCT?: string;
+  ASSET_LIQUIDITY_CAP_USD?: string;
+  DAILY_LOSS_LIMIT_PCT?: string;
+  WEEKLY_LOSS_LIMIT_PCT?: string;
+  MAX_CONSECUTIVE_LOSSES?: string;
   HL_PREDATORY_ORDER_OFFSET_BPS?: string;
   FUNDING_HORIZON_HOURS?: string;
   EXCHANGE_API_HOSTNAME?: string;
@@ -141,7 +193,9 @@ export interface Env {
   EXCHANGE_FEE_BPS?: string;
   MIN_EV_THRESHOLD?: string;
   KELLY_FRACTION?: string;
+  MAX_POSITION_SIZE?: string;
   MAX_POSITION_PCT?: string;
+  MAX_DRAWDOWN_PCT?: string;
   MAX_INVENTORY_UNITS?: string;
   MAX_INVENTORY_DELTA?: string;
   DELTA_NORMALIZATION_WEIGHTS?: string;
@@ -186,10 +240,15 @@ export interface Env {
   PAPER_MAKER_FEE_BPS?: string;
   QUOTE_REFRESH_MIN_INTERVAL_MS?: string;
   QUOTE_REFRESH_MIN_PRICE_TICKS?: string;
+  CROSS_ASSET_CANCEL_LEAD_BPS?: string;
+  CROSS_ASSET_CANCEL_COOLDOWN_MS?: string;
   LIVE_READINESS_MIN_PAPER_TRADES?: string;
   LIVE_READINESS_MIN_PAPER_PNL_USD?: string;
   LIVE_READINESS_REQUIRE_SINGLE_ASSET?: string;
   LIVE_READINESS_ALLOW_HYPE?: string;
+  CASCADE_LIVE_READINESS_MIN_PAPER_TRADES?: string;
+  CASCADE_LIVE_READINESS_MIN_PAPER_PNL_R?: string;
+  CASCADE_LIVE_READINESS_MIN_DAYS_PAPER?: string;
   SHADOW_VLO_CAPACITY?: string;
   SHADOW_VLO_DRIFT_TRADES?: string;
   SHADOW_VLO_QUEUE_DEPTH_MULTIPLIER?: string;
@@ -242,6 +301,13 @@ export type MarketMakingMode =
   | "BALANCED"
   | "AGGRESSIVE"
   | "INVENTORY_SKEW_ONLY";
+export type SentimentAlphaMode = "OFF" | "EVENT_RISK_ONLY" | "CONTINUOUS";
+export type StrategyMode =
+  | "OFF"
+  | "MARKET_MAKING"
+  | "CASCADE_RECOVERY"
+  | "BOTH_SHADOW"
+  | "BOTH_LIVE";
 export type NotificationPriority = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 export type TradeAlertMode = "ALL" | "FILLED_ONLY" | "NONE";
 export type MarketTransport = "grpc" | "websocket";
@@ -556,6 +622,7 @@ export interface CitadelState {
 
 export interface GlobalRiskConfig {
   TRADING_ENABLED: boolean;
+  STRATEGY_MODE: StrategyMode;
   ORACLE_ENABLED: boolean;
   SENTIMENT_ENABLED: boolean;
   PROFILER_ENABLED: boolean;
@@ -575,6 +642,30 @@ export interface GlobalRiskConfig {
   RISK_AVERSION_FACTOR: number;
   FUNDING_BIAS_THRESHOLD: number;
   FUNDING_INVENTORY_BIAS: number;
+  HEDGE_ENABLED: boolean;
+  HEDGE_TRIGGER_INVENTORY_PCT: number;
+  HEDGE_COOLDOWN_MS: number;
+  HEDGE_MAX_SLIPPAGE_BPS: number;
+  CASCADE_TAKER_ENABLED: boolean;
+  CASCADE_INSTRUMENTS: string;
+  MAX_SPREAD_BPS_FOR_TAKER: number;
+  MAX_SINGLE_ORDER_NOTIONAL_USD: number;
+  SLICE_NOTIONAL_THRESHOLD_USD: number;
+  SLICE_NOTIONAL_PER_CHUNK: number;
+  SLICE_INTERVAL_MS: number;
+  SLICE_JITTER_MS: number;
+  MIN_FILL_RATIO: number;
+  LAYERED_QUOTE_LEVELS: number;
+  LAYERED_QUOTE_SIZE_DECAY: number;
+  LAYERED_QUOTE_SPREAD_STEP_BPS: number;
+  CVAR_CONFIDENCE: number;
+  CVAR_MAX_TAIL_LOSS_BPS: number;
+  CVAR_LOOKBACK_TRADES: number;
+  SENTIMENT_ALPHA_MODE: SentimentAlphaMode;
+  TOXICITY_CLASSIFIER_ENABLED: boolean;
+  TOXICITY_CLASSIFIER_THRESHOLD: number;
+  FUNDING_PRE_SETTLEMENT_WINDOW_MS: number;
+  FUNDING_PRE_SETTLEMENT_BIAS_MULTIPLIER: number;
   QUOTE_HIBERNATE_MS: number;
   VAR_CONFIDENCE_Z: number;
   ORACLE_GOVERNANCE_MODE: GovernanceMode;
@@ -591,6 +682,38 @@ export interface GlobalRiskConfig {
   AM_VPIN_CONTESTED_SPREAD_MULTIPLIER: number;
   AM_VPIN_TOXIC_SPREAD_MULTIPLIER: number;
   AM_VPIN_QUOTE_HALT_MS: number;
+  CASCADE_WINDOW_MS: number;
+  CASCADE_NOTIONAL_THRESHOLD_USD: number;
+  CASCADE_ZSCORE_THRESHOLD: number;
+  CASCADE_LOOKBACK_HOURS: number;
+  CASCADE_DIRECTIONAL_PCT: number;
+  CASCADE_MIN_PRICE_MOVE_ATR: number;
+  ABSORPTION_WINDOW_MS: number;
+  ABSORPTION_PRICE_BAND_BPS: number;
+  ABSORPTION_MIN_HOLD_SECONDS: number;
+  ENTRY_WINDOW_SECONDS: number;
+  IMPULSIVE_BAR_BODY_ATR: number;
+  IMPULSIVE_BAR_VOLUME_MULT: number;
+  STOP_BUFFER_ATR: number;
+  MIN_STOP_DISTANCE_BPS: number;
+  MAX_STOP_DISTANCE_BPS: number;
+  MIN_TIME_SINCE_LAST_CASCADE_SECONDS: number;
+  NEWS_BLACKOUT_MINUTES: number;
+  MAX_REALIZED_VOL_PERCENTILE: number;
+  CASCADE_TIME_STOP_HOURS: number;
+  PARTIAL_1_R: number;
+  PARTIAL_1_SIZE_PCT: number;
+  PARTIAL_2_R: number;
+  PARTIAL_2_SIZE_PCT: number;
+  TRAILING_STOP_TYPE: "ATR" | "EMA";
+  TRAILING_STOP_PARAM: number;
+  RISK_PER_TRADE_PCT: number;
+  HEAT_CAP_PCT: number;
+  MAX_POSITION_NOTIONAL_PCT: number;
+  ASSET_LIQUIDITY_CAP_USD: number;
+  DAILY_LOSS_LIMIT_PCT: number;
+  WEEKLY_LOSS_LIMIT_PCT: number;
+  MAX_CONSECUTIVE_LOSSES: number;
   updatedAt: ISO8601;
   updatedBy: string;
   version: string;
@@ -702,6 +825,7 @@ export type GlobalRiskConfigUpdate = Partial<
   Pick<
     GlobalRiskConfig,
     | "TRADING_ENABLED"
+    | "STRATEGY_MODE"
     | "ORACLE_ENABLED"
     | "SENTIMENT_ENABLED"
     | "PROFILER_ENABLED"
@@ -721,6 +845,30 @@ export type GlobalRiskConfigUpdate = Partial<
     | "RISK_AVERSION_FACTOR"
     | "FUNDING_BIAS_THRESHOLD"
     | "FUNDING_INVENTORY_BIAS"
+    | "HEDGE_ENABLED"
+    | "HEDGE_TRIGGER_INVENTORY_PCT"
+    | "HEDGE_COOLDOWN_MS"
+    | "HEDGE_MAX_SLIPPAGE_BPS"
+    | "CASCADE_TAKER_ENABLED"
+    | "CASCADE_INSTRUMENTS"
+    | "MAX_SPREAD_BPS_FOR_TAKER"
+    | "MAX_SINGLE_ORDER_NOTIONAL_USD"
+    | "SLICE_NOTIONAL_THRESHOLD_USD"
+    | "SLICE_NOTIONAL_PER_CHUNK"
+    | "SLICE_INTERVAL_MS"
+    | "SLICE_JITTER_MS"
+    | "MIN_FILL_RATIO"
+    | "LAYERED_QUOTE_LEVELS"
+    | "LAYERED_QUOTE_SIZE_DECAY"
+    | "LAYERED_QUOTE_SPREAD_STEP_BPS"
+    | "CVAR_CONFIDENCE"
+    | "CVAR_MAX_TAIL_LOSS_BPS"
+    | "CVAR_LOOKBACK_TRADES"
+    | "SENTIMENT_ALPHA_MODE"
+    | "TOXICITY_CLASSIFIER_ENABLED"
+    | "TOXICITY_CLASSIFIER_THRESHOLD"
+    | "FUNDING_PRE_SETTLEMENT_WINDOW_MS"
+    | "FUNDING_PRE_SETTLEMENT_BIAS_MULTIPLIER"
     | "QUOTE_HIBERNATE_MS"
     | "VAR_CONFIDENCE_Z"
     | "ORACLE_GOVERNANCE_MODE"
@@ -737,6 +885,38 @@ export type GlobalRiskConfigUpdate = Partial<
     | "AM_VPIN_CONTESTED_SPREAD_MULTIPLIER"
     | "AM_VPIN_TOXIC_SPREAD_MULTIPLIER"
     | "AM_VPIN_QUOTE_HALT_MS"
+    | "CASCADE_WINDOW_MS"
+    | "CASCADE_NOTIONAL_THRESHOLD_USD"
+    | "CASCADE_ZSCORE_THRESHOLD"
+    | "CASCADE_LOOKBACK_HOURS"
+    | "CASCADE_DIRECTIONAL_PCT"
+    | "CASCADE_MIN_PRICE_MOVE_ATR"
+    | "ABSORPTION_WINDOW_MS"
+    | "ABSORPTION_PRICE_BAND_BPS"
+    | "ABSORPTION_MIN_HOLD_SECONDS"
+    | "ENTRY_WINDOW_SECONDS"
+    | "IMPULSIVE_BAR_BODY_ATR"
+    | "IMPULSIVE_BAR_VOLUME_MULT"
+    | "STOP_BUFFER_ATR"
+    | "MIN_STOP_DISTANCE_BPS"
+    | "MAX_STOP_DISTANCE_BPS"
+    | "MIN_TIME_SINCE_LAST_CASCADE_SECONDS"
+    | "NEWS_BLACKOUT_MINUTES"
+    | "MAX_REALIZED_VOL_PERCENTILE"
+    | "CASCADE_TIME_STOP_HOURS"
+    | "PARTIAL_1_R"
+    | "PARTIAL_1_SIZE_PCT"
+    | "PARTIAL_2_R"
+    | "PARTIAL_2_SIZE_PCT"
+    | "TRAILING_STOP_TYPE"
+    | "TRAILING_STOP_PARAM"
+    | "RISK_PER_TRADE_PCT"
+    | "HEAT_CAP_PCT"
+    | "MAX_POSITION_NOTIONAL_PCT"
+    | "ASSET_LIQUIDITY_CAP_USD"
+    | "DAILY_LOSS_LIMIT_PCT"
+    | "WEEKLY_LOSS_LIMIT_PCT"
+    | "MAX_CONSECUTIVE_LOSSES"
   >
 >;
 
@@ -1308,6 +1488,7 @@ export type MarketRegime = "REGIME_TREND" | "REGIME_RANGE" | "REGIME_CRISIS";
 export type TradeDirection = "LONG" | "SHORT";
 export type QuoteSide = "BID" | "ASK";
 export type ExecutionTimeInForce = "ALO" | "GTC" | "IOC" | "FOK";
+export type ExecutionStyle = "POST_ONLY_QUOTE" | "TAKER_IOC" | "TAKER_MARKET" | "SLICED_TWAP";
 export type ManagedOrderStatus =
   | "PENDING"
   | "OPEN"
@@ -1356,10 +1537,7 @@ export interface OracleMemoryState {
   volumeCount: number;
 }
 
-export type OracleInstrumentState = Omit<
-  OracleState,
-  "instrumentStates" | "memoryByInstrument"
->;
+export type OracleInstrumentState = Omit<OracleState, "instrumentStates" | "memoryByInstrument">;
 
 export interface OracleState {
   schemaVersion: "oracle.v1";
@@ -1449,6 +1627,7 @@ export interface TradeIntent {
   marketKey: string | null;
   source_exchange: string | null;
   direction: TradeDirection;
+  executionStyle?: ExecutionStyle;
   action: "BUY" | "SELL";
   orderType: "MARKET" | "LIMIT" | "IOC" | "FOK";
   postOnly: boolean;
@@ -1700,6 +1879,7 @@ export interface AdminConfigUpdate {
   config?: GlobalRiskConfigUpdate;
   signal?: "REFRESH_CONFIG";
   TRADING_ENABLED?: boolean;
+  STRATEGY_MODE?: StrategyMode;
   ORACLE_ENABLED?: boolean;
   SENTIMENT_ENABLED?: boolean;
   PROFILER_ENABLED?: boolean;
@@ -1719,6 +1899,23 @@ export interface AdminConfigUpdate {
   RISK_AVERSION_FACTOR?: number;
   FUNDING_BIAS_THRESHOLD?: number;
   FUNDING_INVENTORY_BIAS?: number;
+  HEDGE_ENABLED?: boolean;
+  HEDGE_TRIGGER_INVENTORY_PCT?: number;
+  HEDGE_COOLDOWN_MS?: number;
+  HEDGE_MAX_SLIPPAGE_BPS?: number;
+  CASCADE_TAKER_ENABLED?: boolean;
+  CASCADE_INSTRUMENTS?: string;
+  LAYERED_QUOTE_LEVELS?: number;
+  LAYERED_QUOTE_SIZE_DECAY?: number;
+  LAYERED_QUOTE_SPREAD_STEP_BPS?: number;
+  CVAR_CONFIDENCE?: number;
+  CVAR_MAX_TAIL_LOSS_BPS?: number;
+  CVAR_LOOKBACK_TRADES?: number;
+  SENTIMENT_ALPHA_MODE?: SentimentAlphaMode;
+  TOXICITY_CLASSIFIER_ENABLED?: boolean;
+  TOXICITY_CLASSIFIER_THRESHOLD?: number;
+  FUNDING_PRE_SETTLEMENT_WINDOW_MS?: number;
+  FUNDING_PRE_SETTLEMENT_BIAS_MULTIPLIER?: number;
   QUOTE_HIBERNATE_MS?: number;
   VAR_CONFIDENCE_Z?: number;
   ORACLE_GOVERNANCE_MODE?: GovernanceMode;
@@ -1735,6 +1932,38 @@ export interface AdminConfigUpdate {
   AM_VPIN_CONTESTED_SPREAD_MULTIPLIER?: number;
   AM_VPIN_TOXIC_SPREAD_MULTIPLIER?: number;
   AM_VPIN_QUOTE_HALT_MS?: number;
+  CASCADE_WINDOW_MS?: number;
+  CASCADE_NOTIONAL_THRESHOLD_USD?: number;
+  CASCADE_ZSCORE_THRESHOLD?: number;
+  CASCADE_LOOKBACK_HOURS?: number;
+  CASCADE_DIRECTIONAL_PCT?: number;
+  CASCADE_MIN_PRICE_MOVE_ATR?: number;
+  ABSORPTION_WINDOW_MS?: number;
+  ABSORPTION_PRICE_BAND_BPS?: number;
+  ABSORPTION_MIN_HOLD_SECONDS?: number;
+  ENTRY_WINDOW_SECONDS?: number;
+  IMPULSIVE_BAR_BODY_ATR?: number;
+  IMPULSIVE_BAR_VOLUME_MULT?: number;
+  STOP_BUFFER_ATR?: number;
+  MIN_STOP_DISTANCE_BPS?: number;
+  MAX_STOP_DISTANCE_BPS?: number;
+  MIN_TIME_SINCE_LAST_CASCADE_SECONDS?: number;
+  NEWS_BLACKOUT_MINUTES?: number;
+  MAX_REALIZED_VOL_PERCENTILE?: number;
+  CASCADE_TIME_STOP_HOURS?: number;
+  PARTIAL_1_R?: number;
+  PARTIAL_1_SIZE_PCT?: number;
+  PARTIAL_2_R?: number;
+  PARTIAL_2_SIZE_PCT?: number;
+  TRAILING_STOP_TYPE?: "ATR" | "EMA";
+  TRAILING_STOP_PARAM?: number;
+  RISK_PER_TRADE_PCT?: number;
+  HEAT_CAP_PCT?: number;
+  MAX_POSITION_NOTIONAL_PCT?: number;
+  ASSET_LIQUIDITY_CAP_USD?: number;
+  DAILY_LOSS_LIMIT_PCT?: number;
+  WEEKLY_LOSS_LIMIT_PCT?: number;
+  MAX_CONSECUTIVE_LOSSES?: number;
   maxLatencyMs?: number;
   MAX_LATENCY?: number;
   performance?: Partial<PerformanceConfig>;

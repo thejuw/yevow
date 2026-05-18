@@ -40,16 +40,16 @@ The command center is intentionally static and talks to the API over authenticat
 
 ## Agent Overview
 
-| Agent | Responsibility | Output |
-| --- | --- | --- |
-| Oracle | Classifies regime, estimates volatility, and produces posterior price distributions. | Regime state, skepticism multiplier, posterior PDF, ensemble vote. |
-| Profiler | Tracks AM-VPIN, order-book imbalance, whale prints, spoofing, and cascade risk. | Toxicity state, quote halt signals, defensive alerts. |
-| Croupier | Computes expected value and builds post-only market-making quotes using inventory-aware skew. | Trade intent, reservation price, quote orders. |
-| Pit Boss | Applies Kelly sizing, inventory caps, drawdown controls, asset allocation, and final risk approval. | Approved/rejected execution plan and risk rationale. |
-| Sentiment | Optional Workers AI or rule-based headline bias. | Sentiment score, confidence, cost/latency telemetry. |
-| Executioner | Converts approved intents into exchange-compatible signed or shadow orders. | Execution reports, fill/ack state, slippage inputs. |
-| Governor | Applies Moltworker/admin macro bias and temporary overrides. | Effective config, strategic bias, override audit trail. |
-| Janitor | Keeps hot state, D1 rows, telemetry buffers, and order maps clean. | Cleanup reports and retention enforcement. |
+| Agent       | Responsibility                                                                                      | Output                                                             |
+| ----------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Oracle      | Classifies regime, estimates volatility, and produces posterior price distributions.                | Regime state, skepticism multiplier, posterior PDF, ensemble vote. |
+| Profiler    | Tracks AM-VPIN, order-book imbalance, whale prints, spoofing, and cascade risk.                     | Toxicity state, quote halt signals, defensive alerts.              |
+| Croupier    | Computes expected value and builds post-only market-making quotes using inventory-aware skew.       | Trade intent, reservation price, quote orders.                     |
+| Pit Boss    | Applies Kelly sizing, inventory caps, drawdown controls, asset allocation, and final risk approval. | Approved/rejected execution plan and risk rationale.               |
+| Sentiment   | Optional Workers AI or rule-based headline bias.                                                    | Sentiment score, confidence, cost/latency telemetry.               |
+| Executioner | Converts approved intents into exchange-compatible signed or shadow orders.                         | Execution reports, fill/ack state, slippage inputs.                |
+| Governor    | Applies Moltworker/admin macro bias and temporary overrides.                                        | Effective config, strategic bias, override audit trail.            |
+| Janitor     | Keeps hot state, D1 rows, telemetry buffers, and order maps clean.                                  | Cleanup reports and retention enforcement.                         |
 
 All agents emit structured telemetry into the internal bus and D1 audit trail. The engine is designed to keep market-data ingestion alive even when execution is disabled, so paper/shadow replay can continue while live capital remains gated.
 
@@ -111,10 +111,25 @@ descriptor.
 The repository is designed to fail closed:
 
 - `TRADING_ENABLED` should stay false until intentionally enabled through the authenticated admin API.
+- `STRATEGY_MODE=CASCADE_RECOVERY` arms the cascade detector in paper posture only; live cascade IOC execution still requires `TRADING_ENABLED=true`, `SHADOW_MODE=false`, `EXCHANGE_ORDER_TEST_MODE=false`, `CASCADE_TAKER_ENABLED=true`, and the cascade live-readiness gate.
 - `EXCHANGE_ORDER_TEST_MODE` is true by default for Hyperliquid signed-payload validation.
 - Hyperliquid live execution requires an approved API wallet/agent, never the main fund-holding wallet private key.
 - No API credentials or runtime secrets belong in source control.
 - Runtime secrets should live in Cloudflare Worker Secrets when possible; the Settings Console can stage encrypted `RISK_VAULT` credentials for operator rotation workflows, and execution uses env secrets first with vault fallback.
+
+## Cascade Recovery Strategy
+
+The cascade recovery path is now enabled for paper-mode observation. It listens for Hyperliquid liquidation clusters, confirms absorption, emits recovery signals, tracks cascade positions, and records operational alerts without enabling live taker execution.
+
+The current deployment is BTC/HYPE focused. The source cascade build spec mentioned BTC/ETH/SOL, but the operator direction for this stack is to keep CPU, quota, and risk concentrated on BTC and HYPE.
+
+Primary docs:
+
+- `docs/cascade-strategy.md` describes the detector, absorption model, entry logic, sizing, and exits.
+- `docs/cascade-parameters.md` lists every cascade parameter, default, meaning, and operating range.
+- `docs/cascade-runbook.md` describes paper enablement, two-person live approval, emergency disable, alert routing, and post-cascade review.
+
+Live/taker promotion is intentionally non-overridable by the normal high-impact override. The gateway refuses `BOTH_LIVE` or `CASCADE_TAKER_ENABLED=true` until all cascade paper evidence, config-freeze, and two-person checks pass.
 
 ## Hyperliquid Secrets
 

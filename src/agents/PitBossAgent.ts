@@ -1,4 +1,5 @@
 import type { EngineState, GlobalRiskConfig, TradeIntent } from "../types";
+import { applyCvarSizing } from "../engine/CvarSizer";
 
 export interface PitBossDecision {
   approved: boolean;
@@ -30,7 +31,15 @@ export class PitBossAgent {
       engineState.assetMatrix?.[intent.instrumentCode]?.capitalAllocationPct ?? 1;
     const safeAllocation = Math.min(1, Math.max(0, allocation));
     const assetMaxFraction = Math.max(0, maxPositionPct * safeAllocation);
-    const cappedFraction = Math.min(kellyFraction, assetMaxFraction, 0.05);
+    const preCvarFraction = Math.min(kellyFraction, assetMaxFraction, 0.05);
+    const cvar = applyCvarSizing({
+      baseFraction: preCvarFraction,
+      slippage: engineState.slippage,
+      confidence: config.CVAR_CONFIDENCE,
+      maxTailLossBps: config.CVAR_MAX_TAIL_LOSS_BPS,
+      lookbackTrades: config.CVAR_LOOKBACK_TRADES
+    });
+    const cappedFraction = cvar.cappedFraction;
     const maxNotional = Math.min(
       config.MAX_POSITION_SIZE > 0 ? config.MAX_POSITION_SIZE : Number.POSITIVE_INFINITY,
       bankroll * cappedFraction
@@ -50,7 +59,7 @@ export class PitBossAgent {
       capitalAllocationPct: safeAllocation,
       assetMaxNotional: Number.isFinite(maxNotional) ? maxNotional : bankroll * cappedFraction,
       reason: approved
-        ? "APPROVED_FRACTIONAL_KELLY_VOL_WEIGHTED_ASSET_BUDGET"
+        ? `APPROVED_FRACTIONAL_KELLY_VOL_WEIGHTED_ASSET_BUDGET_${cvar.reason}`
         : "REJECTED_BY_KELLY_OR_EV"
     };
   }

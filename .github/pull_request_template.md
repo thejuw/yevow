@@ -6,6 +6,9 @@
 
 - [ ] `npm run typecheck`
 - [ ] `npm run web:typecheck`
+- [ ] `npm run lint`
+- [ ] `npm run format:check`
+- [ ] `npm run test:engine`
 - [ ] `npm run web:build`
 - [ ] `npx wrangler deploy --dry-run`
 - [ ] `npx wrangler deploy --config wrangler.ingest.toml --dry-run`

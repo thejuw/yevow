@@ -1,9 +1,8 @@
-import { ConfigManager } from "./ConfigManager";
-import {
-  Logger,
-  createLogSink,
-  structuredConsoleLogsEnabled
-} from "./Logger";
+import { ConfigManager, configDefaultsFromEnv } from "./ConfigManager";
+import { IntentIdempotencyLedger } from "./execution/IntentIdempotency";
+import { evaluateExecutionRisk, isInventoryHedgeIntent } from "./execution/RiskGuards";
+import { Logger, createLogSink, structuredConsoleLogsEnabled } from "./Logger";
+import { RiskLimiter } from "./strategy/cascade/RiskLimiter";
 import { RateLimiter } from "./utils/RateLimiter";
 import { SignatureEngine } from "./utils/SignatureEngine";
 import { getTradingEngineStub } from "./utils/TradingEngineStub";
@@ -13,7 +12,16 @@ import {
   buildSignedTradeIntentAudit,
   isShadowMode
 } from "./utils/CitadelProtocol";
-import type { Env, ExchangeOpenOrder, ExecutionReport, JsonRecord, TradeIntent } from "./types";
+import type {
+  Env,
+  EngineState,
+  ExchangeOpenOrder,
+  ExecutionReport,
+  ExecutionStyle,
+  GlobalRiskConfig,
+  JsonRecord,
+  TradeIntent
+} from "./types";
 
 const BINANCE_US_BASE_URL = "https://api.binance.us";
 const HYPERLIQUID_BASE_URL = "https://api.hyperliquid.xyz";
@@ -24,6 +32,8 @@ limiter.configure("default", 10, 10);
 limiter.configure("hyperliquid", 1_000, 18);
 let hyperliquidRateLimitConfigKey = "1000:18";
 const secretCache = new Map<string, { value: string | null; expiresAt: number }>();
+const intentLedger = new IntentIdempotencyLedger();
+const hedgeCooldownByInstrument = new Map<string, number>();
 
 type ExchangeAdapter = "generic-json" | "binance-us" | "hyperliquid";
 
@@ -32,6 +42,19 @@ interface PreparedExchangeRequest {
   init: RequestInit;
   signingLatencyMs: number;
   redactedPayload: Record<string, unknown>;
+}
+
+type IntentResponder = (body: unknown, status?: number, remember?: boolean) => Response;
+
+interface TwapSliceConfig {
+  sliceNotionalPerChunk: number;
+  sliceIntervalMs: number;
+  sliceJitterMs: number;
+}
+
+interface TwapSlice {
+  intent: TradeIntent;
+  delayMs: number;
 }
 
 interface BinanceSymbolFilters {
@@ -117,26 +140,163 @@ async function executeIntent(
   ctx: ExecutionContext,
   logger: Logger
 ): Promise<Response> {
-  const config = await new ConfigManager(env.CONFIG_STORE).fetchConfig();
-
-  if (!config.TRADING_ENABLED) {
-    return json({ ok: false, error: "Trading disabled" }, 423);
-  }
-
+  const config = await new ConfigManager(
+    env.CONFIG_STORE,
+    configDefaultsFromEnv(env)
+  ).fetchConfig();
   const intent = await request.json<TradeIntent>();
   validateIntent(intent);
+  const idempotency = intentLedger.evaluate(intent);
 
-  if (intent.orderType !== "LIMIT" || intent.postOnly !== true) {
-    const report = rejectedReport(intent, "TAKER_EXECUTION_DISABLED", 423);
+  if (idempotency.kind === "REPLAY") {
+    return json(
+      {
+        ...(isRecord(idempotency.response.body) ? idempotency.response.body : {}),
+        idempotentReplay: true
+      },
+      idempotency.response.status
+    );
+  }
+
+  if (idempotency.kind === "CONFLICT") {
+    return json({ ok: false, error: idempotency.reason }, 409);
+  }
+
+  const respond = (body: unknown, status = 200, remember = true): Response => {
+    if (remember) {
+      intentLedger.remember(intent, idempotency.fingerprint, { body, status });
+    }
+    return json(body, status);
+  };
+
+  const riskDecision = evaluateExecutionRisk(intent, config, Number(env.PAPER_BANKROLL_USD ?? 0));
+
+  if (!riskDecision.ok) {
+    const report = rejectedReport(
+      intent,
+      riskDecision.reason ?? "EXECUTION_RISK_REJECTED",
+      riskDecision.status
+    );
     ctx.waitUntil(forwardReport(env, report));
-    logger.warn("TAKER_EXECUTION_DISABLED", "Rejected non-post-only intent under passive inventory protocol", {
+    logger.warn("EXECUTION_RISK_REJECTED", "Pre-trade risk guard rejected intent", {
       intentId: intent.intentId,
-      instrumentCode: intent.instrumentCode,
-      orderType: intent.orderType,
-      postOnly: intent.postOnly,
-      timeInForce: intent.timeInForce
+      reason: riskDecision.reason,
+      notional: riskDecision.notional,
+      status: riskDecision.status
     });
-    return json({ ok: false, report, error: "TAKER_EXECUTION_DISABLED" }, 423);
+    return respond({ ok: false, report, error: riskDecision.reason }, riskDecision.status);
+  }
+
+  const inventoryHedge = isInventoryHedgeIntent(intent);
+  const executionStyle = resolveExecutionStyle(intent);
+
+  if (executionStyle === "SLICED_TWAP") {
+    const gate = evaluateCascadeTakerGate(intent, config, inventoryHedge);
+    if (!gate.ok) {
+      const report = rejectedReport(intent, gate.reason, gate.status);
+      ctx.waitUntil(forwardReport(env, report));
+      logger.warn("CASCADE_TAKER_GATE_REJECTED", "Sliced TWAP intent failed taker gates", {
+        intentId: intent.intentId,
+        reason: gate.reason,
+        status: gate.status
+      });
+      return respond({ ok: false, report, error: gate.reason }, gate.status);
+    }
+
+    const cascadeRisk = await evaluateCascadeRiskLimiter(env, config, intent);
+    if (!cascadeRisk.ok) {
+      const report = rejectedReport(intent, cascadeRisk.reason, cascadeRisk.status);
+      ctx.waitUntil(forwardReport(env, report));
+      logger.warn("CASCADE_TAKER_RISK_REJECTED", "Sliced TWAP intent failed cascade risk gates", {
+        intentId: intent.intentId,
+        reason: cascadeRisk.reason
+      });
+      return respond({ ok: false, report, error: cascadeRisk.reason }, cascadeRisk.status);
+    }
+
+    return scheduleSlicedTwap(intent, env, ctx, logger, respond);
+  }
+
+  if (isTakerExecutionStyle(executionStyle) && !inventoryHedge) {
+    const gate = evaluateCascadeTakerGate(intent, config, inventoryHedge);
+    if (!gate.ok) {
+      const report = rejectedReport(intent, gate.reason, gate.status);
+      ctx.waitUntil(forwardReport(env, report));
+      logger.warn("CASCADE_TAKER_GATE_REJECTED", "Cascade taker intent failed pre-send gates", {
+        intentId: intent.intentId,
+        reason: gate.reason,
+        executionStyle,
+        status: gate.status
+      });
+      return respond({ ok: false, report, error: gate.reason }, gate.status);
+    }
+
+    const cascadeRisk = await evaluateCascadeRiskLimiter(env, config, intent);
+    if (!cascadeRisk.ok) {
+      const report = rejectedReport(intent, cascadeRisk.reason, cascadeRisk.status);
+      ctx.waitUntil(forwardReport(env, report));
+      logger.warn("CASCADE_TAKER_RISK_REJECTED", "Cascade taker intent failed risk limiter", {
+        intentId: intent.intentId,
+        reason: cascadeRisk.reason
+      });
+      return respond({ ok: false, report, error: cascadeRisk.reason }, cascadeRisk.status);
+    }
+  }
+
+  if (executionStyle === "TAKER_MARKET" && !isStopCloseIntent(intent)) {
+    const report = rejectedReport(intent, "TAKER_MARKET_ONLY_ALLOWED_FOR_STOPS", 403);
+    ctx.waitUntil(forwardReport(env, report));
+    logger.warn(
+      "TAKER_MARKET_ONLY_ALLOWED_FOR_STOPS",
+      "Rejected market-style taker intent outside stop-close lifecycle",
+      {
+        intentId: intent.intentId,
+        instrumentCode: intent.instrumentCode,
+        orderType: intent.orderType,
+        timeInForce: intent.timeInForce,
+        executionStyle
+      }
+    );
+    return respond({ ok: false, report, error: "TAKER_MARKET_ONLY_ALLOWED_FOR_STOPS" }, 403);
+  }
+
+  if ((intent.orderType !== "LIMIT" || intent.postOnly !== true) && !inventoryHedge) {
+    if (!isTakerExecutionStyle(executionStyle)) {
+      const report = rejectedReport(intent, "TAKER_EXECUTION_DISABLED", 423);
+      ctx.waitUntil(forwardReport(env, report));
+      logger.warn(
+        "TAKER_EXECUTION_DISABLED",
+        "Rejected non-post-only intent without an explicit cascade taker execution style",
+        {
+          intentId: intent.intentId,
+          instrumentCode: intent.instrumentCode,
+          orderType: intent.orderType,
+          postOnly: intent.postOnly,
+          timeInForce: intent.timeInForce
+        }
+      );
+      return respond({ ok: false, report, error: "TAKER_EXECUTION_DISABLED" }, 423);
+    }
+  }
+
+  if (inventoryHedge) {
+    const now = Date.now();
+    const cooldownMs = Math.max(1_000, config.HEDGE_COOLDOWN_MS);
+    const last = hedgeCooldownByInstrument.get(intent.instrumentCode) ?? 0;
+
+    if (now - last < cooldownMs) {
+      const report = rejectedReport(intent, "HEDGE_COOLDOWN_ACTIVE", 429);
+      ctx.waitUntil(forwardReport(env, report));
+      logger.warn("HEDGE_COOLDOWN_ACTIVE", "Inventory hedge intent was rate-limited", {
+        intentId: intent.intentId,
+        instrumentCode: intent.instrumentCode,
+        cooldownMs,
+        retryAfterMs: cooldownMs - (now - last)
+      });
+      return respond({ ok: false, report, error: "HEDGE_COOLDOWN_ACTIVE" }, 429);
+    }
+
+    hedgeCooldownByInstrument.set(intent.instrumentCode, now);
   }
 
   const priority = "NEW";
@@ -145,7 +305,11 @@ async function executeIntent(
 
   if (!reservation.allowed) {
     ctx.waitUntil(delay(reservation.waitMs));
-    return json({ ok: false, error: "Rate limited", retryAfterMs: reservation.waitMs }, 429);
+    return respond(
+      { ok: false, error: "Rate limited", retryAfterMs: reservation.waitMs },
+      429,
+      false
+    );
   }
 
   let exchangeRequest: PreparedExchangeRequest;
@@ -160,7 +324,7 @@ async function executeIntent(
       intentId: intent.intentId,
       reason
     });
-    return json({ ok: false, report, error: reason }, 503);
+    return respond({ ok: false, report, error: reason }, 503);
   }
 
   if (exchangeRequest.signingLatencyMs > 1) {
@@ -179,7 +343,7 @@ async function executeIntent(
       const report = buildShadowRestingQuoteReport(intent, audit.exactTimestamp);
       ctx.waitUntil(forwardReport(env, report));
 
-      return json({
+      return respond({
         ok: true,
         shadowMode: true,
         status: "OPEN",
@@ -210,7 +374,7 @@ async function executeIntent(
     });
     ctx.waitUntil(forwardReport(env, report));
 
-    return json({
+    return respond({
       ok: true,
       shadowMode: true,
       status: "GHOST_FILL",
@@ -219,7 +383,7 @@ async function executeIntent(
     });
   }
 
-  const preTrade = await validatePreTrade(env, intent);
+  const preTrade = await validatePreTrade(env, intent, config);
   if (!preTrade.ok) {
     const report = rejectedReport(intent, preTrade.reason, preTrade.status);
     ctx.waitUntil(forwardReport(env, report));
@@ -228,7 +392,7 @@ async function executeIntent(
       reason: preTrade.reason,
       status: preTrade.status
     });
-    return json({ ok: false, report, error: preTrade.reason }, preTrade.status);
+    return respond({ ok: false, report, error: preTrade.reason }, preTrade.status);
   }
 
   const startedAt = Date.now();
@@ -271,7 +435,7 @@ async function executeIntent(
       reason,
       latencyMs
     });
-    return json({ ok: false, report, error: reason }, 503);
+    return respond({ ok: false, report, error: reason }, 503);
   }
 
   const report = toExecutionReport(intent, response, body, Date.now() - startedAt);
@@ -285,7 +449,12 @@ async function executeIntent(
       reason: report.reason ?? null,
       bodyJson: JSON.stringify(body)
     });
-    return json({ ok: false, report, body }, response.status || 502);
+    return respond({ ok: false, report, body }, response.status || 502);
+  }
+
+  let retryReport: ExecutionReport | null = null;
+  if (executionStyle === "TAKER_MARKET" && report.status === "PARTIAL_FILL") {
+    retryReport = await retryPartialStopClose(env, intent, report, ctx, logger);
   }
 
   logger.info("EXCHANGE_ORDER_SUBMITTED", "Execution request submitted", {
@@ -297,7 +466,300 @@ async function executeIntent(
     reportJson: JSON.stringify(report)
   });
 
-  return json({ ok: true, report, body });
+  return respond({ ok: true, report, retryReport, body });
+}
+
+function resolveExecutionStyle(intent: TradeIntent): ExecutionStyle {
+  if (intent.executionStyle) {
+    return intent.executionStyle;
+  }
+  if (intent.postOnly && intent.orderType === "LIMIT") {
+    return "POST_ONLY_QUOTE";
+  }
+  if (intent.orderType === "MARKET") {
+    return "TAKER_MARKET";
+  }
+  if (!intent.postOnly && (intent.orderType === "IOC" || intent.timeInForce === "IOC")) {
+    return "TAKER_IOC";
+  }
+  return "POST_ONLY_QUOTE";
+}
+
+function isTakerExecutionStyle(executionStyle: ExecutionStyle): boolean {
+  return executionStyle === "TAKER_IOC" || executionStyle === "TAKER_MARKET";
+}
+
+function evaluateCascadeTakerGate(
+  intent: TradeIntent,
+  config: GlobalRiskConfig,
+  inventoryHedge: boolean
+): { ok: true } | { ok: false; reason: string; status: number } {
+  if (inventoryHedge) {
+    return { ok: true };
+  }
+  if (config.STRATEGY_MODE !== "CASCADE_RECOVERY" && config.STRATEGY_MODE !== "BOTH_LIVE") {
+    return { ok: false, reason: "CASCADE_STRATEGY_MODE_DISABLED", status: 423 };
+  }
+  if (!config.TRADING_ENABLED) {
+    return { ok: false, reason: "TRADING_DISABLED", status: 423 };
+  }
+  if (!config.CASCADE_TAKER_ENABLED) {
+    return { ok: false, reason: "CASCADE_TAKER_DISABLED", status: 423 };
+  }
+
+  const notional = (intent.approvedSize ?? intent.requestedSize) * intent.expectedPrice;
+  if (
+    intent.executionStyle !== "SLICED_TWAP" &&
+    config.MAX_SINGLE_ORDER_NOTIONAL_USD > 0 &&
+    notional > config.MAX_SINGLE_ORDER_NOTIONAL_USD
+  ) {
+    return { ok: false, reason: "MAX_SINGLE_ORDER_NOTIONAL_EXCEEDED", status: 409 };
+  }
+
+  return { ok: true };
+}
+
+async function evaluateCascadeRiskLimiter(
+  env: Env,
+  config: GlobalRiskConfig,
+  intent: TradeIntent
+): Promise<{ ok: true } | { ok: false; reason: string; status: number }> {
+  if (isInventoryHedgeIntent(intent) || isStopCloseIntent(intent)) {
+    return { ok: true };
+  }
+
+  const equity =
+    positiveOrNull(env.PAPER_BANKROLL_USD) ?? positiveOrNull(config.MAX_POSITION_SIZE) ?? 0;
+  const state = {
+    bankroll: { equity },
+    cachedConfig: config,
+    riskMetrics: { rollingDrawdownPct: 0 }
+  } as unknown as EngineState;
+  const decision = await new RiskLimiter().shouldBlockNewEntries(env, state);
+
+  if (!decision.blocked) {
+    return { ok: true };
+  }
+
+  return {
+    ok: false,
+    reason: `CASCADE_RISK_${decision.reason ?? "BLOCKED"}`,
+    status: 409
+  };
+}
+
+function isStopCloseIntent(intent: TradeIntent): boolean {
+  const rationale = intent.rationale.toLowerCase();
+  return (
+    intent.orderType === "MARKET" &&
+    !intent.postOnly &&
+    (rationale.includes("stop") || rationale.includes("stop_loss"))
+  );
+}
+
+async function scheduleSlicedTwap(
+  intent: TradeIntent,
+  env: Env,
+  ctx: ExecutionContext,
+  logger: Logger,
+  respond: IntentResponder
+): Promise<Response> {
+  const slices = buildTwapSlices(intent, {
+    sliceNotionalPerChunk: Number(env.SLICE_NOTIONAL_PER_CHUNK ?? 0),
+    sliceIntervalMs: Number(env.SLICE_INTERVAL_MS ?? 0),
+    sliceJitterMs: Number(env.SLICE_JITTER_MS ?? 0)
+  });
+
+  if (slices.length === 0) {
+    const report = rejectedReport(intent, "TWAP_NO_VALID_SLICES", 400);
+    ctx.waitUntil(forwardReport(env, report));
+    return respond({ ok: false, report, error: "TWAP_NO_VALID_SLICES" }, 400);
+  }
+
+  ctx.waitUntil(runTwapSlices(env, slices, logger));
+  logger.info("SLICED_TWAP_SCHEDULED", "Scheduled cascade TWAP child IOC slices", {
+    intentId: intent.intentId,
+    sliceCount: slices.length,
+    totalSize: intent.approvedSize ?? intent.requestedSize,
+    totalNotional: (intent.approvedSize ?? intent.requestedSize) * intent.expectedPrice
+  });
+
+  return respond({
+    ok: true,
+    status: "TWAP_SCHEDULED",
+    sliceCount: slices.length,
+    slices: slices.map((slice) => ({
+      intentId: slice.intent.intentId,
+      approvedSize: slice.intent.approvedSize,
+      requestedSize: slice.intent.requestedSize,
+      delayMs: slice.delayMs
+    }))
+  });
+}
+
+async function runTwapSlices(
+  env: Env,
+  slices: readonly TwapSlice[],
+  logger: Logger
+): Promise<void> {
+  for (const slice of slices) {
+    if (slice.delayMs > 0) {
+      await delay(slice.delayMs);
+    }
+
+    try {
+      const request = await prepareOrderRequest(env, slice.intent, resolveAdapter(env));
+      if (isShadowMode(env)) {
+        const observedAt = new Date().toISOString();
+        const audit = buildSignedTradeIntentAudit(slice.intent, request, observedAt);
+        const trade = buildGhostTradeExecution(
+          slice.intent,
+          audit,
+          slice.intent.source_exchange ?? resolveAdapter(env),
+          estimateShadowFees(env, slice.intent)
+        );
+        logger.recordExecution(trade);
+        continue;
+      }
+
+      const startedAt = Date.now();
+      const response = isExchangeOrderTestMode(env)
+        ? new Response(JSON.stringify({ status: "TEST_ACCEPTED" }), { status: 200 })
+        : await fetch(request.endpoint, request.init);
+      const body = await safeJson(response);
+      const report = toExecutionReport(slice.intent, response, body, Date.now() - startedAt);
+
+      if (
+        report.status === "PARTIAL_FILL" &&
+        fillRatio(report.filledSize ?? 0, slice.intent.approvedSize ?? slice.intent.requestedSize) <
+          Number(env.MIN_FILL_RATIO ?? 0.8)
+      ) {
+        logger.warn("SLICED_TWAP_MIN_FILL_RATIO_BREACHED", "Paused remaining TWAP slices", {
+          intentId: slice.intent.intentId,
+          filledSize: report.filledSize ?? 0,
+          requestedSize: slice.intent.approvedSize ?? slice.intent.requestedSize,
+          minFillRatio: env.MIN_FILL_RATIO ?? "0.8"
+        });
+        return;
+      }
+    } catch (error) {
+      logger.error("SLICED_TWAP_CHILD_FAILED", "TWAP child IOC execution failed", {
+        intentId: slice.intent.intentId,
+        error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
+      });
+      return;
+    }
+  }
+}
+
+async function retryPartialStopClose(
+  env: Env,
+  intent: TradeIntent,
+  report: ExecutionReport,
+  ctx: ExecutionContext,
+  logger: Logger
+): Promise<ExecutionReport | null> {
+  const requestedSize = intent.approvedSize ?? intent.requestedSize;
+  const remainingSize = Math.max(0, requestedSize - (report.filledSize ?? 0));
+  if (remainingSize <= 0) {
+    return null;
+  }
+
+  const retryIntent: TradeIntent = {
+    ...intent,
+    intentId: `${intent.intentId}-stop-retry`,
+    requestedSize: remainingSize,
+    approvedSize: remainingSize,
+    maxSlippageBps: intent.maxSlippageBps * 3,
+    rationale: `${intent.rationale} retry stop close`
+  };
+
+  try {
+    const retryRequest = await prepareOrderRequest(env, retryIntent, resolveAdapter(env));
+    const startedAt = Date.now();
+    const response = isExchangeOrderTestMode(env)
+      ? new Response(JSON.stringify({ status: "TEST_ACCEPTED" }), { status: 200 })
+      : await fetch(retryRequest.endpoint, retryRequest.init);
+    const body = await safeJson(response);
+    const retryReport = toExecutionReport(retryIntent, response, body, Date.now() - startedAt);
+    ctx.waitUntil(forwardReport(env, retryReport));
+
+    if (
+      !response.ok ||
+      retryReport.status === "REJECTED" ||
+      retryReport.status === "PARTIAL_FILL"
+    ) {
+      logger.error(
+        "TAKER_MARKET_STOP_RETRY_ESCALATE_OPERATOR",
+        "Stop close remained unfilled after retry",
+        {
+          intentId: intent.intentId,
+          retryIntentId: retryIntent.intentId,
+          retryStatus: retryReport.status,
+          remainingSize
+        }
+      );
+    }
+
+    return retryReport;
+  } catch (error) {
+    logger.error("TAKER_MARKET_STOP_RETRY_ESCALATE_OPERATOR", "Stop close retry failed", {
+      intentId: intent.intentId,
+      remainingSize,
+      error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
+    });
+    return null;
+  }
+}
+
+function buildTwapSlices(intent: TradeIntent, config: TwapSliceConfig): TwapSlice[] {
+  const size = positiveOrNull(intent.approvedSize ?? intent.requestedSize) ?? 0;
+  const price = positiveOrNull(intent.expectedPrice) ?? 0;
+  const perChunkNotional =
+    positiveOrNull(config.sliceNotionalPerChunk) ?? Math.max(size * price, 1);
+  const notional = size * price;
+  const count = Math.max(1, Math.ceil(notional / perChunkNotional));
+  const chunkSize = size / count;
+  const slices: TwapSlice[] = [];
+
+  for (let index = 0; index < count; index += 1) {
+    const sliceSize = index === count - 1 ? size - chunkSize * index : chunkSize;
+    if (sliceSize <= 0) {
+      continue;
+    }
+
+    slices.push({
+      intent: {
+        ...intent,
+        intentId: `${intent.intentId}-slice-${index + 1}`,
+        executionStyle: "TAKER_IOC",
+        orderType: "IOC",
+        postOnly: false,
+        timeInForce: "IOC",
+        requestedSize: roundOrderSize(sliceSize),
+        approvedSize: roundOrderSize(sliceSize),
+        rationale: `${intent.rationale} sliced_twap_child=${index + 1}/${count}`
+      },
+      delayMs: index === 0 ? 0 : twapDelay(config.sliceIntervalMs, config.sliceJitterMs, index)
+    });
+  }
+
+  return slices;
+}
+
+function twapDelay(intervalMs: number, jitterMs: number, index: number): number {
+  const base = Number.isFinite(intervalMs) && intervalMs > 0 ? intervalMs : 0;
+  const jitter = Number.isFinite(jitterMs) && jitterMs > 0 ? jitterMs : 0;
+  const deterministicJitter = jitter === 0 ? 0 : ((index * 9973) % (jitter * 2 + 1)) - jitter;
+  return Math.max(0, Math.round(base + deterministicJitter));
+}
+
+function fillRatio(filledSize: number, requestedSize: number): number {
+  return requestedSize > 0 ? filledSize / requestedSize : 0;
+}
+
+function roundOrderSize(value: number): number {
+  return Number(value.toFixed(8));
 }
 
 async function cancelOrder(
@@ -306,7 +768,11 @@ async function cancelOrder(
   ctx: ExecutionContext,
   logger: Logger
 ): Promise<Response> {
-  const payload = await request.json<{ orderId?: string; instrumentCode?: string; reason?: string }>();
+  const payload = await request.json<{
+    orderId?: string;
+    instrumentCode?: string;
+    reason?: string;
+  }>();
   const orderId = requireString(payload.orderId, "orderId");
 
   if (isShadowMode(env)) {
@@ -439,7 +905,8 @@ async function executionerDiagnostics(env: Env): Promise<Response> {
   if (adapter !== "hyperliquid") {
     diagnostics.hyperliquidSecrets = {
       ok: true,
-      detail: "Executioner is not configured for Hyperliquid; Hyperliquid signing secrets are not required.",
+      detail:
+        "Executioner is not configured for Hyperliquid; Hyperliquid signing secrets are not required.",
       metadata: { adapter }
     };
     diagnostics.latencyMs = roundLatency(performance.now() - startedAt);
@@ -519,10 +986,13 @@ async function getAccountBalance(env: Env, logger: Logger): Promise<Response> {
   const endpoint = env.EXCHANGE_ACCOUNT_BALANCE_ENDPOINT;
 
   if (!endpoint) {
-    return json({
-      ok: false,
-      error: "EXCHANGE_ACCOUNT_BALANCE_ENDPOINT_NOT_CONFIGURED"
-    }, 503);
+    return json(
+      {
+        ok: false,
+        error: "EXCHANGE_ACCOUNT_BALANCE_ENDPOINT_NOT_CONFIGURED"
+      },
+      503
+    );
   }
 
   try {
@@ -541,17 +1011,18 @@ async function getAccountBalance(env: Env, logger: Logger): Promise<Response> {
 
     return json({ ok: response.ok, status: response.status, body }, response.ok ? 200 : 502);
   } catch (error) {
-    logger.error("EXCHANGE_BALANCE_TEST_FAILED", "Failed to test exchange account balance endpoint", {
-      error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
-    });
+    logger.error(
+      "EXCHANGE_BALANCE_TEST_FAILED",
+      "Failed to test exchange account balance endpoint",
+      {
+        error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
+      }
+    );
     return json({ ok: false, error: "EXCHANGE_BALANCE_TEST_FAILED" }, 503);
   }
 }
 
-function exchangePayload(
-  intent: TradeIntent,
-  adapter: ExchangeAdapter
-): Record<string, unknown> {
+function exchangePayload(intent: TradeIntent, adapter: ExchangeAdapter): Record<string, unknown> {
   if (adapter !== "generic-json") {
     throw new Error("UNSUPPORTED_EXCHANGE_ADAPTER");
   }
@@ -629,7 +1100,10 @@ async function prepareBinanceOrderRequest(
     throw new Error("BINANCE_QUANTITY_BELOW_MIN_QTY");
   }
 
-  const expectedPrice = positive(intent.expectedPrice, "EXPECTED_PRICE");
+  const expectedPrice = cappedExecutionPrice(
+    intent,
+    positive(intent.expectedPrice, "EXPECTED_PRICE")
+  );
   const params: Record<string, string> = {
     symbol,
     side: intent.action,
@@ -695,7 +1169,10 @@ async function prepareHyperliquidOrderRequest(
 ): Promise<PreparedExchangeRequest> {
   const coin = hyperliquidCoin(env, intent.instrumentCode);
   const asset = await hyperliquidAssetMeta(env, coin);
-  const expectedPrice = positive(intent.expectedPrice, "EXPECTED_PRICE");
+  const expectedPrice = cappedExecutionPrice(
+    intent,
+    positive(intent.expectedPrice, "EXPECTED_PRICE")
+  );
   const requestedSize = positive(intent.approvedSize ?? intent.requestedSize, "ORDER_SIZE");
   const tif = hyperliquidTif(env, intent);
   const nonce = Date.now();
@@ -708,8 +1185,7 @@ async function prepareHyperliquidOrderRequest(
     "HL_AGENT_SECRET"
   );
   const agentAddress = await exchangeSecret(env, "HL_AGENT_ADDRESS");
-  const derivedAgentAddress =
-    SignatureEngine.preloadHyperliquidAgentSecret(agentSecret).address;
+  const derivedAgentAddress = SignatureEngine.preloadHyperliquidAgentSecret(agentSecret).address;
 
   if (agentAddress && agentAddress.toLowerCase() !== derivedAgentAddress) {
     throw new Error("HL_AGENT_ADDRESS_SECRET_MISMATCH");
@@ -784,11 +1260,16 @@ async function prepareHyperliquidOrderRequest(
 
 async function validatePreTrade(
   env: Env,
-  intent: TradeIntent
+  intent: TradeIntent,
+  config: GlobalRiskConfig
 ): Promise<{ ok: true } | { ok: false; reason: string; status: number }> {
   const snapshot = await fetchBookSnapshot(env, intent.instrumentCode);
+  const executionStyle = resolveExecutionStyle(intent);
 
   if (!snapshot) {
+    if (isTakerExecutionStyle(executionStyle)) {
+      return { ok: false, reason: "TAKER_BBO_UNAVAILABLE", status: 503 };
+    }
     return { ok: true };
   }
 
@@ -808,15 +1289,34 @@ async function validatePreTrade(
     }
   }
 
-  if (guard > 0) {
+  if (guard > 0 && executionStyle === "POST_ONLY_QUOTE") {
     const touch = intent.action === "BUY" ? bestAsk : bestBid;
     if (touch !== null && Math.abs(touch - intent.expectedPrice) > guard) {
       return { ok: false, reason: "BBO_DRIFT_EXCEEDED", status: 409 };
     }
   }
 
+  if (isTakerExecutionStyle(executionStyle)) {
+    const spreadDecision = takerSpreadDecision(bestBid, bestAsk, config.MAX_SPREAD_BPS_FOR_TAKER);
+    if (!spreadDecision.ok) {
+      return spreadDecision;
+    }
+
+    if (executionStyle === "TAKER_IOC") {
+      const touch = intent.action === "BUY" ? bestAsk : bestBid;
+      if (touch === null) {
+        return { ok: false, reason: "TAKER_TOUCH_UNAVAILABLE", status: 503 };
+      }
+
+      const expectedSlippageBps = takerExpectedSlippageBps(intent, touch);
+      if (expectedSlippageBps > intent.maxSlippageBps) {
+        return { ok: false, reason: "TAKER_SLIPPAGE_CAP_EXCEEDED", status: 409 };
+      }
+    }
+  }
+
   if (intent.timeInForce === "FOK") {
-    const levels = intent.action === "BUY" ? snapshot.asks ?? [] : snapshot.bids ?? [];
+    const levels = intent.action === "BUY" ? (snapshot.asks ?? []) : (snapshot.bids ?? []);
     const fillableSize = levels
       .filter((level) =>
         intent.action === "BUY"
@@ -831,6 +1331,36 @@ async function validatePreTrade(
   }
 
   return { ok: true };
+}
+
+function takerSpreadDecision(
+  bestBid: number | null,
+  bestAsk: number | null,
+  maxSpreadBps: number
+): { ok: true } | { ok: false; reason: string; status: number } {
+  if (bestBid === null || bestAsk === null || bestBid <= 0 || bestAsk <= 0 || bestAsk <= bestBid) {
+    return { ok: false, reason: "TAKER_BBO_INVALID", status: 503 };
+  }
+
+  const mid = (bestBid + bestAsk) / 2;
+  const spreadBps = ((bestAsk - bestBid) / mid) * 10_000;
+  if (spreadBps > maxSpreadBps) {
+    return { ok: false, reason: "TAKER_SPREAD_TOO_WIDE", status: 409 };
+  }
+
+  return { ok: true };
+}
+
+function takerExpectedSlippageBps(intent: TradeIntent, touch: number): number {
+  if (touch <= 0) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  if (intent.action === "BUY") {
+    return Math.max(0, ((intent.expectedPrice - touch) / touch) * 10_000);
+  }
+
+  return Math.max(0, ((touch - intent.expectedPrice) / touch) * 10_000);
 }
 
 async function fetchBookSnapshot(
@@ -861,10 +1391,7 @@ async function fetchBookSnapshot(
   }
 }
 
-async function sendCancel(
-  env: Env,
-  payload: Record<string, unknown>
-): Promise<Response> {
+async function sendCancel(env: Env, payload: Record<string, unknown>): Promise<Response> {
   if (resolveAdapter(env) === "binance-us") {
     if (payload.cancel_all) {
       return cancelBinanceOpenOrders(env, stringField(payload, ["instrument"]));
@@ -918,7 +1445,10 @@ async function listBinanceOpenOrders(env: Env, logger: Logger): Promise<Response
       signingLatencyMs: signed.signingLatencyMs
     });
 
-    return json({ ok: response.ok, status: response.status, orders, body }, response.ok ? 200 : 502);
+    return json(
+      { ok: response.ok, status: response.status, orders, body },
+      response.ok ? 200 : 502
+    );
   } catch (error) {
     logger.error("BINANCE_OPEN_ORDERS_FAILED", "Failed to fetch Binance.US open orders", {
       error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
@@ -963,7 +1493,10 @@ async function listHyperliquidOpenOrders(env: Env, logger: Logger): Promise<Resp
       count: orders.length
     });
 
-    return json({ ok: response.ok, status: response.status, orders, body }, response.ok ? 200 : 502);
+    return json(
+      { ok: response.ok, status: response.status, orders, body },
+      response.ok ? 200 : 502
+    );
   } catch (error) {
     logger.error("HYPERLIQUID_OPEN_ORDERS_FAILED", "Failed to fetch Hyperliquid open orders", {
       error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
@@ -1009,13 +1542,17 @@ async function cancelBinanceOpenOrders(env: Env, instrumentCode?: string): Promi
   const openOrders = normalizeOpenOrders(openOrdersBody);
 
   if (!openOrdersResponse.ok) {
-    return new Response(JSON.stringify({ ok: false, status: openOrdersResponse.status, body: openOrdersBody }), {
-      status: 502,
-      headers: { "content-type": "application/json;charset=UTF-8" }
-    });
+    return new Response(
+      JSON.stringify({ ok: false, status: openOrdersResponse.status, body: openOrdersBody }),
+      {
+        status: 502,
+        headers: { "content-type": "application/json;charset=UTF-8" }
+      }
+    );
   }
 
-  const results: Array<{ orderId: string; instrumentCode: string; status: number; ok: boolean }> = [];
+  const results: Array<{ orderId: string; instrumentCode: string; status: number; ok: boolean }> =
+    [];
   for (const order of openOrders) {
     const signed = await binanceSignedRequest(env, "DELETE", "/api/v3/order", {
       symbol: binanceSymbol(order.instrumentCode),
@@ -1050,14 +1587,19 @@ async function sendHyperliquidCancel(
       user: hyperliquidAccountAddress(env)
     });
     const openOrdersBody = await safeJson(openOrdersResponse);
-    const orders = normalizeOpenOrders(openOrdersBody)
-      .filter((order) => !instrument || instrument === "ALL" || order.instrumentCode === instrument.toLowerCase());
+    const orders = normalizeOpenOrders(openOrdersBody).filter(
+      (order) =>
+        !instrument || instrument === "ALL" || order.instrumentCode === instrument.toLowerCase()
+    );
 
     if (!openOrdersResponse.ok) {
-      return new Response(JSON.stringify({ ok: false, status: openOrdersResponse.status, body: openOrdersBody }), {
-        status: 502,
-        headers: { "content-type": "application/json;charset=UTF-8" }
-      });
+      return new Response(
+        JSON.stringify({ ok: false, status: openOrdersResponse.status, body: openOrdersBody }),
+        {
+          status: 502,
+          headers: { "content-type": "application/json;charset=UTF-8" }
+        }
+      );
     }
 
     if (orders.length === 0) {
@@ -1067,10 +1609,13 @@ async function sendHyperliquidCancel(
       });
     }
 
-    const cancelPayload = await prepareHyperliquidCancelRequest(env, orders.map((order) => ({
-      instrumentCode: order.instrumentCode,
-      orderId: order.exchangeOrderId
-    })));
+    const cancelPayload = await prepareHyperliquidCancelRequest(
+      env,
+      orders.map((order) => ({
+        instrumentCode: order.instrumentCode,
+        orderId: order.exchangeOrderId
+      }))
+    );
     if (isExchangeOrderTestMode(env)) {
       return hyperliquidTestCancelResponse(orders.length);
     }
@@ -1107,7 +1652,10 @@ async function prepareHyperliquidCancelRequest(
     if (/^\d+$/.test(cancel.orderId)) {
       cancelWires.push({ a: asset.assetIndex, o: Number(cancel.orderId) });
     } else {
-      cancelWires.push({ asset: asset.assetIndex, cloid: normalizeHyperliquidCloid(cancel.orderId) });
+      cancelWires.push({
+        asset: asset.assetIndex,
+        cloid: normalizeHyperliquidCloid(cancel.orderId)
+      });
     }
   }
 
@@ -1417,13 +1965,24 @@ function estimateShadowFees(env: Env, intent: TradeIntent): number {
     return 0;
   }
 
-  return Number((intent.expectedPrice * size * feeBps / 10_000).toFixed(8));
+  return Number(((intent.expectedPrice * size * feeBps) / 10_000).toFixed(8));
 }
 
-function buildShadowRestingQuoteReport(
-  intent: TradeIntent,
-  observedAt: string
-): ExecutionReport {
+function cappedExecutionPrice(intent: TradeIntent, referencePrice: number): number {
+  const executionStyle = resolveExecutionStyle(intent);
+  if (executionStyle !== "TAKER_MARKET") {
+    return referencePrice;
+  }
+
+  const slippageMultiplier = Math.max(0, intent.maxSlippageBps * 3) / 10_000;
+  if (intent.action === "BUY") {
+    return referencePrice * (1 + slippageMultiplier);
+  }
+
+  return Math.max(referencePrice * (1 - slippageMultiplier), Number.EPSILON);
+}
+
+function buildShadowRestingQuoteReport(intent: TradeIntent, observedAt: string): ExecutionReport {
   const size = intent.approvedSize ?? intent.requestedSize;
 
   return {
@@ -1447,7 +2006,10 @@ function buildShadowRestingQuoteReport(
 
 function configureRuntimeRateLimits(env: Env): void {
   const capacity = positiveIntegerOrDefault(env.HL_REST_RATE_LIMIT_PER_MINUTE, 1_000);
-  const refill = positiveNumberOrDefault(env.HL_REST_REFILL_PER_SECOND, Math.min(18, capacity / 60));
+  const refill = positiveNumberOrDefault(
+    env.HL_REST_REFILL_PER_SECOND,
+    Math.min(18, capacity / 60)
+  );
   const boundedCapacity = Math.min(1_200, capacity);
   const boundedRefill = Math.min(20, refill);
   const configKey = `${boundedCapacity}:${boundedRefill}`;
@@ -1469,7 +2031,9 @@ function hyperliquidInfoUrl(env: Env): string {
 }
 
 function hyperliquidExchangeUrl(env: Env): string {
-  return env.HL_EXCHANGE_URL ?? env.EXCHANGE_ORDER_ENDPOINT ?? `${hyperliquidBaseUrl(env)}/exchange`;
+  return (
+    env.HL_EXCHANGE_URL ?? env.EXCHANGE_ORDER_ENDPOINT ?? `${hyperliquidBaseUrl(env)}/exchange`
+  );
 }
 
 async function hyperliquidInfo(env: Env, payload: Record<string, unknown>): Promise<Response> {
@@ -1540,7 +2104,10 @@ async function hyperliquidAssetMeta(env: Env, coin: string): Promise<Hyperliquid
 }
 
 function hyperliquidAccountAddress(env: Env): string {
-  return requireString(env.HL_ACCOUNT_ADDRESS ?? env.HL_AGENT_ADDRESS, "HL_ACCOUNT_ADDRESS").toLowerCase();
+  return requireString(
+    env.HL_ACCOUNT_ADDRESS ?? env.HL_AGENT_ADDRESS,
+    "HL_ACCOUNT_ADDRESS"
+  ).toLowerCase();
 }
 
 function hyperliquidCoin(env: Env, instrumentCode: string): string {
@@ -1553,15 +2120,9 @@ function hyperliquidCoin(env: Env, instrumentCode: string): string {
 }
 
 function hyperliquidTif(env: Env, intent: TradeIntent): "Alo" | "Ioc" | "Gtc" {
-  const configured = env.HL_DEFAULT_TIF?.trim().toLowerCase();
-  if (configured === "alo") {
-    return "Alo";
-  }
-  if (configured === "ioc") {
+  const executionStyle = resolveExecutionStyle(intent);
+  if (executionStyle === "TAKER_IOC" || executionStyle === "TAKER_MARKET") {
     return "Ioc";
-  }
-  if (configured === "gtc") {
-    return "Gtc";
   }
   if (intent.timeInForce === "ALO") {
     return "Alo";
@@ -1570,6 +2131,16 @@ function hyperliquidTif(env: Env, intent: TradeIntent): "Alo" | "Ioc" | "Gtc" {
     return "Alo";
   }
   if (intent.timeInForce === "IOC" || intent.orderType === "MARKET") {
+    return "Ioc";
+  }
+  const configured = env.HL_DEFAULT_TIF?.trim().toLowerCase();
+  if (configured === "alo") {
+    return "Alo";
+  }
+  if (configured === "gtc") {
+    return "Gtc";
+  }
+  if (configured === "ioc") {
     return "Ioc";
   }
   return "Alo";
@@ -1620,10 +2191,7 @@ function hyperliquidPriceDecimals(value: number, szDecimals: number): number {
     return 0;
   }
 
-  const significantFigureDecimals = Math.max(
-    0,
-    5 - Math.floor(Math.log10(absolute)) - 1
-  );
+  const significantFigureDecimals = Math.max(0, 5 - Math.floor(Math.log10(absolute)) - 1);
 
   return Math.min(maxDecimals, significantFigureDecimals);
 }
@@ -1645,7 +2213,10 @@ function hyperliquidWireNumber(value: number, precision: number): string {
 }
 
 function hyperliquidCloid(value: string): string {
-  const hex = value.replace(/[^0-9a-fA-F]/g, "").padEnd(32, "0").slice(0, 32);
+  const hex = value
+    .replace(/[^0-9a-fA-F]/g, "")
+    .padEnd(32, "0")
+    .slice(0, 32);
   return `0x${hex}`;
 }
 
@@ -1744,20 +2315,21 @@ function toExecutionReport(
   latencyMs: number
 ): ExecutionReport {
   const hyperliquid = extractHyperliquidExecution(body);
-  const exchangeOrderId = stringField(body, [
-    "order_id",
-    "orderId",
-    "id",
-    "exchange_order_id",
-    "clientOrderId"
-  ]) ?? hyperliquid.exchangeOrderId;
+  const exchangeOrderId =
+    stringField(body, ["order_id", "orderId", "id", "exchange_order_id", "clientOrderId"]) ??
+    hyperliquid.exchangeOrderId;
   const filledSize = Number(
     numberField(body, ["filled_size", "filledSize", "executed_size", "executedQty"]) ??
       hyperliquid.filledSize ??
       0
   );
   const rawStatus = hyperliquid.rawStatus ?? stringField(body, ["status", "state", "order_status"]);
-  const status = normalizeOrderStatus(rawStatus, response.ok, filledSize, intent.approvedSize ?? intent.requestedSize);
+  const status = normalizeOrderStatus(
+    rawStatus,
+    response.ok,
+    filledSize,
+    intent.approvedSize ?? intent.requestedSize
+  );
 
   return {
     clientId: intent.intentId,
@@ -1775,7 +2347,9 @@ function toExecutionReport(
     expectedPrice: intent.expectedPrice,
     fees: extractFees(body),
     latencyMs,
-    reason: response.ok ? hyperliquid.reason : String(body?.message ?? body?.error ?? response.status),
+    reason: response.ok
+      ? hyperliquid.reason
+      : String(body?.message ?? body?.error ?? response.status),
     rawStatus: rawStatus ?? undefined,
     observedAt: new Date().toISOString()
   };
@@ -1790,12 +2364,14 @@ function cancelExecutionReport(
   const rawStatus = stringField(body, ["status", "state", "order_status"]);
   const clientId =
     stringField(body, ["clientOrderId", "origClientOrderId", "client_id", "clientId"]) ?? orderId;
-  const exchangeOrderId = stringField(body, ["orderId", "order_id", "id", "exchange_order_id"]) ?? orderId;
+  const exchangeOrderId =
+    stringField(body, ["orderId", "order_id", "id", "exchange_order_id"]) ?? orderId;
   const resolvedInstrument =
     instrumentCode ??
     instrumentFromBinanceSymbol(stringField(body, ["symbol"])) ??
     stringField(body, ["instrument", "instrument_code"]);
-  const filledSize = numberField(body, ["executedQty", "filled_size", "filledSize", "executed_size"]) ?? 0;
+  const filledSize =
+    numberField(body, ["executedQty", "filled_size", "filledSize", "executed_size"]) ?? 0;
   const orderSize = numberField(body, ["origQty", "size", "quantity", "order_size"]);
 
   return {
@@ -1806,18 +2382,30 @@ function cancelExecutionReport(
     orderSize,
     status: normalizeOrderStatus(rawStatus ?? "CANCELED", response.ok, filledSize, orderSize ?? 0),
     filledSize,
-    achievedPrice: averageExecutionPrice(body) ?? numberField(body, ["price", "avg_price", "average_price"]),
+    achievedPrice:
+      averageExecutionPrice(body) ?? numberField(body, ["price", "avg_price", "average_price"]),
     fees: extractFees(body),
     latencyMs: 0,
-    reason: response.ok ? "CANCEL_ACKNOWLEDGED" : String(body?.message ?? body?.error ?? response.status),
+    reason: response.ok
+      ? "CANCEL_ACKNOWLEDGED"
+      : String(body?.message ?? body?.error ?? response.status),
     rawStatus: rawStatus ?? undefined,
     observedAt: new Date().toISOString()
   };
 }
 
 function averageExecutionPrice(body: Record<string, unknown> | null): number | undefined {
-  const executedQty = numberField(body, ["executedQty", "filled_size", "filledSize", "executed_size"]);
-  const cumulativeQuote = numberField(body, ["cummulativeQuoteQty", "cumulativeQuoteQty", "filled_quote"]);
+  const executedQty = numberField(body, [
+    "executedQty",
+    "filled_size",
+    "filledSize",
+    "executed_size"
+  ]);
+  const cumulativeQuote = numberField(body, [
+    "cummulativeQuoteQty",
+    "cumulativeQuoteQty",
+    "filled_quote"
+  ]);
 
   if (executedQty && cumulativeQuote && executedQty > 0 && cumulativeQuote > 0) {
     return cumulativeQuote / executedQty;
@@ -1937,30 +2525,30 @@ function normalizeOpenOrders(body: Record<string, unknown> | null): ExchangeOpen
       ? body.data
       : [];
 
-  return rawOrders
-    .filter(isRecord)
-    .map((order) => {
-      const rawSymbol = stringField(order, ["symbol", "instrument", "instrument_code"]);
-      return {
-        clientId: stringField(order, ["client_id", "clientId", "clientOrderId", "origClientOrderId"]) ?? null,
-        exchangeOrderId: requireString(
-          stringField(order, ["order_id", "orderId", "id", "exchange_order_id", "oid"]),
-          "exchangeOrderId"
-        ),
-        instrumentCode: requireString(
-          instrumentFromHyperliquidCoin(stringField(order, ["coin"])) ??
-            instrumentFromBinanceSymbol(rawSymbol) ??
-            rawSymbol?.toLowerCase(),
-          "instrumentCode"
-        ),
-        side: normalizeSide(stringField(order, ["side"])),
-        price: numberField(order, ["price", "limitPx", "stopPrice"]) ?? 0,
-        size: numberField(order, ["origQty", "origSz", "sz", "size", "quantity", "order_size"]) ?? 0,
-        filledSize: numberField(order, ["executedQty", "filled_size", "filledSize", "executed_size"]) ?? 0,
-        status: normalizeOrderStatus(stringField(order, ["status", "state"]), true, 0, 1),
-        observedAt: new Date().toISOString()
-      };
-    });
+  return rawOrders.filter(isRecord).map((order) => {
+    const rawSymbol = stringField(order, ["symbol", "instrument", "instrument_code"]);
+    return {
+      clientId:
+        stringField(order, ["client_id", "clientId", "clientOrderId", "origClientOrderId"]) ?? null,
+      exchangeOrderId: requireString(
+        stringField(order, ["order_id", "orderId", "id", "exchange_order_id", "oid"]),
+        "exchangeOrderId"
+      ),
+      instrumentCode: requireString(
+        instrumentFromHyperliquidCoin(stringField(order, ["coin"])) ??
+          instrumentFromBinanceSymbol(rawSymbol) ??
+          rawSymbol?.toLowerCase(),
+        "instrumentCode"
+      ),
+      side: normalizeSide(stringField(order, ["side"])),
+      price: numberField(order, ["price", "limitPx", "stopPrice"]) ?? 0,
+      size: numberField(order, ["origQty", "origSz", "sz", "size", "quantity", "order_size"]) ?? 0,
+      filledSize:
+        numberField(order, ["executedQty", "filled_size", "filledSize", "executed_size"]) ?? 0,
+      status: normalizeOrderStatus(stringField(order, ["status", "state"]), true, 0, 1),
+      observedAt: new Date().toISOString()
+    };
+  });
 }
 
 function normalizeOrderStatus(
@@ -2018,10 +2606,7 @@ async function safeJson(response: Response): Promise<Record<string, unknown> | n
   }
 }
 
-function stringField(
-  value: Record<string, unknown> | null,
-  keys: string[]
-): string | undefined {
+function stringField(value: Record<string, unknown> | null, keys: string[]): string | undefined {
   if (!value) {
     return undefined;
   }
@@ -2039,10 +2624,7 @@ function stringField(
   return undefined;
 }
 
-function numberField(
-  value: Record<string, unknown> | null,
-  keys: string[]
-): number | undefined {
+function numberField(value: Record<string, unknown> | null, keys: string[]): number | undefined {
   if (!value) {
     return undefined;
   }
@@ -2190,6 +2772,19 @@ function json(body: unknown, status = 200): Response {
 }
 
 export const __test__ = {
+  buildTwapSlices,
+  cappedExecutionPrice,
+  evaluateCascadeTakerGate,
   hyperliquidOrderWire,
-  hyperliquidPriceDecimals
+  hyperliquidPriceDecimals,
+  hyperliquidTif,
+  normalizeOrderStatus,
+  prepareOrderRequest,
+  resolveExecutionStyle,
+  validatePreTrade,
+  toExecutionReport,
+  clearIntentLedger: () => {
+    intentLedger.clear();
+    hedgeCooldownByInstrument.clear();
+  }
 };

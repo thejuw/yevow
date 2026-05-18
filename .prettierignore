@@ -1,0 +1,8 @@
+coverage
+node_modules
+out
+web/.next
+web/out
+.wrangler
+package-lock.json
+web/package-lock.json

@@ -12,6 +12,7 @@ import type {
   ToxicityPressureSide,
   ToxicityState
 } from "../types";
+import { classifyLearnedToxicity } from "../engine/ToxicityClassifier";
 
 export const PROFILER_STATE_STORAGE_KEY = "agent:profiler:state";
 export const PROFILER_STATE_STORAGE_PREFIX = `${PROFILER_STATE_STORAGE_KEY}:`;
@@ -47,6 +48,8 @@ export interface ProfilerAgentConfig {
   criticalHaltMs?: number;
   contestedSpreadMultiplier?: number;
   toxicSpreadMultiplier?: number;
+  toxicityClassifierEnabled?: boolean;
+  toxicityClassifierThreshold?: number;
 }
 
 export interface ProfilerContext {
@@ -60,6 +63,7 @@ export interface ProfilerContext {
   liquidityWalls?: LiquidityWall[];
   spoofingAlerts?: LiquidityWall[];
   liquidationHeatmap?: LiquidationHeatmapState | null;
+  jumpDetected?: boolean;
 }
 
 export interface ProfilerEvaluation {
@@ -78,6 +82,8 @@ interface AmVpinConsensus {
   reservationShiftBps: number;
   haltMs: number | null;
   structuralConsensus: boolean;
+  classifierProbability?: number;
+  classifierTriggered?: boolean;
 }
 
 export class ProfilerAgent {
@@ -93,6 +99,8 @@ export class ProfilerAgent {
   private criticalHaltMs: number;
   private contestedSpreadMultiplier: number;
   private toxicSpreadMultiplier: number;
+  private toxicityClassifierEnabled: boolean;
+  private toxicityClassifierThreshold: number;
   private readonly whalePrintZThreshold: number;
   private readonly quoteHibernateMs: number;
   private buyVolumes: Float32Array;
@@ -153,6 +161,12 @@ export class ProfilerAgent {
     this.toxicSpreadMultiplier = positiveNumber(
       config.toxicSpreadMultiplier,
       DEFAULT_TOXIC_SPREAD_MULTIPLIER
+    );
+    this.toxicityClassifierEnabled = config.toxicityClassifierEnabled !== false;
+    this.toxicityClassifierThreshold = clamp(
+      positiveNumber(config.toxicityClassifierThreshold, 0.72),
+      0,
+      1
     );
     this.whalePrintZThreshold = positiveNumber(
       config.whalePrintZThreshold,
@@ -218,6 +232,12 @@ export class ProfilerAgent {
       ),
       1,
       10
+    );
+    this.toxicityClassifierEnabled = config.TOXICITY_CLASSIFIER_ENABLED;
+    this.toxicityClassifierThreshold = clamp(
+      config.TOXICITY_CLASSIFIER_THRESHOLD,
+      0,
+      1
     );
 
     if (nextBucketSize !== this.bucketSize || nextRollingWindow !== this.rollingWindow) {
@@ -556,18 +576,27 @@ export class ProfilerAgent {
     );
     const obi = calculateObi(context.orderBookBids, context.orderBookAsks, this.obiDepth);
     const amVpin = this.calculateAmVpinAfterWrite(directionalImbalance);
-    const consensus = classifyToxicity({
-      amVpin,
-      obi,
-      directionalImbalance,
-      normalThreshold: this.normalThreshold,
-      toxicThreshold: this.toxicThreshold,
-      criticalThreshold: this.criticalThreshold,
-      criticalObi: this.criticalObi,
-      criticalHaltMs: this.criticalHaltMs,
-      contestedSpreadMultiplier: this.contestedSpreadMultiplier,
-      toxicSpreadMultiplier: this.toxicSpreadMultiplier
-    });
+    const consensus = this.applyClassifierOverlay(
+      classifyToxicity({
+        amVpin,
+        obi,
+        directionalImbalance,
+        normalThreshold: this.normalThreshold,
+        toxicThreshold: this.toxicThreshold,
+        criticalThreshold: this.criticalThreshold,
+        criticalObi: this.criticalObi,
+        criticalHaltMs: this.criticalHaltMs,
+        contestedSpreadMultiplier: this.contestedSpreadMultiplier,
+        toxicSpreadMultiplier: this.toxicSpreadMultiplier
+      }),
+      {
+        amVpin,
+        obi,
+        directionalImbalance,
+        spreadBps: context.spreadBps,
+        jumpDetected: context.jumpDetected === true
+      }
+    );
 
     this.buyVolumes[this.ringIndex] = this.activeBuyVolume;
     this.sellVolumes[this.ringIndex] = this.activeSellVolume;
@@ -602,6 +631,77 @@ export class ProfilerAgent {
     return consensus.state === "NORMAL"
       ? null
       : this.createAmVpinSignal(tick, context, consensus);
+  }
+
+  private applyClassifierOverlay(
+    consensus: AmVpinConsensus,
+    input: {
+      amVpin: number;
+      obi: number | null;
+      directionalImbalance: number;
+      spreadBps: number | null;
+      jumpDetected: boolean;
+    }
+  ): AmVpinConsensus {
+    if (!this.toxicityClassifierEnabled) {
+      return consensus;
+    }
+
+    const classifier = classifyLearnedToxicity(
+      {
+        profiler: {
+          ...this.state,
+          amVpinScore: input.amVpin,
+          toxicityScore: input.amVpin,
+          obi: input.obi,
+          latestDirectionalImbalance: input.directionalImbalance,
+          amVpinBucketCompletions: this.state.amVpinBucketCompletions + 1
+        },
+        spreadBps: input.spreadBps,
+        jumpDetected: input.jumpDetected
+      },
+      this.toxicityClassifierThreshold
+    );
+
+    if (!classifier.triggered || consensus.state === "CRITICAL") {
+      return {
+        ...consensus,
+        classifierProbability: classifier.probability,
+        classifierTriggered: classifier.triggered
+      };
+    }
+
+    const structuralAgreement =
+      input.obi !== null &&
+      Math.sign(input.obi) === Math.sign(input.directionalImbalance) &&
+      Math.abs(input.obi) >= this.criticalObi * 0.75;
+
+    if (
+      structuralAgreement &&
+      classifier.probability >= Math.max(0.85, this.toxicityClassifierThreshold)
+    ) {
+      return {
+        state: "CRITICAL",
+        pressureSide: input.directionalImbalance >= 0 ? "BUY" : "SELL",
+        spreadMultiplier: this.toxicSpreadMultiplier,
+        reservationShiftBps: 15,
+        haltMs: this.criticalHaltMs,
+        structuralConsensus: true,
+        classifierProbability: classifier.probability,
+        classifierTriggered: true
+      };
+    }
+
+    return {
+      state: consensus.state === "NORMAL" ? "CONTESTED" : consensus.state,
+      pressureSide: consensus.pressureSide,
+      spreadMultiplier: Math.max(consensus.spreadMultiplier, this.contestedSpreadMultiplier),
+      reservationShiftBps: consensus.reservationShiftBps,
+      haltMs: consensus.haltMs,
+      structuralConsensus: consensus.structuralConsensus,
+      classifierProbability: classifier.probability,
+      classifierTriggered: true
+    };
   }
 
   private calculateAmVpinAfterWrite(nextDirectionalImbalance: number): number {
@@ -668,6 +768,8 @@ export class ProfilerAgent {
         pressureSide: consensus.pressureSide,
         spreadMultiplier: consensus.spreadMultiplier,
         reservationShiftBps: consensus.reservationShiftBps,
+        classifierProbability: consensus.classifierProbability ?? null,
+        classifierTriggered: consensus.classifierTriggered ?? false,
         toxicity_state: consensus.state,
         bucketSize: this.bucketSize,
         rollingWindow: this.rollingWindow,

@@ -4,6 +4,7 @@ node_modules/
 __pycache__/
 *.pyc
 dist/
+coverage/
 *.log
 *.tsbuildinfo
 web/.next/

@@ -1,11 +1,7 @@
-import { ConfigManager, defaultConfig } from "./ConfigManager";
+import { ConfigManager, configDefaultsFromEnv, defaultConfig } from "./ConfigManager";
 import { decode as msgpackDecode } from "@msgpack/msgpack";
 import { Governor, neutralMacroBias } from "./Governor";
-import {
-  Logger,
-  createLogSink,
-  structuredConsoleLogsEnabled
-} from "./Logger";
+import { Logger, createLogSink, structuredConsoleLogsEnabled } from "./Logger";
 import {
   ProfilerAgent,
   PROFILER_STATE_STORAGE_KEY,
@@ -18,6 +14,18 @@ import {
   type AnomalyDetectionResult
 } from "./agents/AnomalyDetector";
 import { CroupierAgent, type CroupierDecision } from "./agents/CroupierAgent";
+import { applyExecutionAccounting } from "./engine/ExecutionAccounting";
+import { evaluateIntentDispatchGate } from "./engine/IntentGeneration";
+import { countOrderBookLevels } from "./engine/OrderBookState";
+import { AdverseSelectionModel, adversePenaltyForQuoteSide } from "./engine/AdverseSelectionModel";
+import {
+  MultiScaleVolatilityModel,
+  type MultiScaleVolatilitySnapshot
+} from "./engine/MultiScaleVolatility";
+import { bootstrapPaperAdverseSelection } from "./engine/PaperReplayModel";
+import { QueuePositionModel } from "./engine/QueuePositionModel";
+import { createShadowQueue } from "./engine/ShadowQueue";
+import { isInventoryHedgeIntent } from "./execution/RiskGuards";
 import {
   HeatmapAgent,
   LIQUIDATION_HEATMAP_STORAGE_KEY,
@@ -26,23 +34,33 @@ import {
 import { JanitorAgent } from "./agents/JanitorAgent";
 import { OracleAgent, defaultOracleState } from "./agents/OracleAgent";
 import { PitBossAgent } from "./agents/PitBossAgent";
-import {
-  SentimentAgent,
-  defaultSentimentState
-} from "./agents/SentimentAgent";
+import { SentimentAgent, defaultSentimentState } from "./agents/SentimentAgent";
 import { camouflageIntent } from "./utils/Camouflage";
-import {
-  RateLimiter,
-  type RateLimitBucketSnapshot
-} from "./utils/RateLimiter";
+import { RateLimiter, type RateLimitBucketSnapshot } from "./utils/RateLimiter";
 import { planSmartOrderRoute } from "./utils/SOR";
 import { Notifier } from "./utils/Notifier";
 import { evaluateGrpcDrop, isShadowMode } from "./utils/CitadelProtocol";
+import { GhostBook, type GhostBookConfig, type GhostBookObservation } from "./utils/GhostBook";
+import { AbsorptionAnalyzer } from "./strategy/cascade/AbsorptionAnalyzer";
+import { Backtester, type BacktestInput } from "./strategy/cascade/Backtester";
+import { CascadeCandleAggregator } from "./strategy/cascade/CandleAggregator";
+import { CascadeDetector } from "./strategy/cascade/CascadeDetector";
 import {
-  GhostBook,
-  type GhostBookConfig,
-  type GhostBookObservation
-} from "./utils/GhostBook";
+  CascadeRecoverySignalEngine,
+  defaultCascadeRecoverySignalConfig
+} from "./strategy/cascade/CascadeRecoverySignal";
+import { calculateAtr } from "./strategy/cascade/indicators/ATR";
+import { cumulativeVolumeDelta } from "./strategy/cascade/indicators/CumulativeVolumeDelta";
+import { HyperliquidLiquidationStream } from "./strategy/cascade/LiquidationStream";
+import { HeatManager } from "./strategy/cascade/HeatManager";
+import { NewsCalendar } from "./strategy/cascade/NewsCalendar";
+import {
+  cascadeAlertPolicy,
+  type CascadeAlertEventType
+} from "./strategy/cascade/OperationalSafeguards";
+import { PositionManager } from "./strategy/cascade/PositionManager";
+import { calculatePositionSize } from "./strategy/cascade/PositionSizer";
+import { calculateVwap } from "./strategy/cascade/indicators/VWAP";
 import type { PerformanceSnapshot } from "./Logger";
 import type {
   AdminConfigUpdate,
@@ -97,10 +115,24 @@ import type {
   TradeExecution,
   TradeIntent
 } from "./types";
+import type {
+  AbsorptionAnalyzerConfig,
+  AbsorptionObservation,
+  AbsorptionConfirmed,
+  CascadeDetectorConfig,
+  CascadeEvent,
+  CascadeOpenPosition,
+  CascadePositionIntent,
+  CascadeRecoverySignal,
+  CascadeRecoverySignalConfig,
+  LiquidationEvent
+} from "./strategy/cascade/types";
 
 const ENGINE_STATE_KEY = "engine:state";
 const ORDER_BOOK_PREFIX = "book:";
 const PERFORMANCE_HISTORY_KEY = "performance:latency-history";
+const CASCADE_POSITIONS_KEY = "cascade:positions";
+const CASCADE_PAPER_ARMED_AT_KEY = "cascade:paper_armed_at";
 const REPLAY_STATUS_KEY = "replay:status";
 const RISK_LIMITS_KEY = "risk:limits";
 const CONFIG_KEY = "engine:config";
@@ -175,6 +207,8 @@ const DEFAULT_PAPER_FILL_ADVERSE_BPS = 1.5;
 const DEFAULT_PAPER_MAKER_FEE_BPS = 2;
 const DEFAULT_QUOTE_REFRESH_MIN_INTERVAL_MS = 750;
 const DEFAULT_QUOTE_REFRESH_MIN_PRICE_TICKS = 1;
+const DEFAULT_CROSS_ASSET_CANCEL_LEAD_BPS = 8;
+const DEFAULT_CROSS_ASSET_CANCEL_COOLDOWN_MS = 5_000;
 const DEFAULT_MARKET_TICK_JOURNAL_INTERVAL = 100;
 const DEFAULT_MARKET_TICK_MAX_ROWS = 100_000;
 const DEFAULT_SHADOW_VLO_CAPACITY = 512;
@@ -309,11 +343,7 @@ interface BookSyncState {
 
 interface AppliedBookUpdate {
   accepted: boolean;
-  reason?:
-    | "SEQUENCE_GAP"
-    | "DUPLICATE_OR_OUT_OF_ORDER"
-    | "UNKNOWN_SIDE"
-    | "CROSSED_BOOK";
+  reason?: "SEQUENCE_GAP" | "DUPLICATE_OR_OUT_OF_ORDER" | "UNKNOWN_SIDE" | "CROSSED_BOOK";
   book?: InternalOrderBook;
   timeToBookMs: number | null;
   expectedSequence?: number;
@@ -459,12 +489,23 @@ export class TradingEngine {
   private readonly profilerAgent: ProfilerAgent;
   private readonly profilerAgents = new Map<string, ProfilerAgent>();
   private readonly heatmapAgent: HeatmapAgent;
+  private readonly cascadeLiquidationStream = new HyperliquidLiquidationStream();
+  private readonly cascadeDetector: CascadeDetector;
+  private readonly absorptionAnalyzer: AbsorptionAnalyzer;
+  private readonly candleAggregator = new CascadeCandleAggregator(["1m", "5m", "1h"]);
+  private readonly cascadePositionManager = new PositionManager();
+  private readonly cascadeNewsCalendar: NewsCalendar;
+  private readonly cascadeBacktester: Backtester;
+  private readonly cascadeHeatManager = new HeatManager();
   private readonly anomalyDetector: AnomalyDetector;
   private readonly sentimentAgent = new SentimentAgent();
   private readonly oracleAgent = new OracleAgent();
   private readonly croupierAgent: CroupierAgent;
   private readonly pitBossAgent = new PitBossAgent(0.5);
   private readonly janitorAgent = new JanitorAgent();
+  private readonly adverseSelectionModel = new AdverseSelectionModel();
+  private readonly multiScaleVolatility = new MultiScaleVolatilityModel();
+  private readonly queuePositionModel = new QueuePositionModel();
   private readonly rateLimiter = new RateLimiter();
   private readonly jitterSampleWindow: number;
   private readonly jitterComputeIntervalTicks: number;
@@ -503,11 +544,16 @@ export class TradingEngine {
     }
   >();
   private quoteRefreshThrottleLogAt = new Map<string, number>();
+  private crossAssetCancelLogAt = new Map<string, number>();
+  private lastHedgeDispatchedAt = new Map<string, number>();
   private shadowQueueNoEdgeLogAt = new Map<string, number>();
   private latencyHistory: LatencyMetrics[] = [];
   private processingLatencySamples: number[] = [];
   private domWallHistory: LiquidityWall[] = [];
   private leadLagSamples = new Map<string, Array<{ price: number; observedAt: string }>>();
+  private cascadeCvdByInstrument = new Map<string, number>();
+  private cascadeAbsorptionsById = new Map<string, AbsorptionConfirmed>();
+  private cascadeEventsById = new Map<string, CascadeEvent>();
   private maxLatencyMs = DEFAULT_MAX_LATENCY_MS;
   private latestWakeUpTimeMs: number | null = null;
   private lastPerformanceStatus: EngineStabilityStatus = "STABLE";
@@ -529,9 +575,11 @@ export class TradingEngine {
     private readonly state: DurableObjectState,
     private readonly env: Env
   ) {
-    this.configManager = new ConfigManager(env.CONFIG_STORE);
+    this.configManager = new ConfigManager(env.CONFIG_STORE, configDefaultsFromEnv(env));
     this.governor = new Governor(env.CONFIG_STORE);
-    this.ghostBook = new GhostBook(resolveGhostBookConfig(env));
+    this.cascadeNewsCalendar = new NewsCalendar(env.CONFIG_STORE);
+    this.cascadeBacktester = new Backtester(env.TRADING_DB);
+    this.ghostBook = createShadowQueue(env);
     this.jitterSampleWindow = readPositiveInteger(
       env.JITTER_SAMPLE_WINDOW,
       DEFAULT_JITTER_SAMPLE_WINDOW,
@@ -569,10 +617,7 @@ export class TradingEngine {
       DEFAULT_DOM_SPOOF_PROXIMITY_BPS
     );
     this.profilerAgent = new ProfilerAgent({
-      bucketSize: readPositiveNumber(
-        env.PROFILER_BUCKET_VOLUME,
-        DEFAULT_PROFILER_BUCKET_VOLUME
-      ),
+      bucketSize: readPositiveNumber(env.PROFILER_BUCKET_VOLUME, DEFAULT_PROFILER_BUCKET_VOLUME),
       rollingWindow: readPositiveInteger(
         env.PROFILER_ROLLING_WINDOW,
         DEFAULT_PROFILER_ROLLING_WINDOW,
@@ -609,6 +654,73 @@ export class TradingEngine {
         env.HL_CASCADE_DISTANCE_PCT,
         DEFAULT_CASCADE_DISTANCE_PCT
       )
+    });
+    this.cascadeDetector = new CascadeDetector({
+      windowMs: readPositiveInteger(
+        env.CASCADE_WINDOW_MS,
+        defaultConfig.CASCADE_WINDOW_MS,
+        60_000,
+        3_600_000
+      ),
+      notionalThresholdUsd: readPositiveNumber(
+        env.CASCADE_NOTIONAL_THRESHOLD_USD,
+        defaultConfig.CASCADE_NOTIONAL_THRESHOLD_USD
+      ),
+      zScoreThreshold: readPositiveNumber(
+        env.CASCADE_ZSCORE_THRESHOLD,
+        defaultConfig.CASCADE_ZSCORE_THRESHOLD
+      ),
+      lookbackHours: readPositiveInteger(
+        env.CASCADE_LOOKBACK_HOURS,
+        defaultConfig.CASCADE_LOOKBACK_HOURS,
+        1,
+        168
+      ),
+      directionalPct: readBoundedNumber(
+        env.CASCADE_DIRECTIONAL_PCT,
+        defaultConfig.CASCADE_DIRECTIONAL_PCT,
+        0.5,
+        1
+      ),
+      minPriceMoveAtr: readBoundedNumber(
+        env.CASCADE_MIN_PRICE_MOVE_ATR,
+        defaultConfig.CASCADE_MIN_PRICE_MOVE_ATR,
+        0,
+        10
+      ),
+      minBaselineWindows: readPositiveInteger(env.CASCADE_MIN_BASELINE_WINDOWS, 12, 0, 10_000),
+      minCascadeSeparationMs: readPositiveInteger(
+        env.CASCADE_MIN_SEPARATION_MS,
+        defaultConfig.CASCADE_WINDOW_MS,
+        0,
+        6 * 3_600_000
+      ),
+      maxEventsPerInstrument: readPositiveInteger(
+        env.CASCADE_MAX_EVENTS_PER_INSTRUMENT,
+        10_000,
+        100,
+        100_000
+      )
+    });
+    this.absorptionAnalyzer = new AbsorptionAnalyzer({
+      absorptionWindowMs: readPositiveInteger(
+        env.ABSORPTION_WINDOW_MS,
+        defaultConfig.ABSORPTION_WINDOW_MS,
+        60_000,
+        6 * 3_600_000
+      ),
+      priceBandBps: readPositiveNumber(
+        env.ABSORPTION_PRICE_BAND_BPS,
+        defaultConfig.ABSORPTION_PRICE_BAND_BPS
+      ),
+      minHoldSeconds: readPositiveInteger(
+        env.ABSORPTION_MIN_HOLD_SECONDS,
+        defaultConfig.ABSORPTION_MIN_HOLD_SECONDS,
+        5,
+        3_600
+      ),
+      oiStabilityBps: readPositiveNumber(env.ABSORPTION_OI_STABILITY_BPS, 5),
+      maxActiveCascades: readPositiveInteger(env.ABSORPTION_MAX_ACTIVE_CASCADES, 24, 1, 100)
     });
     this.anomalyDetector = new AnomalyDetector({
       priceZThreshold: readPositiveNumber(
@@ -649,10 +761,7 @@ export class TradingEngine {
         env.RISK_AVERSION_FACTOR,
         DEFAULT_RISK_AVERSION_FACTOR
       ),
-      minTickChange: readPositiveNumber(
-        env.AMM_MIN_TICK_CHANGE,
-        DEFAULT_AMM_MIN_TICK_CHANGE
-      )
+      minTickChange: readPositiveNumber(env.AMM_MIN_TICK_CHANGE, DEFAULT_AMM_MIN_TICK_CHANGE)
     });
     this.rateLimiter.configure("default", 10, 10);
     this.logger = new Logger(
@@ -683,6 +792,7 @@ export class TradingEngine {
       let persistedHeatmapState: LiquidationHeatmapState | undefined;
       let persistedAnomalyState: AnomalyDetectorState | undefined;
       let persistedRateLimits: Record<string, RateLimitBucketSnapshot> | undefined;
+      let persistedCascadePositions: CascadeOpenPosition[] | undefined;
       let kvRiskLimits: Partial<RiskLimits> | null = null;
       let kvConfig: AdminConfigUpdate | null = null;
 
@@ -698,6 +808,7 @@ export class TradingEngine {
           persistedHeatmapState,
           persistedAnomalyState,
           persistedRateLimits,
+          persistedCascadePositions,
           kvRiskLimits,
           kvConfig
         ] = await Promise.all([
@@ -711,6 +822,7 @@ export class TradingEngine {
           this.state.storage.get<LiquidationHeatmapState>(LIQUIDATION_HEATMAP_STORAGE_KEY),
           this.state.storage.get<AnomalyDetectorState>(ANOMALY_DETECTOR_STORAGE_KEY),
           this.state.storage.get<Record<string, RateLimitBucketSnapshot>>(RATE_LIMIT_STATE_KEY),
+          this.state.storage.get<CascadeOpenPosition[]>(CASCADE_POSITIONS_KEY),
           this.env.RISK_VAULT.get<Partial<RiskLimits>>(RISK_LIMITS_KEY, "json"),
           this.env.CONFIG_STORE.get<AdminConfigUpdate>(CONFIG_KEY, "json")
         ]);
@@ -736,17 +848,15 @@ export class TradingEngine {
       this.asks = hydratedBooks.asks;
       this.bookSync = hydratedBooks.sync;
       this.ghostBook.hydrate(baseState.shadowQueue);
+      this.cascadePositionManager.hydrate(persistedCascadePositions ?? []);
       this.hydrateProfilerAgents(persistedProfilerState, persistedProfilerStates);
       this.heatmapAgent.hydrate(persistedHeatmapState ?? baseState.liquidationHeatmap);
       this.anomalyDetector.hydrate(persistedAnomalyState);
       this.rateLimiter.hydrate(persistedRateLimits);
       this.oracleAgent.hydrate(baseState.oracle);
       this.sentimentAgent.hydrate(baseState.sentiment);
-      this.lastTickTimestamp =
-        baseState.microstructure?.updatedAt ?? baseState.updatedAt ?? null;
-      this.latencyHistory = (persistedLatencyHistory ?? []).slice(
-        -PERFORMANCE_HISTORY_LIMIT
-      );
+      this.lastTickTimestamp = baseState.microstructure?.updatedAt ?? baseState.updatedAt ?? null;
+      this.latencyHistory = (persistedLatencyHistory ?? []).slice(-PERFORMANCE_HISTORY_LIMIT);
       this.processingLatencySamples = (persistedProcessingLatencySamples ?? [])
         .filter((sample) => Number.isFinite(sample) && sample >= 0)
         .slice(-this.jitterSampleWindow);
@@ -757,9 +867,13 @@ export class TradingEngine {
       const effectiveGovernance = await this.governor.readEffectiveConfig(
         await this.configManager.fetchConfig()
       );
+      await this.cascadeNewsCalendar.refresh(true);
       this.cachedConfig = effectiveGovernance.config;
       this.macroBias = effectiveGovernance.macroBias;
       this.activeTemporaryOverride = effectiveGovernance.temporaryOverride;
+      if (this.cachedConfig.STRATEGY_MODE === "CASCADE_RECOVERY") {
+        this.state.waitUntil(this.ensureCascadePaperModeArmed(now));
+      }
       this.configureProfilerAgents(this.cachedConfig);
       this.maxLatencyMs = this.cachedConfig.LATENCY_THRESHOLD_MS;
       const location = baseState.location ?? defaultEngineLocation();
@@ -959,12 +1073,10 @@ export class TradingEngine {
         const observedAt = new Date().toISOString();
         const shouldClearQuoteSuspension =
           this.engineState.quoteState.status === "SUSPENDED" &&
-          (
-            this.engineState.quoteState.reason === "HARD_STALE_DROP" ||
+          (this.engineState.quoteState.reason === "HARD_STALE_DROP" ||
             this.engineState.quoteState.reason === "NATIVE_HL_LATENCY" ||
             this.engineState.quoteState.reason === "GRPC_FATAL_DROP" ||
-            this.engineState.quoteState.reason === "STALE_DATA_KILL_SWITCH"
-        );
+            this.engineState.quoteState.reason === "STALE_DATA_KILL_SWITCH");
         this.resetLatencyBaseline(observedAt, "ADMIN_MAINTENANCE");
         const recoveredAssetQuoteStates = shouldClearQuoteSuspension
           ? resumeExpiredAssetQuoteStates(
@@ -993,11 +1105,14 @@ export class TradingEngine {
             observedAt
           });
         }
-        await this.safeStoragePut({
-          [ENGINE_STATE_KEY]: this.engineState,
-          [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
-          [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples
-        }, "ADMIN_RESET_LATENCY");
+        await this.safeStoragePut(
+          {
+            [ENGINE_STATE_KEY]: this.engineState,
+            [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
+            [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples
+          },
+          "ADMIN_RESET_LATENCY"
+        );
         return json({ ok: true, state: this.engineState });
       }
 
@@ -1021,9 +1136,7 @@ export class TradingEngine {
 
       if (request.method === "GET" && url.pathname === "/book/snapshot") {
         const instrumentCode =
-          url.searchParams.get("instrumentCode") ??
-          url.searchParams.get("instrument") ??
-          undefined;
+          url.searchParams.get("instrumentCode") ?? url.searchParams.get("instrument") ?? undefined;
         const depth = clampInteger(
           url.searchParams.get("depth"),
           BOOK_SNAPSHOT_TOP_LEVELS,
@@ -1036,9 +1149,7 @@ export class TradingEngine {
 
       if (request.method === "GET" && url.pathname === "/dom/heatmap") {
         const instrumentCode =
-          url.searchParams.get("instrumentCode") ??
-          url.searchParams.get("instrument") ??
-          undefined;
+          url.searchParams.get("instrumentCode") ?? url.searchParams.get("instrument") ?? undefined;
 
         return json(this.currentDomHeatmap(instrumentCode));
       }
@@ -1076,15 +1187,13 @@ export class TradingEngine {
       }
 
       if (request.method === "POST" && url.pathname === "/reset-book") {
-        const payload =
-          (await readJsonOrNull<Partial<OrderBookResetRequest>>(request)) ?? {};
+        const payload = (await readJsonOrNull<Partial<OrderBookResetRequest>>(request)) ?? {};
         await this.enqueueOrderBookReset(payload);
         return json({ ok: true, state: this.engineState });
       }
 
       if (request.method === "POST" && url.pathname === "/ingest/connection") {
-        const payload =
-          (await readJsonOrNull<Partial<OrderBookResetRequest>>(request)) ?? {};
+        const payload = (await readJsonOrNull<Partial<OrderBookResetRequest>>(request)) ?? {};
         const registration = this.registerIngestConnection(payload);
         return json({ ok: true, registration, state: this.engineState });
       }
@@ -1117,9 +1226,7 @@ export class TradingEngine {
           ),
           typeof payload?.shadowBankroll === "number" ? payload.shadowBankroll : 0,
           readPositiveNumber(
-            payload?.speedMultiplier === undefined
-              ? undefined
-              : String(payload.speedMultiplier),
+            payload?.speedMultiplier === undefined ? undefined : String(payload.speedMultiplier),
             1
           ),
           sanitizeReplayDate(payload?.dateFrom ?? payload?.from),
@@ -1150,11 +1257,155 @@ export class TradingEngine {
         return json({ ok: true, replay: result, state: this.engineState });
       }
 
+      if (request.method === "POST" && url.pathname === "/admin/backtest/cascade") {
+        const payload = await readJsonOrNull<BacktestInput>(request);
+        if (!payload) {
+          return json({ ok: false, error: "INVALID_BACKTEST_REQUEST" }, 400);
+        }
+        const report = await this.cascadeBacktester.run({
+          fromDate: payload.fromDate,
+          toDate: payload.toDate,
+          instruments: payload.instruments,
+          startingEquity: payload.startingEquity,
+          candles: payload.candles,
+          liquidations: payload.liquidations,
+          openInterest: payload.openInterest,
+          config: {
+            strategyMode: this.cachedConfig.STRATEGY_MODE,
+            feeBps: this.cachedConfig.EXCHANGE_FEE_BPS,
+            riskPerTradePct: this.cachedConfig.RISK_PER_TRADE_PCT,
+            cascadeWindowMs: this.cachedConfig.CASCADE_WINDOW_MS,
+            cascadeNotionalThresholdUsd: this.cachedConfig.CASCADE_NOTIONAL_THRESHOLD_USD,
+            cascadeZScoreThreshold: this.cachedConfig.CASCADE_ZSCORE_THRESHOLD,
+            cascadeLookbackHours: this.cachedConfig.CASCADE_LOOKBACK_HOURS,
+            cascadeDirectionalPct: this.cachedConfig.CASCADE_DIRECTIONAL_PCT,
+            cascadeMinPriceMoveAtr: this.cachedConfig.CASCADE_MIN_PRICE_MOVE_ATR,
+            cascadeMinBaselineWindows: readPositiveInteger(
+              this.env.CASCADE_MIN_BASELINE_WINDOWS,
+              12,
+              0,
+              10_000
+            ),
+            cascadeMinSeparationMs: readPositiveInteger(
+              this.env.CASCADE_MIN_SEPARATION_MS,
+              this.cachedConfig.CASCADE_WINDOW_MS,
+              0,
+              6 * 3_600_000
+            ),
+            absorptionWindowMs: this.cachedConfig.ABSORPTION_WINDOW_MS,
+            absorptionPriceBandBps: this.cachedConfig.ABSORPTION_PRICE_BAND_BPS,
+            absorptionMinHoldSeconds: this.cachedConfig.ABSORPTION_MIN_HOLD_SECONDS,
+            entryWindowSeconds: this.cachedConfig.ENTRY_WINDOW_SECONDS,
+            impulsiveBarBodyAtr: this.cachedConfig.IMPULSIVE_BAR_BODY_ATR,
+            impulsiveBarVolumeMult: this.cachedConfig.IMPULSIVE_BAR_VOLUME_MULT,
+            stopBufferAtr: this.cachedConfig.STOP_BUFFER_ATR,
+            minStopDistanceBps: this.cachedConfig.MIN_STOP_DISTANCE_BPS,
+            maxStopDistanceBps: this.cachedConfig.MAX_STOP_DISTANCE_BPS,
+            minTimeSinceLastCascadeSeconds: this.cachedConfig.MIN_TIME_SINCE_LAST_CASCADE_SECONDS,
+            newsBlackoutMinutes: this.cachedConfig.NEWS_BLACKOUT_MINUTES,
+            maxRealizedVolPercentile: this.cachedConfig.MAX_REALIZED_VOL_PERCENTILE,
+            timeStopHours: this.cachedConfig.CASCADE_TIME_STOP_HOURS,
+            partial1R: this.cachedConfig.PARTIAL_1_R,
+            partial1SizePct: this.cachedConfig.PARTIAL_1_SIZE_PCT,
+            partial2R: this.cachedConfig.PARTIAL_2_R,
+            partial2SizePct: this.cachedConfig.PARTIAL_2_SIZE_PCT,
+            runnerTrailingType: this.cachedConfig.TRAILING_STOP_TYPE,
+            runnerTrailingParam: this.cachedConfig.TRAILING_STOP_PARAM,
+            maxPositionNotionalPct: this.cachedConfig.MAX_POSITION_NOTIONAL_PCT,
+            assetLiquidityCapUsd: this.cachedConfig.ASSET_LIQUIDITY_CAP_USD,
+            heatCapPct: this.cachedConfig.HEAT_CAP_PCT,
+            ...payload.config
+          }
+        });
+        return json({ ok: true, report });
+      }
+
+      if (request.method === "GET" && url.pathname === "/admin/cascade/active") {
+        return json({ ok: true, cascades: this.currentCascadeActiveSnapshot() });
+      }
+
+      if (request.method === "GET" && url.pathname === "/admin/cascade/signals") {
+        const limit = clampInteger(url.searchParams.get("limit"), 50, 1, SIGNAL_BUFFER_LIMIT);
+        return json({ ok: true, signals: this.currentCascadeSignalSnapshot(limit) });
+      }
+
+      if (request.method === "GET" && url.pathname === "/admin/cascade/positions") {
+        return json({ ok: true, positions: this.currentCascadePositionSnapshot() });
+      }
+
+      if (
+        request.method === "POST" &&
+        /^\/admin\/cascade\/positions\/[^/]+\/close$/.test(url.pathname)
+      ) {
+        const [, , , , positionId] = url.pathname.split("/");
+        const payload =
+          (await readJsonOrNull<{
+            reason?: string;
+            actor?: string;
+          }>(request)) ?? {};
+        const result = await this.closeCascadePosition(
+          decodeURIComponent(positionId),
+          typeof payload.actor === "string" && payload.actor.trim()
+            ? payload.actor.trim()
+            : "admin",
+          typeof payload.reason === "string" && payload.reason.trim()
+            ? payload.reason.trim()
+            : "operator-request"
+        );
+        return json(result, result.ok ? 200 : 404);
+      }
+
+      if (request.method === "GET" && url.pathname === "/admin/cascade/heat") {
+        return json({ ok: true, heat: this.currentCascadeHeatSnapshot() });
+      }
+
+      if (request.method === "POST" && url.pathname === "/admin/cascade/blackout") {
+        const payload = await request.json<{
+          title?: string;
+          startsAt?: string;
+          endsAt?: string;
+          assets?: string[];
+          createdBy?: string;
+        }>();
+        if (!payload.title || !payload.startsAt || !payload.endsAt) {
+          return json({ ok: false, error: "INVALID_NEWS_BLACKOUT" }, 400);
+        }
+        const calendar = await this.cascadeNewsCalendar.addAdHocBlackout({
+          title: payload.title,
+          startsAt: payload.startsAt,
+          endsAt: payload.endsAt,
+          assets: payload.assets ?? ["*"],
+          createdBy: payload.createdBy ?? "admin"
+        });
+        return json({ ok: true, calendar });
+      }
+
       if (request.method === "GET" && url.pathname === "/admin/replay/status") {
         return json({
           ok: true,
           replay: await this.currentReplayStatus()
         });
+      }
+
+      if (request.method === "POST" && url.pathname === "/news/blackout") {
+        const payload = await request.json<{
+          title?: string;
+          startsAt?: string;
+          endsAt?: string;
+          assets?: string[];
+          createdBy?: string;
+        }>();
+        if (!payload.title || !payload.startsAt || !payload.endsAt) {
+          return json({ ok: false, error: "INVALID_NEWS_BLACKOUT" }, 400);
+        }
+        const calendar = await this.cascadeNewsCalendar.addAdHocBlackout({
+          title: payload.title,
+          startsAt: payload.startsAt,
+          endsAt: payload.endsAt,
+          assets: payload.assets ?? ["*"],
+          createdBy: payload.createdBy ?? "admin"
+        });
+        return json({ ok: true, calendar });
       }
 
       if (request.method === "POST" && url.pathname === "/news/sentiment") {
@@ -1269,6 +1520,22 @@ export class TradingEngine {
         );
       }
 
+      if (request.method === "POST" && url.pathname === "/liquidation") {
+        const payload = await readHyperliquidRawIngestPayload(request);
+        const result = await this.handleHyperliquidRaw(payload, wakeUpTimeMs);
+        return json(
+          {
+            ok: result.accepted,
+            accepted: result.accepted,
+            processedCount: result.processedCount,
+            status: result.status,
+            reason: result.reason,
+            state: this.engineState
+          },
+          result.accepted ? 200 : 202
+        );
+      }
+
       if (request.method === "POST" && url.pathname === "/ingest/grpc-fatal-drop") {
         const payload = await request.json<GrpcFatalDropPayload>();
         const result = await this.handleGrpcFatalDrop(payload);
@@ -1305,7 +1572,8 @@ export class TradingEngine {
         }
 
         const acceptedCount = results.filter((result) => result.accepted).length;
-        const terminalResult = results.find((result) => result.status === "DESYNC") ?? results.at(-1);
+        const terminalResult =
+          results.find((result) => result.status === "DESYNC") ?? results.at(-1);
 
         return json(
           {
@@ -1409,8 +1677,10 @@ export class TradingEngine {
     const bestBook =
       currentBook ??
       [...this.orderBook.values()].sort((left, right) => {
-        const leftScore = (left.isSynced ? 10 : 0) + (left.midPrice === null ? 0 : 1) + left.sourceWeight;
-        const rightScore = (right.isSynced ? 10 : 0) + (right.midPrice === null ? 0 : 1) + right.sourceWeight;
+        const leftScore =
+          (left.isSynced ? 10 : 0) + (left.midPrice === null ? 0 : 1) + left.sourceWeight;
+        const rightScore =
+          (right.isSynced ? 10 : 0) + (right.midPrice === null ? 0 : 1) + right.sourceWeight;
         return rightScore - leftScore;
       })[0];
 
@@ -1699,7 +1969,10 @@ export class TradingEngine {
         asset.instrumentCode,
         this.engineState.quoteState
       );
-      const active = selectedByMoltworker && Boolean(book?.isSynced) && !isQuoteSuspendedAt(quoteState, observedAt);
+      const active =
+        selectedByMoltworker &&
+        Boolean(book?.isSynced) &&
+        !isQuoteSuspendedAt(quoteState, observedAt);
       const weight = active ? 1 / volatility : 0;
       activeWeights[asset.instrumentCode] = weight;
       totalWeight += weight;
@@ -1718,9 +1991,9 @@ export class TradingEngine {
           latestOracle.instrumentCode === asset.instrumentCode
             ? latestOracle
             : latestOracle.instrumentStates?.[asset.instrumentCode];
-        const profilerState = profilerStates[asset.instrumentCode] ?? this.profilerFor(asset.instrumentCode).snapshot();
-        const allocation =
-          totalWeight > 0 ? activeWeights[asset.instrumentCode] / totalWeight : 0;
+        const profilerState =
+          profilerStates[asset.instrumentCode] ?? this.profilerFor(asset.instrumentCode).snapshot();
+        const allocation = totalWeight > 0 ? activeWeights[asset.instrumentCode] / totalWeight : 0;
         const selectedByMoltworker =
           selected.size === 0 ||
           selected.has(asset.instrumentCode) ||
@@ -1766,15 +2039,8 @@ export class TradingEngine {
     );
   }
 
-  private async safeStoragePut(
-    key: string,
-    value: unknown,
-    reason: string
-  ): Promise<void>;
-  private async safeStoragePut(
-    entries: Record<string, unknown>,
-    reason: string
-  ): Promise<void>;
+  private async safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
+  private async safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void>;
   private async safeStoragePut(
     keyOrEntries: string | Record<string, unknown>,
     valueOrReason: unknown,
@@ -1786,7 +2052,7 @@ export class TradingEngine {
 
     const reason =
       typeof keyOrEntries === "string"
-        ? maybeReason ?? "STORAGE_WRITE"
+        ? (maybeReason ?? "STORAGE_WRITE")
         : typeof valueOrReason === "string"
           ? valueOrReason
           : "STORAGE_WRITE";
@@ -1803,25 +2069,15 @@ export class TradingEngine {
     }
   }
 
-  private waitUntilStoragePut(
-    key: string,
-    value: unknown,
-    reason: string
-  ): void {
+  private waitUntilStoragePut(key: string, value: unknown, reason: string): void {
     this.state.waitUntil(this.safeStoragePut(key, value, reason));
   }
 
-  private waitUntilStoragePutEntries(
-    entries: Record<string, unknown>,
-    reason: string
-  ): void {
+  private waitUntilStoragePutEntries(entries: Record<string, unknown>, reason: string): void {
     this.state.waitUntil(this.safeStoragePut(entries, reason));
   }
 
-  private async safeStorageDelete(
-    keys: string[],
-    reason: string
-  ): Promise<void> {
+  private async safeStorageDelete(keys: string[], reason: string): Promise<void> {
     if (keys.length === 0 || this.storageWriteDisabledUntil > Date.now()) {
       return;
     }
@@ -2079,7 +2335,8 @@ export class TradingEngine {
       sparkline: this.latencyHistory.slice(-60).map((metric) => ({
         t: metric.brainTimestamp,
         latency: metric.totalLatencyMs,
-        imbalance: metric.status === "FRESH" ? this.engineState.microstructure.weightedImbalance : null
+        imbalance:
+          metric.status === "FRESH" ? this.engineState.microstructure.weightedImbalance : null
       })),
       location: this.engineState.location.colo,
       connectedAdminStreams: this.adminSockets.size,
@@ -2113,9 +2370,7 @@ export class TradingEngine {
       };
     }
 
-    const messages = Array.isArray(payload.messages)
-      ? payload.messages
-      : [payload.raw ?? payload];
+    const messages = Array.isArray(payload.messages) ? payload.messages : [payload.raw ?? payload];
     let processedCount = 0;
     let terminalResult: TickIngestResult | null = null;
 
@@ -2253,14 +2508,9 @@ export class TradingEngine {
 
     const receivedAt = nativeIso(payload.receivedAt) ?? new Date().toISOString();
     const coin = requireNativeString(data.coin ?? payload.instrumentCode, "coin");
-    const instrumentCode = hyperliquidNativeInstrumentCode(
-      coin,
-      payload.instrumentCode
-    );
+    const instrumentCode = hyperliquidNativeInstrumentCode(coin, payload.instrumentCode);
     const exchangeCode = (payload.exchangeCode ?? "hyperliquid").toLowerCase();
-    const sourceExchange = normalizeSourceExchange(
-      payload.source_exchange ?? "hyperliquid"
-    );
+    const sourceExchange = normalizeSourceExchange(payload.source_exchange ?? "hyperliquid");
     const sourceWeight = normalizeSourceWeight(payload.sourceWeight);
     const rawExchangeTimestamp = nativeExchangeTimestamp(data.time ?? data.timestamp);
     const exchangeTimestamp = this.resolveHyperliquidBookTimestamp(
@@ -2274,7 +2524,7 @@ export class TradingEngine {
       Number.isSafeInteger(explicitSequence) &&
       explicitSequence >= 0;
     const sequence = nativeSequence(
-      hasExplicitSequence ? explicitSequenceValue : data.time ?? data.timestamp
+      hasExplicitSequence ? explicitSequenceValue : (data.time ?? data.timestamp)
     );
     const marketKey = buildMarketKey(sourceExchange, instrumentCode);
     const existingSync = this.bookSync.get(marketKey);
@@ -2524,6 +2774,16 @@ export class TradingEngine {
       observedAt
     });
     const nextEventCount = heatmap.recentEvents.length;
+    const cascadeLiquidations = this.cascadeLiquidationStream.ingest(raw, {
+      instrumentCode,
+      sourceExchange: payload.source_exchange ?? "hyperliquid",
+      observedAt,
+      fallbackPrice: this.engineState.microstructure.midPrice
+    });
+    if (cascadeLiquidations.length > 0) {
+      this.state.waitUntil(this.persistCascadeLiquidations(cascadeLiquidations));
+    }
+    const cascadeEvents = this.recordCascadeLiquidations(cascadeLiquidations, observedAt);
 
     this.engineState = {
       ...this.engineState,
@@ -2533,10 +2793,13 @@ export class TradingEngine {
     };
 
     this.state.waitUntil(
-      this.safeStoragePut({
-        [ENGINE_STATE_KEY]: this.engineState,
-        [LIQUIDATION_HEATMAP_STORAGE_KEY]: heatmap
-      }, "LIQUIDATION_EVENT")
+      this.safeStoragePut(
+        {
+          [ENGINE_STATE_KEY]: this.engineState,
+          [LIQUIDATION_HEATMAP_STORAGE_KEY]: heatmap
+        },
+        "LIQUIDATION_EVENT"
+      )
     );
 
     if (nextEventCount > previousEventCount) {
@@ -2545,6 +2808,7 @@ export class TradingEngine {
         clusterCount: heatmap.clusters.length,
         nearestCascade: heatmap.nearestCascade,
         totalEstimatedNotionalUsd: heatmap.totalEstimatedNotionalUsd,
+        cascadeEventCount: cascadeEvents.length,
         observedAt
       });
     }
@@ -2552,7 +2816,869 @@ export class TradingEngine {
     return {
       accepted: true,
       status: "FRESH",
-      processedCount: nextEventCount > previousEventCount ? 1 : 0
+      processedCount: Math.max(
+        nextEventCount > previousEventCount ? 1 : 0,
+        cascadeLiquidations.length,
+        cascadeEvents.length
+      )
+    };
+  }
+
+  private recordCascadeLiquidations(
+    events: LiquidationEvent[],
+    observedAt: string
+  ): CascadeEvent[] {
+    const cascades: CascadeEvent[] = [];
+    this.cascadeDetector.configure(this.currentCascadeDetectorConfig());
+    this.absorptionAnalyzer.configure(this.currentAbsorptionAnalyzerConfig());
+
+    for (const event of events) {
+      if (!this.isCascadeInstrumentEnabled(event.instrumentCode)) {
+        continue;
+      }
+
+      const cascade = this.cascadeDetector.observe(event, {
+        observedAt,
+        atr1h: this.resolveCascadeAtr1h(event)
+      });
+
+      if (!cascade) {
+        continue;
+      }
+
+      cascades.push(cascade);
+      this.cascadeEventsById.set(cascade.cascadeId, cascade);
+      this.absorptionAnalyzer.trackCascade(cascade);
+      this.logger.warn("CASCADE_DETECTED", "Liquidation cascade detected", {
+        eventType: "CASCADE_DETECTED",
+        cascadeId: cascade.cascadeId,
+        instrumentCode: cascade.instrumentCode,
+        direction: cascade.direction,
+        liquidationNotional: cascade.liquidationNotional,
+        liquidationCount: cascade.liquidationCount,
+        zScore: cascade.zScore,
+        directionalPct: cascade.directionalPct,
+        priceMoveAtr: cascade.priceMoveAtr
+      });
+      this.publish("CASCADE_DETECTED", {
+        cascadeId: cascade.cascadeId,
+        instrumentCode: cascade.instrumentCode,
+        direction: cascade.direction,
+        liquidationNotional: cascade.liquidationNotional,
+        liquidationCount: cascade.liquidationCount,
+        zScore: cascade.zScore,
+        directionalPct: cascade.directionalPct,
+        priceMoveAtr: cascade.priceMoveAtr,
+        detectedAt: cascade.detectedAt
+      });
+      this.emitCascadeOperationalAlert(
+        "CASCADE_DETECTED",
+        "Cascade detected",
+        `${cascade.instrumentCode} ${cascade.direction} liquidation cascade detected.`,
+        {
+          cascadeId: cascade.cascadeId,
+          instrumentCode: cascade.instrumentCode,
+          direction: cascade.direction,
+          liquidationNotional: cascade.liquidationNotional,
+          liquidationCount: cascade.liquidationCount,
+          zScore: cascade.zScore,
+          priceMoveAtr: cascade.priceMoveAtr,
+          detectedAt: cascade.detectedAt
+        },
+        cascade.cascadeId
+      );
+    }
+
+    return cascades;
+  }
+
+  private async persistCascadeLiquidations(events: LiquidationEvent[]): Promise<void> {
+    if (events.length === 0) {
+      return;
+    }
+
+    try {
+      await this.env.TRADING_DB.batch(
+        events.map((event) =>
+          this.env.TRADING_DB.prepare(
+            `INSERT OR REPLACE INTO cascade_liquidations (
+               event_id, instrument_code, source_exchange, side, forced_flow_side, price,
+               notional_usd, base_size, exchange_timestamp, observed_at, raw_json
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          ).bind(
+            event.eventId,
+            event.instrumentCode,
+            event.sourceExchange,
+            event.side,
+            event.forcedFlowSide,
+            event.price,
+            event.notionalUsd,
+            event.baseSize,
+            event.exchangeTimestamp,
+            event.observedAt,
+            JSON.stringify(event.raw)
+          )
+        )
+      );
+    } catch (error) {
+      this.handleStorageWriteFailure("CASCADE_LIQUIDATION_JOURNAL", error);
+    }
+  }
+
+  private isCascadeInstrumentEnabled(instrumentCode: string): boolean {
+    const enabled = cascadeInstrumentSet(this.cachedConfig.CASCADE_INSTRUMENTS);
+    if (enabled.size === 0) {
+      return false;
+    }
+
+    return enabled.has(baseAssetFromInstrument(instrumentCode));
+  }
+
+  private currentCascadeActiveSnapshot(): JsonRecord[] {
+    const positionsByCascade = new Map(
+      this.cascadePositionManager.snapshot().map((position) => [position.cascadeId, position])
+    );
+    const maxAgeMs = Math.max(this.cachedConfig.ABSORPTION_WINDOW_MS * 2, 60_000);
+    const nowMs = Date.now();
+
+    return [...this.cascadeEventsById.values()]
+      .map((cascade) => {
+        const absorption = this.cascadeAbsorptionsById.get(cascade.cascadeId) ?? null;
+        const position = positionsByCascade.get(cascade.cascadeId) ?? null;
+        const phase = position
+          ? isOpenCascadePosition(position)
+            ? "POSITION_OPEN"
+            : "POSITION_CLOSED"
+          : absorption
+            ? "ABSORPTION_CONFIRMED"
+            : "DETECTED";
+
+        return {
+          cascadeId: cascade.cascadeId,
+          instrumentCode: cascade.instrumentCode,
+          direction: cascade.direction,
+          phase,
+          liquidationNotional: roundMetric(cascade.liquidationNotional, 2),
+          liquidationCount: cascade.liquidationCount,
+          zScore: roundMetric(cascade.zScore, 4),
+          directionalPct: roundMetric(cascade.directionalPct, 4),
+          priceMoveAtr: roundMetric(cascade.priceMoveAtr, 4),
+          detectedAt: cascade.detectedAt,
+          absorption: absorption ? (absorption as unknown as JsonRecord) : null,
+          position: position ? (position as unknown as JsonRecord) : null
+        };
+      })
+      .filter((cascade) => {
+        if (cascade.phase === "POSITION_OPEN") {
+          return true;
+        }
+
+        return (
+          cascade.phase !== "POSITION_CLOSED" &&
+          nowMs - Date.parse(String(cascade.detectedAt)) <= maxAgeMs
+        );
+      })
+      .sort(
+        (left, right) => Date.parse(String(right.detectedAt)) - Date.parse(String(left.detectedAt))
+      )
+      .slice(0, 50);
+  }
+
+  private currentCascadeSignalSnapshot(limit: number): JsonRecord[] {
+    return this.signals
+      .filter((signal) => {
+        const context = signal.featureVector as JsonRecord;
+        const risk = signal.riskContext as JsonRecord;
+        return (
+          typeof context.cascadeId === "string" ||
+          typeof risk.cascadeId === "string" ||
+          signal.rationale.toLowerCase().includes("cascade")
+        );
+      })
+      .slice(-limit)
+      .reverse()
+      .map((signal) => ({
+        signalId: signal.signalId,
+        traceId: signal.traceId,
+        sourceAgent: signal.sourceAgent,
+        targetAgent: signal.targetAgent,
+        instrumentCode: signal.instrumentCode,
+        action: signal.action,
+        confidence: signal.confidence,
+        expectedValue: signal.expectedValue,
+        maxSlippageBps: signal.maxSlippageBps,
+        rationale: signal.rationale,
+        outcome: (signal.riskContext as JsonRecord).outcome ?? "EMITTED",
+        closeReason: (signal.riskContext as JsonRecord).closeReason ?? null,
+        cascadeId:
+          (signal.featureVector as JsonRecord).cascadeId ??
+          (signal.riskContext as JsonRecord).cascadeId ??
+          null,
+        createdAt: signal.createdAt,
+        featureVector: signal.featureVector,
+        riskContext: signal.riskContext
+      }));
+  }
+
+  private currentCascadePositionSnapshot(): JsonRecord[] {
+    const nowMs = Date.now();
+
+    return this.cascadePositionManager
+      .snapshot()
+      .map((position) => {
+        const markPrice = this.markPriceForInstrument(position.instrumentCode);
+        const unrealizedPnl =
+          markPrice === null
+            ? null
+            : roundMetric(
+                (position.direction === "LONG"
+                  ? markPrice - position.entryPrice
+                  : position.entryPrice - markPrice) * position.remainingSize,
+                8
+              );
+        const unrealizedR =
+          unrealizedPnl === null || position.rDistance <= 0 || position.remainingSize <= 0
+            ? null
+            : roundMetric(unrealizedPnl / (position.rDistance * position.remainingSize), 6);
+        const timeStopMs = Date.parse(position.timeStopAt);
+
+        return {
+          ...position,
+          targets: position.targets as unknown as JsonRecord,
+          markPrice,
+          unrealizedPnl,
+          unrealizedR,
+          timeToTimeStopMs: Number.isFinite(timeStopMs) ? Math.max(0, timeStopMs - nowMs) : null
+        };
+      })
+      .sort(
+        (left, right) => Date.parse(String(right.updatedAt)) - Date.parse(String(left.updatedAt))
+      );
+  }
+
+  private currentCascadeHeatSnapshot(): JsonRecord {
+    const positions = this.cascadePositionManager.snapshot();
+    const currentHeatPct = this.cascadeHeatManager.currentHeat(positions);
+    const heatCapPct = this.cachedConfig.HEAT_CAP_PCT;
+    const remainingRiskUsd = positions
+      .filter(isOpenCascadePosition)
+      .reduce((sum, position) => sum + position.rDistance * position.remainingSize, 0);
+
+    return {
+      currentHeatPct: roundMetric(currentHeatPct, 8),
+      heatCapPct: roundMetric(heatCapPct, 8),
+      percentOfCap: heatCapPct > 0 ? roundMetric(currentHeatPct / heatCapPct, 8) : 0,
+      openPositionCount: positions.filter(isOpenCascadePosition).length,
+      remainingRiskUsd: roundMetric(remainingRiskUsd, 2),
+      updatedAt: new Date().toISOString()
+    };
+  }
+
+  private async closeCascadePosition(
+    positionId: string,
+    actor: string,
+    reason: string
+  ): Promise<{ ok: boolean; error?: string; position?: JsonRecord; intents?: JsonRecord[] }> {
+    const position = this.cascadePositionManager
+      .snapshot()
+      .find((candidate) => candidate.positionId === positionId);
+
+    if (!position || !isOpenCascadePosition(position)) {
+      return { ok: false, error: "CASCADE_POSITION_NOT_OPEN" };
+    }
+
+    const observedAt = new Date().toISOString();
+    const markPrice = this.markPriceForInstrument(position.instrumentCode) ?? position.entryPrice;
+    const update = this.cascadePositionManager.requestManualClose(
+      positionId,
+      observedAt,
+      markPrice
+    );
+
+    if (!update) {
+      return { ok: false, error: "CASCADE_POSITION_NOT_OPEN" };
+    }
+
+    for (const intent of update.intents) {
+      if (intent.kind === "CLOSE" && intent.size > 0) {
+        this.state.waitUntil(
+          this.dispatchExecution(this.tradeIntentFromCascadePositionIntent(intent, observedAt))
+        );
+      }
+    }
+
+    this.logger.warn("CASCADE_POSITION_MANUAL_CLOSE", "Operator requested cascade position close", {
+      positionId,
+      actor,
+      reason,
+      instrumentCode: position.instrumentCode,
+      markPrice,
+      remainingSize: position.remainingSize
+    });
+    this.publish(
+      "CASCADE_POSITION_MANUAL_CLOSE",
+      {
+        positionId,
+        actor,
+        reason,
+        instrumentCode: position.instrumentCode,
+        markPrice,
+        remainingSize: position.remainingSize,
+        observedAt
+      },
+      positionId
+    );
+    this.state.waitUntil(
+      this.safeStoragePut(
+        CASCADE_POSITIONS_KEY,
+        this.cascadePositionManager.snapshot(),
+        "CASCADE_POSITION_MANUAL_CLOSE"
+      )
+    );
+
+    return {
+      ok: true,
+      position: update.position as unknown as JsonRecord,
+      intents: update.intents as unknown as JsonRecord[]
+    };
+  }
+
+  private markPriceForInstrument(instrumentCode: string): number | null {
+    const selected = this.selectMarketKey(instrumentCode);
+    const book = selected ? this.orderBook.get(selected.marketKey) : undefined;
+    const normalized = normalizeInstrumentSelector(instrumentCode);
+
+    return (
+      book?.midPrice ??
+      this.engineState.assetMatrix[normalized]?.midPrice ??
+      (this.engineState.microstructure.instrumentCode === normalized
+        ? this.engineState.microstructure.midPrice
+        : null)
+    );
+  }
+
+  private currentCascadeDetectorConfig(): CascadeDetectorConfig {
+    return {
+      windowMs: this.cachedConfig.CASCADE_WINDOW_MS,
+      notionalThresholdUsd: this.cachedConfig.CASCADE_NOTIONAL_THRESHOLD_USD,
+      zScoreThreshold: this.cachedConfig.CASCADE_ZSCORE_THRESHOLD,
+      lookbackHours: this.cachedConfig.CASCADE_LOOKBACK_HOURS,
+      directionalPct: this.cachedConfig.CASCADE_DIRECTIONAL_PCT,
+      minPriceMoveAtr: this.cachedConfig.CASCADE_MIN_PRICE_MOVE_ATR,
+      minBaselineWindows: readPositiveInteger(this.env.CASCADE_MIN_BASELINE_WINDOWS, 12, 0, 10_000),
+      minCascadeSeparationMs: readPositiveInteger(
+        this.env.CASCADE_MIN_SEPARATION_MS,
+        this.cachedConfig.CASCADE_WINDOW_MS,
+        0,
+        6 * 3_600_000
+      ),
+      maxEventsPerInstrument: readPositiveInteger(
+        this.env.CASCADE_MAX_EVENTS_PER_INSTRUMENT,
+        10_000,
+        100,
+        100_000
+      )
+    };
+  }
+
+  private currentAbsorptionAnalyzerConfig(): AbsorptionAnalyzerConfig {
+    return {
+      absorptionWindowMs: this.cachedConfig.ABSORPTION_WINDOW_MS,
+      priceBandBps: this.cachedConfig.ABSORPTION_PRICE_BAND_BPS,
+      minHoldSeconds: this.cachedConfig.ABSORPTION_MIN_HOLD_SECONDS,
+      oiStabilityBps: readPositiveNumber(this.env.ABSORPTION_OI_STABILITY_BPS, 5),
+      maxActiveCascades: readPositiveInteger(this.env.ABSORPTION_MAX_ACTIVE_CASCADES, 24, 1, 100)
+    };
+  }
+
+  private resolveCascadeAtr1h(event: LiquidationEvent): number | null {
+    const fallback = readPositiveNumber(this.env.CASCADE_ATR_FALLBACK_USD, 0);
+    if (fallback > 0) {
+      return fallback;
+    }
+
+    const price = event.price > 0 ? event.price : this.engineState.microstructure.midPrice;
+    const fallbackPct = readBoundedNumber(this.env.CASCADE_ATR_FALLBACK_PCT, 0, 0, 0.2);
+    return price && price > 0 && fallbackPct > 0 ? price * fallbackPct : null;
+  }
+
+  private observeCascadeAbsorption(tick: MarketTick): void {
+    if (!isTradeTick(tick) || !Number.isFinite(tick.price) || tick.price <= 0) {
+      return;
+    }
+
+    const instrumentCode = normalizeNativeInstrumentCode(tick.instrumentCode);
+    if (!this.isCascadeInstrumentEnabled(instrumentCode)) {
+      return;
+    }
+
+    const signedNotional =
+      tick.side === "buy"
+        ? tick.price * tick.size
+        : tick.side === "sell"
+          ? -tick.price * tick.size
+          : 0;
+    const cumulativeVolumeDelta =
+      (this.cascadeCvdByInstrument.get(instrumentCode) ?? 0) + signedNotional;
+    this.cascadeCvdByInstrument.set(instrumentCode, cumulativeVolumeDelta);
+
+    const observation: AbsorptionObservation = {
+      instrumentCode,
+      observedAt: tick.receivedAt,
+      price: tick.price,
+      takerBuyVolume: tick.side === "buy" ? Math.max(0, tick.size) : 0,
+      takerSellVolume: tick.side === "sell" ? Math.max(0, tick.size) : 0,
+      cumulativeVolumeDelta,
+      openInterest: typeof tick.openInterest === "number" ? tick.openInterest : null
+    };
+    this.absorptionAnalyzer.configure(this.currentAbsorptionAnalyzerConfig());
+    const confirmed = this.absorptionAnalyzer.observe(observation);
+
+    if (!confirmed) {
+      return;
+    }
+
+    this.cascadeAbsorptionsById.set(confirmed.cascadeId, confirmed);
+    this.logger.info("ABSORPTION_CONFIRMED", "Liquidation cascade absorption confirmed", {
+      eventType: "ABSORPTION_CONFIRMED",
+      cascadeId: confirmed.cascadeId,
+      instrumentCode: confirmed.instrumentCode,
+      direction: confirmed.direction,
+      elapsedMs: confirmed.elapsedMs,
+      price: confirmed.price,
+      priceHeld: confirmed.criteria.priceHeld,
+      takerExhaustion: confirmed.criteria.takerExhaustion,
+      cvdReversal: confirmed.criteria.cvdReversal,
+      openInterestStabilized: confirmed.criteria.openInterestStabilized,
+      observations: confirmed.observations
+    });
+    this.publish("ABSORPTION_CONFIRMED", {
+      schemaVersion: confirmed.schemaVersion,
+      cascadeId: confirmed.cascadeId,
+      instrumentCode: confirmed.instrumentCode,
+      direction: confirmed.direction,
+      confirmedAt: confirmed.confirmedAt,
+      elapsedMs: confirmed.elapsedMs,
+      price: confirmed.price,
+      priceHeld: confirmed.criteria.priceHeld,
+      takerExhaustion: confirmed.criteria.takerExhaustion,
+      cvdReversal: confirmed.criteria.cvdReversal,
+      openInterestStabilized: confirmed.criteria.openInterestStabilized,
+      observations: confirmed.observations
+    });
+    this.emitCascadeOperationalAlert(
+      "CASCADE_ABSORPTION_CONFIRMED",
+      "Cascade absorption confirmed",
+      `${confirmed.instrumentCode} absorption confirmed after ${confirmed.elapsedMs}ms.`,
+      {
+        cascadeId: confirmed.cascadeId,
+        instrumentCode: confirmed.instrumentCode,
+        direction: confirmed.direction,
+        elapsedMs: confirmed.elapsedMs,
+        price: confirmed.price,
+        confirmedAt: confirmed.confirmedAt
+      },
+      confirmed.cascadeId
+    );
+  }
+
+  private async evaluateCascadeStrategy(tick: MarketTick, observedAt: string): Promise<void> {
+    if (
+      this.cachedConfig.STRATEGY_MODE === "OFF" ||
+      this.cachedConfig.STRATEGY_MODE === "MARKET_MAKING"
+    ) {
+      return;
+    }
+
+    const closedCandles = this.candleAggregator.ingestTick(tick);
+    await this.dispatchCascadePositionUpdates(tick, observedAt);
+
+    if (!this.isCascadeInstrumentEnabled(tick.instrumentCode)) {
+      return;
+    }
+
+    const closed1m = closedCandles.filter(
+      (candle) =>
+        candle.timeframe === "1m" &&
+        candle.instrumentCode.toLowerCase() === tick.instrumentCode.toLowerCase()
+    );
+    if (closed1m.length === 0) {
+      return;
+    }
+
+    await this.cascadeNewsCalendar.refresh();
+    for (const reclaimCandle of closed1m) {
+      const absorption = latestAbsorptionForInstrument(
+        this.cascadeAbsorptionsById,
+        reclaimCandle.instrumentCode
+      );
+      if (!absorption) {
+        continue;
+      }
+
+      const cascade = this.cascadeEventsById.get(absorption.cascadeId);
+      if (!cascade) {
+        continue;
+      }
+
+      const recent1mCandles = this.candleAggregator.snapshot(
+        reclaimCandle.instrumentCode,
+        "1m",
+        64
+      );
+      const latestRawEvent = cascade.rawEvents.at(-1) ?? null;
+      const blackout = this.cascadeNewsCalendar.isWithinBlackout(
+        new Date(observedAt),
+        baseAssetFromInstrument(reclaimCandle.instrumentCode)
+      );
+      const signalResult = this.cascadeSignalEngineWithConfig().evaluate({
+        cascade,
+        absorption,
+        reclaimCandle,
+        recent1mCandles,
+        atr1m: calculateAtr(recent1mCandles, 14),
+        atr1h: latestRawEvent ? this.resolveCascadeAtr1h(latestRawEvent) : null,
+        preCascadeSwingLow: recentSwingLow(recent1mCandles),
+        preCascadeSwingHigh: recentSwingHigh(recent1mCandles),
+        cascadeVwap: calculateVwap(recent1mCandles),
+        cvd1m: cumulativeVolumeDelta(recent1mCandles),
+        openInterestDelta: 0,
+        oracleRegime: this.engineState.oracle.regime ?? "UNKNOWN",
+        recentSecondCascadeAt: latestCascadeAtForInstrument(this.cascadeEventsById, cascade),
+        majorNewsWithinBlackout: blackout.blocked,
+        realizedVolPercentile1h: 0.5,
+        dailyLossLimitBreached: !this.engineState.riskMetrics.isTradingEnabled,
+        weeklyLossLimitBreached: false,
+        observedAt
+      });
+
+      if (!signalResult.accepted) {
+        this.logger.info(
+          "CASCADE_SIGNAL_REJECTED",
+          "Cascade recovery signal gates rejected entry",
+          {
+            cascadeId: signalResult.rejection.cascadeId,
+            instrumentCode: signalResult.rejection.instrumentCode,
+            reasons: signalResult.rejection.reasons.join(",")
+          }
+        );
+        this.recordCascadeUiSignal(
+          {
+            signalId: `cascade-reject-${signalResult.rejection.cascadeId}-${Date.parse(observedAt)}`,
+            traceId: `${this.engineState.engineId}:cascade-reject:${signalResult.rejection.cascadeId}`,
+            sourceAgent: "PIT_BOSS",
+            targetAgent: "SYSTEM",
+            instrumentCode: signalResult.rejection.instrumentCode,
+            action: "HOLD",
+            confidence: 0,
+            horizonMs: this.cachedConfig.ENTRY_WINDOW_SECONDS * 1_000,
+            expectedValue: 0,
+            maxSlippageBps: 0,
+            rationale: `Cascade recovery skipped: ${signalResult.rejection.reasons.join(", ")}`,
+            featureVector: signalResult.rejection.context,
+            riskContext: {
+              outcome: "SKIPPED",
+              cascadeId: signalResult.rejection.cascadeId,
+              reasons: signalResult.rejection.reasons
+            },
+            createdAt: observedAt
+          },
+          "SKIPPED"
+        );
+        continue;
+      }
+
+      await this.processCascadeSignal(signalResult.signal, observedAt);
+    }
+  }
+
+  private async dispatchCascadePositionUpdates(
+    tick: MarketTick,
+    observedAt: string
+  ): Promise<void> {
+    const updates = this.cascadePositionManager.onTick({
+      instrumentCode: tick.instrumentCode,
+      price: tick.price,
+      observedAt,
+      atr: calculateAtr(this.candleAggregator.snapshot(tick.instrumentCode, "1m", 32), 14)
+    });
+
+    for (const update of updates) {
+      for (const intent of update.intents) {
+        if (intent.kind !== "CLOSE" || intent.size <= 0) {
+          continue;
+        }
+        const tradeIntent = this.tradeIntentFromCascadePositionIntent(intent, observedAt);
+        this.state.waitUntil(this.dispatchExecution(tradeIntent));
+        if (intent.closeReason === "STOP_LOSS" || intent.closeReason === "TIME_STOP") {
+          this.emitCascadeOperationalAlert(
+            intent.closeReason === "STOP_LOSS" ? "STOP_HIT" : "TIME_STOP_HIT",
+            intent.closeReason === "STOP_LOSS" ? "Cascade stop hit" : "Cascade time stop hit",
+            `${intent.instrumentCode} cascade position ${intent.positionId} triggered ${intent.closeReason}.`,
+            {
+              positionId: intent.positionId,
+              signalId: intent.signalId,
+              instrumentCode: intent.instrumentCode,
+              closeReason: intent.closeReason,
+              size: intent.size,
+              referencePrice: intent.referencePrice,
+              observedAt
+            },
+            intent.positionId
+          );
+        }
+      }
+    }
+
+    if (updates.length > 0) {
+      this.state.waitUntil(
+        this.safeStoragePut(
+          CASCADE_POSITIONS_KEY,
+          this.cascadePositionManager.snapshot(),
+          "CASCADE_POSITION_UPDATE"
+        )
+      );
+    }
+  }
+
+  private async processCascadeSignal(
+    signal: CascadeRecoverySignal,
+    observedAt: string
+  ): Promise<void> {
+    const currentHeat = this.cascadeHeatManager.currentHeat(this.cascadePositionManager.snapshot());
+    this.emitCascadeOperationalAlert(
+      "SIGNAL_EMITTED",
+      "Cascade signal emitted",
+      `${signal.instrumentCode} ${signal.direction} cascade recovery signal emitted.`,
+      {
+        signalId: signal.signalId,
+        cascadeId: signal.cascadeId,
+        instrumentCode: signal.instrumentCode,
+        direction: signal.direction,
+        triggerType: signal.triggerType,
+        confidence: signal.confidence,
+        emittedAt: signal.emittedAt
+      },
+      signal.signalId
+    );
+    const sizeDecision = calculatePositionSize({
+      equity: this.engineState.bankroll.equity,
+      riskPerTradePct: this.cachedConfig.RISK_PER_TRADE_PCT,
+      entryPrice: signal.entryPrice,
+      stopPrice: signal.stopPrice,
+      maxPositionNotionalPct: this.cachedConfig.MAX_POSITION_NOTIONAL_PCT,
+      assetLiquidityCap: this.cachedConfig.ASSET_LIQUIDITY_CAP_USD,
+      currentHeat,
+      heatCapPct: this.cachedConfig.HEAT_CAP_PCT
+    });
+
+    if (!sizeDecision.approved) {
+      this.logger.warn("CASCADE_SIZE_REJECTED", "Cascade recovery position sizing rejected entry", {
+        signalId: signal.signalId,
+        instrumentCode: signal.instrumentCode,
+        limitingFactor: sizeDecision.limitingFactor,
+        reason: sizeDecision.reason
+      });
+      if (sizeDecision.limitingFactor === "HEAT") {
+        this.emitCascadeOperationalAlert(
+          "HEAT_CAP_EXCEEDED",
+          "Cascade heat cap blocked entry",
+          `${signal.instrumentCode} cascade entry was rejected by the heat cap.`,
+          {
+            signalId: signal.signalId,
+            cascadeId: signal.cascadeId,
+            instrumentCode: signal.instrumentCode,
+            currentHeat,
+            heatAfterPct: sizeDecision.heatAfterPct,
+            heatCapPct: this.cachedConfig.HEAT_CAP_PCT,
+            reason: sizeDecision.reason
+          },
+          signal.signalId
+        );
+      }
+      return;
+    }
+
+    const position = this.cascadePositionManager.registerFromSignal(
+      signal,
+      sizeDecision,
+      observedAt
+    );
+    const intent = this.tradeIntentFromCascadeSignal(signal, sizeDecision.units, observedAt);
+    this.recordCascadeUiSignal(
+      {
+        signalId: signal.signalId,
+        traceId: `${this.engineState.engineId}:cascade:${signal.signalId}`,
+        sourceAgent: "PIT_BOSS",
+        targetAgent: "EXECUTIONER",
+        instrumentCode: signal.instrumentCode,
+        action: intent.action,
+        confidence: signal.confidence,
+        horizonMs: Math.max(0, Date.parse(signal.timeStopAt) - Date.parse(observedAt)),
+        expectedValue: intent.expectedValue,
+        maxSlippageBps: intent.maxSlippageBps,
+        rationale: `Cascade recovery entry approved via ${signal.triggerType}`,
+        featureVector: signal.context,
+        riskContext: {
+          outcome: "TAKEN",
+          cascadeId: signal.cascadeId,
+          positionId: position.positionId,
+          sizeDecision: sizeDecision as unknown as JsonRecord
+        },
+        createdAt: observedAt
+      },
+      "TAKEN"
+    );
+    this.logger.traceDecision({
+      decisionId: `cascade-entry-${signal.signalId}`,
+      signalId: signal.signalId,
+      traceId: `${this.engineState.engineId}:cascade:${signal.signalId}`,
+      agentName: "PIT_BOSS",
+      targetAgent: "EXECUTIONER",
+      instrumentCode: signal.instrumentCode,
+      action: intent.action,
+      confidence: signal.confidence,
+      expectedValue: intent.expectedValue,
+      maxSlippageBps: intent.maxSlippageBps,
+      reasoning: `Cascade recovery entry approved. Heat ${currentHeat} -> ${sizeDecision.heatAfterPct}.`,
+      featureVector: signal.context,
+      riskSnapshot: {
+        positionId: position.positionId,
+        sizeDecision: sizeDecision as unknown as JsonRecord
+      },
+      rawSignal: signal as unknown as JsonRecord,
+      latencyMs: 0,
+      createdAt: observedAt
+    });
+    this.state.waitUntil(this.dispatchExecution(intent));
+    this.state.waitUntil(
+      this.safeStoragePut(
+        CASCADE_POSITIONS_KEY,
+        this.cascadePositionManager.snapshot(),
+        "CASCADE_POSITION_OPENED"
+      )
+    );
+    this.emitCascadeOperationalAlert(
+      "POSITION_OPENED",
+      "Cascade position opened",
+      `${position.instrumentCode} ${position.direction} cascade position opened.`,
+      {
+        signalId: signal.signalId,
+        cascadeId: signal.cascadeId,
+        positionId: position.positionId,
+        instrumentCode: position.instrumentCode,
+        direction: position.direction,
+        entryPrice: position.entryPrice,
+        stopPrice: position.currentStopPrice,
+        notionalUsd: sizeDecision.notionalUsd,
+        riskPct: sizeDecision.riskPct,
+        heatAfterPct: sizeDecision.heatAfterPct,
+        observedAt
+      },
+      position.positionId
+    );
+  }
+
+  private cascadeSignalEngineWithConfig(): CascadeRecoverySignalEngine {
+    const config: CascadeRecoverySignalConfig = {
+      ...defaultCascadeRecoverySignalConfig,
+      entryWindowSeconds: this.cachedConfig.ENTRY_WINDOW_SECONDS,
+      impulsiveBarBodyAtr: this.cachedConfig.IMPULSIVE_BAR_BODY_ATR,
+      impulsiveBarVolumeMult: this.cachedConfig.IMPULSIVE_BAR_VOLUME_MULT,
+      stopBufferAtr: this.cachedConfig.STOP_BUFFER_ATR,
+      minStopDistanceBps: this.cachedConfig.MIN_STOP_DISTANCE_BPS,
+      maxStopDistanceBps: this.cachedConfig.MAX_STOP_DISTANCE_BPS,
+      minTimeSinceLastCascadeSeconds: this.cachedConfig.MIN_TIME_SINCE_LAST_CASCADE_SECONDS,
+      newsBlackoutMinutes: this.cachedConfig.NEWS_BLACKOUT_MINUTES,
+      maxRealizedVolPercentile: this.cachedConfig.MAX_REALIZED_VOL_PERCENTILE,
+      timeStopHours: this.cachedConfig.CASCADE_TIME_STOP_HOURS,
+      partial1R: this.cachedConfig.PARTIAL_1_R,
+      partial1SizePct: this.cachedConfig.PARTIAL_1_SIZE_PCT,
+      partial2R: this.cachedConfig.PARTIAL_2_R,
+      partial2SizePct: this.cachedConfig.PARTIAL_2_SIZE_PCT,
+      runnerTrailingType: this.cachedConfig.TRAILING_STOP_TYPE,
+      runnerTrailingParam: this.cachedConfig.TRAILING_STOP_PARAM
+    };
+    return new CascadeRecoverySignalEngine(config);
+  }
+
+  private tradeIntentFromCascadeSignal(
+    signal: CascadeRecoverySignal,
+    size: number,
+    observedAt: string
+  ): TradeIntent {
+    const action = signal.direction === "LONG" ? "BUY" : "SELL";
+    const notional = size * signal.entryPrice;
+    const executionStyle =
+      notional > this.cachedConfig.SLICE_NOTIONAL_THRESHOLD_USD ? "SLICED_TWAP" : "TAKER_IOC";
+
+    return {
+      schemaVersion: "trade-intent.v1",
+      intentId: `cascade-entry-${signal.signalId}`,
+      traceId: `${this.engineState.engineId}:cascade-entry:${signal.signalId}`,
+      instrumentCode: signal.instrumentCode,
+      marketKey: `hyperliquid:${signal.instrumentCode}`,
+      source_exchange: "hyperliquid",
+      direction: signal.direction,
+      executionStyle,
+      action,
+      orderType: "IOC",
+      postOnly: false,
+      timeInForce: "IOC",
+      intendedPrice: signal.entryPrice,
+      expectedPrice: signal.entryPrice,
+      requestedSize: size,
+      approvedSize: size,
+      probabilityWin: signal.confidence,
+      probabilityLoss: Math.max(0, 1 - signal.confidence),
+      profit: signal.rDistance * 2,
+      loss: signal.rDistance,
+      executionCosts: this.cachedConfig.EXCHANGE_FEE_BPS / 10_000,
+      adverseSelectionCost: 0,
+      expectedValue:
+        signal.confidence * signal.rDistance * 2 - (1 - signal.confidence) * signal.rDistance,
+      minEvThreshold: 0,
+      maxSlippageBps: this.cachedConfig.HEDGE_MAX_SLIPPAGE_BPS,
+      confidence: signal.confidence,
+      rationale: `cascade recovery ${signal.triggerType} ${signal.cascadeId}`,
+      createdAt: observedAt
+    };
+  }
+
+  private tradeIntentFromCascadePositionIntent(
+    intent: CascadePositionIntent,
+    observedAt: string
+  ): TradeIntent {
+    const isStop = intent.executionStyle === "TAKER_MARKET";
+    return {
+      schemaVersion: "trade-intent.v1",
+      intentId: `cascade-exit-${intent.intentId}`,
+      traceId: `${this.engineState.engineId}:cascade-exit:${intent.positionId}`,
+      instrumentCode: intent.instrumentCode,
+      marketKey: `hyperliquid:${intent.instrumentCode}`,
+      source_exchange: "hyperliquid",
+      direction: intent.action === "BUY" ? "LONG" : "SHORT",
+      executionStyle: intent.executionStyle,
+      action: intent.action,
+      orderType: isStop ? "MARKET" : "IOC",
+      postOnly: false,
+      timeInForce: "IOC",
+      intendedPrice: intent.referencePrice,
+      expectedPrice: intent.referencePrice,
+      requestedSize: intent.size,
+      approvedSize: intent.size,
+      probabilityWin: 1,
+      probabilityLoss: 0,
+      profit: 0,
+      loss: 0,
+      executionCosts: this.cachedConfig.EXCHANGE_FEE_BPS / 10_000,
+      adverseSelectionCost: 0,
+      expectedValue: 0,
+      minEvThreshold: 0,
+      maxSlippageBps: this.cachedConfig.HEDGE_MAX_SLIPPAGE_BPS,
+      confidence: 1,
+      rationale: `cascade ${intent.closeReason ?? "close"} ${isStop ? "stop_loss" : "partial"} reduce-only`,
+      createdAt: observedAt
     };
   }
 
@@ -2597,16 +3723,21 @@ export class TradingEngine {
         status: citadel.status,
         reason,
         shadowMode: isShadowMode(this.env),
-        lastEvacuationAt: citadel.shouldEvacuate ? observedAt : this.engineState.citadel.lastEvacuationAt,
+        lastEvacuationAt: citadel.shouldEvacuate
+          ? observedAt
+          : this.engineState.citadel.lastEvacuationAt,
         updatedAt: observedAt
       },
       heartbeatAt: observedAt,
       updatedAt: observedAt
     };
     this.state.waitUntil(
-      this.persistHotStorageSnapshot({
-        [ENGINE_STATE_KEY]: this.engineState
-      }, "GRPC_FATAL_DROP")
+      this.persistHotStorageSnapshot(
+        {
+          [ENGINE_STATE_KEY]: this.engineState
+        },
+        "GRPC_FATAL_DROP"
+      )
     );
     this.logger.error("GRPC_FATAL_DROP", "Dwellir gRPC blackout forced quote evacuation", {
       streamId: payload.streamId ?? null,
@@ -2649,9 +3780,7 @@ export class TradingEngine {
     metrics.sampleCount = this.engineState.latencySampleCount;
     metrics.latencyRiskMultiplier = this.engineState.location.latencyRiskMultiplier;
     metrics.positionSizeMultiplier = this.engineState.location.positionSizeMultiplier;
-    this.latencyHistory = [...this.latencyHistory, metrics].slice(
-      -PERFORMANCE_HISTORY_LIMIT
-    );
+    this.latencyHistory = [...this.latencyHistory, metrics].slice(-PERFORMANCE_HISTORY_LIMIT);
     const assetQuoteStates = suspendAssetQuoteStates(
       this.engineState.assetQuoteStates,
       "NATIVE_HL_LATENCY",
@@ -2668,11 +3797,14 @@ export class TradingEngine {
       updatedAt: observedAt
     };
     this.state.waitUntil(
-      this.persistHotStorageSnapshot({
-        [ENGINE_STATE_KEY]: this.engineState,
-        [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
-        [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples
-      }, "NATIVE_HL_LATENCY_PULL")
+      this.persistHotStorageSnapshot(
+        {
+          [ENGINE_STATE_KEY]: this.engineState,
+          [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
+          [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples
+        },
+        "NATIVE_HL_LATENCY_PULL"
+      )
     );
     this.logPerformance(metrics);
     this.publish("STALE_DATA_KILL_SWITCH", {
@@ -2687,9 +3819,7 @@ export class TradingEngine {
     });
   }
 
-  private enqueueOrderBookReset(
-    payload: Partial<OrderBookResetRequest>
-  ): Promise<void> {
+  private enqueueOrderBookReset(payload: Partial<OrderBookResetRequest>): Promise<void> {
     const job = this.ingestQueue.then(() => this.resetOrderBook(payload));
     this.ingestQueue = job.then(
       () => undefined,
@@ -2704,9 +3834,7 @@ export class TradingEngine {
     const observedAt = new Date().toISOString();
     const sourceExchange = normalizeSourceExchange(payload.source_exchange ?? "hyperliquid");
     const streamId =
-      typeof payload.streamId === "string" && payload.streamId.length > 0
-        ? payload.streamId
-        : null;
+      typeof payload.streamId === "string" && payload.streamId.length > 0 ? payload.streamId : null;
     const connectionId =
       typeof payload.connectionId === "string" && payload.connectionId.length > 0
         ? payload.connectionId
@@ -2751,9 +3879,7 @@ export class TradingEngine {
     };
   }
 
-  private async resetOrderBook(
-    payload: Partial<OrderBookResetRequest>
-  ): Promise<void> {
+  private async resetOrderBook(payload: Partial<OrderBookResetRequest>): Promise<void> {
     const now = new Date().toISOString();
     const reason =
       typeof payload.reason === "string" && payload.reason.length > 0
@@ -2761,8 +3887,7 @@ export class TradingEngine {
         : "UNSPECIFIED_RESET";
     const source = payload.source ?? "SYSTEM";
     const blackoutDurationMs =
-      typeof payload.blackoutDurationMs === "number" &&
-      Number.isFinite(payload.blackoutDurationMs)
+      typeof payload.blackoutDurationMs === "number" && Number.isFinite(payload.blackoutDurationMs)
         ? Math.max(0, Math.round(payload.blackoutDurationMs))
         : null;
     const resetInstrument = payload.instrumentCode?.toLowerCase() ?? null;
@@ -2770,9 +3895,7 @@ export class TradingEngine {
       ? normalizeSourceExchange(payload.source_exchange)
       : null;
     const resetStreamId =
-      typeof payload.streamId === "string" && payload.streamId.length > 0
-        ? payload.streamId
-        : null;
+      typeof payload.streamId === "string" && payload.streamId.length > 0 ? payload.streamId : null;
     const resetMarketKey =
       resetInstrument && resetSourceExchange
         ? buildMarketKey(resetSourceExchange, resetInstrument)
@@ -2993,16 +4116,17 @@ export class TradingEngine {
       updatedAt: observedAt
     };
 
-    await this.safeStoragePut({
-      [ENGINE_STATE_KEY]: this.engineState,
-      [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
-      [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples
-    }, "ADMIN_CONTROLLED_RECOVERY");
+    await this.safeStoragePut(
+      {
+        [ENGINE_STATE_KEY]: this.engineState,
+        [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
+        [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples
+      },
+      "ADMIN_CONTROLLED_RECOVERY"
+    );
 
     if (payload.resetPaperPortfolio) {
-      this.state.waitUntil(
-        this.env.CONFIG_STORE.put(PAPER_SESSION_STARTED_AT_KEY, observedAt)
-      );
+      this.state.waitUntil(this.env.CONFIG_STORE.put(PAPER_SESSION_STARTED_AT_KEY, observedAt));
     }
 
     this.logger.warn("ADMIN_CONTROLLED_RECOVERY", "Admin controlled recovery applied", {
@@ -3116,11 +4240,14 @@ export class TradingEngine {
     };
 
     if (options.persist !== false) {
-      await this.safeStoragePut({
-        [ENGINE_STATE_KEY]: this.engineState,
-        [DOM_WALL_HISTORY_KEY]: this.domWallHistory,
-        [`${ORDER_BOOK_PREFIX}${marketKey}`]: book
-      }, "ORDER_BOOK_SNAPSHOT_APPLIED");
+      await this.safeStoragePut(
+        {
+          [ENGINE_STATE_KEY]: this.engineState,
+          [DOM_WALL_HISTORY_KEY]: this.domWallHistory,
+          [`${ORDER_BOOK_PREFIX}${marketKey}`]: book
+        },
+        "ORDER_BOOK_SNAPSHOT_APPLIED"
+      );
     }
 
     const shouldEmitTelemetry =
@@ -3180,7 +4307,11 @@ export class TradingEngine {
     const timeToBookMs = calculateTimeToBookMs(delta.exchangeTimestamp, updatedAt);
     const enforceExactSequence = delta.source === "HYPERLIQUID";
 
-    if (enforceExactSequence && expectedSequence !== undefined && delta.sequence > expectedSequence) {
+    if (
+      enforceExactSequence &&
+      expectedSequence !== undefined &&
+      delta.sequence > expectedSequence
+    ) {
       await this.handleSequenceGap(delta, expectedSequence, timeToBookMs, updatedAt);
       return {
         accepted: false,
@@ -3535,9 +4666,7 @@ export class TradingEngine {
       };
     }
 
-    const instrumentCode = requested
-      ? normalizeInstrumentSelector(requested)
-      : undefined;
+    const instrumentCode = requested ? normalizeInstrumentSelector(requested) : undefined;
     const candidates = [...this.orderBook.values()]
       .filter((book) => !instrumentCode || book.instrumentCode === instrumentCode)
       .sort((left, right) => {
@@ -3583,10 +4712,8 @@ export class TradingEngine {
     const weightedMidPrice =
       totalWeight > 0
         ? roundCrypto(
-            sources.reduce(
-              (sum, source) => sum + (source.midPrice ?? 0) * source.weight,
-              0
-            ) / totalWeight
+            sources.reduce((sum, source) => sum + (source.midPrice ?? 0) * source.weight, 0) /
+              totalWeight
           )
         : null;
     const primary = [...sources].sort((left, right) => right.weight - left.weight)[0];
@@ -3783,10 +4910,7 @@ export class TradingEngine {
     }
 
     if (this.domWallHistory.length > this.domWallHistoryLimit) {
-      this.domWallHistory.splice(
-        0,
-        this.domWallHistory.length - this.domWallHistoryLimit
-      );
+      this.domWallHistory.splice(0, this.domWallHistory.length - this.domWallHistoryLimit);
     }
 
     return this.domWallHistory.slice(-this.domWallHistoryLimit);
@@ -3833,10 +4957,7 @@ export class TradingEngine {
     return created;
   }
 
-  private maybeCrossCheckTopOfBook(
-    delta: BookDeltaWithTicker,
-    book: InternalOrderBook
-  ): void {
+  private maybeCrossCheckTopOfBook(delta: BookDeltaWithTicker, book: InternalOrderBook): void {
     const syncState = this.getBookSync(
       book.marketKey,
       delta.instrumentCode.toLowerCase(),
@@ -3950,12 +5071,16 @@ export class TradingEngine {
         updatedAt: resumedAt
       };
       this.killSwitchLogged = false;
-      this.logger.warn("SHADOW_MODE_AUTO_RESUME", "Shadow mode resumed paper trading after a stale halt", {
-        instrumentCode: tick.instrumentCode,
-        previousMode: "HALTED",
-        nextMode: "PAPER",
-        configVersion: this.cachedConfig.version
-      });
+      this.logger.warn(
+        "SHADOW_MODE_AUTO_RESUME",
+        "Shadow mode resumed paper trading after a stale halt",
+        {
+          instrumentCode: tick.instrumentCode,
+          previousMode: "HALTED",
+          nextMode: "PAPER",
+          configVersion: this.cachedConfig.version
+        }
+      );
       this.publish("RESUME_QUOTES", {
         reason: "SHADOW_MODE_AUTO_RESUME",
         observedAt: resumedAt
@@ -3995,15 +5120,12 @@ export class TradingEngine {
     }
 
     this.lastTickTimestamp = tick.receivedAt;
+    this.observeCascadeAbsorption(tick);
 
     const metrics = this.calculateLatency(tick);
     const streamId = extractTickStreamId(tick);
-    const hardStaleDropMs = this.resolveNativeHyperliquidMaxLatencyMs(
-      tick.transport,
-      streamId
-    );
-    const isHardStale =
-      !options.shadowReplay && metrics.totalLatencyMs > hardStaleDropMs;
+    const hardStaleDropMs = this.resolveNativeHyperliquidMaxLatencyMs(tick.transport, streamId);
+    const isHardStale = !options.shadowReplay && metrics.totalLatencyMs > hardStaleDropMs;
 
     if (isHardStale) {
       const nextStaleTickCount = this.engineState.staleTickCount + 1;
@@ -4022,7 +5144,11 @@ export class TradingEngine {
         ...this.engineState,
         processedTicks: this.engineState.processedTicks + 1,
         staleTickCount: nextStaleTickCount,
-        quoteState: aggregateQuoteState(assetQuoteStates, this.engineState.quoteState, metrics.brainTimestamp),
+        quoteState: aggregateQuoteState(
+          assetQuoteStates,
+          this.engineState.quoteState,
+          metrics.brainTimestamp
+        ),
         assetQuoteStates,
         heartbeatAt: metrics.brainTimestamp,
         updatedAt: metrics.brainTimestamp
@@ -4032,11 +5158,14 @@ export class TradingEngine {
         this.resetLatencyBaseline(metrics.brainTimestamp, "HARD_STALE_DROP");
       }
 
-      await this.persistHotStorageSnapshot({
-        [ENGINE_STATE_KEY]: this.engineState,
-        [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
-        [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples
-      }, "HARD_STALE_TICK_DROPPED");
+      await this.persistHotStorageSnapshot(
+        {
+          [ENGINE_STATE_KEY]: this.engineState,
+          [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
+          [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples
+        },
+        "HARD_STALE_TICK_DROPPED"
+      );
 
       if (nextStaleTickCount <= 5 || nextStaleTickCount % 500 === 0) {
         this.logger.warn("HARD_STALE_TICK_DROPPED", "Dropped tick beyond hard stale threshold", {
@@ -4100,9 +5229,7 @@ export class TradingEngine {
     metrics.latencyRiskMultiplier = this.engineState.location.latencyRiskMultiplier;
     metrics.positionSizeMultiplier = this.engineState.location.positionSizeMultiplier;
 
-    this.latencyHistory = [...this.latencyHistory, metrics].slice(
-      -PERFORMANCE_HISTORY_LIMIT
-    );
+    this.latencyHistory = [...this.latencyHistory, metrics].slice(-PERFORMANCE_HISTORY_LIMIT);
 
     if (metrics.status === "STALE" && !options.shadowReplay && this.cachedConfig.TRADING_ENABLED) {
       this.observeExecutionProfile(metrics, {
@@ -4120,28 +5247,39 @@ export class TradingEngine {
         this.engineState.assetQuoteStates,
         "STALE_DATA_KILL_SWITCH",
         metrics.brainTimestamp,
-        { instrumentCode: tick.instrumentCode, suspendedUntil, lastQuote: this.engineState.quoteState.lastQuote }
+        {
+          instrumentCode: tick.instrumentCode,
+          suspendedUntil,
+          lastQuote: this.engineState.quoteState.lastQuote
+        }
       );
       this.engineState = {
         ...this.engineState,
         processedTicks: this.engineState.processedTicks + 1,
         staleTickCount: this.engineState.staleTickCount + 1,
-        quoteState: aggregateQuoteState(assetQuoteStates, this.engineState.quoteState, metrics.brainTimestamp),
+        quoteState: aggregateQuoteState(
+          assetQuoteStates,
+          this.engineState.quoteState,
+          metrics.brainTimestamp
+        ),
         assetQuoteStates,
         maxLatencyMs: this.maxLatencyMs,
         heartbeatAt: metrics.brainTimestamp,
         updatedAt: metrics.brainTimestamp
       };
 
-      await this.persistHotStorageSnapshot({
-        [ENGINE_STATE_KEY]: this.engineState,
-        [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
-        [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples,
-        [`staleTick:${tick.source_exchange}:${tick.instrumentCode}:${tick.sequence}`]: {
-          tick,
-          metrics
-        }
-      }, "STALE_DATA_KILL_SWITCH");
+      await this.persistHotStorageSnapshot(
+        {
+          [ENGINE_STATE_KEY]: this.engineState,
+          [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
+          [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples,
+          [`staleTick:${tick.source_exchange}:${tick.instrumentCode}:${tick.sequence}`]: {
+            tick,
+            metrics
+          }
+        },
+        "STALE_DATA_KILL_SWITCH"
+      );
 
       this.logPerformance(metrics);
       this.publish("STALE_DATA_KILL_SWITCH", {
@@ -4201,14 +5339,21 @@ export class TradingEngine {
               this.engineState.assetQuoteStates,
               "ORDER_BOOK_NOT_READY",
               metrics.brainTimestamp,
-              { instrumentCode: tick.instrumentCode, lastQuote: this.engineState.quoteState.lastQuote }
+              {
+                instrumentCode: tick.instrumentCode,
+                lastQuote: this.engineState.quoteState.lastQuote
+              }
             )
           : this.engineState.assetQuoteStates;
         this.engineState = {
           ...this.engineState,
           processedTicks: this.engineState.processedTicks + 1,
           quoteState: this.cachedConfig.TRADING_ENABLED
-            ? aggregateQuoteState(assetQuoteStates, this.engineState.quoteState, metrics.brainTimestamp)
+            ? aggregateQuoteState(
+                assetQuoteStates,
+                this.engineState.quoteState,
+                metrics.brainTimestamp
+              )
             : this.engineState.quoteState,
           assetQuoteStates,
           maxLatencyMs: this.maxLatencyMs,
@@ -4216,11 +5361,14 @@ export class TradingEngine {
           updatedAt: metrics.brainTimestamp
         };
 
-        await this.persistHotStorageSnapshot({
-          [ENGINE_STATE_KEY]: this.engineState,
-          [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
-          [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples
-        }, "INFORMATIONAL_TICK_BOOK_NOT_READY");
+        await this.persistHotStorageSnapshot(
+          {
+            [ENGINE_STATE_KEY]: this.engineState,
+            [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
+            [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples
+          },
+          "INFORMATIONAL_TICK_BOOK_NOT_READY"
+        );
 
         this.publishTickTelemetry(tick, metrics, "FRESH", hotPathStartedAt);
 
@@ -4272,18 +5420,21 @@ export class TradingEngine {
           updatedAt: metrics.brainTimestamp
         };
 
-        await this.persistHotStorageSnapshot({
-          [ENGINE_STATE_KEY]: this.engineState,
-          [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
-          [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples,
-          [`bookDesync:${tick.source_exchange}:${tick.instrumentCode}:${tick.sequence}`]: {
-            tick,
-            metrics,
-            reason: applied.reason,
-            expectedSequence: applied.expectedSequence,
-            actualSequence: applied.actualSequence
-          }
-        }, "BOOK_DESYNC");
+        await this.persistHotStorageSnapshot(
+          {
+            [ENGINE_STATE_KEY]: this.engineState,
+            [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
+            [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples,
+            [`bookDesync:${tick.source_exchange}:${tick.instrumentCode}:${tick.sequence}`]: {
+              tick,
+              metrics,
+              reason: applied.reason,
+              expectedSequence: applied.expectedSequence,
+              actualSequence: applied.actualSequence
+            }
+          },
+          "BOOK_DESYNC"
+        );
 
         this.publishTickTelemetry(tick, metrics, "FRESH", hotPathStartedAt);
 
@@ -4305,17 +5456,22 @@ export class TradingEngine {
       }
     }
 
+    await this.evaluateCascadeStrategy(tick, metrics.brainTimestamp);
+
+    const volatilitySnapshot = this.multiScaleVolatility.update(
+      tick.instrumentCode,
+      book.midPrice,
+      metrics.brainTimestamp
+    );
+    this.maybeCancelLaggingHypeQuotes(tick, volatilitySnapshot, metrics.brainTimestamp, options);
+
     const shadowQueueState = this.processShadowQueueTick(
       tick,
       book,
       metrics.brainTimestamp,
       options
     );
-    const domSnapshot = this.getLiquidityWalls(
-      tick.instrumentCode,
-      metrics.brainTimestamp,
-      tick
-    );
+    const domSnapshot = this.getLiquidityWalls(tick.instrumentCode, metrics.brainTimestamp, tick);
     const anomalyLogicStartedAt = highResolutionNow();
     const anomalyResult = this.anomalyDetector.evaluate({
       tick,
@@ -4357,16 +5513,19 @@ export class TradingEngine {
         updatedAt: metrics.brainTimestamp
       };
 
-      await this.safeStoragePut({
-        [ENGINE_STATE_KEY]: this.engineState,
-        [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
-        [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples,
-        [DOM_WALL_HISTORY_KEY]: this.domWallHistory,
-        [ANOMALY_DETECTOR_STORAGE_KEY]: anomalyResult.state,
-        [`${ORDER_BOOK_PREFIX}${book.marketKey}`]: book,
-        [`lastTick:${book.marketKey}`]: tick,
-        [`anomaly:${book.marketKey}:${tick.sequence}`]: anomalyResult.anomalies
-      }, "ANOMALY_EMERGENCY_PAUSE");
+      await this.safeStoragePut(
+        {
+          [ENGINE_STATE_KEY]: this.engineState,
+          [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
+          [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples,
+          [DOM_WALL_HISTORY_KEY]: this.domWallHistory,
+          [ANOMALY_DETECTOR_STORAGE_KEY]: anomalyResult.state,
+          [`${ORDER_BOOK_PREFIX}${book.marketKey}`]: book,
+          [`lastTick:${book.marketKey}`]: tick,
+          [`anomaly:${book.marketKey}:${tick.sequence}`]: anomalyResult.anomalies
+        },
+        "ANOMALY_EMERGENCY_PAUSE"
+      );
 
       this.triggerEmergencyPause(tick, book, domSnapshot, anomalyResult, metrics);
       this.publishTickTelemetry(tick, metrics, "FRESH", hotPathStartedAt);
@@ -4393,7 +5552,8 @@ export class TradingEngine {
           orderBookAsks: book.asks,
           liquidityWalls: domSnapshot.walls,
           spoofingAlerts: domSnapshot.pulledWalls,
-          liquidationHeatmap: this.engineState.liquidationHeatmap
+          liquidationHeatmap: this.engineState.liquidationHeatmap,
+          jumpDetected: volatilitySnapshot?.jumpDetected ?? false
         })
       : disabledProfilerEvaluation(profilerAgent.snapshot(), metrics.brainTimestamp);
     const profilerLatencyMs = this.cachedConfig.PROFILER_ENABLED
@@ -4441,7 +5601,10 @@ export class TradingEngine {
       oracleResult.state,
       profilerStates
     );
-    const inventoryGuard = passiveInventoryGuardStateFromInventory(inventory, metrics.brainTimestamp);
+    const inventoryGuard = passiveInventoryGuardStateFromInventory(
+      inventory,
+      metrics.brainTimestamp
+    );
     const sentimentForDecision = this.cachedConfig.SENTIMENT_ENABLED
       ? this.engineState.sentiment
       : {
@@ -4449,6 +5612,20 @@ export class TradingEngine {
           updatedAt: metrics.brainTimestamp
         };
     const croupierStartedAt = highResolutionNow();
+    const bidAdversePenalty = adversePenaltyForQuoteSide(
+      this.adverseSelectionModel,
+      book,
+      "BID",
+      oracleResult.state.regime,
+      metrics.brainTimestamp
+    );
+    const askAdversePenalty = adversePenaltyForQuoteSide(
+      this.adverseSelectionModel,
+      book,
+      "ASK",
+      oracleResult.state.regime,
+      metrics.brainTimestamp
+    );
     const croupierDecision = this.cachedConfig.CROUPIER_ENABLED
       ? this.croupierAgent.evaluate({
           engineId: this.engineState.engineId,
@@ -4461,6 +5638,11 @@ export class TradingEngine {
           minEvThreshold: this.cachedConfig.MIN_EV_THRESHOLD,
           exchangeFeeBps: this.cachedConfig.EXCHANGE_FEE_BPS,
           executionCostBufferBps: this.engineState.slippage.executionCostBufferBps,
+          adverseSelectionPenaltyBps: Math.max(
+            bidAdversePenalty.penaltyBps,
+            askAdversePenalty.penaltyBps
+          ),
+          multiScaleVolatility: volatilitySnapshot,
           fundingRateHourly: this.currentFundingRate(book),
           fundingHorizonHours: readPositiveNumber(this.env.FUNDING_HORIZON_HOURS, 1),
           riskAversionFactor: this.cachedConfig.RISK_AVERSION_FACTOR,
@@ -4472,6 +5654,9 @@ export class TradingEngine {
             this.cachedConfig.FUNDING_INVENTORY_BIAS > 0
               ? this.cachedConfig.FUNDING_INVENTORY_BIAS
               : readPositiveNumber(this.env.FUNDING_INVENTORY_BIAS, DEFAULT_FUNDING_INVENTORY_BIAS),
+          fundingPreSettlementWindowMs: this.cachedConfig.FUNDING_PRE_SETTLEMENT_WINDOW_MS,
+          fundingPreSettlementBiasMultiplier:
+            this.cachedConfig.FUNDING_PRE_SETTLEMENT_BIAS_MULTIPLIER,
           liquidationHeatmap: this.engineState.liquidationHeatmap,
           predatoryOrderOffsetBps: readPositiveNumber(
             this.env.HL_PREDATORY_ORDER_OFFSET_BPS,
@@ -4481,6 +5666,10 @@ export class TradingEngine {
           profilerPressureSide: profilerResult.state.pressureSide,
           profilerSpreadMultiplier: profilerResult.state.spreadMultiplier,
           profilerReservationShiftBps: profilerResult.state.reservationShiftBps,
+          layeredQuoteLevels: this.cachedConfig.LAYERED_QUOTE_LEVELS,
+          layeredQuoteSizeDecay: this.cachedConfig.LAYERED_QUOTE_SIZE_DECAY,
+          layeredQuoteSpreadStepBps: this.cachedConfig.LAYERED_QUOTE_SPREAD_STEP_BPS,
+          sentimentAlphaMode: this.cachedConfig.SENTIMENT_ALPHA_MODE,
           macroBias: this.macroBias,
           marketMakingMode: this.cachedConfig.MARKET_MAKING_MODE,
           observedAt: metrics.brainTimestamp
@@ -4498,14 +5687,10 @@ export class TradingEngine {
       metrics.brainTimestamp
     );
     const executionPlan = this.cachedConfig.PIT_BOSS_ENABLED
-      ? this.prepareExecutionPlan(
-          croupierDecision.intent,
-          metrics.brainTimestamp,
-          {
-            stateOverride: { ...this.engineState, assetMatrix, ensemble },
-            kellyFractionOverride: this.cachedConfig.KELLY_FRACTION * ensemble.kellyMultiplier
-          }
-        )
+      ? this.prepareExecutionPlan(croupierDecision.intent, metrics.brainTimestamp, {
+          stateOverride: { ...this.engineState, assetMatrix, ensemble },
+          kellyFractionOverride: this.cachedConfig.KELLY_FRACTION * ensemble.kellyMultiplier
+        })
       : null;
     let executionPlans = [executionPlan].filter(
       (plan): plan is NonNullable<typeof executionPlan> => plan !== null
@@ -4533,8 +5718,7 @@ export class TradingEngine {
     const profilerSignalType = profilerResult.signal?.featureVector.signalType;
     const isCascadeShield = profilerSignalType === "CASCADE_SHIELD";
     const isProfilerQuoteHalt =
-      profilerSignalType === "SUSPEND_QUOTES" ||
-      profilerSignalType === "AM_VPIN_CRITICAL";
+      profilerSignalType === "SUSPEND_QUOTES" || profilerSignalType === "AM_VPIN_CRITICAL";
 
     if (ensemble.anomalyCircuitBreaker) {
       executionPlans = [];
@@ -4558,13 +5742,13 @@ export class TradingEngine {
       const suspendedUntil =
         typeof profilerResult.signal?.featureVector.suspendedUntil === "string"
           ? profilerResult.signal.featureVector.suspendedUntil
-          : profilerResult.state.quoteHaltUntil ??
+          : (profilerResult.state.quoteHaltUntil ??
             new Date(
               Date.parse(metrics.brainTimestamp) +
                 (profilerSignalType === "AM_VPIN_CRITICAL"
                   ? this.cachedConfig.AM_VPIN_QUOTE_HALT_MS
                   : this.resolveQuoteHibernateMs())
-            ).toISOString();
+            ).toISOString());
       assetQuoteState = {
         status: "SUSPENDED",
         reason: profilerSignalType === "AM_VPIN_CRITICAL" ? "AM_VPIN_CRITICAL" : "WHALE_PRINT",
@@ -4672,16 +5856,17 @@ export class TradingEngine {
       shadowQueue: shadowQueueState,
       lastTradeIntent: executionPlan?.intent ?? croupierDecision.intent,
       inventoryGuard,
-      orderMap: executionPlans.length > 0 && (this.cachedConfig.TRADING_ENABLED || options.shadowReplay)
-        ? {
-            ...this.engineState.orderMap,
-            ...Object.fromEntries(
-              executionPlans.flatMap((plan) =>
-                plan.orders.map((order) => [order.clientId, order])
+      orderMap:
+        executionPlans.length > 0 && (this.cachedConfig.TRADING_ENABLED || options.shadowReplay)
+          ? {
+              ...this.engineState.orderMap,
+              ...Object.fromEntries(
+                executionPlans.flatMap((plan) =>
+                  plan.orders.map((order) => [order.clientId, order])
+                )
               )
-            )
-          }
-        : this.engineState.orderMap,
+            }
+          : this.engineState.orderMap,
       dom: domSnapshot,
       anomaly: anomalyResult.status,
       liquidationHeatmap: this.engineState.liquidationHeatmap,
@@ -4733,7 +5918,9 @@ export class TradingEngine {
         minEvThreshold: croupierDecision.minEvThreshold
       });
       if (!options.shadowReplay && this.cachedConfig.TRADING_ENABLED) {
-        this.state.waitUntil(this.cancelAllQuotes(tick.instrumentCode, "ADVERSE_SELECTION_CRITICAL"));
+        this.state.waitUntil(
+          this.cancelAllQuotes(tick.instrumentCode, "ADVERSE_SELECTION_CRITICAL")
+        );
       }
     } else if (croupierDecision.quote && !strategyQuoteDisableReason) {
       this.publish(
@@ -4759,7 +5946,8 @@ export class TradingEngine {
     }
 
     for (const plan of executionPlans) {
-      if (!options.shadowReplay && this.cachedConfig.TRADING_ENABLED) {
+      const dispatchGate = evaluateIntentDispatchGate(this.engineState, plan.intent);
+      if (!options.shadowReplay && dispatchGate.allowed) {
         this.logger.info("TRADE_INTENT_AUTHORIZED", "PitBoss authorized executable intent", {
           intentId: plan.intent.intentId,
           instrumentCode: plan.intent.instrumentCode,
@@ -4772,10 +5960,18 @@ export class TradingEngine {
           timingJitterMs: plan.camouflage.timingJitterMs
         });
         for (const childIntent of plan.camouflage.icebergChunks) {
-          this.state.waitUntil(
-            this.dispatchExecution(childIntent, plan.camouflage.timingJitterMs)
-          );
+          this.state.waitUntil(this.dispatchExecution(childIntent, plan.camouflage.timingJitterMs));
         }
+      } else if (!options.shadowReplay && this.cachedConfig.TRADING_ENABLED) {
+        this.logger.warn(
+          "TRADE_INTENT_DISPATCH_BLOCKED",
+          "Intent dispatch gate blocked execution",
+          {
+            intentId: plan.intent.intentId,
+            instrumentCode: plan.intent.instrumentCode,
+            reason: dispatchGate.reason
+          }
+        );
       } else if (options.shadowReplay) {
         this.logger.info("SHADOW_TRADE_INTENT_AUTHORIZED", "Replay generated shadow trade intent", {
           intentId: plan.intent.intentId,
@@ -4785,6 +5981,20 @@ export class TradingEngine {
           icebergChildCount: plan.camouflage.icebergChunks.length
         });
       }
+    }
+
+    const hedgeIntent = this.createInventoryHedgeIntent(book, inventory, metrics.brainTimestamp);
+    if (hedgeIntent && !options.shadowReplay) {
+      this.logger.warn("INVENTORY_HEDGE_AUTHORIZED", "Inventory hedge IOC path authorized", {
+        intentId: hedgeIntent.intentId,
+        instrumentCode: hedgeIntent.instrumentCode,
+        action: hedgeIntent.action,
+        approvedSize: hedgeIntent.approvedSize,
+        expectedPrice: hedgeIntent.expectedPrice,
+        currentInventoryDelta: inventory.current_inventory_delta,
+        triggerPct: this.cachedConfig.HEDGE_TRIGGER_INVENTORY_PCT
+      });
+      this.state.waitUntil(this.dispatchExecution(hedgeIntent));
     }
 
     if (profilerResult.signal) {
@@ -4801,10 +6011,7 @@ export class TradingEngine {
       }
     }
 
-    if (
-      this.engineState.processedTicks <= 5 ||
-      this.engineState.processedTicks % 1_000 === 0
-    ) {
+    if (this.engineState.processedTicks <= 5 || this.engineState.processedTicks % 1_000 === 0) {
       this.logger.info("MARKET_TICK_ACCEPTED", "Market tick processed", {
         instrumentCode: tick.instrumentCode,
         exchangeCode: tick.exchangeCode,
@@ -4817,7 +6024,11 @@ export class TradingEngine {
 
     this.publishTickTelemetry(tick, metrics, metrics.status, hotPathStartedAt);
     if (profilerResult.closedBuckets > 0) {
-      this.publishAmVpinTelemetry(profilerResult.state, tick.instrumentCode, metrics.brainTimestamp);
+      this.publishAmVpinTelemetry(
+        profilerResult.state,
+        tick.instrumentCode,
+        metrics.brainTimestamp
+      );
     }
     this.maybeRecordAgentSnapshot(metrics.brainTimestamp);
 
@@ -4831,8 +6042,7 @@ export class TradingEngine {
 
   private applyFundingFromTick(tick: MarketTick, observedAt: string): void {
     const fundingRateHourly =
-      finiteNumber(tick.fundingRateHourly) ??
-      finiteNumber(tick.raw?.fundingRateHourly);
+      finiteNumber(tick.fundingRateHourly) ?? finiteNumber(tick.raw?.fundingRateHourly);
 
     if (fundingRateHourly === null) {
       return;
@@ -4927,10 +6137,7 @@ export class TradingEngine {
       return false;
     }
 
-    return (
-      this.engineState.processedTicks <= 5 ||
-      this.engineState.processedTicks % interval === 0
-    );
+    return this.engineState.processedTicks <= 5 || this.engineState.processedTicks % interval === 0;
   }
 
   private recordShadowQueueGhostFill(
@@ -4945,38 +6152,53 @@ export class TradingEngine {
       0,
       1
     );
-    const adverseBps = readBoundedNumber(
+    const fallbackAdverseBps = readBoundedNumber(
       this.env.PAPER_FILL_ADVERSE_BPS,
       DEFAULT_PAPER_FILL_ADVERSE_BPS,
       0,
       100
     );
+    const paperFillModel = bootstrapPaperAdverseSelection({
+      slippage: this.engineState.slippage,
+      fallbackAdverseBps,
+      side: fill.side
+    });
+    const adverseBps = paperFillModel.adverseBps;
     const makerFeeBps = readBoundedNumber(
       this.env.PAPER_MAKER_FEE_BPS ?? this.env.EXCHANGE_FEE_BPS,
       DEFAULT_PAPER_MAKER_FEE_BPS,
       0,
       100
     );
-    const paperFillPrice = adverseAdjustedPaperFillPrice(fill.side, fill.price, adverseBps, book.tickSize);
+    const paperFillPrice = adverseAdjustedPaperFillPrice(
+      fill.side,
+      fill.price,
+      adverseBps,
+      book.tickSize
+    );
     const paperSizeCap = this.shadowQueueKellySize(fill.side, paperFillPrice, book);
     const executablePaperSize = roundCrypto(Math.min(fill.size * participationRate, paperSizeCap));
 
     if (executablePaperSize <= 0) {
-      this.publish("SHADOW_QUEUE_GHOST_FILL", {
-        fillId: fill.fillId,
-        instrumentCode: fill.instrumentCode,
-        side: fill.side,
-        price: paperFillPrice,
-        virtualQueueSize: fill.size,
-        paperExecutionSize: 0,
-        reason: "PAPER_RISK_CAP_ZERO",
-        participationRate,
-        adverseBps,
-        observedAt
-      }, fill.fillId);
+      this.publish(
+        "SHADOW_QUEUE_GHOST_FILL",
+        {
+          fillId: fill.fillId,
+          instrumentCode: fill.instrumentCode,
+          side: fill.side,
+          price: paperFillPrice,
+          virtualQueueSize: fill.size,
+          paperExecutionSize: 0,
+          reason: "PAPER_RISK_CAP_ZERO",
+          participationRate,
+          adverseBps,
+          observedAt
+        },
+        fill.fillId
+      );
       return;
     }
-    const fees = roundCrypto(paperFillPrice * executablePaperSize * makerFeeBps / 10_000);
+    const fees = roundCrypto((paperFillPrice * executablePaperSize * makerFeeBps) / 10_000);
 
     const trade: TradeExecution = {
       tradeId: `shadow-queue:${fill.fillId}:${Date.parse(observedAt) || observedAt}`,
@@ -4998,7 +6220,8 @@ export class TradingEngine {
       metadata: toJsonValue({
         schemaVersion: "shadow-queue.fill.v1",
         paperSizer: "shadowQueueKellySize",
-        fillModel: "risk_capped_participation_with_adverse_price_haircut",
+        fillModel: "risk_capped_participation_with_bootstrapped_adverse_selection",
+        fillModelSource: paperFillModel.source,
         virtualQueueSize: fill.size,
         paperExecutionSize: executablePaperSize,
         paperSizeCap,
@@ -5022,7 +6245,11 @@ export class TradingEngine {
     };
 
     this.logger.recordExecution(trade);
-    this.publish("SHADOW_QUEUE_GHOST_FILL", trade as unknown as Record<string, unknown>, fill.fillId);
+    this.publish(
+      "SHADOW_QUEUE_GHOST_FILL",
+      trade as unknown as Record<string, unknown>,
+      fill.fillId
+    );
   }
 
   private handleShadowQueueDecision(
@@ -5042,7 +6269,11 @@ export class TradingEngine {
           sampled: true
         });
       }
-      this.publish("SHADOW_QUEUE_NO_EDGE", decision as unknown as Record<string, unknown>, decision.decisionId);
+      this.publish(
+        "SHADOW_QUEUE_NO_EDGE",
+        decision as unknown as Record<string, unknown>,
+        decision.decisionId
+      );
       return decision;
     }
 
@@ -5058,7 +6289,11 @@ export class TradingEngine {
         decisionLatencyMs: decision.decisionLatencyMs,
         latencyBudgetMs: this.engineState.shadowQueue.latencyBudgetMs
       });
-      this.publish("SHADOW_QUEUE_LATENCY_BREACH", suppressed as unknown as Record<string, unknown>, decision.decisionId);
+      this.publish(
+        "SHADOW_QUEUE_LATENCY_BREACH",
+        suppressed as unknown as Record<string, unknown>,
+        decision.decisionId
+      );
       return suppressed;
     }
 
@@ -5075,11 +6310,14 @@ export class TradingEngine {
       agentName: "PROFILER",
       targetAgent: "EXECUTIONER",
       instrumentCode: updatedDecision.instrumentCode,
-      action:
-        updatedDecision.action === "GREEN_LIGHT"
-          ? "EXECUTE"
-          : "SUPERVISOR_ACTION",
-      confidence: Math.min(1, Math.max(0, Math.abs(updatedDecision.microDrift) / Math.max(updatedDecision.tickThreshold, 1e-12))),
+      action: updatedDecision.action === "GREEN_LIGHT" ? "EXECUTE" : "SUPERVISOR_ACTION",
+      confidence: Math.min(
+        1,
+        Math.max(
+          0,
+          Math.abs(updatedDecision.microDrift) / Math.max(updatedDecision.tickThreshold, 1e-12)
+        )
+      ),
       expectedValue: intent?.expectedValue ?? 0,
       maxSlippageBps: intent?.maxSlippageBps ?? 0,
       reasoning: updatedDecision.reason,
@@ -5105,17 +6343,29 @@ export class TradingEngine {
     });
 
     if (!intent) {
-      this.publish("SHADOW_QUEUE_SIGNAL_SUPPRESSED", updatedDecision as unknown as Record<string, unknown>, updatedDecision.decisionId);
+      this.publish(
+        "SHADOW_QUEUE_SIGNAL_SUPPRESSED",
+        updatedDecision as unknown as Record<string, unknown>,
+        updatedDecision.decisionId
+      );
       return updatedDecision;
     }
 
     if (updatedDecision.action === "RED_LIGHT") {
-      this.publish("SHADOW_QUEUE_RED_LIGHT", updatedDecision as unknown as Record<string, unknown>, updatedDecision.decisionId);
+      this.publish(
+        "SHADOW_QUEUE_RED_LIGHT",
+        updatedDecision as unknown as Record<string, unknown>,
+        updatedDecision.decisionId
+      );
       if (this.cachedConfig.TRADING_ENABLED) {
         this.state.waitUntil(this.cancelAllQuotes(book.instrumentCode, "SHADOW_QUEUE_RED_LIGHT"));
       }
     } else {
-      this.publish("SHADOW_QUEUE_GREEN_LIGHT", updatedDecision as unknown as Record<string, unknown>, updatedDecision.decisionId);
+      this.publish(
+        "SHADOW_QUEUE_GREEN_LIGHT",
+        updatedDecision as unknown as Record<string, unknown>,
+        updatedDecision.decisionId
+      );
     }
 
     if (this.cachedConfig.TRADING_ENABLED) {
@@ -5162,7 +6412,8 @@ export class TradingEngine {
     }
 
     const expectedDriftValue = Math.abs(decision.microDrift) * requestedSize;
-    const feeCost = price * requestedSize * Math.max(0, this.cachedConfig.EXCHANGE_FEE_BPS) / 10_000;
+    const feeCost =
+      (price * requestedSize * Math.max(0, this.cachedConfig.EXCHANGE_FEE_BPS)) / 10_000;
     const expectedValue = roundCrypto(expectedDriftValue - feeCost);
 
     return {
@@ -5190,7 +6441,10 @@ export class TradingEngine {
       expectedValue,
       minEvThreshold: Number.NEGATIVE_INFINITY,
       maxSlippageBps: Math.max(1, book.spreadBps ?? this.engineState.shadowQueue.baseSpreadBps),
-      confidence: Math.min(1, Math.max(0.01, Math.abs(decision.microDrift) / Math.max(book.tickSize, 1e-12))),
+      confidence: Math.min(
+        1,
+        Math.max(0.01, Math.abs(decision.microDrift) / Math.max(book.tickSize, 1e-12))
+      ),
       rationale:
         decision.action === "GREEN_LIGHT"
           ? `VLO Green Light: post-fill drift confirmed ${decision.originalSide}; fractional Kelly post-only deployment.`
@@ -5207,7 +6461,7 @@ export class TradingEngine {
     const tickSize = Math.max(book.tickSize, DEFAULT_ORDER_BOOK_TICK_SIZE);
     const baseSpread = Math.max(
       book.spread ?? 0,
-      pnMidPrice * this.engineState.shadowQueue.baseSpreadBps / 10_000,
+      (pnMidPrice * this.engineState.shadowQueue.baseSpreadBps) / 10_000,
       tickSize
     );
 
@@ -5219,8 +6473,7 @@ export class TradingEngine {
     }
 
     const raw = pnMidPrice + baseSpread;
-    const bounded =
-      book.bestBid !== null ? Math.max(raw, book.bestBid + tickSize) : raw;
+    const bounded = book.bestBid !== null ? Math.max(raw, book.bestBid + tickSize) : raw;
     return normalizePriceToTick(bounded, tickSize, "CEIL");
   }
 
@@ -5253,21 +6506,11 @@ export class TradingEngine {
         ? Math.max(0, inventory.maxInventoryUnits - inventory.netDelta)
         : Math.max(0, inventory.maxInventoryUnits + inventory.netDelta);
     const levels = action === "BUY" ? book.bids : book.asks;
-    const depthCap = Math.max(
-      DEFAULT_SHADOW_VLO_MIN_SIZE,
-      (levels[0]?.size ?? 0) * 0.02
-    );
+    const depthCap = Math.max(DEFAULT_SHADOW_VLO_MIN_SIZE, (levels[0]?.size ?? 0) * 0.02);
     const riskBudgetUsd =
-      equity *
-      maxPositionPct *
-      kellyFraction *
-      this.engineState.location.positionSizeMultiplier;
+      equity * maxPositionPct * kellyFraction * this.engineState.location.positionSizeMultiplier;
     const budgetSize = riskBudgetUsd > 0 ? riskBudgetUsd / price : 0;
-    const bounded = Math.min(
-      Math.max(0, budgetSize),
-      Math.max(0, inventoryRoom),
-      depthCap
-    );
+    const bounded = Math.min(Math.max(0, budgetSize), Math.max(0, inventoryRoom), depthCap);
 
     return bounded > 0 ? roundCrypto(Math.max(DEFAULT_SHADOW_VLO_MIN_SIZE, bounded)) : 0;
   }
@@ -5294,17 +6537,15 @@ export class TradingEngine {
       };
     }
 
-    let best:
-      | {
-          leadInstrument: string;
-          lagInstrument: string;
-          correlation: number;
-          lagSteps: number;
-          sampleCount: number;
-          leadLagDelta: number;
-          expectedValue: number;
-        }
-      | null = null;
+    let best: {
+      leadInstrument: string;
+      lagInstrument: string;
+      correlation: number;
+      lagSteps: number;
+      sampleCount: number;
+      leadLagDelta: number;
+      expectedValue: number;
+    } | null = null;
 
     for (const leadInstrument of instruments) {
       for (const lagInstrument of instruments) {
@@ -5384,8 +6625,7 @@ export class TradingEngine {
     positions: Record<string, Position> = this.engineState.openPositions
   ): EngineState["inventory"] {
     const netDelta = Object.values(positions).reduce(
-      (sum, position) =>
-        sum + (position.side === "LONG" ? position.quantity : -position.quantity),
+      (sum, position) => sum + (position.side === "LONG" ? position.quantity : -position.quantity),
       0
     );
     const maxInventoryUnits =
@@ -5471,9 +6711,7 @@ export class TradingEngine {
     }
 
     const microMid = this.engineState.microstructure.midPrice;
-    return typeof microMid === "number" && Number.isFinite(microMid) && microMid > 0
-      ? microMid
-      : 1;
+    return typeof microMid === "number" && Number.isFinite(microMid) && microMid > 0 ? microMid : 1;
   }
 
   private updatePortfolioRisk(
@@ -5483,7 +6721,8 @@ export class TradingEngine {
     const equity = Math.max(this.engineState.bankroll.equity, 0);
     const priorHighWaterMark = Math.max(this.engineState.riskMetrics.highWaterMark, equity);
     const highWaterMark =
-      this.engineState.mode === "PAPER" && priorHighWaterMark > Math.max(equity * 1.5, equity + 1_000)
+      this.engineState.mode === "PAPER" &&
+      priorHighWaterMark > Math.max(equity * 1.5, equity + 1_000)
         ? equity
         : Math.max(priorHighWaterMark, equity);
     const rollingDrawdownPct =
@@ -5549,7 +6788,8 @@ export class TradingEngine {
       Math.min(1, Math.abs(anomalyStatus.volumeZScore ?? 0) / 8),
       Math.min(1, anomalyStatus.cancellationToExecutionRatio / 12)
     );
-    const anomalyCircuitBreaker = anomalyScore >= 0.85 || profilerState.toxicityState === "CRITICAL";
+    const anomalyCircuitBreaker =
+      anomalyScore >= 0.85 || profilerState.toxicityState === "CRITICAL";
     const profilerConfidence = !this.cachedConfig.PROFILER_ENABLED
       ? 0
       : profilerState.toxicityState === "CRITICAL"
@@ -5574,18 +6814,27 @@ export class TradingEngine {
     const sentimentConfidence = !this.cachedConfig.SENTIMENT_ENABLED
       ? 0
       : sentimentDirectionMatches
-      ? Math.max(0.35, sentimentState.confidence)
-      : Math.max(0.1, 1 - sentimentState.confidence);
-    const croupierConfidence = this.cachedConfig.CROUPIER_ENABLED && intent
-      ? Math.min(
-          1,
-          Math.max(
-            0,
-            (intent.confidence + Math.min(1, Math.max(0, intent.expectedValue / Math.max(1, intent.executionCosts + intent.adverseSelectionCost)))) /
-              2
+        ? Math.max(0.35, sentimentState.confidence)
+        : Math.max(0.1, 1 - sentimentState.confidence);
+    const croupierConfidence =
+      this.cachedConfig.CROUPIER_ENABLED && intent
+        ? Math.min(
+            1,
+            Math.max(
+              0,
+              (intent.confidence +
+                Math.min(
+                  1,
+                  Math.max(
+                    0,
+                    intent.expectedValue /
+                      Math.max(1, intent.executionCosts + intent.adverseSelectionCost)
+                  )
+                )) /
+                2
+            )
           )
-        )
-      : 0;
+        : 0;
     const votes: EngineState["ensemble"]["votes"] = [
       {
         agent: "ORACLE",
@@ -5599,7 +6848,9 @@ export class TradingEngine {
         confidence: roundMetric(profilerConfidence, 6),
         weight: 0.3,
         contribution: roundMetric(profilerConfidence * 0.3, 6),
-        rationale: this.cachedConfig.PROFILER_ENABLED ? profilerState.toxicityState ?? "NORMAL" : "DISABLED"
+        rationale: this.cachedConfig.PROFILER_ENABLED
+          ? (profilerState.toxicityState ?? "NORMAL")
+          : "DISABLED"
       },
       {
         agent: "CROUPIER",
@@ -5658,14 +6909,12 @@ export class TradingEngine {
       stateOverride?: EngineState;
       kellyFractionOverride?: number;
     } = {}
-  ):
-    | {
-        intent: NonNullable<EngineState["lastTradeIntent"]>;
-        camouflage: ReturnType<typeof camouflageIntent>;
-        sorPlan: ReturnType<typeof planSmartOrderRoute>;
-        orders: ManagedOrder[];
-      }
-    | null {
+  ): {
+    intent: NonNullable<EngineState["lastTradeIntent"]>;
+    camouflage: ReturnType<typeof camouflageIntent>;
+    sorPlan: ReturnType<typeof planSmartOrderRoute>;
+    orders: ManagedOrder[];
+  } | null {
     if (!intent) {
       return null;
     }
@@ -5704,12 +6953,16 @@ export class TradingEngine {
     );
     const sorPlan = planSmartOrderRoute(camouflage.intent, [...this.orderBook.values()]);
     if (sorPlan.unfilledSize > 0) {
-      this.logger.warn("SOR_RESIDUAL_LIQUIDITY_SHORTFALL", "Smart router could not source full approved size", {
-        intentId: camouflage.intent.intentId,
-        instrumentCode: camouflage.intent.instrumentCode,
-        approvedSize: camouflage.intent.approvedSize ?? camouflage.intent.requestedSize,
-        unfilledSize: sorPlan.unfilledSize
-      });
+      this.logger.warn(
+        "SOR_RESIDUAL_LIQUIDITY_SHORTFALL",
+        "Smart router could not source full approved size",
+        {
+          intentId: camouflage.intent.intentId,
+          instrumentCode: camouflage.intent.instrumentCode,
+          approvedSize: camouflage.intent.approvedSize ?? camouflage.intent.requestedSize,
+          unfilledSize: sorPlan.unfilledSize
+        }
+      );
     }
     const executionChildren =
       sorPlan.routes.length > 0
@@ -5804,7 +7057,9 @@ export class TradingEngine {
       return {
         status: "SUSPENDED",
         reason: "ADVERSE_SELECTION_CRITICAL",
-        suspendedUntil: new Date(Date.parse(observedAt) + this.resolveQuoteHibernateMs()).toISOString(),
+        suspendedUntil: new Date(
+          Date.parse(observedAt) + this.resolveQuoteHibernateMs()
+        ).toISOString(),
         lastQuote: previous.lastQuote,
         updatedAt: observedAt
       };
@@ -5846,12 +7101,7 @@ export class TradingEngine {
   private resolveQuoteHibernateMs(): number {
     return this.cachedConfig.QUOTE_HIBERNATE_MS > 0
       ? this.cachedConfig.QUOTE_HIBERNATE_MS
-      : readPositiveInteger(
-          this.env.QUOTE_HIBERNATE_MS,
-          DEFAULT_QUOTE_HIBERNATE_MS,
-          100,
-          60_000
-        );
+      : readPositiveInteger(this.env.QUOTE_HIBERNATE_MS, DEFAULT_QUOTE_HIBERNATE_MS, 100, 60_000);
   }
 
   private maybeResumeQuotes(observedAt: string): void {
@@ -5892,7 +7142,68 @@ export class TradingEngine {
     }
   }
 
-  private async dispatchQuote(quote: NonNullable<EngineState["quoteState"]["lastQuote"]>): Promise<void> {
+  private maybeCancelLaggingHypeQuotes(
+    tick: MarketTick,
+    volatility: MultiScaleVolatilitySnapshot | null,
+    observedAt: string,
+    options: TickHandlingOptions
+  ): void {
+    if (
+      options.shadowReplay ||
+      !this.cachedConfig.TRADING_ENABLED ||
+      tick.instrumentCode !== "btc-usd" ||
+      !volatility ||
+      volatility.midPrice <= 0
+    ) {
+      return;
+    }
+
+    const moveBps = Math.abs(volatility.ret) * 10_000;
+    const leadThresholdBps = readPositiveNumber(
+      this.env.CROSS_ASSET_CANCEL_LEAD_BPS,
+      DEFAULT_CROSS_ASSET_CANCEL_LEAD_BPS
+    );
+
+    if (moveBps < leadThresholdBps && !volatility.jumpDetected) {
+      return;
+    }
+
+    const cooldownMs = readPositiveInteger(
+      this.env.CROSS_ASSET_CANCEL_COOLDOWN_MS,
+      DEFAULT_CROSS_ASSET_CANCEL_COOLDOWN_MS,
+      100,
+      60_000
+    );
+    const last = this.crossAssetCancelLogAt.get("hype-usd") ?? 0;
+    const now = Date.parse(observedAt);
+    const nowMs = Number.isFinite(now) ? now : Date.now();
+
+    if (nowMs - last < cooldownMs) {
+      return;
+    }
+
+    this.crossAssetCancelLogAt.set("hype-usd", nowMs);
+    this.logger.warn("CROSS_ASSET_HYPE_CANCEL", "BTC lead move invalidated HYPE resting quotes", {
+      leadInstrument: "btc-usd",
+      lagInstrument: "hype-usd",
+      moveBps: roundMetric(moveBps, 4),
+      thresholdBps: leadThresholdBps,
+      jumpDetected: volatility.jumpDetected,
+      jumpZScore: roundMetric(volatility.jumpZScore, 4)
+    });
+    this.publish("SUSPEND_QUOTES", {
+      instrumentCode: "hype-usd",
+      reason: "BTC_LEAD_MOVE",
+      moveBps,
+      jumpDetected: volatility.jumpDetected,
+      observedAt
+    });
+    this.state.waitUntil(this.cancelAllQuotes("hype-usd", "BTC_LEAD_MOVE"));
+  }
+
+  private async dispatchQuote(
+    quote: NonNullable<EngineState["quoteState"]["lastQuote"]>
+  ): Promise<void> {
     if (!this.env.EXECUTIONER || !this.cachedConfig.TRADING_ENABLED) {
       return;
     }
@@ -5927,11 +7238,7 @@ export class TradingEngine {
     }
 
     const intents: TradeIntent[] = [];
-    const bankroll = Math.max(
-      0,
-      this.engineState.bankroll.equity,
-      this.engineState.bankroll.cash
-    );
+    const bankroll = Math.max(0, this.engineState.bankroll.equity, this.engineState.bankroll.cash);
     const maxPositionPct =
       this.cachedConfig.MAX_POSITION_PCT > 0
         ? this.cachedConfig.MAX_POSITION_PCT
@@ -5959,14 +7266,18 @@ export class TradingEngine {
       const approvedSize = roundCrypto(Math.min(order.size, Math.max(0, maxSize)));
 
       if (approvedSize <= 0) {
-        this.logger.warn("QUOTE_ORDER_RISK_CAP_ZERO", "Skipped quote order with no remaining risk budget", {
-          quoteSignalId: quote.signalId,
-          instrumentCode: quote.instrumentCode,
-          side: action,
-          requestedSize: order.size,
-          price: order.price,
-          maxOrderNotional
-        });
+        this.logger.warn(
+          "QUOTE_ORDER_RISK_CAP_ZERO",
+          "Skipped quote order with no remaining risk budget",
+          {
+            quoteSignalId: quote.signalId,
+            instrumentCode: quote.instrumentCode,
+            side: action,
+            requestedSize: order.size,
+            price: order.price,
+            maxOrderNotional
+          }
+        );
         continue;
       }
 
@@ -5976,7 +7287,8 @@ export class TradingEngine {
         traceId: `${this.engineState.engineId}:quote:${quote.signalId}:${order.clientOrderId}`,
         instrumentCode: quote.instrumentCode,
         marketKey: quote.marketKey,
-        source_exchange: quote.marketKey?.split(":")[0] ?? this.engineState.microstructure.source_exchange,
+        source_exchange:
+          quote.marketKey?.split(":")[0] ?? this.engineState.microstructure.source_exchange,
         direction: action === "BUY" ? "LONG" : "SHORT",
         action,
         orderType: "LIMIT",
@@ -6031,25 +7343,24 @@ export class TradingEngine {
       60_000
     );
 
-    if (elapsedMs >= minIntervalMs) {
-      return false;
-    }
-
     const minPriceTicks = readPositiveInteger(
       this.env.QUOTE_REFRESH_MIN_PRICE_TICKS,
       DEFAULT_QUOTE_REFRESH_MIN_PRICE_TICKS,
       0,
       100
     );
-    const tickSize =
-      this.findBestAssetBook(quote.instrumentCode)?.tickSize ?? DEFAULT_ORDER_BOOK_TICK_SIZE;
-    const nextBid = quote.orders.find((order) => order.side === "BID")?.price ?? null;
-    const nextAsk = quote.orders.find((order) => order.side === "ASK")?.price ?? null;
-    const bidChanged = quotePriceMovedTicks(last.bid, nextBid, tickSize) >= minPriceTicks;
-    const askChanged = quotePriceMovedTicks(last.ask, nextAsk, tickSize) >= minPriceTicks;
-    const changedEnough = bidChanged || askChanged;
+    const book = this.findBestAssetBook(quote.instrumentCode);
+    const tickSize = book?.tickSize ?? DEFAULT_ORDER_BOOK_TICK_SIZE;
+    const advice = this.queuePositionModel.adviseRefresh({
+      previousQuote: last,
+      quote,
+      book: book ?? null,
+      minPriceTicks,
+      elapsedMs,
+      tickSize
+    });
 
-    if (changedEnough) {
+    if (advice.shouldRefresh) {
       return false;
     }
 
@@ -6058,13 +7369,19 @@ export class TradingEngine {
     const nowMs = Date.now();
     if (nowMs - logAt >= HOT_PATH_LOG_THROTTLE_MS) {
       this.quoteRefreshThrottleLogAt.set(logKey, nowMs);
-      this.logger.info("QUOTE_REFRESH_THROTTLED", "Skipped quote refresh inside minimum cadence window", {
-        instrumentCode: quote.instrumentCode,
-        elapsedMs,
-        minIntervalMs,
-        minPriceTicks,
-        signalId: quote.signalId
-      });
+      this.logger.info(
+        "QUOTE_REFRESH_THROTTLED",
+        "Skipped quote refresh inside minimum cadence window",
+        {
+          instrumentCode: quote.instrumentCode,
+          elapsedMs,
+          minIntervalMs,
+          minPriceTicks,
+          signalId: quote.signalId,
+          queuePressure: roundMetric(advice.queuePressure, 4),
+          queueReason: advice.reason
+        }
+      );
     }
 
     return true;
@@ -6081,34 +7398,141 @@ export class TradingEngine {
     });
   }
 
+  private createInventoryHedgeIntent(
+    book: InternalOrderBook,
+    inventory: InventoryState,
+    observedAt: string
+  ): TradeIntent | null {
+    if (!this.cachedConfig.HEDGE_ENABLED || !book.midPrice || book.midPrice <= 0) {
+      return null;
+    }
+
+    const maxDelta = Math.max(
+      inventory.maxInventoryDelta,
+      this.cachedConfig.MAX_INVENTORY_DELTA,
+      0
+    );
+    if (maxDelta <= 0) {
+      return null;
+    }
+
+    const currentDelta = inventory.current_inventory_delta;
+    const triggerDelta = maxDelta * this.cachedConfig.HEDGE_TRIGGER_INVENTORY_PCT;
+    if (Math.abs(currentDelta) < triggerDelta) {
+      return null;
+    }
+
+    const nowMs = Date.parse(observedAt);
+    const safeNowMs = Number.isFinite(nowMs) ? nowMs : Date.now();
+    const lastHedgeAt = this.lastHedgeDispatchedAt.get(book.instrumentCode) ?? 0;
+    if (safeNowMs - lastHedgeAt < this.cachedConfig.HEDGE_COOLDOWN_MS) {
+      return null;
+    }
+
+    const action: TradeIntent["action"] = currentDelta > 0 ? "SELL" : "BUY";
+    const touch = action === "SELL" ? book.bestBid : book.bestAsk;
+    if (!touch || touch <= 0) {
+      return null;
+    }
+
+    const targetResidual = maxDelta * 0.4 * Math.sign(currentDelta);
+    const hedgeSize = roundCrypto(
+      Math.min(Math.abs(currentDelta - targetResidual), Math.abs(currentDelta))
+    );
+    if (hedgeSize <= 0) {
+      return null;
+    }
+
+    const slippage = Math.max(0, this.cachedConfig.HEDGE_MAX_SLIPPAGE_BPS) / 10_000;
+    const rawPrice = action === "BUY" ? touch * (1 + slippage) : touch * (1 - slippage);
+    const expectedPrice = normalizePriceToTick(
+      Math.max(book.tickSize, rawPrice),
+      Math.max(book.tickSize, DEFAULT_ORDER_BOOK_TICK_SIZE),
+      action === "BUY" ? "CEIL" : "FLOOR"
+    );
+    this.lastHedgeDispatchedAt.set(book.instrumentCode, safeNowMs);
+
+    return {
+      schemaVersion: "trade-intent.v1",
+      intentId: `inventory-hedge:${book.instrumentCode}:${safeNowMs}`,
+      traceId: `${this.engineState.engineId}:inventory-hedge:${book.instrumentCode}:${safeNowMs}`,
+      instrumentCode: book.instrumentCode,
+      marketKey: book.marketKey,
+      source_exchange: book.source_exchange,
+      direction: action === "BUY" ? "LONG" : "SHORT",
+      action,
+      orderType: "IOC",
+      postOnly: false,
+      timeInForce: "IOC",
+      intendedPrice: expectedPrice,
+      expectedPrice,
+      requestedSize: hedgeSize,
+      approvedSize: hedgeSize,
+      probabilityWin: 0.5,
+      probabilityLoss: 0.5,
+      profit: 0,
+      loss: (book.midPrice * hedgeSize * this.cachedConfig.HEDGE_MAX_SLIPPAGE_BPS) / 10_000,
+      executionCosts:
+        (book.midPrice *
+          hedgeSize *
+          (this.cachedConfig.EXCHANGE_FEE_BPS + this.cachedConfig.HEDGE_MAX_SLIPPAGE_BPS)) /
+        10_000,
+      adverseSelectionCost: 0,
+      expectedValue: 0,
+      minEvThreshold: Number.NEGATIVE_INFINITY,
+      maxSlippageBps: this.cachedConfig.HEDGE_MAX_SLIPPAGE_BPS,
+      confidence: Math.min(1, Math.abs(currentDelta) / maxDelta),
+      rationale:
+        `INVENTORY_HEDGE reduce-only IOC limit; currentDelta=${roundMetric(currentDelta, 8)} ` +
+        `maxDelta=${roundMetric(maxDelta, 8)} triggerPct=${roundMetric(this.cachedConfig.HEDGE_TRIGGER_INVENTORY_PCT, 4)}`,
+      createdAt: observedAt
+    };
+  }
+
   private async dispatchExecution(
     intent: NonNullable<EngineState["lastTradeIntent"]>,
     initialDelayMs = 0
   ): Promise<void> {
-    if (!this.env.EXECUTIONER || !this.cachedConfig.TRADING_ENABLED) {
+    const inventoryHedge = isInventoryHedgeIntent(intent);
+
+    if (
+      !this.env.EXECUTIONER ||
+      (!this.cachedConfig.TRADING_ENABLED && !(inventoryHedge && this.cachedConfig.HEDGE_ENABLED))
+    ) {
       return;
     }
 
-    if (!isInstrumentSelectedByMoltworker(intent.instrumentCode, this.macroBias)) {
-      this.logger.info("EXECUTION_DISPATCH_BLOCKED", "Skipped execution intent for inactive Moltworker asset", {
-        intentId: intent.intentId,
-        instrumentCode: intent.instrumentCode,
-        action: intent.action,
-        orderType: intent.orderType,
-        selectedInstruments: [...selectedMoltworkerInstruments(this.macroBias)]
-      });
+    if (
+      !inventoryHedge &&
+      !isInstrumentSelectedByMoltworker(intent.instrumentCode, this.macroBias)
+    ) {
+      this.logger.info(
+        "EXECUTION_DISPATCH_BLOCKED",
+        "Skipped execution intent for inactive Moltworker asset",
+        {
+          intentId: intent.intentId,
+          instrumentCode: intent.instrumentCode,
+          action: intent.action,
+          orderType: intent.orderType,
+          selectedInstruments: [...selectedMoltworkerInstruments(this.macroBias)]
+        }
+      );
       return;
     }
 
-    if (intent.orderType !== "LIMIT" || intent.postOnly !== true) {
-      this.logger.warn("TAKER_EXECUTION_SUPPRESSED", "Non-post-only execution suppressed by passive inventory protocol", {
-        intentId: intent.intentId,
-        instrumentCode: intent.instrumentCode,
-        orderType: intent.orderType,
-        postOnly: intent.postOnly,
-        timeInForce: intent.timeInForce,
-        rationale: intent.rationale
-      });
+    if ((intent.orderType !== "LIMIT" || intent.postOnly !== true) && !inventoryHedge) {
+      this.logger.warn(
+        "TAKER_EXECUTION_SUPPRESSED",
+        "Non-post-only execution suppressed by passive inventory protocol",
+        {
+          intentId: intent.intentId,
+          instrumentCode: intent.instrumentCode,
+          orderType: intent.orderType,
+          postOnly: intent.postOnly,
+          timeInForce: intent.timeInForce,
+          rationale: intent.rationale
+        }
+      );
       return;
     }
 
@@ -6203,12 +7627,15 @@ export class TradingEngine {
   ): Promise<void> {
     const queue = await this.readExecutionQueue("EXECUTION_QUEUE_ENQUEUE_READ");
     const runAfterMs = Date.now() + Math.max(0, waitMs);
-    const nextQueue = [...queue, {
-      intent,
-      priority,
-      runAfterMs,
-      enqueuedAt: new Date().toISOString()
-    }]
+    const nextQueue = [
+      ...queue,
+      {
+        intent,
+        priority,
+        runAfterMs,
+        enqueuedAt: new Date().toISOString()
+      }
+    ]
       .sort(compareQueuedExecutionIntent)
       .slice(0, 1_000);
 
@@ -6220,12 +7647,16 @@ export class TradingEngine {
     const now = Date.now();
     if (now - this.rateLimitDeferralLogAt >= HOT_PATH_LOG_THROTTLE_MS) {
       this.rateLimitDeferralLogAt = now;
-      this.logger.warn("EXECUTION_DEFERRED_BY_RATE_LIMIT", "Execution intent deferred by durable rate limiter", {
-        intentId: intent.intentId,
-        priority,
-        waitMs,
-        queuedCount: nextQueue.length
-      });
+      this.logger.warn(
+        "EXECUTION_DEFERRED_BY_RATE_LIMIT",
+        "Execution intent deferred by durable rate limiter",
+        {
+          intentId: intent.intentId,
+          priority,
+          waitMs,
+          queuedCount: nextQueue.length
+        }
+      );
     }
   }
 
@@ -6247,7 +7678,9 @@ export class TradingEngine {
 
     const now = Date.now();
     const due = queue.filter((item) => item.runAfterMs <= now).sort(compareQueuedExecutionIntent);
-    const pending = queue.filter((item) => item.runAfterMs > now).sort(compareQueuedExecutionIntent);
+    const pending = queue
+      .filter((item) => item.runAfterMs > now)
+      .sort(compareQueuedExecutionIntent);
 
     await this.safeStoragePut(EXECUTION_QUEUE_KEY, pending, "EXECUTION_QUEUE_DRAIN");
 
@@ -6312,101 +7745,49 @@ export class TradingEngine {
   }
 
   private async applyExecutionReport(report: ExecutionReport): Promise<void> {
-    const existing =
-      this.engineState.orderMap[report.clientId] ??
-      Object.values(this.engineState.orderMap).find(
-        (order) =>
-          report.exchangeOrderId &&
-          order.exchangeOrderId === report.exchangeOrderId
-      );
-    const observedAt = report.observedAt ?? new Date().toISOString();
-    const previousFilledSize = existing?.filledSize ?? 0;
-    const cumulativeFilledSize =
-      typeof report.filledSize === "number" && Number.isFinite(report.filledSize)
-        ? Math.max(0, report.filledSize)
-        : previousFilledSize;
-    const fillIncrementSize =
-      typeof report.fillIncrementSize === "number" && Number.isFinite(report.fillIncrementSize)
-        ? Math.max(0, report.fillIncrementSize)
-        : Math.max(0, cumulativeFilledSize - previousFilledSize);
-    const nextOrder: ManagedOrder = {
-      ...(existing ?? {
-        clientId: report.clientId,
-        exchangeOrderId: report.exchangeOrderId ?? null,
-        intentId: report.clientId,
-        instrumentCode:
-          report.instrumentCode ??
-          this.engineState.lastTradeIntent?.instrumentCode ??
-          "unknown",
-        side:
-          report.side ??
-          this.engineState.lastTradeIntent?.action ??
-          "BUY",
-        price: report.expectedPrice ?? report.achievedPrice ?? 0,
-        size: report.orderSize ?? report.filledSize ?? 0,
-        filledSize: 0,
-        status: "PENDING",
-        createdAt: observedAt,
-        updatedAt: observedAt,
-        ackDeadlineAt: observedAt
-      }),
-      exchangeOrderId: report.exchangeOrderId ?? existing?.exchangeOrderId ?? null,
-      status: report.status,
-      filledSize: cumulativeFilledSize,
-      updatedAt: observedAt
-    };
-    const slippagePoint = this.recordSlippage(report, nextOrder);
-    const portfolio =
-      isPortfolioFillStatus(report.status) && fillIncrementSize > 0
-        ? this.applyFillToPortfolio(
-            nextOrder,
-            fillIncrementSize,
-            report.achievedPrice ?? report.expectedPrice ?? nextOrder.price,
-            report.fees ?? 0,
-            observedAt
-          )
-        : {
-            bankroll: this.markBankrollToMarket(
-              this.engineState.bankroll.cash,
-              this.engineState.bankroll.realizedPnl,
-              this.engineState.openPositions,
-              observedAt
-            ),
-            openPositions: this.engineState.openPositions
-          };
-    const orderMap = { ...this.engineState.orderMap };
-    delete orderMap[existing?.clientId ?? report.clientId];
-    orderMap[nextOrder.clientId] = nextOrder;
-    const realizedPnlDelta = roundCrypto(
-      portfolio.bankroll.realizedPnl - this.engineState.bankroll.realizedPnl
-    );
-    const tradeExecution = this.executionReportToTrade(
+    const accounting = applyExecutionAccounting({
+      state: this.engineState,
       report,
-      nextOrder,
-      slippagePoint,
-      realizedPnlDelta,
-      observedAt
+      markPrice: (instrumentCode, fallback) => this.currentMarkPrice(instrumentCode, fallback)
+    });
+    const inventory = this.calculateInventoryState(accounting.observedAt, accounting.openPositions);
+    this.adverseSelectionModel.observeExecutionReport(
+      report,
+      accounting.order,
+      this.currentMarkPrice(accounting.order.instrumentCode, accounting.order.price),
+      this.engineState.oracle.regime
     );
-    const inventory = this.calculateInventoryState(observedAt, portfolio.openPositions);
+
+    this.logger.recordExecutionQuality({
+      clientId: report.clientId,
+      instrumentCode: accounting.order.instrumentCode,
+      expectedPrice: accounting.slippagePoint.expectedPrice,
+      achievedPrice: accounting.slippagePoint.achievedPrice,
+      slippageBps: accounting.slippagePoint.slippageBps,
+      implementationShortfall: accounting.slippagePoint.implementationShortfall,
+      latencyMs: accounting.slippagePoint.latencyMs,
+      fees: report.fees ?? 0,
+      observedAt: report.observedAt
+    });
 
     this.engineState = {
       ...this.engineState,
-      bankroll: portfolio.bankroll,
-      openPositions: portfolio.openPositions,
+      bankroll: accounting.bankroll,
+      openPositions: accounting.openPositions,
       inventory,
       current_inventory_delta: inventory.current_inventory_delta,
-      orderMap,
-      slippage: appendSlippagePoint(this.engineState.slippage, slippagePoint),
-      updatedAt: observedAt,
-      heartbeatAt: observedAt
+      orderMap: accounting.orderMap,
+      slippage: accounting.slippage,
+      updatedAt: accounting.observedAt,
+      heartbeatAt: accounting.observedAt
     };
 
     await this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "EXECUTION_REPORT");
-    this.logger.recordExecution(tradeExecution);
+    this.logger.recordExecution(accounting.tradeExecution);
     this.publish(
       "TRADE_EXECUTION_UPDATE",
-      tradeExecution as unknown as Record<string, unknown>,
-      tradeExecution.tradeId
+      accounting.tradeExecution as unknown as Record<string, unknown>,
+      accounting.tradeExecution.tradeId
     );
   }
 
@@ -6449,9 +7830,7 @@ export class TradingEngine {
       evAtExecution: matchedIntent?.expectedValue ?? 0,
       slippageBps: slippagePoint.slippageBps,
       resultingPnl:
-        status === "FILLED" || status === "PARTIAL" || status === "GHOST_FILL"
-          ? resultingPnl
-          : 0,
+        status === "FILLED" || status === "PARTIAL" || status === "GHOST_FILL" ? resultingPnl : 0,
       primaryDriver,
       fees: report.fees ?? 0,
       status,
@@ -6477,7 +7856,12 @@ export class TradingEngine {
     fees: number,
     observedAt: string
   ): Pick<EngineState, "bankroll" | "openPositions"> {
-    if (!Number.isFinite(fillSize) || fillSize <= 0 || !Number.isFinite(fillPrice) || fillPrice <= 0) {
+    if (
+      !Number.isFinite(fillSize) ||
+      fillSize <= 0 ||
+      !Number.isFinite(fillPrice) ||
+      fillPrice <= 0
+    ) {
       return {
         bankroll: this.engineState.bankroll,
         openPositions: this.engineState.openPositions
@@ -6499,18 +7883,15 @@ export class TradingEngine {
         ? Math.min(Math.abs(existingSigned), Math.abs(fillSigned))
         : 0;
     const realizedFromClose =
-      closingSize > 0
-        ? (fillPrice - oldAverage) * closingSize * (existingSigned > 0 ? 1 : -1)
-        : 0;
-    const realizedPnl = roundCrypto(
-      (existing?.realizedPnl ?? 0) + realizedFromClose - fees
-    );
+      closingSize > 0 ? (fillPrice - oldAverage) * closingSize * (existingSigned > 0 ? 1 : -1) : 0;
+    const realizedPnl = roundCrypto((existing?.realizedPnl ?? 0) + realizedFromClose - fees);
     const markPrice = this.currentMarkPrice(order.instrumentCode, fillPrice);
 
     if (Math.abs(nextSigned) <= 0.00000001) {
       delete positions[order.instrumentCode];
     } else {
-      const sameDirection = existingSigned === 0 || Math.sign(existingSigned) === Math.sign(fillSigned);
+      const sameDirection =
+        existingSigned === 0 || Math.sign(existingSigned) === Math.sign(fillSigned);
       const averageEntryPrice = sameDirection
         ? roundCrypto(
             (Math.abs(existingSigned) * oldAverage + Math.abs(fillSigned) * fillPrice) /
@@ -6535,9 +7916,7 @@ export class TradingEngine {
     }
 
     const cashDelta =
-      order.side === "BUY"
-        ? -(fillPrice * fillSize + fees)
-        : fillPrice * fillSize - fees;
+      order.side === "BUY" ? -(fillPrice * fillSize + fees) : fillPrice * fillSize - fees;
     const cash = roundCrypto(this.engineState.bankroll.cash + cashDelta);
     const bankroll = this.markBankrollToMarket(
       cash,
@@ -6580,7 +7959,9 @@ export class TradingEngine {
     const achievedPrice = report.achievedPrice ?? expectedPrice;
     const sideMultiplier = order.side === "BUY" ? 1 : -1;
     const slippageBps =
-      expectedPrice > 0 ? ((achievedPrice - expectedPrice) / expectedPrice) * 10_000 * sideMultiplier : 0;
+      expectedPrice > 0
+        ? ((achievedPrice - expectedPrice) / expectedPrice) * 10_000 * sideMultiplier
+        : 0;
     const fees = report.fees ?? 0;
     const implementationShortfall =
       Math.abs(achievedPrice - expectedPrice) * Math.max(order.filledSize, order.size) + fees;
@@ -6810,23 +8191,22 @@ export class TradingEngine {
       return null;
     }
 
-    this.logger.warn("JANITOR_DUST_CLOSE_SKIPPED", "Dust closeout skipped because taker execution is disabled", {
-      instrumentCode,
-      side: position.side,
-      quantity: position.quantity,
-      observedAt,
-      inventoryProtocol: "POST_ONLY_SKEW"
-    });
+    this.logger.warn(
+      "JANITOR_DUST_CLOSE_SKIPPED",
+      "Dust closeout skipped because taker execution is disabled",
+      {
+        instrumentCode,
+        side: position.side,
+        quantity: position.quantity,
+        observedAt,
+        inventoryProtocol: "POST_ONLY_SKEW"
+      }
+    );
     return null;
   }
 
   private async pruneTelemetryLogs(): Promise<number> {
-    const retentionDays = readPositiveInteger(
-      this.env.JANITOR_LOG_RETENTION_DAYS,
-      7,
-      1,
-      3650
-    );
+    const retentionDays = readPositiveInteger(this.env.JANITOR_LOG_RETENTION_DAYS, 7, 1, 3650);
     const maxTelemetryRows = readPositiveInteger(
       this.env.JANITOR_TELEMETRY_MAX_ROWS,
       50_000,
@@ -6846,7 +8226,9 @@ export class TradingEngine {
         `DELETE FROM logs
          WHERE event_type = 'TELEMETRY'
            AND created_at < ?`
-      ).bind(cutoff).run();
+      )
+        .bind(cutoff)
+        .run();
       const capResult = await this.env.TRADING_DB.prepare(
         `DELETE FROM logs
          WHERE event_type = 'TELEMETRY'
@@ -6857,11 +8239,15 @@ export class TradingEngine {
              ORDER BY created_at DESC, id DESC
              LIMIT ?
            )`
-      ).bind(maxTelemetryRows).run();
+      )
+        .bind(maxTelemetryRows)
+        .run();
       const tickRetentionResult = await this.env.TRADING_DB.prepare(
         `DELETE FROM market_ticks
          WHERE received_at < ?`
-      ).bind(cutoff).run();
+      )
+        .bind(cutoff)
+        .run();
       const tickCapResult = await this.env.TRADING_DB.prepare(
         `DELETE FROM market_ticks
          WHERE tick_id NOT IN (
@@ -6870,7 +8256,9 @@ export class TradingEngine {
            ORDER BY received_at DESC, tick_id DESC
            LIMIT ?
          )`
-      ).bind(maxMarketTickRows).run();
+      )
+        .bind(maxMarketTickRows)
+        .run();
       return (
         Number(retentionResult.meta?.changes ?? 0) +
         Number(capResult.meta?.changes ?? 0) +
@@ -6932,7 +8320,11 @@ export class TradingEngine {
     const initialShadowBankroll =
       shadowBankroll > 0
         ? shadowBankroll
-        : Math.max(this.engineState.bankroll.equity, this.engineState.bankroll.cash, DEFAULT_PAPER_BANKROLL_USD);
+        : Math.max(
+            this.engineState.bankroll.equity,
+            this.engineState.bankroll.cash,
+            DEFAULT_PAPER_BANKROLL_USD
+          );
     await this.writeReplayStatus({
       replayId,
       status: "RUNNING",
@@ -7036,9 +8428,12 @@ export class TradingEngine {
             status: "RUNNING",
             ticksTotal: ticks.length,
             ticksProcessed: index + 1,
-            progressPct: ticks.length > 0 ? roundMetric(((index + 1) / ticks.length) * 100, 2) : 100,
+            progressPct:
+              ticks.length > 0 ? roundMetric(((index + 1) / ticks.length) * 100, 2) : 100,
             speedMultiplier,
-            shadowBankroll: initialShadowBankroll + modeledTrades.reduce((sum, trade) => sum + trade.theoreticalPnl, 0),
+            shadowBankroll:
+              initialShadowBankroll +
+              modeledTrades.reduce((sum, trade) => sum + trade.theoreticalPnl, 0),
             dateFrom,
             dateTo,
             scenario: replayOptions.scenario,
@@ -7080,20 +8475,19 @@ export class TradingEngine {
     const maxDrawdown = calculateMaxDrawdown(equityCurve);
     const sharpe = calculateReplaySharpe(modeledTrades.map((trade) => trade.theoreticalPnl));
     const winRate = calculateWinRate(modeledTrades);
-    const stressResults = replayOptions.scenario === "BASELINE"
-      ? buildStressSummary(modeledTrades, generatedIntentCount)
-      : [
-          {
-            scenario: replayOptions.scenario,
-            pnl: roundMetric(theoreticalPnl, 8),
-            maxDrawdown,
-            generatedIntentCount,
-            simulatedTradeCount: modeledTrades.length
-          }
-        ];
-    const walkForward = replayOptions.walkForward
-      ? buildReplayWalkForward(modeledTrades, 4)
-      : [];
+    const stressResults =
+      replayOptions.scenario === "BASELINE"
+        ? buildStressSummary(modeledTrades, generatedIntentCount)
+        : [
+            {
+              scenario: replayOptions.scenario,
+              pnl: roundMetric(theoreticalPnl, 8),
+              maxDrawdown,
+              generatedIntentCount,
+              simulatedTradeCount: modeledTrades.length
+            }
+          ];
+    const walkForward = replayOptions.walkForward ? buildReplayWalkForward(modeledTrades, 4) : [];
     const ablation = replayOptions.sentimentAblation
       ? buildReplayAblation(modeledTrades, this.engineState.sentiment)
       : null;
@@ -7182,9 +8576,11 @@ export class TradingEngine {
       maxLatencyMs: this.maxLatencyMs,
       lastTickTimestamp: this.lastTickTimestamp,
       profilerState: this.profilerAgent.snapshot(),
-      profilerStates: deepClone([...this.profilerAgents.entries()].map(
-        ([instrumentCode, agent]) => [instrumentCode, agent.snapshot()] as [string, ProfilerState]
-      )),
+      profilerStates: deepClone(
+        [...this.profilerAgents.entries()].map(
+          ([instrumentCode, agent]) => [instrumentCode, agent.snapshot()] as [string, ProfilerState]
+        )
+      ),
       anomalyState: this.anomalyDetector.snapshot(),
       oracleState: this.oracleAgent.snapshot(),
       sentimentState: this.sentimentAgent.snapshot(),
@@ -7202,22 +8598,24 @@ export class TradingEngine {
       this.handleStorageWriteFailure("REPLAY_STATUS_READ", error);
     }
 
-    return status ?? {
-      replayId: null,
-      status: "IDLE",
-      ticksTotal: 0,
-      ticksProcessed: 0,
-      progressPct: 0,
-      speedMultiplier: 1,
-      shadowBankroll: 0,
-      dateFrom: null,
-      dateTo: null,
-      scenario: "BASELINE",
-      error: null,
-      startedAt: null,
-      updatedAt: new Date().toISOString(),
-      completedAt: null
-    };
+    return (
+      status ?? {
+        replayId: null,
+        status: "IDLE",
+        ticksTotal: 0,
+        ticksProcessed: 0,
+        progressPct: 0,
+        speedMultiplier: 1,
+        shadowBankroll: 0,
+        dateFrom: null,
+        dateTo: null,
+        scenario: "BASELINE",
+        error: null,
+        startedAt: null,
+        updatedAt: new Date().toISOString(),
+        completedAt: null
+      }
+    );
   }
 
   private async writeReplayStatus(status: ReplayStatus): Promise<void> {
@@ -7265,10 +8663,7 @@ export class TradingEngine {
     this.lastTickTimestamp = snapshot.lastTickTimestamp;
     this.signals = snapshot.signals;
     this.latestAgentSignals = new Map(snapshot.latestAgentSignals);
-    this.hydrateProfilerAgents(
-      snapshot.profilerState,
-      new Map(snapshot.profilerStates)
-    );
+    this.hydrateProfilerAgents(snapshot.profilerState, new Map(snapshot.profilerStates));
     this.anomalyDetector.hydrate(snapshot.anomalyState);
     this.oracleAgent.hydrate(snapshot.oracleState);
     this.sentimentAgent.hydrate(snapshot.sentimentState);
@@ -7293,10 +8688,7 @@ export class TradingEngine {
       )
     };
 
-    await this.safeStorageDelete(
-      [...persistedBookKeys.keys()],
-      "REPLAY_RESTORE_DELETE_BOOKS"
-    );
+    await this.safeStorageDelete([...persistedBookKeys.keys()], "REPLAY_RESTORE_DELETE_BOOKS");
 
     await this.safeStoragePut(writes, "REPLAY_RESTORE");
   }
@@ -7326,15 +8718,21 @@ export class TradingEngine {
          ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
          ORDER BY received_at ASC
          LIMIT ?`
-      ).bind(...binds).all<ReplayTickRow>();
+      )
+        .bind(...binds)
+        .all<ReplayTickRow>();
 
       return (rows.results ?? [])
         .map((row) => safeParseJson<MarketTick>(row.tick_json))
         .filter((tick): tick is MarketTick => tick?.schemaVersion === "universal-tick.v1");
     } catch (error) {
-      this.logger.warn("REPLAY_TICK_JOURNAL_UNAVAILABLE", "Falling back to telemetry logs for replay", {
-        error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
-      });
+      this.logger.warn(
+        "REPLAY_TICK_JOURNAL_UNAVAILABLE",
+        "Falling back to telemetry logs for replay",
+        {
+          error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
+        }
+      );
       const where = ["telemetry_json LIKE '%\"tick\"%'"];
       const binds: Array<string | number> = [];
 
@@ -7354,7 +8752,9 @@ export class TradingEngine {
          WHERE ${where.join(" AND ")}
          ORDER BY created_at ASC
          LIMIT ?`
-      ).bind(...binds).all<{ telemetry_json: string; created_at: string }>();
+      )
+        .bind(...binds)
+        .all<{ telemetry_json: string; created_at: string }>();
 
       return (rows.results ?? [])
         .map((row) => safeParseJson<{ tick?: MarketTick }>(row.telemetry_json)?.tick ?? null)
@@ -7384,7 +8784,9 @@ export class TradingEngine {
        WHERE ${where.join(" AND ")}
        ORDER BY executed_at ASC
        LIMIT 5000`
-    ).bind(...binds).all<ReplayTradeRow>();
+    )
+      .bind(...binds)
+      .all<ReplayTradeRow>();
 
     return (rows.results ?? []).filter((row) => row.side === "BUY" || row.side === "SELL");
   }
@@ -7461,10 +8863,14 @@ export class TradingEngine {
         )
         .run();
     } catch (error) {
-      this.logger.warn("BACKTEST_RUN_JOURNAL_FAILED", "Replay completed but D1 backtest journal failed", {
-        replayId: result.replayId,
-        error: error instanceof Error ? error.message : "UNKNOWN_D1_ERROR"
-      });
+      this.logger.warn(
+        "BACKTEST_RUN_JOURNAL_FAILED",
+        "Replay completed but D1 backtest journal failed",
+        {
+          replayId: result.replayId,
+          error: error instanceof Error ? error.message : "UNKNOWN_D1_ERROR"
+        }
+      );
     }
   }
 
@@ -7499,9 +8905,7 @@ export class TradingEngine {
   private calculateLatency(tick: MarketTick): LatencyMetrics {
     const brainTimestamp = new Date().toISOString();
     const sourceTimestamp =
-      tick.synchronizedExchangeTimestamp ??
-      tick.providerTimestamp ??
-      tick.exchangeTimestamp;
+      tick.synchronizedExchangeTimestamp ?? tick.providerTimestamp ?? tick.exchangeTimestamp;
     const providerTimestamp = tick.providerTimestamp ?? sourceTimestamp;
     const sourceTime = parseTimestampMs(sourceTimestamp, "source_timestamp");
     const rawIngestTime = parseTimestampMs(tick.receivedAt, "ingest_timestamp");
@@ -7594,10 +8998,7 @@ export class TradingEngine {
     );
   }
 
-  private observeExecutionProfile(
-    metrics: LatencyMetrics,
-    trace: ExecutionTraceInput
-  ): void {
+  private observeExecutionProfile(metrics: LatencyMetrics, trace: ExecutionTraceInput): void {
     const processingLatencyMs = roundLatency(metrics.processingLatencyMs);
 
     this.processingLatencySamples.push(processingLatencyMs);
@@ -7621,9 +9022,7 @@ export class TradingEngine {
     const shouldCompute =
       previousProfile.lastComputedAt === null ||
       nextProcessedTicks % this.jitterComputeIntervalTicks === 0;
-    const totalHotPathMs = roundLatency(
-      Math.max(0, highResolutionNow() - trace.hotPathStartedAt)
-    );
+    const totalHotPathMs = roundLatency(Math.max(0, highResolutionNow() - trace.hotPathStartedAt));
     let nextProfile: ExecutionProfile = {
       ...previousProfile,
       jitterThresholdMs: this.jitterThresholdMs,
@@ -7633,8 +9032,7 @@ export class TradingEngine {
       lastProcessingLatencyMs: processingLatencyMs,
       wakeUpTimeMs: trace.wakeUpTimeMs,
       coldStartSuspected:
-        trace.wakeUpTimeMs !== null &&
-        trace.wakeUpTimeMs > COLD_START_WAKEUP_THRESHOLD_MS,
+        trace.wakeUpTimeMs !== null && trace.wakeUpTimeMs > COLD_START_WAKEUP_THRESHOLD_MS,
       orderBookUpdateMs: trace.orderBookUpdateMs,
       agentLogicMs: trace.agentLogicMs,
       totalHotPathMs,
@@ -7882,23 +9280,22 @@ export class TradingEngine {
         anomalyStatus: this.engineState.anomaly.status,
         priceZScore: this.engineState.anomaly.priceZScore,
         volumeZScore: this.engineState.anomaly.volumeZScore,
-        cancellationToExecutionRatio:
-          this.engineState.anomaly.cancellationToExecutionRatio,
+        cancellationToExecutionRatio: this.engineState.anomaly.cancellationToExecutionRatio,
         colo: this.engineState.location.colo,
         placement: this.engineState.location.placement,
         isGoldenRegion: this.engineState.location.isGoldenRegion,
         latencyRiskMultiplier: this.engineState.location.latencyRiskMultiplier,
         positionSizeMultiplier: this.engineState.location.positionSizeMultiplier,
         netDelta: this.engineState.inventory.netDelta,
-      maxInventoryUnits: this.engineState.inventory.maxInventoryUnits,
-      inventoryPenalty: this.engineState.inventory.inventoryPenalty,
-      stopBid: this.engineState.inventory.stopBid,
-      stopAsk: this.engineState.inventory.stopAsk,
-      weightedImbalance: this.engineState.microstructure.weightedImbalance,
-      midPrice: this.engineState.microstructure.midPrice,
-      macroBias: this.macroBias,
-      temporaryOverride: this.activeTemporaryOverride,
-      connectedAdminStreams: this.adminSockets.size,
+        maxInventoryUnits: this.engineState.inventory.maxInventoryUnits,
+        inventoryPenalty: this.engineState.inventory.inventoryPenalty,
+        stopBid: this.engineState.inventory.stopBid,
+        stopAsk: this.engineState.inventory.stopAsk,
+        weightedImbalance: this.engineState.microstructure.weightedImbalance,
+        midPrice: this.engineState.microstructure.midPrice,
+        macroBias: this.macroBias,
+        temporaryOverride: this.activeTemporaryOverride,
+        connectedAdminStreams: this.adminSockets.size,
         RegimeCoefficient: this.engineState.oracle.skepticismMultiplier,
         AgentLogicTrace: this.signals.slice(-5).map((signal) => ({
           agent: signal.sourceAgent,
@@ -7920,22 +9317,20 @@ export class TradingEngine {
       return;
     }
 
-    const agents = (Object.keys(this.engineState.agentHealth) as AgentName[]).map(
-      (agentName) => {
-        const latestSignal = this.latestAgentSignals.get(agentName);
+    const agents = (Object.keys(this.engineState.agentHealth) as AgentName[]).map((agentName) => {
+      const latestSignal = this.latestAgentSignals.get(agentName);
 
-        return {
-          agentName,
-          health: this.engineState.agentHealth[agentName].status,
-          confidence: latestSignal?.confidence ?? null,
-          bias: latestSignal ? inferSignalBias(latestSignal) : "NEUTRAL",
-          action: latestSignal?.action ?? null,
-          expectedValue: latestSignal?.expectedValue ?? null,
-          lastSignalId: latestSignal?.signalId ?? null,
-          heartbeatAt: this.engineState.agentHealth[agentName].heartbeatAt
-        };
-      }
-    );
+      return {
+        agentName,
+        health: this.engineState.agentHealth[agentName].status,
+        confidence: latestSignal?.confidence ?? null,
+        bias: latestSignal ? inferSignalBias(latestSignal) : "NEUTRAL",
+        action: latestSignal?.action ?? null,
+        expectedValue: latestSignal?.expectedValue ?? null,
+        lastSignalId: latestSignal?.signalId ?? null,
+        heartbeatAt: this.engineState.agentHealth[agentName].heartbeatAt
+      };
+    });
 
     this.publish(
       "AGENT_STATE_SNAPSHOT",
@@ -8023,8 +9418,7 @@ export class TradingEngine {
         sequence: tick.sequence,
         priceZScore: anomalyResult.status.priceZScore,
         volumeZScore: anomalyResult.status.volumeZScore,
-        cancellationToExecutionRatio:
-          anomalyResult.status.cancellationToExecutionRatio,
+        cancellationToExecutionRatio: anomalyResult.status.cancellationToExecutionRatio,
         mode: this.engineState.mode,
         killSwitch: this.engineState.risk.killSwitch
       },
@@ -8107,11 +9501,7 @@ export class TradingEngine {
     );
   }
 
-  private publish(
-    type: string,
-    payload: Record<string, unknown>,
-    correlationId?: string
-  ): void {
+  private publish(type: string, payload: Record<string, unknown>, correlationId?: string): void {
     const message: BusMessage = {
       type,
       sequence: this.nextBusSequence(),
@@ -8197,61 +9587,56 @@ export class TradingEngine {
     return entries;
   }
 
-  private accumulateTickTelemetry(
-    payload: Record<string, unknown>,
-    emittedAt: string
-  ): void {
+  private accumulateTickTelemetry(payload: Record<string, unknown>, emittedAt: string): void {
     const cpuTimeMs = readTelemetryNumber(payload.cpuTimeMs);
     const totalLatencyMs = readTelemetryNumber(payload.totalLatencyMs);
     const websocketLatencyMs = readTelemetryNumber(payload.websocketLatencyMs);
     const processingLatencyMs = readTelemetryNumber(payload.processingLatencyMs);
     const timeToBookMs = readTelemetryNumber(payload.timeToBookMs);
     const status =
-      typeof payload.status === "string" && payload.status.length > 0
-        ? payload.status
-        : null;
+      typeof payload.status === "string" && payload.status.length > 0 ? payload.status : null;
 
-    const current =
-      this.tickTelemetryAggregate ??
-      {
-        count: 0,
-        freshCount: 0,
-        staleCount: 0,
-        firstObservedAt: emittedAt,
-        lastObservedAt: emittedAt,
-        latestInstrumentCode: null,
-        latestExchangeCode: null,
-        latestSequence: null,
-        latestStatus: null,
-        latestColo: null,
-        latestPlacement: null,
-        latestIsGoldenRegion: null,
-        latestLatencyRiskMultiplier: null,
-        sumCpuTimeMs: 0,
-        sumTotalLatencyMs: 0,
-        sumWebsocketLatencyMs: 0,
-        sumProcessingLatencyMs: 0,
-        sumTimeToBookMs: 0,
-        timeToBookSamples: 0,
-        maxTotalLatencyMs: 0,
-        maxWebsocketLatencyMs: 0,
-        maxProcessingLatencyMs: 0,
-        maxTimeToBookMs: null,
-        latestAverageLatencyMs: null,
-        latestOrderBookDepth: null,
-        latestToxicityScore: null,
-        latestJitterMs: null,
-        latestExecutionStatus: null,
-        latestWeightedImbalance: null,
-        latestMidPrice: null
-      };
+    const current = this.tickTelemetryAggregate ?? {
+      count: 0,
+      freshCount: 0,
+      staleCount: 0,
+      firstObservedAt: emittedAt,
+      lastObservedAt: emittedAt,
+      latestInstrumentCode: null,
+      latestExchangeCode: null,
+      latestSequence: null,
+      latestStatus: null,
+      latestColo: null,
+      latestPlacement: null,
+      latestIsGoldenRegion: null,
+      latestLatencyRiskMultiplier: null,
+      sumCpuTimeMs: 0,
+      sumTotalLatencyMs: 0,
+      sumWebsocketLatencyMs: 0,
+      sumProcessingLatencyMs: 0,
+      sumTimeToBookMs: 0,
+      timeToBookSamples: 0,
+      maxTotalLatencyMs: 0,
+      maxWebsocketLatencyMs: 0,
+      maxProcessingLatencyMs: 0,
+      maxTimeToBookMs: null,
+      latestAverageLatencyMs: null,
+      latestOrderBookDepth: null,
+      latestToxicityScore: null,
+      latestJitterMs: null,
+      latestExecutionStatus: null,
+      latestWeightedImbalance: null,
+      latestMidPrice: null
+    };
 
     current.count += 1;
     current.freshCount += status === "FRESH" ? 1 : 0;
     current.staleCount += status === "STALE" ? 1 : 0;
     current.lastObservedAt = emittedAt;
     current.latestInstrumentCode =
-      typeof payload.instrumentCode === "string" ? payload.instrumentCode : current.latestInstrumentCode;
+      typeof payload.instrumentCode === "string"
+        ? payload.instrumentCode
+        : current.latestInstrumentCode;
     current.latestExchangeCode =
       typeof payload.exchangeCode === "string" ? payload.exchangeCode : current.latestExchangeCode;
     current.latestSequence =
@@ -8259,19 +9644,15 @@ export class TradingEngine {
         ? payload.sequence
         : current.latestSequence;
     current.latestStatus = status ?? current.latestStatus;
-    current.latestColo =
-      typeof payload.colo === "string" ? payload.colo : current.latestColo;
+    current.latestColo = typeof payload.colo === "string" ? payload.colo : current.latestColo;
     current.latestPlacement =
-      typeof payload.placement === "string"
-        ? payload.placement
-        : current.latestPlacement;
+      typeof payload.placement === "string" ? payload.placement : current.latestPlacement;
     current.latestIsGoldenRegion =
       typeof payload.isGoldenRegion === "boolean"
         ? payload.isGoldenRegion
         : current.latestIsGoldenRegion;
     current.latestLatencyRiskMultiplier =
-      readTelemetryNumber(payload.latencyRiskMultiplier) ??
-      current.latestLatencyRiskMultiplier;
+      readTelemetryNumber(payload.latencyRiskMultiplier) ?? current.latestLatencyRiskMultiplier;
 
     if (cpuTimeMs !== null) {
       current.sumCpuTimeMs += cpuTimeMs;
@@ -8282,10 +9663,7 @@ export class TradingEngine {
     }
     if (websocketLatencyMs !== null) {
       current.sumWebsocketLatencyMs += websocketLatencyMs;
-      current.maxWebsocketLatencyMs = Math.max(
-        current.maxWebsocketLatencyMs,
-        websocketLatencyMs
-      );
+      current.maxWebsocketLatencyMs = Math.max(current.maxWebsocketLatencyMs, websocketLatencyMs);
     }
     if (processingLatencyMs !== null) {
       current.sumProcessingLatencyMs += processingLatencyMs;
@@ -8370,10 +9748,7 @@ export class TradingEngine {
     this.telemetryBuffer.push(entry);
 
     if (this.telemetryBuffer.length > TELEMETRY_BUFFER_LIMIT) {
-      this.telemetryBuffer.splice(
-        0,
-        this.telemetryBuffer.length - TELEMETRY_BUFFER_LIMIT
-      );
+      this.telemetryBuffer.splice(0, this.telemetryBuffer.length - TELEMETRY_BUFFER_LIMIT);
     }
 
     this.scheduleTelemetryFlush();
@@ -8436,10 +9811,12 @@ export class TradingEngine {
         "TradingEngine",
         entry.message,
         entry.correlationId,
-        JSON.stringify(toJsonValue({
-          telemetryType: entry.telemetryType,
-          ...entry.payload
-        })),
+        JSON.stringify(
+          toJsonValue({
+            telemetryType: entry.telemetryType,
+            ...entry.payload
+          })
+        ),
         entry.createdAt
       )
     );
@@ -8569,7 +9946,7 @@ export class TradingEngine {
   ): Promise<void> {
     const previousVersion = this.cachedConfig.version;
     const effectiveGovernance = await this.governor.readEffectiveConfig(
-      configSnapshot ?? await this.configManager.fetchConfig()
+      configSnapshot ?? (await this.configManager.fetchConfig())
     );
     const nextConfig = effectiveGovernance.config;
     const now = new Date().toISOString();
@@ -8726,10 +10103,13 @@ export class TradingEngine {
       updatedAt: signal.createdAt
     };
 
-    await this.safeStoragePut({
-      [ENGINE_STATE_KEY]: this.engineState,
-      [`signal:${signal.signalId}`]: signal
-    }, "AGENT_SIGNAL");
+    await this.safeStoragePut(
+      {
+        [ENGINE_STATE_KEY]: this.engineState,
+        [`signal:${signal.signalId}`]: signal
+      },
+      "AGENT_SIGNAL"
+    );
 
     this.logger.agentDecision(signal, latencyMs);
     this.publish(
@@ -8760,11 +10140,94 @@ export class TradingEngine {
     }
   }
 
+  private emitCascadeOperationalAlert(
+    eventType: CascadeAlertEventType,
+    title: string,
+    message: string,
+    metadata: JsonRecord,
+    dedupeKey: string
+  ): void {
+    const policy = cascadeAlertPolicy(eventType);
+    const payload: JsonRecord = {
+      eventType,
+      priority: policy.priority,
+      routes: policy.routes,
+      externalDelivery: policy.externalDelivery,
+      ...metadata
+    };
+
+    this.publish("CASCADE_ALERT", payload, dedupeKey);
+    if (!policy.externalDelivery) {
+      return;
+    }
+
+    this.notifier.notify({
+      priority: policy.priority,
+      title,
+      message,
+      dedupeKey: `cascade:${eventType}:${dedupeKey}`,
+      metadata: payload
+    });
+  }
+
+  private async ensureCascadePaperModeArmed(observedAt: string): Promise<void> {
+    try {
+      const existing = await this.env.CONFIG_STORE.get(CASCADE_PAPER_ARMED_AT_KEY);
+      if (existing) {
+        return;
+      }
+
+      await this.env.CONFIG_STORE.put(CASCADE_PAPER_ARMED_AT_KEY, observedAt);
+      this.logger.warn("CASCADE_PAPER_MODE_ARMED", "Cascade recovery paper-mode clock started", {
+        strategyMode: this.cachedConfig.STRATEGY_MODE,
+        tradingEnabled: this.cachedConfig.TRADING_ENABLED,
+        shadowMode: isShadowMode(this.env),
+        observedAt
+      });
+    } catch (error) {
+      this.handleStorageWriteFailure("CASCADE_PAPER_MODE_ARMING", error);
+    }
+  }
+
+  private recordCascadeUiSignal(
+    signal: AgentSignal,
+    outcome: "TAKEN" | "SKIPPED" | "CLOSED"
+  ): void {
+    this.signals.push(signal);
+
+    if (this.signals.length > SIGNAL_BUFFER_LIMIT) {
+      this.signals.splice(0, this.signals.length - SIGNAL_BUFFER_LIMIT);
+    }
+
+    this.latestAgentSignals.set(signal.sourceAgent, signal);
+    this.state.waitUntil(
+      this.safeStoragePut(`signal:${signal.signalId}`, signal, "CASCADE_SIGNAL")
+    );
+    this.publish(
+      "CASCADE_SIGNAL",
+      {
+        signalId: signal.signalId,
+        traceId: signal.traceId,
+        sourceAgent: signal.sourceAgent,
+        targetAgent: signal.targetAgent,
+        instrumentCode: signal.instrumentCode,
+        action: signal.action,
+        confidence: signal.confidence,
+        expectedValue: signal.expectedValue,
+        outcome,
+        cascadeId:
+          (signal.featureVector as JsonRecord).cascadeId ??
+          (signal.riskContext as JsonRecord).cascadeId ??
+          null,
+        createdAt: signal.createdAt
+      },
+      signal.signalId
+    );
+  }
+
   private async applyConfigUpdate(update: AdminConfigUpdate): Promise<void> {
     if (update.signal === "REFRESH_CONFIG" || update.config) {
-      const directConfig = update.config
-        ? this.configFromAdminSnapshot(update.config)
-        : undefined;
+      const directConfig = update.config ? this.configFromAdminSnapshot(update.config) : undefined;
       await this.refreshConfig("ADMIN_SIGNAL", directConfig);
       await this.scheduleConfigRefresh();
       if (!hasRuntimeConfigUpdate(update)) {
@@ -8905,10 +10368,7 @@ function nativeHashSequence(value: string): number {
   return hash >>> 0;
 }
 
-function hyperliquidNativeInstrumentCode(
-  coin: string,
-  fallback?: string | null
-): string {
+function hyperliquidNativeInstrumentCode(coin: string, fallback?: string | null): string {
   const fallbackCode =
     typeof fallback === "string" && fallback.trim() !== ""
       ? normalizeNativeInstrumentCode(fallback)
@@ -8947,9 +10407,7 @@ function normalizeNativeInstrumentCode(value: string): string {
 }
 
 function normalizeInstrumentSelector(value: string): string {
-  const rawInstrument = value.includes(":")
-    ? value.split(":").slice(1).join(":")
-    : value;
+  const rawInstrument = value.includes(":") ? value.split(":").slice(1).join(":") : value;
   const normalized = normalizeNativeInstrumentCode(rawInstrument);
 
   if (!normalized.includes("-")) {
@@ -8970,6 +10428,85 @@ function splitNativeInstrument(instrumentCode: string): {
     baseAsset: baseAsset || "unknown",
     quoteAsset: quoteParts.join("-") || "usd"
   };
+}
+
+function baseAssetFromInstrument(instrumentCode: string): string {
+  return splitNativeInstrument(instrumentCode).baseAsset.toUpperCase();
+}
+
+function cascadeInstrumentSet(value: string): Set<string> {
+  return new Set(
+    value
+      .split(",")
+      .map((asset) => asset.trim().toUpperCase())
+      .filter((asset) => /^[A-Z0-9]{2,12}$/.test(asset))
+  );
+}
+
+function latestAbsorptionForInstrument(
+  absorptions: ReadonlyMap<string, AbsorptionConfirmed>,
+  instrumentCode: string
+): AbsorptionConfirmed | null {
+  let selected: AbsorptionConfirmed | null = null;
+  for (const absorption of absorptions.values()) {
+    if (absorption.instrumentCode !== instrumentCode.toLowerCase()) {
+      continue;
+    }
+    if (!selected || Date.parse(absorption.confirmedAt) > Date.parse(selected.confirmedAt)) {
+      selected = absorption;
+    }
+  }
+  return selected;
+}
+
+function latestCascadeAtForInstrument(
+  cascades: ReadonlyMap<string, CascadeEvent>,
+  currentCascade: CascadeEvent
+): string | null {
+  let selected: string | null = null;
+  for (const cascade of cascades.values()) {
+    if (
+      cascade.cascadeId === currentCascade.cascadeId ||
+      cascade.instrumentCode !== currentCascade.instrumentCode
+    ) {
+      continue;
+    }
+    if (!selected || Date.parse(cascade.detectedAt) > Date.parse(selected)) {
+      selected = cascade.detectedAt;
+    }
+  }
+  return selected;
+}
+
+function isOpenCascadePosition(position: CascadeOpenPosition): boolean {
+  return (
+    position.remainingSize > 0 &&
+    position.status !== "CLOSED" &&
+    position.status !== "STOPPED_OUT" &&
+    position.status !== "TIME_STOPPED"
+  );
+}
+
+function recentSwingLow(candles: readonly { low: number }[]): number | null {
+  if (candles.length === 0) {
+    return null;
+  }
+  let low = Number.POSITIVE_INFINITY;
+  for (const candle of candles.slice(-20)) {
+    low = Math.min(low, candle.low);
+  }
+  return Number.isFinite(low) ? low : null;
+}
+
+function recentSwingHigh(candles: readonly { high: number }[]): number | null {
+  if (candles.length === 0) {
+    return null;
+  }
+  let high = Number.NEGATIVE_INFINITY;
+  for (const candle of candles.slice(-20)) {
+    high = Math.max(high, candle.high);
+  }
+  return Number.isFinite(high) ? high : null;
 }
 
 function parseHyperliquidNativeLevels(
@@ -8993,16 +10530,12 @@ function parseHyperliquidNativeLevels(
   return [[], []];
 }
 
-function nativeBookSideLevels(
-  value: unknown,
-  receivedAt: string
-): OrderBookSnapshotLevel[] {
-  const rawLevels =
-    Array.isArray(value)
-      ? value
-      : isNativeRecord(value) && Array.isArray(value.levels)
-        ? value.levels
-        : [];
+function nativeBookSideLevels(value: unknown, receivedAt: string): OrderBookSnapshotLevel[] {
+  const rawLevels = Array.isArray(value)
+    ? value
+    : isNativeRecord(value) && Array.isArray(value.levels)
+      ? value.levels
+      : [];
   const levels: OrderBookSnapshotLevel[] = [];
 
   for (const rawLevel of rawLevels) {
@@ -9109,10 +10642,7 @@ function createNativeHyperliquidTradeTick(
 ): MarketTick {
   const receivedAt = nativeIso(payload.receivedAt) ?? new Date().toISOString();
   const coin = requireNativeString(item.coin ?? payload.instrumentCode, "coin");
-  const instrumentCode = hyperliquidNativeInstrumentCode(
-    coin,
-    payload.instrumentCode
-  );
+  const instrumentCode = hyperliquidNativeInstrumentCode(coin, payload.instrumentCode);
   const exchangeCode = (payload.exchangeCode ?? "hyperliquid").toLowerCase();
   const sourceExchange = normalizeSourceExchange(payload.source_exchange ?? "hyperliquid");
   const sourceWeight = normalizeSourceWeight(payload.sourceWeight);
@@ -9182,10 +10712,7 @@ function createNativeHyperliquidFundingTick(
   const ctx = nativeObject(data.ctx) ?? data;
   const receivedAt = nativeIso(payload.receivedAt) ?? new Date().toISOString();
   const coin = requireNativeString(data.coin ?? payload.instrumentCode, "coin");
-  const instrumentCode = hyperliquidNativeInstrumentCode(
-    coin,
-    payload.instrumentCode
-  );
+  const instrumentCode = hyperliquidNativeInstrumentCode(coin, payload.instrumentCode);
   const exchangeCode = (payload.exchangeCode ?? "hyperliquid").toLowerCase();
   const sourceExchange = normalizeSourceExchange(payload.source_exchange ?? "hyperliquid");
   const sourceWeight = normalizeSourceWeight(payload.sourceWeight);
@@ -9295,11 +10822,11 @@ function nativeHyperliquidLatencyMetrics(input: {
 function hasRuntimeConfigUpdate(update: AdminConfigUpdate): boolean {
   return Boolean(
     update.mode ||
-      update.bankroll ||
-      update.risk ||
-      update.maxLatencyMs !== undefined ||
-      update.MAX_LATENCY !== undefined ||
-      update.performance
+    update.bankroll ||
+    update.risk ||
+    update.maxLatencyMs !== undefined ||
+    update.MAX_LATENCY !== undefined ||
+    update.performance
   );
 }
 
@@ -9419,10 +10946,7 @@ function normalizePaperBankroll(
     return bankroll;
   }
 
-  const paperBankroll = readPositiveNumber(
-    env.PAPER_BANKROLL_USD,
-    DEFAULT_PAPER_BANKROLL_USD
-  );
+  const paperBankroll = readPositiveNumber(env.PAPER_BANKROLL_USD, DEFAULT_PAPER_BANKROLL_USD);
 
   return {
     ...bankroll,
@@ -9458,8 +10982,7 @@ function readTopologyHeaders(request: Request): EdgeTopology {
   return {
     colo: normalizeTopologyHeader(headers.get(`${TOPOLOGY_HEADER_PREFIX}colo`)),
     placement: normalizeTopologyHeader(
-      headers.get(`${TOPOLOGY_HEADER_PREFIX}placement`) ??
-        headers.get("cf-placement")
+      headers.get(`${TOPOLOGY_HEADER_PREFIX}placement`) ?? headers.get("cf-placement")
     ),
     country: normalizeTopologyHeader(headers.get(`${TOPOLOGY_HEADER_PREFIX}country`)),
     city: normalizeTopologyHeader(headers.get(`${TOPOLOGY_HEADER_PREFIX}city`)),
@@ -9486,16 +11009,11 @@ function resolveEngineLocation(
 ): EngineLocation {
   const targetColo = configuredPlacementColo(env.PLACEMENT_TARGET_COLO);
   const observedColo =
-    (
-      placementColo(topology.placement) ??
-      topology.colo ??
-      targetColo
-    )?.toUpperCase() ?? null;
+    (placementColo(topology.placement) ?? topology.colo ?? targetColo)?.toUpperCase() ?? null;
   const colo = observedColo;
   const goldenColos = parseColoSet(config.GOLDEN_COLOS || env.GOLDEN_COLOS);
   const hasGoldenRegionPolicy = goldenColos.size > 0;
-  const isGoldenRegion =
-    !hasGoldenRegionPolicy || (colo !== null && goldenColos.has(colo));
+  const isGoldenRegion = !hasGoldenRegionPolicy || (colo !== null && goldenColos.has(colo));
   const latencyRiskMultiplier = isGoldenRegion
     ? 1
     : resolveRiskMultiplier(env.HIGH_LATENCY_COLO_RISK_MULTIPLIER);
@@ -9519,9 +11037,9 @@ function resolveEngineLocation(
         ? "UNKNOWN_COLO"
         : !placementColo(topology.placement) && !topology.colo && targetColo === colo
           ? "TARGET_COLO_ASSUMED"
-        : isGoldenRegion
-          ? "GOLDEN_REGION"
-          : "NON_GOLDEN_REGION"
+          : isGoldenRegion
+            ? "GOLDEN_REGION"
+            : "NON_GOLDEN_REGION"
   };
 }
 
@@ -9545,10 +11063,7 @@ function applyLocationRisk(
     ...risk,
     configVersion: config.version,
     killSwitch: !config.TRADING_ENABLED,
-    maxOrderNotional: roundMetric(
-      config.MAX_POSITION_SIZE * location.positionSizeMultiplier,
-      8
-    ),
+    maxOrderNotional: roundMetric(config.MAX_POSITION_SIZE * location.positionSizeMultiplier, 8),
     maxDrawdownPct: config.MAX_DRAWDOWN_PCT,
     updatedAt
   };
@@ -9638,10 +11153,7 @@ function inferSignalBias(signal: AgentSignal): "BULLISH" | "BEARISH" | "NEUTRAL"
 }
 
 function hawkesEvacuationSignal(signal: AgentSignal): boolean {
-  return (
-    signal.action === "PAUSE" &&
-    signal.featureVector?.signalType === "HAWKES_FLOW_CLUSTER"
-  );
+  return signal.action === "PAUSE" && signal.featureVector?.signalType === "HAWKES_FLOW_CLUSTER";
 }
 
 function touchAgentHealth(
@@ -9664,10 +11176,7 @@ function touchAgentHealth(
   };
 }
 
-function disabledProfilerEvaluation(
-  state: ProfilerState,
-  observedAt: string
-): ProfilerEvaluation {
+function disabledProfilerEvaluation(state: ProfilerState, observedAt: string): ProfilerEvaluation {
   return {
     processed: false,
     skippedReason: "PROFILER_AGENT_DISABLED",
@@ -9870,9 +11379,7 @@ function normalizeInventoryState(
         ? value.baseAsset
         : "BTC",
     normalization:
-      value.normalization && typeof value.normalization === "object"
-        ? value.normalization
-        : {},
+      value.normalization && typeof value.normalization === "object" ? value.normalization : {},
     maxInventoryUnits,
     maxInventoryDelta
   };
@@ -10059,10 +11566,7 @@ function defaultRiskLimits(): RiskLimits {
   };
 }
 
-function mergeRiskLimits(
-  current?: RiskLimits,
-  update?: Partial<RiskLimits> | null
-): RiskLimits {
+function mergeRiskLimits(current?: RiskLimits, update?: Partial<RiskLimits> | null): RiskLimits {
   return {
     ...(current ?? defaultRiskLimits()),
     ...(update ?? {}),
@@ -10084,9 +11588,7 @@ function resolveMaxLatencyMs(
     fallback ??
     DEFAULT_MAX_LATENCY_MS;
 
-  return Number.isFinite(candidate) && candidate > 0
-    ? candidate
-    : DEFAULT_MAX_LATENCY_MS;
+  return Number.isFinite(candidate) && candidate > 0 ? candidate : DEFAULT_MAX_LATENCY_MS;
 }
 
 function processingLatencyStats(samples: number[]): {
@@ -10104,8 +11606,7 @@ function processingLatencyStats(samples: number[]): {
 
   const average = samples.reduce((sum, sample) => sum + sample, 0) / samples.length;
   const variance =
-    samples.reduce((sum, sample) => sum + (sample - average) ** 2, 0) /
-    samples.length;
+    samples.reduce((sum, sample) => sum + (sample - average) ** 2, 0) / samples.length;
   const max = samples.reduce(
     (currentMax, sample) => Math.max(currentMax, sample),
     Number.NEGATIVE_INFINITY
@@ -10134,9 +11635,7 @@ function prometheusMetric(
   ].join("\n");
 }
 
-function prometheusLabels(
-  labels: Record<string, string | number | boolean | null>
-): string {
+function prometheusLabels(labels: Record<string, string | number | boolean | null>): string {
   const entries = Object.entries(labels).filter(([, value]) => value !== null);
 
   if (entries.length === 0) {
@@ -10210,17 +11709,7 @@ function countBookLevels(
   bids: Map<string, SortedBookSide>,
   asks: Map<string, SortedBookSide>
 ): number {
-  let count = 0;
-
-  for (const book of bids.values()) {
-    count += book.size;
-  }
-
-  for (const book of asks.values()) {
-    count += book.size;
-  }
-
-  return count;
+  return countOrderBookLevels(bids.values(), asks.values());
 }
 
 function buildMicrostructureSnapshot(
@@ -10238,14 +11727,9 @@ function buildMicrostructureSnapshot(
 ): MicrostructureMetrics {
   const bestBid = bids[0]?.price ?? null;
   const bestAsk = asks[0]?.price ?? null;
-  const spread =
-    bestBid !== null && bestAsk !== null
-      ? roundCrypto(bestAsk - bestBid)
-      : null;
+  const spread = bestBid !== null && bestAsk !== null ? roundCrypto(bestAsk - bestBid) : null;
   const midPrice =
-    bestBid !== null && bestAsk !== null
-      ? roundCrypto((bestBid + bestAsk) / 2)
-      : null;
+    bestBid !== null && bestAsk !== null ? roundCrypto((bestBid + bestAsk) / 2) : null;
   const spreadBps =
     spread !== null && midPrice !== null && midPrice !== 0
       ? roundMetric((spread / midPrice) * 10_000, 4)
@@ -10339,10 +11823,7 @@ function isTargetInstrument(instrumentCode: string): boolean {
   return TARGET_INSTRUMENTS.has(normalizeNativeInstrumentCode(instrumentCode));
 }
 
-function isInstrumentSelectedByMoltworker(
-  instrumentCode: string,
-  macroBias: MacroBias
-): boolean {
+function isInstrumentSelectedByMoltworker(instrumentCode: string, macroBias: MacroBias): boolean {
   const selected = selectedMoltworkerInstruments(macroBias);
   const normalized = normalizeNativeInstrumentCode(instrumentCode);
   const coin = normalized.split("-")[0];
@@ -10491,10 +11972,7 @@ function reconcileAssetQuoteStatesForConfig(
         return [asset.instrumentCode, defaults[asset.instrumentCode]];
       }
 
-      if (
-        existing.reason === "TRADING_DISABLED" ||
-        existing.reason === "MOLTWORKER_NOT_SELECTED"
-      ) {
+      if (existing.reason === "TRADING_DISABLED" || existing.reason === "MOLTWORKER_NOT_SELECTED") {
         return [
           asset.instrumentCode,
           {
@@ -10521,15 +11999,14 @@ function quoteStateForInstrumentState(
   return states?.[normalized] ?? fallback;
 }
 
-function isQuoteSuspendedAt(
-  quoteState: EngineState["quoteState"],
-  observedAt: string
-): boolean {
+function isQuoteSuspendedAt(quoteState: EngineState["quoteState"], observedAt: string): boolean {
   if (quoteState.status !== "SUSPENDED") {
     return false;
   }
 
-  return !quoteState.suspendedUntil || Date.parse(quoteState.suspendedUntil) > Date.parse(observedAt);
+  return (
+    !quoteState.suspendedUntil || Date.parse(quoteState.suspendedUntil) > Date.parse(observedAt)
+  );
 }
 
 function suspendAssetQuoteStates(
@@ -10610,24 +12087,24 @@ function aggregateQuoteState(
     values
       .map((state) => state.lastQuote)
       .filter((quote) => !quote || isTargetInstrument(quote.instrumentCode))
-      .filter((quote): quote is NonNullable<EngineState["quoteState"]["lastQuote"]> => Boolean(quote))
+      .filter((quote): quote is NonNullable<EngineState["quoteState"]["lastQuote"]> =>
+        Boolean(quote)
+      )
       .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt))[0] ??
     previousLastQuote;
 
   if (values.length > 0 && active.length === 0 && suspended.length > 0) {
     const indefinite = suspended.find((state) => !state.suspendedUntil);
     const longest = [...suspended].sort(
-      (left, right) => Date.parse(right.suspendedUntil ?? "9999-12-31T23:59:59.999Z") -
+      (left, right) =>
+        Date.parse(right.suspendedUntil ?? "9999-12-31T23:59:59.999Z") -
         Date.parse(left.suspendedUntil ?? "9999-12-31T23:59:59.999Z")
     )[0];
 
     return {
       status: "SUSPENDED",
-      reason:
-        indefinite?.reason ??
-        longest?.reason ??
-        "ALL_ASSET_QUOTES_SUSPENDED",
-      suspendedUntil: indefinite ? null : longest?.suspendedUntil ?? null,
+      reason: indefinite?.reason ?? longest?.reason ?? "ALL_ASSET_QUOTES_SUSPENDED",
+      suspendedUntil: indefinite ? null : (longest?.suspendedUntil ?? null),
       lastQuote,
       updatedAt: observedAt
     };
@@ -10662,9 +12139,7 @@ function adverseAdjustedPaperFillPrice(
   tickSize: number
 ): number {
   const adjusted =
-    side === "BUY"
-      ? price * (1 + adverseBps / 10_000)
-      : price * (1 - adverseBps / 10_000);
+    side === "BUY" ? price * (1 + adverseBps / 10_000) : price * (1 - adverseBps / 10_000);
 
   return normalizePriceToTick(
     Math.max(tickSize, adjusted),
@@ -10678,9 +12153,7 @@ function normalizeMarketKey(value: string): string {
 }
 
 function normalizeSourceExchange(value: string | null | undefined): string {
-  return typeof value === "string" && value.trim() !== ""
-    ? value.trim().toLowerCase()
-    : "unknown";
+  return typeof value === "string" && value.trim() !== "" ? value.trim().toLowerCase() : "unknown";
 }
 
 function normalizeSourceWeight(value: number | null | undefined): number {
@@ -10747,8 +12220,7 @@ function volumeStats(volumes: number[]): { mean: number; sigma: number } {
   }
 
   const mean = volumes.reduce((sum, volume) => sum + volume, 0) / volumes.length;
-  const variance =
-    volumes.reduce((sum, volume) => sum + (volume - mean) ** 2, 0) / volumes.length;
+  const variance = volumes.reduce((sum, volume) => sum + (volume - mean) ** 2, 0) / volumes.length;
 
   return {
     mean: roundCrypto(mean),
@@ -10811,9 +12283,7 @@ function latestActiveWalls(
     }
   }
 
-  return new Map(
-    [...latest.entries()].filter(([, wall]) => wall.status === "ACTIVE")
-  );
+  return new Map([...latest.entries()].filter(([, wall]) => wall.status === "ACTIVE"));
 }
 
 function classifyMissingWalls(
@@ -10957,18 +12427,11 @@ function roundCrypto(value: number): number {
   return roundMetric(value, CRYPTO_DECIMAL_PLACES);
 }
 
-function normalizePriceToTick(
-  value: number,
-  tickSize: number,
-  mode: "FLOOR" | "CEIL"
-): number {
-  const normalizedTick = Number.isFinite(tickSize) && tickSize > 0
-    ? tickSize
-    : DEFAULT_ORDER_BOOK_TICK_SIZE;
+function normalizePriceToTick(value: number, tickSize: number, mode: "FLOOR" | "CEIL"): number {
+  const normalizedTick =
+    Number.isFinite(tickSize) && tickSize > 0 ? tickSize : DEFAULT_ORDER_BOOK_TICK_SIZE;
   const scaled =
-    mode === "FLOOR"
-      ? Math.floor(value / normalizedTick)
-      : Math.ceil(value / normalizedTick);
+    mode === "FLOOR" ? Math.floor(value / normalizedTick) : Math.ceil(value / normalizedTick);
 
   return roundCrypto(Math.max(normalizedTick, scaled * normalizedTick));
 }
@@ -11121,10 +12584,7 @@ function deleteBookNode(root: BookNode | null, key: number): BookNode | null {
   return mergeBookNodes(root.left, root.right);
 }
 
-function mergeBookNodes(
-  left: BookNode | null,
-  right: BookNode | null
-): BookNode | null {
+function mergeBookNodes(left: BookNode | null, right: BookNode | null): BookNode | null {
   if (!left) {
     return right;
   }
@@ -11250,8 +12710,7 @@ function bucketPrice(price: number, tickSize: number, side: OrderBookSide): numb
   }
 
   const scaled = price / tickSize;
-  const bucketed =
-    side === "bid" ? Math.floor(scaled) * tickSize : Math.ceil(scaled) * tickSize;
+  const bucketed = side === "bid" ? Math.floor(scaled) * tickSize : Math.ceil(scaled) * tickSize;
 
   return roundCrypto(bucketed);
 }
@@ -11261,11 +12720,7 @@ function toJsonValue(value: unknown): JsonValue {
     return null;
   }
 
-  if (
-    typeof value === "string" ||
-    typeof value === "boolean" ||
-    typeof value === "number"
-  ) {
+  if (typeof value === "string" || typeof value === "boolean" || typeof value === "number") {
     return typeof value === "number" && !Number.isFinite(value) ? null : value;
   }
 
@@ -11301,20 +12756,14 @@ function hydrateOrderBooks(records: Map<string, InternalOrderBook>): {
   const sync = new Map<string, BookSyncState>();
 
   for (const [, value] of records) {
-    const bidLevels = Array.isArray(value.bids)
-      ? value.bids
-      : hydrateLegacyLevel(value, "bid");
-    const askLevels = Array.isArray(value.asks)
-      ? value.asks
-      : hydrateLegacyLevel(value, "ask");
+    const bidLevels = Array.isArray(value.bids) ? value.bids : hydrateLegacyLevel(value, "bid");
+    const askLevels = Array.isArray(value.asks) ? value.asks : hydrateLegacyLevel(value, "ask");
     const tickSize = value.tickSize ?? DEFAULT_ORDER_BOOK_TICK_SIZE;
     const bidBook = levelsToBookSide(bidLevels, "bid", tickSize);
     const askBook = levelsToBookSide(askLevels, "ask", tickSize);
     const normalizedBids = bidBook.top(BOOK_SNAPSHOT_TOP_LEVELS);
     const normalizedAsks = askBook.top(BOOK_SNAPSHOT_TOP_LEVELS);
-    const sourceExchange = normalizeSourceExchange(
-      value.source_exchange ?? value.exchangeCode
-    );
+    const sourceExchange = normalizeSourceExchange(value.source_exchange ?? value.exchangeCode);
     const marketKey = normalizeMarketKey(
       value.marketKey ?? buildMarketKey(sourceExchange, value.instrumentCode)
     );
@@ -11381,10 +12830,7 @@ function hydrateOrderBooks(records: Map<string, InternalOrderBook>): {
   return { snapshots, bids, asks, sync };
 }
 
-function hydrateLegacyLevel(
-  value: InternalOrderBook,
-  side: OrderBookSide
-): PriceLevel[] {
+function hydrateLegacyLevel(value: InternalOrderBook, side: OrderBookSide): PriceLevel[] {
   const legacy = value as unknown as {
     bid?: number | null;
     ask?: number | null;
@@ -11465,9 +12911,7 @@ function isCrossedBook(book: InternalOrderBook): boolean {
   );
 }
 
-function mapManagedStatusToTradeStatus(
-  status: ManagedOrder["status"]
-): TradeExecution["status"] {
+function mapManagedStatusToTradeStatus(status: ManagedOrder["status"]): TradeExecution["status"] {
   switch (status) {
     case "FILLED":
       return "FILLED";
@@ -11496,12 +12940,7 @@ function executionReportSize(
   status: TradeExecution["status"]
 ): number {
   if (status === "FILLED" || status === "PARTIAL" || status === "GHOST_FILL") {
-    return (
-      report.fillIncrementSize ??
-      report.filledSize ??
-      order.filledSize ??
-      order.size
-    );
+    return report.fillIncrementSize ?? report.filledSize ?? order.filledSize ?? order.size;
   }
 
   return report.orderSize ?? order.size;
@@ -11526,10 +12965,7 @@ function executionTradeId(
   return `execution:${report.clientId}:${exchangeId}:${status}:${Date.parse(observedAt) || observedAt}`;
 }
 
-function inferExecutionPrimaryDriver(
-  intent: TradeIntent | null,
-  order: ManagedOrder
-): AgentName {
+function inferExecutionPrimaryDriver(intent: TradeIntent | null, order: ManagedOrder): AgentName {
   const rationale = intent?.rationale.toLowerCase() ?? "";
 
   if (rationale.includes("hedge") || order.clientId.includes(":hedge")) {
@@ -11543,11 +12979,7 @@ function inferExecutionPrimaryDriver(
   return intent ? "CROUPIER" : "EXECUTIONER";
 }
 
-function resolveTickSize(
-  env: Env,
-  instrumentCode: string,
-  override?: number
-): number {
+function resolveTickSize(env: Env, instrumentCode: string, override?: number): number {
   if (typeof override === "number" && Number.isFinite(override) && override > 0) {
     return override;
   }
@@ -11561,11 +12993,7 @@ function resolveTickSize(
   return readPositiveNumber(env.ORDER_BOOK_TICK_SIZE_DEFAULT, DEFAULT_ORDER_BOOK_TICK_SIZE);
 }
 
-function resolveDomBinSize(
-  env: Env,
-  instrumentCode: string,
-  fallback: number
-): number {
+function resolveDomBinSize(env: Env, instrumentCode: string, fallback: number): number {
   const configured = parsePositiveNumberMap(env.DOM_PRICE_BIN_SIZES)[instrumentCode];
 
   if (configured !== undefined) {
@@ -11587,10 +13015,9 @@ function parsePositiveNumberMap(value: string | undefined): Record<string, numbe
   try {
     const parsed = JSON.parse(value) as Record<string, unknown>;
     const entries = Object.entries(parsed)
-      .map(([instrumentCode, rawValue]) => [
-        instrumentCode.toLowerCase(),
-        Number(rawValue)
-      ] as const)
+      .map(
+        ([instrumentCode, rawValue]) => [instrumentCode.toLowerCase(), Number(rawValue)] as const
+      )
       .filter(([, numericValue]) => Number.isFinite(numericValue) && numericValue > 0);
 
     return Object.fromEntries(entries);
@@ -11813,19 +13240,19 @@ function modelReplayIntentTrade(
     return null;
   }
 
-  const latencyPenaltyBps = options.scenario === "LATENCY_SHOCK"
-    ? Math.max(options.latencyMs * 0.02, 2)
-    : options.latencyMs * 0.005;
+  const latencyPenaltyBps =
+    options.scenario === "LATENCY_SHOCK"
+      ? Math.max(options.latencyMs * 0.02, 2)
+      : options.latencyMs * 0.005;
   const effectiveSlippageBps = options.slippageBps + latencyPenaltyBps;
   const entrySlippage = effectiveSlippageBps / 10_000;
-  const entryPrice = intent.action === "BUY"
-    ? referencePrice * (1 + entrySlippage)
-    : referencePrice * (1 - entrySlippage);
+  const entryPrice =
+    intent.action === "BUY"
+      ? referencePrice * (1 + entrySlippage)
+      : referencePrice * (1 - entrySlippage);
   const exitPrice = exitTick.price;
   const grossPnl =
-    intent.action === "BUY"
-      ? (exitPrice - entryPrice) * size
-      : (entryPrice - exitPrice) * size;
+    intent.action === "BUY" ? (exitPrice - entryPrice) * size : (entryPrice - exitPrice) * size;
   const fees = ((entryPrice + exitPrice) * size * options.feeBps) / 10_000;
 
   return {
@@ -11914,11 +13341,16 @@ function bucketReplayTrades(
   return [...buckets.entries()].map(([key, bucket]) => {
     const pnl = bucket.map((trade) => trade.theoreticalPnl);
     const grossProfit = pnl.filter((value) => value > 0).reduce((sum, value) => sum + value, 0);
-    const grossLoss = Math.abs(pnl.filter((value) => value < 0).reduce((sum, value) => sum + value, 0));
+    const grossLoss = Math.abs(
+      pnl.filter((value) => value < 0).reduce((sum, value) => sum + value, 0)
+    );
     return {
       key,
       tradeCount: bucket.length,
-      pnl: roundMetric(pnl.reduce((sum, value) => sum + value, 0), 8),
+      pnl: roundMetric(
+        pnl.reduce((sum, value) => sum + value, 0),
+        8
+      ),
       grossProfit: roundMetric(grossProfit, 8),
       grossLoss: roundMetric(grossLoss, 8),
       winRate: calculateWinRate(bucket),
@@ -11957,18 +13389,14 @@ function calculateReplaySharpe(pnls: number[]): number | null {
     return null;
   }
   const mean = pnls.reduce((sum, pnl) => sum + pnl, 0) / pnls.length;
-  const variance =
-    pnls.reduce((sum, pnl) => sum + (pnl - mean) ** 2, 0) / (pnls.length - 1);
+  const variance = pnls.reduce((sum, pnl) => sum + (pnl - mean) ** 2, 0) / (pnls.length - 1);
   const sigma = Math.sqrt(variance);
   return sigma > 0 ? roundMetric((mean / sigma) * Math.sqrt(pnls.length), 6) : null;
 }
 
 function calculateWinRate(trades: ReplayResult["shadowTrades"]): number | null {
   return trades.length > 0
-    ? roundMetric(
-        trades.filter((trade) => trade.theoreticalPnl > 0).length / trades.length,
-        6
-      )
+    ? roundMetric(trades.filter((trade) => trade.theoreticalPnl > 0).length / trades.length, 6)
     : null;
 }
 
@@ -11980,7 +13408,10 @@ function buildStressSummary(
   return [
     {
       scenario: "BASELINE",
-      pnl: roundMetric(trades.reduce((sum, trade) => sum + trade.theoreticalPnl, 0), 8),
+      pnl: roundMetric(
+        trades.reduce((sum, trade) => sum + trade.theoreticalPnl, 0),
+        8
+      ),
       maxDrawdown: calculateMaxDrawdown(equity),
       generatedIntentCount,
       simulatedTradeCount: trades.length
@@ -12024,7 +13455,10 @@ function buildReplayAblation(
 ): ReplayResult["ablation"] {
   const sentimentTrades = trades.filter((trade) => trade.driver === "SENTIMENT");
   const sentimentEnabledPnl = trades.reduce((sum, trade) => sum + trade.theoreticalPnl, 0);
-  const sentimentContribution = sentimentTrades.reduce((sum, trade) => sum + trade.theoreticalPnl, 0);
+  const sentimentContribution = sentimentTrades.reduce(
+    (sum, trade) => sum + trade.theoreticalPnl,
+    0
+  );
   const estimatedAiCostUsd = Number(sentiment.estimatedCostUsd ?? 0);
   const sentimentDisabledPnl = sentimentEnabledPnl - sentimentContribution;
   return {
@@ -12094,10 +13528,7 @@ function resolveGhostBookConfig(env: Env): GhostBookConfig {
       env.SHADOW_VLO_LATENCY_BUDGET_MS,
       DEFAULT_SHADOW_VLO_LATENCY_BUDGET_MS
     ),
-    minSize: readPositiveNumber(
-      env.SHADOW_VLO_MIN_SIZE,
-      DEFAULT_SHADOW_VLO_MIN_SIZE
-    )
+    minSize: readPositiveNumber(env.SHADOW_VLO_MIN_SIZE, DEFAULT_SHADOW_VLO_MIN_SIZE)
   };
 }
 
@@ -12253,10 +13684,8 @@ function finiteNumber(value: unknown): number | null {
 }
 
 function isInformationalTick(tick: MarketTick): boolean {
-  const eventType =
-    typeof tick.raw?.eventType === "string" ? tick.raw.eventType.toLowerCase() : "";
-  const commodity =
-    typeof tick.raw?.commodity === "string" ? tick.raw.commodity.toUpperCase() : "";
+  const eventType = typeof tick.raw?.eventType === "string" ? tick.raw.eventType.toLowerCase() : "";
+  const commodity = typeof tick.raw?.commodity === "string" ? tick.raw.commodity.toUpperCase() : "";
 
   return (
     eventType === "trade" ||
@@ -12268,10 +13697,8 @@ function isInformationalTick(tick: MarketTick): boolean {
 }
 
 function isTradeTick(tick: MarketTick): boolean {
-  const eventType =
-    typeof tick.raw?.eventType === "string" ? tick.raw.eventType.toLowerCase() : "";
-  const commodity =
-    typeof tick.raw?.commodity === "string" ? tick.raw.commodity.toUpperCase() : "";
+  const eventType = typeof tick.raw?.eventType === "string" ? tick.raw.eventType.toLowerCase() : "";
+  const commodity = typeof tick.raw?.commodity === "string" ? tick.raw.commodity.toUpperCase() : "";
 
   return eventType === "trade" || commodity === "TRADE";
 }
@@ -12286,7 +13713,9 @@ function extractTickStreamId(tick: MarketTick): string | null {
   return typeof rawStreamId === "string" && rawStreamId.trim() ? rawStreamId.trim() : null;
 }
 
-async function readHyperliquidRawIngestPayload(request: Request): Promise<HyperliquidRawIngestPayload> {
+async function readHyperliquidRawIngestPayload(
+  request: Request
+): Promise<HyperliquidRawIngestPayload> {
   const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
 
   if (contentType.includes("application/x-msgpack")) {

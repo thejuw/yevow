@@ -39,7 +39,71 @@ test.describe("Grand Command admin dashboard", () => {
     });
   });
 
-  test("rejects negative and out-of-bounds matrix variables before backend submission", async ({ page }) => {
+  test("shows cascade recovery panels and can request an operator close", async ({ page }) => {
+    const api = await installApiMock(page);
+    await loginToDashboard(page);
+
+    await expect(page.getByText("Strategy Mode")).toBeVisible();
+    await expect(page.getByLabel("Strategy selector")).toBeVisible();
+    await expect(page.getByLabel("Cascade asset toggles")).toContainText("ETH");
+    await expect(page.getByLabel("Cascade asset toggles")).toContainText("SOL");
+    await expect(page.getByText("Cascade Recovery Ops")).toBeVisible();
+    await expect(page.getByText("Active Cascades").first()).toBeVisible();
+    await expect(page.getByText("Open Positions").first()).toBeVisible();
+    await expect(page.getByText("Recent Signals").first()).toBeVisible();
+
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.getByRole("button", { name: "Close" }).click();
+    await expect(page.getByText("Cascade close intent dispatched.")).toBeVisible();
+    expect(api.cascadeCloseCount).toBe(1);
+  });
+
+  test("toggles cascade assets and runs cascade replay validation", async ({ page }) => {
+    const api = await installApiMock(page);
+    await loginToDashboard(page);
+
+    await page
+      .getByLabel("Cascade asset toggles")
+      .getByRole("button", { name: /○ HYPE/ })
+      .click();
+    expect(api.configUpdates.at(-1)).toMatchObject({
+      CASCADE_INSTRUMENTS: "BTC,ETH,SOL,HYPE"
+    });
+
+    await page.getByRole("button", { name: "Cascade Validate" }).click();
+    await expect(page.locator(".cascade-validation-grid")).toContainText("PASS");
+    expect(api.cascadeBacktestCount).toBe(1);
+  });
+
+  test("wires dashboard diagnostics and replay actions", async ({ page }) => {
+    const api = await installApiMock(page);
+    await loginToDashboard(page);
+
+    await page.getByRole("button", { name: "Run Integrity Check" }).click();
+    await expect(page.getByText("System Integrity Protocol")).toBeVisible();
+    expect(api.diagnosticsCount).toBe(1);
+
+    await page.locator(".diagnostics-modal").getByRole("button", { name: "Close" }).click();
+    await page.getByRole("button", { name: "Run Replay" }).click();
+    await expect(page.getByText("Shadow replay completed and journaled.")).toBeVisible();
+    expect(api.replayCount).toBe(1);
+  });
+
+  test("shows cascade-specific parameter sections when cascade mode is armed", async ({ page }) => {
+    await installApiMock(page);
+    await loginToSettings(page);
+
+    await expect(page.getByText("Cascade Detection Parameters")).toBeVisible();
+    await expect(page.getByText("Cascade Entry & Exit Parameters")).toBeVisible();
+    await expect(page.getByText("Cascade Risk Limits")).toBeVisible();
+    await expect(page.getByTestId("param-CASCADE_NOTIONAL_THRESHOLD_USD").first()).toBeVisible();
+    await expect(page.getByTestId("param-PARTIAL_1_R").first()).toBeVisible();
+    await expect(page.getByTestId("param-DAILY_LOSS_LIMIT_PCT").first()).toBeVisible();
+  });
+
+  test("rejects negative and out-of-bounds matrix variables before backend submission", async ({
+    page
+  }) => {
     const api = await installApiMock(page);
     await loginToSettings(page);
 
@@ -79,11 +143,19 @@ async function loginToSettings(page: Page): Promise<void> {
 async function installApiMock(page: Page): Promise<{
   configPostCount: number;
   configUpdates: Array<Record<string, unknown>>;
+  cascadeCloseCount: number;
+  cascadeBacktestCount: number;
+  diagnosticsCount: number;
+  replayCount: number;
 }> {
   const now = new Date().toISOString();
   const api = {
     configPostCount: 0,
-    configUpdates: [] as Array<Record<string, unknown>>
+    configUpdates: [] as Array<Record<string, unknown>>,
+    cascadeCloseCount: 0,
+    cascadeBacktestCount: 0,
+    diagnosticsCount: 0,
+    replayCount: 0
   };
   let config = baseConfig(now);
 
@@ -93,7 +165,15 @@ async function installApiMock(page: Page): Promise<{
     const path = url.pathname;
 
     if (path === "/login") {
-      await route.fulfill({ json: { ok: true, token: "test-token", tokenType: "Bearer", expiresIn: 3600, scopes: ["READ", "WRITE"] } });
+      await route.fulfill({
+        json: {
+          ok: true,
+          token: "test-token",
+          tokenType: "Bearer",
+          expiresIn: 3600,
+          scopes: ["READ", "WRITE"]
+        }
+      });
       return;
     }
 
@@ -106,7 +186,12 @@ async function installApiMock(page: Page): Promise<{
       const body = request.postDataJSON() as { config?: Record<string, unknown> };
       const update = body.config ?? {};
       api.configUpdates.push(update);
-      config = { ...config, ...update, updatedAt: new Date().toISOString(), version: `test-${api.configPostCount}` };
+      config = {
+        ...config,
+        ...update,
+        updatedAt: new Date().toISOString(),
+        version: `test-${api.configPostCount}`
+      };
       await route.fulfill({ json: { ok: true, config } });
       return;
     }
@@ -191,15 +276,175 @@ async function installApiMock(page: Page): Promise<{
             },
             generatedAt: now
           },
-          pagination: { page: 1, limit: 50, total: 0, pageCount: 0, hasNextPage: false, hasPreviousPage: false },
+          pagination: {
+            page: 1,
+            limit: 50,
+            total: 0,
+            pageCount: 0,
+            hasNextPage: false,
+            hasPreviousPage: false
+          },
           filters: { statusMode: "ALL" }
         }
       });
       return;
     }
 
+    if (path === "/admin/cascade/active") {
+      await route.fulfill({
+        json: {
+          ok: true,
+          cascades: [
+            {
+              cascadeId: "cascade-btc-1",
+              instrumentCode: "btc-usd",
+              direction: "LONG_LIQUIDATION",
+              phase: "ABSORPTION_CONFIRMED",
+              liquidationNotional: 12500000,
+              liquidationCount: 12,
+              zScore: 4.2,
+              directionalPct: 0.88,
+              priceMoveAtr: 1.7,
+              detectedAt: now,
+              absorption: {},
+              position: null
+            }
+          ]
+        }
+      });
+      return;
+    }
+
+    if (path === "/admin/cascade/positions") {
+      await route.fulfill({
+        json: {
+          ok: true,
+          positions: [
+            {
+              positionId: "cascade-position-1",
+              signalId: "cascade-signal-1",
+              cascadeId: "cascade-btc-1",
+              instrumentCode: "btc-usd",
+              direction: "LONG",
+              status: "ENTERED",
+              entryPrice: 100,
+              currentStopPrice: 95,
+              initialStopPrice: 95,
+              totalSize: 1,
+              remainingSize: 1,
+              initialRiskPct: 0.005,
+              rDistance: 5,
+              targets: {},
+              timeStopAt: new Date(Date.now() + 3600000).toISOString(),
+              firstTargetTaken: false,
+              secondTargetTaken: false,
+              enteredAt: now,
+              updatedAt: now,
+              markPrice: 103,
+              unrealizedPnl: 3,
+              unrealizedR: 0.6,
+              timeToTimeStopMs: 3600000
+            }
+          ]
+        }
+      });
+      return;
+    }
+
+    if (path === "/admin/cascade/signals") {
+      await route.fulfill({
+        json: {
+          ok: true,
+          signals: [
+            {
+              signalId: "cascade-signal-1",
+              instrumentCode: "btc-usd",
+              action: "BUY",
+              outcome: "TAKEN",
+              createdAt: now
+            }
+          ]
+        }
+      });
+      return;
+    }
+
+    if (path === "/admin/cascade/heat") {
+      await route.fulfill({
+        json: {
+          ok: true,
+          heat: {
+            currentHeatPct: 0.005,
+            heatCapPct: 0.02,
+            percentOfCap: 0.25,
+            openPositionCount: 1,
+            remainingRiskUsd: 5,
+            updatedAt: now
+          }
+        }
+      });
+      return;
+    }
+
+    if (path === "/admin/cascade/positions/cascade-position-1/close") {
+      api.cascadeCloseCount += 1;
+      await route.fulfill({ json: { ok: true } });
+      return;
+    }
+
+    if (path === "/admin/backtest/cascade") {
+      api.cascadeBacktestCount += 1;
+      await route.fulfill({
+        json: {
+          ok: true,
+          report: {
+            schemaVersion: "cascade.backtest-report.v2",
+            fromDate: now,
+            toDate: now,
+            instruments: ["btc-usd", "eth-usd", "sol-usd", "hype-usd"],
+            startingEquity: 1000,
+            endingEquity: 1003,
+            totalPnl: 3,
+            maxDrawdownPct: 0.001,
+            trades: [],
+            cascades: [],
+            signals: [],
+            rejectedSignals: [],
+            dataQuality: {
+              candleCount: 1000,
+              liquidationCount: 20,
+              openInterestCount: 100,
+              slippageSampleCount: 10,
+              source: "D1"
+            },
+            validation: {
+              ok: true,
+              checks: [
+                {
+                  id: "candles_present",
+                  label: "Historical candles",
+                  ok: true,
+                  detail: "1000 candles loaded."
+                },
+                {
+                  id: "liquidations_present",
+                  label: "Historical liquidations",
+                  ok: true,
+                  detail: "20 liquidation events loaded."
+                }
+              ]
+            },
+            metadata: { model: "cascade-event-replay-v2" }
+          }
+        }
+      });
+      return;
+    }
+
     if (path === "/admin/alerts") {
-      await route.fulfill({ json: { ok: true, alerting: { configured: false, debounceMs: 60000, channels: [] } } });
+      await route.fulfill({
+        json: { ok: true, alerting: { configured: false, debounceMs: 60000, channels: [] } }
+      });
       return;
     }
 
@@ -268,6 +513,43 @@ async function installApiMock(page: Page): Promise<{
       return;
     }
 
+    if (path === "/admin/diagnostics") {
+      api.diagnosticsCount += 1;
+      await route.fulfill({
+        json: {
+          ok: true,
+          generatedAt: now,
+          checks: [
+            {
+              id: "l1_sync",
+              label: "L1 Sync Check",
+              status: "OPTIMAL",
+              detail: "No dropped packets in the mocked visual path."
+            }
+          ]
+        }
+      });
+      return;
+    }
+
+    if (path === "/admin/replay") {
+      api.replayCount += 1;
+      await route.fulfill({
+        json: {
+          ok: true,
+          replay: {
+            status: "COMPLETED",
+            progressPct: 100,
+            scenario: "BASELINE",
+            theoreticalPnl: 2.1,
+            maxDrawdown: 0.001,
+            sharpe: 1.2
+          }
+        }
+      });
+      return;
+    }
+
     if (path === "/admin/replay/status") {
       await route.fulfill({ json: { ok: true, replay: null } });
       return;
@@ -326,6 +608,13 @@ async function installApiMock(page: Page): Promise<{
 function baseConfig(now: string) {
   return {
     TRADING_ENABLED: true,
+    STRATEGY_MODE: "CASCADE_RECOVERY",
+    ORACLE_ENABLED: true,
+    SENTIMENT_ENABLED: true,
+    PROFILER_ENABLED: true,
+    CROUPIER_ENABLED: true,
+    PIT_BOSS_ENABLED: true,
+    MARKET_MAKING_MODE: "BALANCED",
     MAX_POSITION_SIZE: 1,
     MAX_POSITION_PCT: 0.05,
     MAX_INVENTORY_UNITS: 5,
@@ -348,7 +637,65 @@ function baseConfig(now: string) {
     AM_VPIN_CRITICAL_THRESHOLD: 0.85,
     AM_VPIN_OBI_DEPTH: 5,
     AM_VPIN_CRITICAL_OBI: 0.8,
+    AM_VPIN_CONTESTED_SPREAD_MULTIPLIER: 1,
+    AM_VPIN_TOXIC_SPREAD_MULTIPLIER: 1,
     AM_VPIN_QUOTE_HALT_MS: 60000,
+    CASCADE_WINDOW_MS: 900000,
+    CASCADE_NOTIONAL_THRESHOLD_USD: 10000000,
+    CASCADE_ZSCORE_THRESHOLD: 3,
+    CASCADE_LOOKBACK_HOURS: 24,
+    CASCADE_DIRECTIONAL_PCT: 0.75,
+    CASCADE_MIN_PRICE_MOVE_ATR: 1,
+    ABSORPTION_WINDOW_MS: 1800000,
+    ABSORPTION_PRICE_BAND_BPS: 25,
+    ABSORPTION_MIN_HOLD_SECONDS: 120,
+    ENTRY_WINDOW_SECONDS: 1800,
+    IMPULSIVE_BAR_BODY_ATR: 1.2,
+    IMPULSIVE_BAR_VOLUME_MULT: 1.5,
+    STOP_BUFFER_ATR: 0.25,
+    MIN_STOP_DISTANCE_BPS: 15,
+    MAX_STOP_DISTANCE_BPS: 350,
+    MIN_TIME_SINCE_LAST_CASCADE_SECONDS: 900,
+    NEWS_BLACKOUT_MINUTES: 30,
+    MAX_REALIZED_VOL_PERCENTILE: 0.95,
+    CASCADE_TIME_STOP_HOURS: 6,
+    PARTIAL_1_R: 2,
+    PARTIAL_1_SIZE_PCT: 30,
+    PARTIAL_2_R: 3,
+    PARTIAL_2_SIZE_PCT: 30,
+    TRAILING_STOP_TYPE: "ATR",
+    TRAILING_STOP_PARAM: 2,
+    RISK_PER_TRADE_PCT: 0.005,
+    HEAT_CAP_PCT: 0.02,
+    MAX_POSITION_NOTIONAL_PCT: 0.1,
+    ASSET_LIQUIDITY_CAP_USD: 25000,
+    DAILY_LOSS_LIMIT_PCT: 0.02,
+    WEEKLY_LOSS_LIMIT_PCT: 0.05,
+    MAX_CONSECUTIVE_LOSSES: 3,
+    HEDGE_ENABLED: false,
+    HEDGE_TRIGGER_INVENTORY_PCT: 0.6,
+    HEDGE_COOLDOWN_MS: 30000,
+    HEDGE_MAX_SLIPPAGE_BPS: 8,
+    CASCADE_TAKER_ENABLED: false,
+    CASCADE_INSTRUMENTS: "BTC,ETH,SOL",
+    MAX_SPREAD_BPS_FOR_TAKER: 15,
+    MAX_SINGLE_ORDER_NOTIONAL_USD: 1000,
+    SLICE_NOTIONAL_THRESHOLD_USD: 10000,
+    SLICE_NOTIONAL_PER_CHUNK: 2500,
+    SLICE_INTERVAL_MS: 250,
+    SLICE_JITTER_MS: 50,
+    MIN_FILL_RATIO: 0.8,
+    LAYERED_QUOTE_LEVELS: 3,
+    LAYERED_QUOTE_SIZE_DECAY: 0.55,
+    LAYERED_QUOTE_SPREAD_STEP_BPS: 1,
+    CVAR_CONFIDENCE: 0.99,
+    CVAR_MAX_TAIL_LOSS_BPS: 25,
+    CVAR_LOOKBACK_TRADES: 500,
+    SENTIMENT_ALPHA_MODE: "EVENT_RISK_ONLY",
+    TOXICITY_CLASSIFIER_ENABLED: true,
+    TOXICITY_CLASSIFIER_THRESHOLD: 0.72,
+    FUNDING_PRE_SETTLEMENT_WINDOW_MS: 1800000,
+    FUNDING_PRE_SETTLEMENT_BIAS_MULTIPLIER: 2,
     VAR_CONFIDENCE_Z: 2.326,
     ORACLE_GOVERNANCE_MODE: "AUTONOMOUS",
     ORACLE_MANUAL_SKEPTICISM: 1.4,
@@ -366,7 +713,13 @@ function baseState(config: ReturnType<typeof baseConfig>) {
     mode: "PAPER",
     bankroll: { currency: "USD", cash: 1000, equity: 1000, realizedPnl: 0, updatedAt: now },
     openPositions: {},
-    riskMetrics: { highWaterMark: 1000, rollingDrawdownPct: 0, var99OneHour: 0, isTradingEnabled: true, updatedAt: now },
+    riskMetrics: {
+      highWaterMark: 1000,
+      rollingDrawdownPct: 0,
+      var99OneHour: 0,
+      isTradingEnabled: true,
+      updatedAt: now
+    },
     processedTicks: 100,
     acceptedSignals: 10,
     averageLatency: 450,
@@ -389,17 +742,69 @@ function baseState(config: ReturnType<typeof baseConfig>) {
     macroBias: { direction: "NEUTRAL", intensity: 0, confidence: 0, reason: "test" },
     temporaryOverride: null,
     assetMatrix: {
-      "btc-usd": { instrumentCode: "btc-usd", coin: "BTC", active: true, selectedByMoltworker: true, capitalAllocationPct: 0.25, midPrice: 101 },
-      "eth-usd": { instrumentCode: "eth-usd", coin: "ETH", active: true, selectedByMoltworker: true, capitalAllocationPct: 0.25, midPrice: 2500 }
+      "btc-usd": {
+        instrumentCode: "btc-usd",
+        coin: "BTC",
+        active: true,
+        selectedByMoltworker: true,
+        capitalAllocationPct: 0.25,
+        midPrice: 101
+      },
+      "eth-usd": {
+        instrumentCode: "eth-usd",
+        coin: "ETH",
+        active: true,
+        selectedByMoltworker: true,
+        capitalAllocationPct: 0.25,
+        midPrice: 2500
+      }
     },
     profilerStates: {},
-    microstructure: { bestBid: 100, bestAsk: 101, midPrice: 100.5, spreadBps: 10, weightedImbalance: 0.1, depthLevels: 20, timeToBookMs: 1, updatedAt: now },
+    microstructure: {
+      bestBid: 100,
+      bestAsk: 101,
+      midPrice: 100.5,
+      spreadBps: 10,
+      weightedImbalance: 0.1,
+      depthLevels: 20,
+      timeToBookMs: 1,
+      updatedAt: now
+    },
     oracle: { skepticismMultiplier: 1.4 },
-    inventory: { netDelta: 0, current_inventory_delta: 0, baseAsset: "BTC", normalization: {}, maxInventoryUnits: 5, maxInventoryDelta: 1, inventoryPenalty: 0, stopBid: false, stopAsk: false },
+    inventory: {
+      netDelta: 0,
+      current_inventory_delta: 0,
+      baseAsset: "BTC",
+      normalization: {},
+      maxInventoryUnits: 5,
+      maxInventoryDelta: 1,
+      inventoryPenalty: 0,
+      stopBid: false,
+      stopAsk: false
+    },
     quoteState: { status: "ACTIVE", reason: null, suspendedUntil: null },
-    executionProfile: { status: "STABLE", jitterMs: 1, jitterThresholdMs: 10, averageProcessingLatencyMs: 0, orderBookUpdateMs: 0, agentLogicMs: 0, wakeUpTimeMs: 0 },
-    citadel: { status: "NOMINAL", reason: null, shadowMode: true, lastEvacuationAt: null, updatedAt: now },
-    location: { colo: "BRU", isGoldenRegion: true, latencyRiskMultiplier: 1, positionSizeMultiplier: 1 },
+    executionProfile: {
+      status: "STABLE",
+      jitterMs: 1,
+      jitterThresholdMs: 10,
+      averageProcessingLatencyMs: 0,
+      orderBookUpdateMs: 0,
+      agentLogicMs: 0,
+      wakeUpTimeMs: 0
+    },
+    citadel: {
+      status: "NOMINAL",
+      reason: null,
+      shadowMode: true,
+      lastEvacuationAt: null,
+      updatedAt: now
+    },
+    location: {
+      colo: "BRU",
+      isGoldenRegion: true,
+      latencyRiskMultiplier: 1,
+      positionSizeMultiplier: 1
+    },
     lastTradeIntent: null,
     orderMap: {},
     heartbeatAt: now,

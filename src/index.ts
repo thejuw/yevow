@@ -1,16 +1,15 @@
+import { Hono, type Context } from "hono";
 import { AuthManager } from "./AuthManager";
 import { calibrateGoldenColos, type ColoCalibrationOptions } from "./ColoCalibrator";
-import { ConfigManager } from "./ConfigManager";
+import { ConfigManager, configDefaultsFromEnv } from "./ConfigManager";
 import { Governor } from "./Governor";
+import { Logger, createLogSink, structuredConsoleLogsEnabled } from "./Logger";
+import { readNotificationSettings, writeNotificationSettings } from "./NotificationSettings";
+import { buildPaperLedger, type PaperLedger, type PaperLedgerFillInput } from "./PaperLedger";
 import {
-  Logger,
-  createLogSink,
-  structuredConsoleLogsEnabled
-} from "./Logger";
-import {
-  readNotificationSettings,
-  writeNotificationSettings
-} from "./NotificationSettings";
+  evaluateCascadeLiveReadiness,
+  type TwoPersonApproval
+} from "./strategy/cascade/OperationalSafeguards";
 import { StrategyVault } from "./StrategyVault";
 import { TradingEngine } from "./TradingEngine";
 import { Notifier, type AlertPriority } from "./utils/Notifier";
@@ -36,7 +35,13 @@ const ENGINE_HEALTH_TIMEOUT_MS = 1_500;
 const MOLTWORKER_HEARTBEAT_KEY = "moltworker:heartbeat";
 const DEFAULT_MOLTWORKER_HEARTBEAT_MAX_AGE_MS = 300_000;
 const PAPER_SESSION_STARTED_AT_KEY = "paper:session_started_at";
+const CASCADE_PAPER_ARMED_AT_KEY = "cascade:paper_armed_at";
+const CASCADE_LAST_CONFIG_CHANGE_AT_KEY = "cascade:last_config_change_at";
+const CASCADE_TWO_PERSON_READ_APPROVAL_KEY = "cascade:two_person:read_approval";
+const CASCADE_TWO_PERSON_APPROVAL_WINDOW_MS = 5 * 60_000;
+const CASCADE_CONFIG_FREEZE_HOURS = 72;
 const COST_BUDGET_SETTINGS_KEY = "cost_budget_settings";
+const JWT_REVOCATION_PREFIX = "auth:jti:revoked:";
 const LOG_LEVELS = ["DEBUG", "INFO", "WARN", "ERROR", "CRITICAL"] as const;
 const AGENT_NAMES = [
   "ORACLE",
@@ -136,6 +141,10 @@ interface TradeStatusBreakdownRow {
   status: string;
   count: number;
   latest_executed_at: string | null;
+}
+
+interface PaperLedgerFillRow extends TradeHistoryRow {
+  status: "GHOST_FILL";
 }
 
 interface ExecutionQualityAggregateRow {
@@ -240,226 +249,216 @@ interface DateRangeFilter {
   to: string | null;
 }
 
-export default {
-  async fetch(
-    request: Request,
-    env: Env,
-    ctx: ExecutionContext
-  ): Promise<Response> {
-    const url = new URL(request.url);
-    const logger = new Logger(
-      env.TRADING_DB,
-      (promise) => ctx.waitUntil(promise),
-      "GatewayWorker",
-      undefined,
-      createLogSink(env),
-      structuredConsoleLogsEnabled(env)
+type GatewayHono = { Bindings: Env };
+
+const ROUTE_CATALOG = [
+  "GET /health",
+  "GET /state (TELEMETRY:READ token)",
+  "GET /performance (TELEMETRY:READ token)",
+  "GET /metrics/performance (TELEMETRY:READ token)",
+  "GET /slippage (TELEMETRY:READ token)",
+  "GET /book/snapshot (TELEMETRY:READ token)",
+  "GET /dom/heatmap (TELEMETRY:READ token)",
+  "GET /liquidations/heatmap (TELEMETRY:READ token)",
+  "GET /stream (TELEMETRY:READ token, WebSocket)",
+  "POST /tick",
+  "POST /hyperliquid/raw",
+  "POST /liquidation",
+  "POST /market/tick",
+  "GET /market/ws",
+  "POST /agent/signal",
+  "GET /moltworker/health",
+  "POST /login",
+  "GET /admin",
+  "GET /admin/ui",
+  "GET|POST|PUT|PATCH /admin/config",
+  "GET /admin/health",
+  "GET /admin/state",
+  "GET /admin/settings",
+  "GET /admin/diagnostics",
+  "GET /admin/live-readiness",
+  "POST /admin/live-readiness/approve",
+  "POST /admin/auth/revoke",
+  "POST /admin/moltworker/heartbeat",
+  "POST /admin/settings/notifications",
+  "GET|POST /admin/topology/calibrate",
+  "GET /admin/performance",
+  "GET /admin/metrics/performance",
+  "POST /admin/maintenance/recover",
+  "GET /admin/slippage",
+  "GET /admin/history",
+  "GET /admin/trace",
+  "GET /admin/attribution",
+  "GET /admin/alerts",
+  "POST /admin/alerts/test",
+  "POST /admin/replay",
+  "GET /admin/replay/status",
+  "GET|POST /admin/vault",
+  "POST /admin/vault/test",
+  "POST /admin/news/sentiment",
+  "POST /admin/news/blackout",
+  "GET /admin/cascade/active",
+  "GET /admin/cascade/signals",
+  "GET /admin/cascade/positions",
+  "POST /admin/cascade/positions/:id/close",
+  "POST /admin/cascade/blackout",
+  "GET /admin/cascade/heat",
+  "POST /admin/backtest/cascade",
+  "GET /admin/book/snapshot",
+  "GET /admin/dom/heatmap",
+  "GET /admin/liquidations/heatmap",
+  "GET /admin/stream",
+  "GET /admin/logs"
+] as const;
+
+const gatewayRouter = new Hono<GatewayHono>();
+
+gatewayRouter.options("*", () => corsPreflight());
+
+gatewayRouter.get("/health", async (c) => {
+  const runtime = gatewayRuntime(c);
+  runtime.logger.info(
+    "SYSTEM_HEARTBEAT",
+    "Gateway heartbeat observed at Cloudflare edge",
+    topologyTelemetry(runtime.topology),
+    runtime.topology.requestId
+  );
+
+  return routeToEngine(c.req.raw, c.env, runtime.topology, {
+    timeoutMs: ENGINE_HEALTH_TIMEOUT_MS,
+    timeoutResponse: gatewayHealthFallback(runtime.topology)
+  });
+});
+
+for (const route of [
+  "/state",
+  "/performance",
+  "/metrics/performance",
+  "/slippage",
+  "/book/snapshot",
+  "/dom/heatmap",
+  "/liquidations/heatmap"
+]) {
+  gatewayRouter.get(route, async (c) => {
+    const runtime = gatewayRuntime(c);
+    const auth = await authenticateAdmin(
+      c.req.raw,
+      c.env,
+      runtime.logger,
+      runtime.topology,
+      "TELEMETRY:READ"
     );
-    const configManager = new ConfigManager(env.CONFIG_STORE);
-    const topology = extractEdgeTopology(request, env);
+    return auth instanceof Response ? auth : routeToEngine(c.req.raw, c.env, runtime.topology);
+  });
+}
 
-    if (request.method === "OPTIONS") {
-      return corsPreflight();
-    }
+gatewayRouter.get("/stream", async (c) => {
+  const runtime = gatewayRuntime(c);
+  if (c.req.raw.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+    return json({ ok: false, error: "WebSocket upgrade required" }, 426);
+  }
 
-    if (url.pathname === "/health") {
-      logger.info(
-        "SYSTEM_HEARTBEAT",
-        "Gateway heartbeat observed at Cloudflare edge",
-        topologyTelemetry(topology),
-        topology.requestId
-      );
+  const auth = await authenticateAdmin(
+    c.req.raw,
+    c.env,
+    runtime.logger,
+    runtime.topology,
+    "TELEMETRY:READ"
+  );
+  return auth instanceof Response ? auth : routeToEngine(c.req.raw, c.env, runtime.topology);
+});
 
-      return routeToEngine(request, env, topology, {
-        timeoutMs: ENGINE_HEALTH_TIMEOUT_MS,
-        timeoutResponse: gatewayHealthFallback(topology)
-      });
-    }
+for (const route of [
+  "/tick",
+  "/market/tick",
+  "/hyperliquid/tick",
+  "/hyperliquid/raw",
+  "/liquidation"
+]) {
+  gatewayRouter.post(route, async (c) => routeAuthenticatedIngest(c));
+}
 
-    if (url.pathname === "/state") {
-      const auth = await authenticateAdmin(request, env, logger, topology, "READ");
-      if (auth instanceof Response) {
-        return auth;
-      }
+gatewayRouter.get("/market/ws", async (c) => {
+  if (c.req.raw.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+    return json({ ok: false, error: "WebSocket upgrade required" }, 426);
+  }
+  return routeAuthenticatedIngest(c);
+});
 
-      return routeToEngine(request, env, topology);
-    }
+gatewayRouter.post("/agent/signal", async (c) => routeAuthenticatedIngest(c));
+gatewayRouter.get("/moltworker/health", (c) => readMoltworkerHealth(c.env));
 
-    if (url.pathname === "/performance") {
-      const auth = await authenticateAdmin(request, env, logger, topology, "READ");
-      if (auth instanceof Response) {
-        return auth;
-      }
+gatewayRouter.post("/login", async (c) => {
+  const runtime = gatewayRuntime(c);
+  return handleLogin(c.req.raw, c.env, runtime.logger, runtime.topology);
+});
 
-      return routeToEngine(request, env, topology);
-    }
+gatewayRouter.all("/admin", async (c) => routeAdmin(c));
+gatewayRouter.all("/admin/*", async (c) => routeAdmin(c));
 
-    if (url.pathname === "/metrics/performance") {
-      const auth = await authenticateAdmin(request, env, logger, topology, "READ");
-      if (auth instanceof Response) {
-        return auth;
-      }
+gatewayRouter.get("/", (c) => {
+  const runtime = gatewayRuntime(c);
+  return gatewayCatalogResponse(c.env, runtime.topology);
+});
 
-      return routeToEngine(request, env, topology);
-    }
+gatewayRouter.notFound((c) => {
+  const runtime = gatewayRuntime(c);
+  return gatewayCatalogResponse(c.env, runtime.topology);
+});
 
-    if (url.pathname === "/slippage") {
-      const auth = await authenticateAdmin(request, env, logger, topology, "READ");
-      if (auth instanceof Response) {
-        return auth;
-      }
-
-      return routeToEngine(request, env, topology);
-    }
-
-    if (url.pathname === "/book/snapshot") {
-      const auth = await authenticateAdmin(request, env, logger, topology, "READ");
-      if (auth instanceof Response) {
-        return auth;
-      }
-
-      return routeToEngine(request, env, topology);
-    }
-
-    if (url.pathname === "/dom/heatmap") {
-      const auth = await authenticateAdmin(request, env, logger, topology, "READ");
-      if (auth instanceof Response) {
-        return auth;
-      }
-
-      return routeToEngine(request, env, topology);
-    }
-
-    if (url.pathname === "/liquidations/heatmap") {
-      const auth = await authenticateAdmin(request, env, logger, topology, "READ");
-      if (auth instanceof Response) {
-        return auth;
-      }
-
-      return routeToEngine(request, env, topology);
-    }
-
-    if (url.pathname === "/stream") {
-      if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
-        return json({ ok: false, error: "WebSocket upgrade required" }, 426);
-      }
-
-      const auth = await authenticateAdmin(request, env, logger, topology, "READ");
-      if (auth instanceof Response) {
-        return auth;
-      }
-
-      return routeToEngine(request, env, topology);
-    }
-
-    if (
-      request.method === "POST" &&
-      (url.pathname === "/tick" ||
-        url.pathname === "/market/tick" ||
-        url.pathname === "/hyperliquid/tick" ||
-        url.pathname === "/hyperliquid/raw")
-    ) {
-      const ingestAuth = await authenticateIngest(request, env, logger, topology);
-      if (ingestAuth instanceof Response) {
-        return ingestAuth;
-      }
-
-      return routeToEngine(request, env, topology);
-    }
-
-    if (
-      url.pathname === "/market/ws" &&
-      request.headers.get("Upgrade")?.toLowerCase() === "websocket"
-    ) {
-      const ingestAuth = await authenticateIngest(request, env, logger, topology);
-      if (ingestAuth instanceof Response) {
-        return ingestAuth;
-      }
-
-      return routeToEngine(request, env, topology);
-    }
-
-    if (request.method === "POST" && url.pathname === "/agent/signal") {
-      const ingestAuth = await authenticateIngest(request, env, logger, topology);
-      if (ingestAuth instanceof Response) {
-        return ingestAuth;
-      }
-
-      return routeToEngine(request, env, topology);
-    }
-
-    if (url.pathname === "/moltworker/health") {
-      if (request.method !== "GET") {
-        return json({ ok: false, error: "Method not allowed" }, 405);
-      }
-
-      return readMoltworkerHealth(env);
-    }
-
-    if (url.pathname === "/login") {
-      return handleLogin(request, env, logger, topology);
-    }
-
-    if (url.pathname === "/admin" || url.pathname.startsWith("/admin/")) {
-      return handleAdminRequest(request, env, logger, configManager, topology);
-    }
-
-    return json({
-      ok: true,
-      service: "sovereign-sigma-core",
-      singleton: tradingEngineObjectName(env),
-      topology,
-      routes: [
-        "GET /health",
-        "GET /state (READ token)",
-        "GET /performance (READ token)",
-        "GET /metrics/performance (READ token)",
-        "GET /slippage (READ token)",
-        "GET /book/snapshot (READ token)",
-        "GET /dom/heatmap (READ token)",
-        "GET /liquidations/heatmap (READ token)",
-        "GET /stream (READ token, WebSocket)",
-        "POST /tick",
-        "POST /hyperliquid/raw",
-        "POST /market/tick",
-        "GET /market/ws",
-        "POST /agent/signal",
-        "GET /moltworker/health",
-        "POST /login",
-        "GET /admin",
-        "GET /admin/ui",
-        "GET|POST|PUT|PATCH /admin/config",
-        "GET /admin/health",
-        "GET /admin/state",
-        "GET /admin/settings",
-        "GET /admin/diagnostics",
-        "GET /admin/live-readiness",
-        "POST /admin/moltworker/heartbeat",
-        "POST /admin/settings/notifications",
-        "GET|POST /admin/topology/calibrate",
-        "GET /admin/performance",
-        "GET /admin/metrics/performance",
-        "POST /admin/maintenance/recover",
-        "GET /admin/slippage",
-        "GET /admin/history",
-        "GET /admin/trace",
-        "GET /admin/attribution",
-        "GET /admin/alerts",
-        "POST /admin/alerts/test",
-        "POST /admin/replay",
-        "GET /admin/replay/status",
-        "GET|POST /admin/vault",
-        "POST /admin/vault/test",
-        "POST /admin/news/sentiment",
-        "GET /admin/book/snapshot",
-        "GET /admin/dom/heatmap",
-        "GET /admin/liquidations/heatmap",
-        "GET /admin/stream",
-        "GET /admin/logs"
-      ]
-    });
+export default {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    return gatewayRouter.fetch(request, env, ctx);
   }
 } satisfies ExportedHandler<Env>;
+
+function gatewayRuntime(c: Context<GatewayHono>): {
+  logger: Logger;
+  configManager: ConfigManager;
+  topology: EdgeTopology;
+} {
+  return {
+    logger: new Logger(
+      c.env.TRADING_DB,
+      (promise) => c.executionCtx.waitUntil(promise),
+      "GatewayWorker",
+      undefined,
+      createLogSink(c.env),
+      structuredConsoleLogsEnabled(c.env)
+    ),
+    configManager: new ConfigManager(c.env.CONFIG_STORE, configDefaultsFromEnv(c.env)),
+    topology: extractEdgeTopology(c.req.raw, c.env)
+  };
+}
+
+async function routeAuthenticatedIngest(c: Context<GatewayHono>): Promise<Response> {
+  const runtime = gatewayRuntime(c);
+  const ingestAuth = await authenticateIngest(c.req.raw, c.env, runtime.logger, runtime.topology);
+  return ingestAuth instanceof Response
+    ? ingestAuth
+    : routeToEngine(c.req.raw, c.env, runtime.topology);
+}
+
+async function routeAdmin(c: Context<GatewayHono>): Promise<Response> {
+  const runtime = gatewayRuntime(c);
+  return handleAdminRequest(
+    c.req.raw,
+    c.env,
+    runtime.logger,
+    runtime.configManager,
+    runtime.topology
+  );
+}
+
+function gatewayCatalogResponse(env: Env, topology: EdgeTopology): Response {
+  return json({
+    ok: true,
+    service: "sovereign-sigma-core",
+    singleton: tradingEngineObjectName(env),
+    topology,
+    routes: ROUTE_CATALOG
+  });
+}
 
 async function handleLogin(
   request: Request,
@@ -492,23 +491,15 @@ async function handleLogin(
   const passwordOk = await authManager.verifyPassword(password);
 
   if (!passwordOk) {
-    logSecurityEvent(
-      logger,
-      "LOGIN_FAILED",
-      "Rejected login attempt",
-      request,
-      url,
-      topology,
-      { reason: "INVALID_PASSWORD" }
-    );
+    logSecurityEvent(logger, "LOGIN_FAILED", "Rejected login attempt", request, url, topology, {
+      reason: "INVALID_PASSWORD"
+    });
     return json({ ok: false, error: "Unauthorized" }, 401);
   }
 
   const scopes = AuthManager.normalizeScopes(body?.scopes ?? ["READ", "WRITE"]);
   const subject =
-    typeof body?.subject === "string" && body.subject.length > 0
-      ? body.subject
-      : "admin";
+    typeof body?.subject === "string" && body.subject.length > 0 ? body.subject : "admin";
   const token = await authManager.generateToken({
     sub: subject,
     scopes
@@ -546,13 +537,7 @@ async function handleAdminRequest(
 ): Promise<Response> {
   const url = new URL(request.url);
   const requiredScope = requiredScopeForAdminRequest(request);
-  const auth = await authenticateAdmin(
-    request,
-    env,
-    logger,
-    topology,
-    requiredScope
-  );
+  const auth = await authenticateAdmin(request, env, logger, topology, requiredScope);
 
   if (auth instanceof Response) {
     return auth;
@@ -576,6 +561,7 @@ async function handleAdminRequest(
         "GET /admin/settings",
         "GET /admin/diagnostics",
         "GET /admin/live-readiness",
+        "POST /admin/live-readiness/approve",
         "POST /admin/moltworker/heartbeat",
         "POST /admin/settings/notifications",
         "GET|POST /admin/topology/calibrate",
@@ -593,6 +579,14 @@ async function handleAdminRequest(
         "GET|POST /admin/vault",
         "POST /admin/vault/test",
         "POST /admin/news/sentiment",
+        "POST /admin/news/blackout",
+        "GET /admin/cascade/active",
+        "GET /admin/cascade/signals",
+        "GET /admin/cascade/positions",
+        "POST /admin/cascade/positions/:id/close",
+        "POST /admin/cascade/blackout",
+        "GET /admin/cascade/heat",
+        "POST /admin/backtest/cascade",
         "GET /admin/book/snapshot",
         "GET /admin/dom/heatmap",
         "GET /admin/liquidations/heatmap",
@@ -611,14 +605,7 @@ async function handleAdminRequest(
   }
 
   if (url.pathname === "/admin/config") {
-    return handleAdminConfig(
-      request,
-      env,
-      logger,
-      configManager,
-      topology,
-      auth
-    );
+    return handleAdminConfig(request, env, logger, configManager, topology, auth);
   }
 
   if (url.pathname === "/admin/health") {
@@ -685,6 +672,22 @@ async function handleAdminRequest(
     return readLiveReadiness(env, topology);
   }
 
+  if (url.pathname === "/admin/live-readiness/approve") {
+    if (request.method !== "POST") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+
+    return approveCascadeLiveReadiness(env, logger, topology, auth);
+  }
+
+  if (url.pathname === "/admin/auth/revoke") {
+    if (request.method !== "POST") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+
+    return revokeAdminToken(request, env, logger, topology, auth);
+  }
+
   if (url.pathname === "/admin/moltworker/heartbeat") {
     if (request.method !== "POST") {
       return json({ ok: false, error: "Method not allowed" }, 405);
@@ -698,14 +701,7 @@ async function handleAdminRequest(
       return json({ ok: false, error: "Method not allowed" }, 405);
     }
 
-    return handleTopologyCalibration(
-      request,
-      env,
-      logger,
-      configManager,
-      topology,
-      auth
-    );
+    return handleTopologyCalibration(request, env, logger, configManager, topology, auth);
   }
 
   if (url.pathname === "/admin/performance") {
@@ -720,11 +716,7 @@ async function handleAdminRequest(
       return json({ ok: false, error: "Method not allowed" }, 405);
     }
 
-    return routeToEngine(
-      remapRequestPath(request, "/metrics/performance"),
-      env,
-      topology
-    );
+    return routeToEngine(remapRequestPath(request, "/metrics/performance"), env, topology);
   }
 
   if (url.pathname === "/admin/maintenance/reset-latency") {
@@ -732,11 +724,7 @@ async function handleAdminRequest(
       return json({ ok: false, error: "Method not allowed" }, 405);
     }
 
-    return routeToEngine(
-      remapRequestPath(request, "/maintenance/reset-latency"),
-      env,
-      topology
-    );
+    return routeToEngine(remapRequestPath(request, "/maintenance/reset-latency"), env, topology);
   }
 
   if (url.pathname === "/admin/maintenance/recover") {
@@ -751,11 +739,7 @@ async function handleAdminRequest(
       placement: topology.placement
     });
 
-    return routeToEngine(
-      remapRequestPath(request, "/maintenance/recover"),
-      env,
-      topology
-    );
+    return routeToEngine(remapRequestPath(request, "/maintenance/recover"), env, topology);
   }
 
   if (url.pathname === "/admin/slippage") {
@@ -866,6 +850,70 @@ async function handleAdminRequest(
     return routeToEngine(remapRequestPath(request, "/news/sentiment"), env, topology);
   }
 
+  if (url.pathname === "/admin/news/blackout") {
+    if (request.method !== "POST") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+
+    return routeToEngine(remapRequestPath(request, "/news/blackout"), env, topology);
+  }
+
+  if (url.pathname === "/admin/cascade/active") {
+    if (request.method !== "GET") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+
+    return routeToEngine(remapRequestPath(request, "/admin/cascade/active"), env, topology);
+  }
+
+  if (url.pathname === "/admin/cascade/signals") {
+    if (request.method !== "GET") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+
+    return routeToEngine(remapRequestPath(request, "/admin/cascade/signals"), env, topology);
+  }
+
+  if (url.pathname === "/admin/cascade/positions") {
+    if (request.method !== "GET") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+
+    return routeToEngine(remapRequestPath(request, "/admin/cascade/positions"), env, topology);
+  }
+
+  if (/^\/admin\/cascade\/positions\/[^/]+\/close$/.test(url.pathname)) {
+    if (request.method !== "POST") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+
+    return routeToEngine(remapRequestPath(request, url.pathname), env, topology);
+  }
+
+  if (url.pathname === "/admin/cascade/blackout") {
+    if (request.method !== "POST") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+
+    return routeToEngine(remapRequestPath(request, "/admin/cascade/blackout"), env, topology);
+  }
+
+  if (url.pathname === "/admin/cascade/heat") {
+    if (request.method !== "GET") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+
+    return routeToEngine(remapRequestPath(request, "/admin/cascade/heat"), env, topology);
+  }
+
+  if (url.pathname === "/admin/backtest/cascade") {
+    if (request.method !== "POST") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+
+    return routeToEngine(remapRequestPath(request, "/admin/backtest/cascade"), env, topology);
+  }
+
   if (url.pathname === "/admin/book/snapshot") {
     if (request.method !== "GET") {
       return json({ ok: false, error: "Method not allowed" }, 405);
@@ -891,10 +939,7 @@ async function handleAdminRequest(
   }
 
   if (url.pathname === "/admin/stream") {
-    if (
-      request.method !== "GET" ||
-      request.headers.get("Upgrade")?.toLowerCase() !== "websocket"
-    ) {
+    if (request.method !== "GET" || request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
       return json({ ok: false, error: "WebSocket upgrade required" }, 426);
     }
 
@@ -932,9 +977,7 @@ async function handleAdminConfig(
 
   const update = await request.json<AdminConfigUpdate>();
   const actor =
-    typeof update.actor === "string" && update.actor.length > 0
-      ? update.actor
-      : admin.subject;
+    typeof update.actor === "string" && update.actor.length > 0 ? update.actor : admin.subject;
   const requestedMode = normalizeEngineMode(update.mode);
 
   if (update.mode && !requestedMode) {
@@ -952,10 +995,7 @@ async function handleAdminConfig(
     );
   }
 
-  if (
-    requestedMode === "LIVE" &&
-    update.confirmLive !== true
-  ) {
+  if (requestedMode === "LIVE" && update.confirmLive !== true) {
     return json(
       {
         ok: false,
@@ -971,12 +1011,31 @@ async function handleAdminConfig(
   let changedParameters: ReturnType<typeof diffConfig> = {};
 
   if (hasRiskConfigMutation(update)) {
-    nextConfig = ConfigManager.mergeUpdate(
-      currentConfig,
-      update,
-      actor
-    );
+    nextConfig = ConfigManager.mergeUpdate(currentConfig, update, actor);
     changedParameters = diffConfig(currentConfig, nextConfig);
+  }
+
+  const cascadeLiveRequested = requestsCascadeLivePromotion(currentConfig, nextConfig);
+
+  if (cascadeLiveRequested) {
+    const readiness = await evaluateCascadeLiveReadinessFromState(env, topology, nextConfig, admin);
+    if (!readiness.ok) {
+      logger.warn("CASCADE_LIVE_READINESS_GATE_BLOCKED", "Cascade live/taker promotion blocked", {
+        actor,
+        changedParameters,
+        failedChecks: readiness.checks.filter((check) => !check.ok).map((check) => check.id),
+        colo: topology.colo,
+        placement: topology.placement
+      });
+      return json(
+        {
+          ok: false,
+          error: "CASCADE_LIVE_READINESS_CHECK_FAILED",
+          readiness
+        },
+        409
+      );
+    }
   }
 
   const livePostureRequested =
@@ -992,9 +1051,7 @@ async function handleAdminConfig(
         actor,
         requestedMode,
         changedParameters,
-        failedChecks: readiness.checks
-          .filter((check) => !check.ok)
-          .map((check) => check.id),
+        failedChecks: readiness.checks.filter((check) => !check.ok).map((check) => check.id),
         colo: topology.colo,
         placement: topology.placement
       });
@@ -1047,6 +1104,7 @@ async function handleAdminConfig(
 
   if (Object.keys(changedParameters).length > 0) {
     await configManager.writeConfig(nextConfig);
+    await recordCascadeConfigMetadata(env, currentConfig, nextConfig, changedParameters);
 
     logger.warn("ADMIN_CONFIG_UPDATED", "Admin configuration persisted", {
       actor,
@@ -1087,6 +1145,10 @@ async function handleAdminConfig(
         enabled: nextConfig.TRADING_ENABLED
       });
     }
+  }
+
+  if (cascadeLiveRequested && Object.keys(changedParameters).length > 0) {
+    await env.CONFIG_STORE.delete(CASCADE_TWO_PERSON_READ_APPROVAL_KEY);
   }
 
   const macroBias = update.clearMacroBias
@@ -1174,13 +1236,19 @@ async function handleAdminConfig(
   });
 }
 
-async function readAdminSettings(
-  env: Env,
-  configManager: ConfigManager
-): Promise<Response> {
+async function readAdminSettings(env: Env, configManager: ConfigManager): Promise<Response> {
   const notifier = new Notifier(env, () => undefined);
   const strategyVault = new StrategyVault(env.TRADING_DB, env.CONFIG_STORE);
-  const [config, alerting, vault, notifications, hyperliquidSecrets, strategies, activeStrategy, costBudgets] = await Promise.all([
+  const [
+    config,
+    alerting,
+    vault,
+    notifications,
+    hyperliquidSecrets,
+    strategies,
+    activeStrategy,
+    costBudgets
+  ] = await Promise.all([
     configManager.fetchConfig(),
     notifier.statusAsync(),
     vaultStatus(env),
@@ -1218,10 +1286,7 @@ async function readAdminSettings(
 
 async function readStrategyVault(env: Env): Promise<Response> {
   const vault = new StrategyVault(env.TRADING_DB, env.CONFIG_STORE);
-  const [versions, active] = await Promise.all([
-    vault.listVersions(50),
-    vault.activeVersion()
-  ]);
+  const [versions, active] = await Promise.all([vault.listVersions(50), vault.activeVersion()]);
 
   return json({
     ok: true,
@@ -1240,13 +1305,14 @@ async function createStrategyVersion(
   admin: AuthenticatedAdmin,
   configManager: ConfigManager
 ): Promise<Response> {
-  const body = (await readJsonBody<{
-    name?: string;
-    description?: string;
-    config?: GlobalRiskConfig;
-    parameters?: JsonRecord;
-    performance?: JsonRecord;
-  }>(request)) ?? {};
+  const body =
+    (await readJsonBody<{
+      name?: string;
+      description?: string;
+      config?: GlobalRiskConfig;
+      parameters?: JsonRecord;
+      performance?: JsonRecord;
+    }>(request)) ?? {};
   const currentConfig = await configManager.fetchConfig();
   const vault = new StrategyVault(env.TRADING_DB, env.CONFIG_STORE);
   const version = await vault.createVersion({
@@ -1310,18 +1376,17 @@ async function activateStrategyVersion(
     placement: topology.placement
   });
 
-  return json({
-    ok: refreshResponse.ok,
-    version,
-    engineRefreshStatus: refreshResponse.status
-  }, refreshResponse.ok ? 200 : 502);
+  return json(
+    {
+      ok: refreshResponse.ok,
+      version,
+      engineRefreshStatus: refreshResponse.status
+    },
+    refreshResponse.ok ? 200 : 502
+  );
 }
 
-async function runDiagnostics(
-  env: Env,
-  logger: Logger,
-  topology: EdgeTopology
-): Promise<Response> {
+async function runDiagnostics(env: Env, logger: Logger, topology: EdgeTopology): Promise<Response> {
   const observedAt = new Date().toISOString();
   const engineResponse = await routeToEngine(
     new Request("https://trading-engine.internal/diagnostics"),
@@ -1341,18 +1406,11 @@ async function runDiagnostics(
   }
 
   const d1LatencyMs = Math.round((performance.now() - d1StartedAt) * 1000) / 1000;
-  const d1DiagnosticMaxLatencyMs = positiveNumber(
-    env.D1_DIAGNOSTIC_MAX_LATENCY_MS,
-    250
-  );
+  const d1DiagnosticMaxLatencyMs = positiveNumber(env.D1_DIAGNOSTIC_MAX_LATENCY_MS, 250);
   const secretDiagnostic = await evaluateHyperliquidSecrets(env);
   const moltworker = await evaluateMoltworkerHeartbeat(env);
-  const l1Sync = isJsonRecord(engineDiagnostics?.l1Sync)
-    ? engineDiagnostics.l1Sync
-    : null;
-  const v8Memory = isJsonRecord(engineDiagnostics?.v8Memory)
-    ? engineDiagnostics.v8Memory
-    : null;
+  const l1Sync = isJsonRecord(engineDiagnostics?.l1Sync) ? engineDiagnostics.l1Sync : null;
+  const v8Memory = isJsonRecord(engineDiagnostics?.v8Memory) ? engineDiagnostics.v8Memory : null;
   const checks = [
     diagnosticCheck(
       "l1_sync",
@@ -1415,12 +1473,44 @@ async function runDiagnostics(
   });
 }
 
-async function readLiveReadiness(
-  env: Env,
-  topology: EdgeTopology
-): Promise<Response> {
+async function readLiveReadiness(env: Env, topology: EdgeTopology): Promise<Response> {
   const report = await evaluateLiveReadiness(env, topology);
   return json({ ok: report.ok, readiness: report }, report.ok ? 200 : 409);
+}
+
+async function approveCascadeLiveReadiness(
+  env: Env,
+  logger: Logger,
+  topology: EdgeTopology,
+  admin: AuthenticatedAdmin
+): Promise<Response> {
+  const approval: TwoPersonApproval = {
+    jti: admin.claims.jti,
+    subject: admin.subject,
+    scopes: admin.claims.scopes,
+    observedAt: new Date().toISOString()
+  };
+
+  await env.CONFIG_STORE.put(CASCADE_TWO_PERSON_READ_APPROVAL_KEY, JSON.stringify(approval), {
+    expirationTtl: Math.ceil(CASCADE_TWO_PERSON_APPROVAL_WINDOW_MS / 1_000)
+  });
+  logger.warn("CASCADE_LIVE_READ_APPROVAL_RECORDED", "Read-side cascade live approval recorded", {
+    subject: admin.subject,
+    jti: maskTokenId(admin.claims.jti),
+    expiresInMs: CASCADE_TWO_PERSON_APPROVAL_WINDOW_MS,
+    colo: topology.colo,
+    placement: topology.placement
+  });
+
+  return json({
+    ok: true,
+    approval: {
+      subject: approval.subject,
+      scopes: approval.scopes,
+      observedAt: approval.observedAt,
+      expiresInMs: CASCADE_TWO_PERSON_APPROVAL_WINDOW_MS
+    }
+  });
 }
 
 async function evaluateLiveReadiness(
@@ -1443,12 +1533,16 @@ async function evaluateLiveReadiness(
     : [];
   const selectedAssets = assetMatrix.filter((asset) => asset.selectedByMoltworker !== false);
   const quoteEligibleAssets = selectedAssets.filter(
-    (asset) => asset.quoteEligible === true || (asset.active === true && asset.quoteStatus !== "SUSPENDED")
+    (asset) =>
+      asset.quoteEligible === true || (asset.active === true && asset.quoteStatus !== "SUSPENDED")
   );
   const activeAssetSymbols = quoteEligibleAssets
     .map((asset) => String(asset.coin ?? asset.instrumentCode ?? "").toUpperCase())
     .filter(Boolean);
-  const minPaperTrades = Math.max(1, Math.floor(positiveNumber(env.LIVE_READINESS_MIN_PAPER_TRADES, 500)));
+  const minPaperTrades = Math.max(
+    1,
+    Math.floor(positiveNumber(env.LIVE_READINESS_MIN_PAPER_TRADES, 500))
+  );
   const minPaperPnlUsd = Number(env.LIVE_READINESS_MIN_PAPER_PNL_USD ?? 0);
   const paperTotals = isJsonRecord(paperPnl.totals) ? paperPnl.totals : {};
   const paperTradeCount = Number(paperTotals.tradeCount ?? 0);
@@ -1511,7 +1605,8 @@ async function evaluateLiveReadiness(
     readinessCheck(
       "single_asset_ramp",
       "Single Asset Ramp",
-      !requireSingleAsset || (quoteEligibleAssets.length === 1 && (allowHype || !activeAssetSymbols.includes("HYPE"))),
+      !requireSingleAsset ||
+        (quoteEligibleAssets.length === 1 && (allowHype || !activeAssetSymbols.includes("HYPE"))),
       requireSingleAsset
         ? "Live ramp must start with exactly one non-HYPE asset unless explicitly overridden by env."
         : "Single-asset live ramp requirement is disabled by env.",
@@ -1528,19 +1623,139 @@ async function evaluateLiveReadiness(
       `Engine average latency is ${round(averageLatency, 3)}ms against ${round(latencyThreshold, 3)}ms budget.`,
       { averageLatencyMs: averageLatency, latencyThresholdMs: latencyThreshold }
     ),
-    readinessCheck(
-      "d1_latency",
-      "D1 Audit Path",
-      d1Check.ok,
-      d1Check.detail,
-      d1Check.metadata
-    )
+    readinessCheck("d1_latency", "D1 Audit Path", d1Check.ok, d1Check.detail, d1Check.metadata)
   ];
+  if (cachedConfig?.STRATEGY_MODE === "BOTH_LIVE" || cachedConfig?.CASCADE_TAKER_ENABLED === true) {
+    const cascadeChecks = await evaluateCascadeLiveReadinessFromState(env, topology, {
+      ...(cachedConfig as Partial<GlobalRiskConfig>),
+      updatedAt: String(cachedConfig?.updatedAt ?? new Date().toISOString()),
+      updatedBy: String(cachedConfig?.updatedBy ?? "engine"),
+      version: String(cachedConfig?.version ?? "unknown")
+    } as GlobalRiskConfig);
+    checks.push(...cascadeChecks.checks);
+  }
 
   return {
     ok: checks.every((check) => check.ok),
     generatedAt,
     checks
+  };
+}
+
+async function evaluateCascadeLiveReadinessFromState(
+  env: Env,
+  topology: EdgeTopology,
+  config: GlobalRiskConfig,
+  admin?: AuthenticatedAdmin
+): Promise<LiveReadinessReport> {
+  const [paperArmedAt, lastCascadeConfigChangeAt, readApproval, paperEvidence] = await Promise.all([
+    env.CONFIG_STORE.get(CASCADE_PAPER_ARMED_AT_KEY),
+    env.CONFIG_STORE.get(CASCADE_LAST_CONFIG_CHANGE_AT_KEY),
+    readCascadeTwoPersonApproval(env),
+    readCascadePaperEvidence(env, config)
+  ]);
+  const minPaperTrades = Math.max(
+    1,
+    Math.floor(positiveNumber(env.CASCADE_LIVE_READINESS_MIN_PAPER_TRADES, 30))
+  );
+  const minPaperPnlR = positiveNumber(env.CASCADE_LIVE_READINESS_MIN_PAPER_PNL_R, 10);
+  const minPaperDays = positiveNumber(env.CASCADE_LIVE_READINESS_MIN_DAYS_PAPER, 30);
+  const report = evaluateCascadeLiveReadiness({
+    nowMs: Date.now(),
+    paperArmedAt,
+    minPaperDays,
+    paperTradeCount: paperEvidence.tradeCount,
+    minPaperTrades,
+    paperPnlR: paperEvidence.pnlR,
+    minPaperPnlR,
+    lastCascadeConfigChangeAt,
+    configFreezeHours: CASCADE_CONFIG_FREEZE_HOURS,
+    readApproval,
+    writeToken: admin
+      ? {
+          jti: admin.claims.jti,
+          subject: admin.subject,
+          scopes: admin.claims.scopes,
+          observedAt: new Date().toISOString()
+        }
+      : {
+          jti: "readiness-preview",
+          subject: "readiness-preview",
+          scopes: [],
+          observedAt: new Date().toISOString()
+        },
+    approvalWindowMs: CASCADE_TWO_PERSON_APPROVAL_WINDOW_MS
+  });
+
+  return {
+    ok: report.ok,
+    generatedAt: new Date().toISOString(),
+    checks: report.checks.map((check) => ({
+      ...check,
+      metadata: {
+        ...check.metadata,
+        topologyColo: topology.colo,
+        paperPnlUsd: paperEvidence.pnlUsd,
+        paperRiskUnitUsd: paperEvidence.riskUnitUsd
+      }
+    }))
+  };
+}
+
+async function readCascadeTwoPersonApproval(env: Env): Promise<TwoPersonApproval | null> {
+  const stored = await env.CONFIG_STORE.get<TwoPersonApproval>(
+    CASCADE_TWO_PERSON_READ_APPROVAL_KEY,
+    "json"
+  );
+
+  if (
+    !stored ||
+    typeof stored.jti !== "string" ||
+    typeof stored.subject !== "string" ||
+    !Array.isArray(stored.scopes) ||
+    typeof stored.observedAt !== "string"
+  ) {
+    return null;
+  }
+
+  return stored;
+}
+
+async function readCascadePaperEvidence(
+  env: Env,
+  config: GlobalRiskConfig
+): Promise<{ tradeCount: number; pnlUsd: number; pnlR: number; riskUnitUsd: number }> {
+  const sessionStartedAt = await env.CONFIG_STORE.get(PAPER_SESSION_STARTED_AT_KEY);
+  const timeFilterSql =
+    sessionStartedAt && Number.isFinite(Date.parse(sessionStartedAt)) ? "AND executed_at >= ?" : "";
+  const row = await env.TRADING_DB.prepare(
+    `SELECT
+       COUNT(*) AS trade_count,
+       SUM(resulting_pnl - fees) AS pnl_usd
+     FROM trades
+     WHERE status = 'GHOST_FILL'
+       AND ${paperTradeWhereSql()}
+       AND (
+         primary_driver = 'PIT_BOSS'
+         OR LOWER(COALESCE(raw_execution_json, '')) LIKE '%cascade%'
+       )
+       ${timeFilterSql}`
+  )
+    .bind(...(timeFilterSql ? [sessionStartedAt] : []))
+    .first<{ trade_count: number | null; pnl_usd: number | null }>();
+  const tradeCount = Number(row?.trade_count ?? 0);
+  const pnlUsd = Number(row?.pnl_usd ?? 0);
+  const bankroll = positiveNumber(env.PAPER_BANKROLL_USD, 5_000);
+  const riskPerTradePct = Number.isFinite(Number(config.RISK_PER_TRADE_PCT))
+    ? Number(config.RISK_PER_TRADE_PCT)
+    : 0.005;
+  const riskUnitUsd = Math.max(1, bankroll * Math.max(0.0001, riskPerTradePct));
+
+  return {
+    tradeCount,
+    pnlUsd: round(pnlUsd, 8),
+    pnlR: round(pnlUsd / riskUnitUsd, 8),
+    riskUnitUsd: round(riskUnitUsd, 8)
   };
 }
 
@@ -1648,9 +1863,7 @@ async function handleTopologyCalibration(
   };
   const report = await calibrateGoldenColos(env.TRADING_DB, currentConfig, options);
   const reportTelemetry = JSON.parse(JSON.stringify(report)) as JsonRecord;
-  const apply =
-    request.method === "POST" &&
-    ((body as Record<string, unknown>).apply !== false);
+  const apply = request.method === "POST" && (body as Record<string, unknown>).apply !== false;
   const previousGoldenColos = currentConfig.GOLDEN_COLOS || env.GOLDEN_COLOS || "";
   let nextConfig: GlobalRiskConfig | null = null;
   let engineRefreshStatus: number | null = null;
@@ -1801,9 +2014,7 @@ async function routeToEngine(
       : null;
 
   try {
-    const response = await engine.fetch(
-      withTopologyHeaders(request, topology, controller?.signal)
-    );
+    const response = await engine.fetch(withTopologyHeaders(request, topology, controller?.signal));
 
     return response.status === 101 ? response : withCors(response);
   } catch (error) {
@@ -1871,6 +2082,19 @@ async function authenticateAdmin(
     return json({ ok: false, error: "Unauthorized" }, 401);
   }
 
+  if (claims.jti && (await isJwtRevoked(env, claims.jti))) {
+    logSecurityEvent(
+      logger,
+      "ADMIN_AUTH_REJECTED",
+      "Rejected admin request with revoked JWT",
+      request,
+      url,
+      topology,
+      { reason: "JTI_REVOKED", subject: claims.sub }
+    );
+    return json({ ok: false, error: "Unauthorized" }, 401);
+  }
+
   if (!AuthManager.hasScope(claims, requiredScope)) {
     logSecurityEvent(
       logger,
@@ -1899,6 +2123,55 @@ function createAuthManager(env: Env): AuthManager | null {
   const jwtSecret = env.JWT_SECRET ?? env.ADMIN_JWT_SECRET;
 
   return jwtSecret ? new AuthManager(jwtSecret, env.ADMIN_PASSWORD) : null;
+}
+
+async function isJwtRevoked(env: Env, jti: string): Promise<boolean> {
+  try {
+    return (await env.CONFIG_STORE.get(`${JWT_REVOCATION_PREFIX}${jti}`)) !== null;
+  } catch {
+    return true;
+  }
+}
+
+async function revokeAdminToken(
+  request: Request,
+  env: Env,
+  logger: Logger,
+  topology: EdgeTopology,
+  admin: AuthenticatedAdmin
+): Promise<Response> {
+  const body =
+    (await readJsonBody<{
+      jti?: string;
+      reason?: string;
+    }>(request)) ?? {};
+  const jti = typeof body.jti === "string" && body.jti.length > 0 ? body.jti : admin.claims.jti;
+
+  if (!jti) {
+    return json({ ok: false, error: "JTI_REQUIRED" }, 400);
+  }
+
+  const ttlSeconds = Math.max(60, admin.claims.exp - Math.floor(Date.now() / 1_000));
+  await env.CONFIG_STORE.put(
+    `${JWT_REVOCATION_PREFIX}${jti}`,
+    JSON.stringify({
+      revokedAt: new Date().toISOString(),
+      revokedBy: admin.subject,
+      reason: body.reason ?? "admin-request"
+    }),
+    { expirationTtl: ttlSeconds }
+  );
+
+  logger.warn("ADMIN_JWT_REVOKED", "Admin JWT JTI was revoked", {
+    actor: admin.subject,
+    revokedJti: maskTokenId(jti),
+    reason: body.reason ?? "admin-request",
+    colo: topology.colo,
+    placement: topology.placement,
+    sourceIp: sourceIp(request)
+  });
+
+  return json({ ok: true, revoked: true, jti: maskTokenId(jti), expiresIn: ttlSeconds });
 }
 
 async function authenticateIngest(
@@ -1947,7 +2220,41 @@ async function authenticateIngest(
 }
 
 function requiredScopeForAdminRequest(request: Request): AdminScope {
-  return request.method === "GET" || request.method === "HEAD" ? "READ" : "WRITE";
+  const { pathname } = new URL(request.url);
+
+  if (request.method === "GET" || request.method === "HEAD") {
+    return "TELEMETRY:READ";
+  }
+
+  if (pathname === "/admin/live-readiness/approve") {
+    return "READ";
+  }
+
+  if (pathname.includes("/vault")) {
+    return "VAULT:WRITE";
+  }
+  if (pathname.includes("/auth/")) {
+    return "SECURITY:WRITE";
+  }
+  if (pathname.includes("/replay") || pathname.includes("/backtest")) {
+    return "REPLAY:WRITE";
+  }
+  if (pathname.includes("/alerts") || pathname.includes("/settings/notifications")) {
+    return "ALERTS:WRITE";
+  }
+  if (pathname.includes("/strategy")) {
+    return "STRATEGY:WRITE";
+  }
+  if (
+    pathname.includes("/maintenance") ||
+    pathname.includes("/moltworker") ||
+    pathname.includes("/cascade/positions") ||
+    pathname.includes("/cascade/blackout")
+  ) {
+    return "TRADING:WRITE";
+  }
+
+  return "CONFIG:WRITE";
 }
 
 function bearerToken(request: Request): string | null {
@@ -2083,7 +2390,7 @@ async function readTradeHistory(env: Env, url: URL): Promise<Response> {
     1,
     250
   );
-  const [rows, count, paperPnl, paperTrades, statusBreakdown] = await Promise.all([
+  const [rows, count, paperPnl, paperTrades, paperLedger, statusBreakdown] = await Promise.all([
     env.TRADING_DB.prepare(dataQuery)
       .bind(...filters.bindings, limit, offset)
       .all<TradeHistoryRow>(),
@@ -2092,6 +2399,7 @@ async function readTradeHistory(env: Env, url: URL): Promise<Response> {
       .first<{ total: number }>(),
     readPaperPnlSummary(env),
     readPaperTrades(env, paperLimit),
+    readPaperLedger(env),
     readTradeStatusBreakdown(env)
   ]);
   const total = Number(count?.total ?? 0);
@@ -2101,6 +2409,7 @@ async function readTradeHistory(env: Env, url: URL): Promise<Response> {
     data: (rows.results ?? []).map(formatTradeRow),
     paperTrades: (paperTrades.results ?? []).map(formatTradeRow),
     paperPnl,
+    paperLedger,
     statusBreakdown: (statusBreakdown.results ?? []).map((row) => ({
       status: row.status,
       count: Number(row.count ?? 0),
@@ -2118,9 +2427,7 @@ async function readPaperPnlSummary(env: Env): Promise<JsonRecord> {
   const windowHours = 24;
   const sessionStartedAt = await env.CONFIG_STORE.get(PAPER_SESSION_STARTED_AT_KEY);
   const sessionCutoff =
-    sessionStartedAt && Number.isFinite(Date.parse(sessionStartedAt))
-      ? sessionStartedAt
-      : null;
+    sessionStartedAt && Number.isFinite(Date.parse(sessionStartedAt)) ? sessionStartedAt : null;
   const timeFilterSql = sessionCutoff
     ? "AND executed_at >= ?"
     : "AND executed_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-24 hours')";
@@ -2145,7 +2452,9 @@ async function readPaperPnlSummary(env: Env): Promise<JsonRecord> {
        ${timeFilterSql}
      GROUP BY asset
      ORDER BY asset`
-  ).bind(...(sessionCutoff ? [sessionCutoff] : [])).all<PaperPnlAggregateRow>();
+  )
+    .bind(...(sessionCutoff ? [sessionCutoff] : []))
+    .all<PaperPnlAggregateRow>();
   const assets = (rows.results ?? []).map((row) => {
     const buySize = row.buy_size ?? 0;
     const sellSize = row.sell_size ?? 0;
@@ -2216,10 +2525,7 @@ async function readPaperPnlSummary(env: Env): Promise<JsonRecord> {
   };
 }
 
-async function readPaperTrades(
-  env: Env,
-  limit: number
-): Promise<D1Result<TradeHistoryRow>> {
+async function readPaperTrades(env: Env, limit: number): Promise<D1Result<TradeHistoryRow>> {
   return env.TRADING_DB.prepare(
     `SELECT
        t.trade_id,
@@ -2250,12 +2556,57 @@ async function readPaperTrades(
        AND ${paperTradeWhereSql("t")}
      ORDER BY t.executed_at DESC, t.created_at DESC
      LIMIT ?`
-  ).bind(limit).all<TradeHistoryRow>();
+  )
+    .bind(limit)
+    .all<TradeHistoryRow>();
 }
 
-async function readTradeStatusBreakdown(
-  env: Env
-): Promise<D1Result<TradeStatusBreakdownRow>> {
+async function readPaperLedger(env: Env): Promise<PaperLedger> {
+  const sessionStartedAt = await env.CONFIG_STORE.get(PAPER_SESSION_STARTED_AT_KEY);
+  const sessionCutoff =
+    sessionStartedAt && Number.isFinite(Date.parse(sessionStartedAt)) ? sessionStartedAt : null;
+  const timeFilterSql = sessionCutoff
+    ? "AND t.executed_at >= ?"
+    : "AND t.executed_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-24 hours')";
+  const rows = await env.TRADING_DB.prepare(
+    `SELECT
+       t.trade_id,
+       t.order_id,
+       t.signal_id,
+       t.venue,
+       t.asset,
+       t.side,
+       t.order_type,
+       t.price,
+       t.size,
+       t.notional,
+       t.ev_at_execution,
+       t.slippage_bps,
+       t.resulting_pnl,
+       t.primary_driver,
+       t.fees,
+       t.status,
+       t.exchange_trade_id,
+       t.raw_execution_json,
+       t.executed_at,
+       t.created_at,
+       d.agent_name,
+       d.trace_id
+     FROM trades t
+     LEFT JOIN agent_decisions d ON d.signal_id = t.signal_id
+     WHERE t.status = 'GHOST_FILL'
+       AND ${paperTradeWhereSql("t")}
+       ${timeFilterSql}
+     ORDER BY t.executed_at ASC, t.created_at ASC, t.trade_id ASC
+     LIMIT 5000`
+  )
+    .bind(...(sessionCutoff ? [sessionCutoff] : []))
+    .all<PaperLedgerFillRow>();
+
+  return buildPaperLedger((rows.results ?? []).map(formatPaperLedgerFill));
+}
+
+async function readTradeStatusBreakdown(env: Env): Promise<D1Result<TradeStatusBreakdownRow>> {
   return env.TRADING_DB.prepare(
     `SELECT
        status,
@@ -2304,7 +2655,9 @@ async function readExecutionQuality(env: Env, url: URL): Promise<Response> {
          SUM(fees) AS total_fees
        FROM execution_quality
        ${whereSql}`
-    ).bind(...bindings).first<ExecutionQualityAggregateRow>(),
+    )
+      .bind(...bindings)
+      .first<ExecutionQualityAggregateRow>(),
     env.TRADING_DB.prepare(
       `SELECT
          instrument_code,
@@ -2319,7 +2672,9 @@ async function readExecutionQuality(env: Env, url: URL): Promise<Response> {
        GROUP BY instrument_code
        ORDER BY sample_count DESC
        LIMIT 20`
-    ).bind(...bindings).all<ExecutionQualityAssetRow>(),
+    )
+      .bind(...bindings)
+      .all<ExecutionQualityAssetRow>(),
     readFillRateStats(env, dateRange)
   ]);
 
@@ -2336,10 +2691,7 @@ async function readExecutionQuality(env: Env, url: URL): Promise<Response> {
   });
 }
 
-async function readFillRateStats(
-  env: Env,
-  dateRange: DateRangeFilter
-): Promise<JsonRecord> {
+async function readFillRateStats(env: Env, dateRange: DateRangeFilter): Promise<JsonRecord> {
   const where: string[] = [];
   const bindings: string[] = [];
   if (dateRange.from) {
@@ -2358,14 +2710,14 @@ async function readFillRateStats(
      FROM trades
      WHERE ${where.join(" AND ")}
      GROUP BY status`
-  ).bind(...bindings).all<{ status: string; count: number }>();
+  )
+    .bind(...bindings)
+    .all<{ status: string; count: number }>();
   const counts = Object.fromEntries(
     (rows.results ?? []).map((row) => [row.status, Number(row.count ?? 0)])
   );
   const filled =
-    Number(counts.FILLED ?? 0) +
-    Number(counts.PARTIAL ?? 0) +
-    Number(counts.GHOST_FILL ?? 0);
+    Number(counts.FILLED ?? 0) + Number(counts.PARTIAL ?? 0) + Number(counts.GHOST_FILL ?? 0);
   const attempted = Object.values(counts).reduce((sum, value) => sum + Number(value), 0);
 
   return {
@@ -2379,9 +2731,7 @@ async function readFillRateStats(
   };
 }
 
-function formatExecutionQualitySummary(
-  row: ExecutionQualityAggregateRow | null
-): JsonRecord {
+function formatExecutionQualitySummary(row: ExecutionQualityAggregateRow | null): JsonRecord {
   return {
     sampleCount: Number(row?.sample_count ?? 0),
     averageSlippageBps: nullableRound(row?.average_slippage_bps, 6),
@@ -2399,10 +2749,7 @@ function formatExecutionQualityAsset(row: ExecutionQualityAssetRow): JsonRecord 
   };
 }
 
-async function readCostDashboard(
-  env: Env,
-  topology: EdgeTopology
-): Promise<Response> {
+async function readCostDashboard(env: Env, topology: EdgeTopology): Promise<Response> {
   const report = await buildCostDashboard(env, topology);
   return json({ ok: report.ok, cost: report }, report.ok ? 200 : 409);
 }
@@ -2479,23 +2826,16 @@ async function buildCostDashboard(
 }> {
   const generatedAt = new Date().toISOString();
   const budgets = await readCostBudgetSettings(env);
-  const [
-    logs,
-    trades,
-    decisions,
-    marketTicks,
-    executionQuality,
-    sentimentCalls,
-    stateResponse
-  ] = await Promise.all([
-    countTableRows(env, "logs"),
-    countTableRows(env, "trades"),
-    countTableRows(env, "agent_decisions"),
-    countTableRows(env, "market_ticks"),
-    countTableRows(env, "execution_quality"),
-    countLogEvents(env, "SENTIMENT_ANALYZED"),
-    routeToEngine(new Request("https://trading-engine.internal/state"), env, topology)
-  ]);
+  const [logs, trades, decisions, marketTicks, executionQuality, sentimentCalls, stateResponse] =
+    await Promise.all([
+      countTableRows(env, "logs"),
+      countTableRows(env, "trades"),
+      countTableRows(env, "agent_decisions"),
+      countTableRows(env, "market_ticks"),
+      countTableRows(env, "execution_quality"),
+      countLogEvents(env, "SENTIMENT_ANALYZED"),
+      routeToEngine(new Request("https://trading-engine.internal/state"), env, topology)
+    ]);
   const statePayload = await safeResponseJson(stateResponse);
   const state = isJsonRecord(statePayload?.state) ? statePayload.state : {};
   const executionProfile = isJsonRecord(state.executionProfile) ? state.executionProfile : {};
@@ -2630,7 +2970,9 @@ async function countLogEvents(env: Env, eventType: string): Promise<number> {
     `SELECT COUNT(*) AS count FROM logs
      WHERE event_type = ?
        AND created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-24 hours')`
-  ).bind(eventType).first<CountRow>();
+  )
+    .bind(eventType)
+    .first<CountRow>();
   return Number(row?.count ?? 0);
 }
 
@@ -2654,9 +2996,7 @@ function costComponent(
 }
 
 function normalizeCostEnforcement(value: string | undefined): CostBudgetSettings["enforcement"] {
-  return value === "WARN" || value === "BLOCK_ALL" || value === "BLOCK_LIVE"
-    ? value
-    : "BLOCK_LIVE";
+  return value === "WARN" || value === "BLOCK_ALL" || value === "BLOCK_LIVE" ? value : "BLOCK_LIVE";
 }
 
 function nonNegativeNumberField(value: unknown, fallback: number): number {
@@ -2712,14 +3052,18 @@ async function readAgentTrace(env: Env, url: URL): Promise<Response> {
      ${whereSql}
      ORDER BY created_at DESC
      LIMIT ?`
-  ).bind(...bindings, queryLimit).all<AgentTraceRow>();
+  )
+    .bind(...bindings, queryLimit)
+    .all<AgentTraceRow>();
   const telemetry = await env.TRADING_DB.prepare(
     `SELECT id, event_type, source, message, telemetry_json, created_at
      FROM logs
      WHERE event_type IN ('AGENT_SIGNAL', 'AGENT_STATE_SNAPSHOT', 'PROFILER_ALERT', 'BAYESIAN_POSTERIOR_UPDATED')
      ORDER BY created_at DESC
      LIMIT ?`
-  ).bind(Math.min(limit, 50)).all<TraceTelemetryRow>();
+  )
+    .bind(Math.min(limit, 50))
+    .all<TraceTelemetryRow>();
   const rows = decisions.results ?? [];
   const byAgent: Record<string, JsonRecord[]> = {};
   const scopedRows: AgentTraceRow[] = [];
@@ -2803,7 +3147,9 @@ async function readAttribution(env: Env, url: URL): Promise<Response> {
      WHERE ${where.join(" AND ")}
      ORDER BY t.executed_at DESC, t.created_at DESC
      LIMIT ?`
-  ).bind(...bindings, limit).all<AttributionRow>();
+  )
+    .bind(...bindings, limit)
+    .all<AttributionRow>();
   const trades = (rows.results ?? []).map(formatAttributionTrade).reverse();
   const byDriver = calculateAttributionByDriver(trades);
   const byAsset = calculateAttributionByAsset(trades);
@@ -2898,10 +3244,13 @@ async function testVaultConnection(
   admin: AuthenticatedAdmin
 ): Promise<Response> {
   if (!env.EXECUTIONER) {
-    return json({
-      ok: false,
-      error: "EXECUTIONER_SERVICE_NOT_BOUND"
-    }, 503);
+    return json(
+      {
+        ok: false,
+        error: "EXECUTIONER_SERVICE_NOT_BOUND"
+      },
+      503
+    );
   }
 
   const response = await env.EXECUTIONER.fetch(
@@ -2920,11 +3269,14 @@ async function testVaultConnection(
     placement: topology.placement
   });
 
-  return json({
-    ok: response.ok,
-    status: response.status,
-    result: payload
-  }, response.ok ? 200 : 502);
+  return json(
+    {
+      ok: response.ok,
+      status: response.status,
+      result: payload
+    },
+    response.ok ? 200 : 502
+  );
 }
 
 function formatAgentTraceRow(row: AgentTraceRow): JsonRecord {
@@ -3015,11 +3367,7 @@ function calculateAttributionByRegime(trades: AttributionTrade[]): JsonRecord[] 
 }
 
 function calculateAttributionByAgentAsset(trades: AttributionTrade[]): JsonRecord[] {
-  return calculateAttributionBuckets(
-    trades,
-    (trade) => `${trade.driver}:${trade.asset}`,
-    "bucket"
-  );
+  return calculateAttributionBuckets(trades, (trade) => `${trade.driver}:${trade.asset}`, "bucket");
 }
 
 function calculateAttributionBuckets(
@@ -3048,7 +3396,10 @@ function calculateAttributionBuckets(
     const row: JsonRecord = {
       [keyName]: key,
       tradeCount: bucket.length,
-      cumulativePnl: round(pnls.reduce((sum, pnl) => sum + pnl, 0), 8),
+      cumulativePnl: round(
+        pnls.reduce((sum, pnl) => sum + pnl, 0),
+        8
+      ),
       averagePnl: round(mean, 8),
       sharpe: sigma > 0 ? round((mean / sigma) * Math.sqrt(bucket.length), 6) : null,
       profitFactor: grossLoss > 0 ? round(grossProfit / grossLoss, 6) : null,
@@ -3059,7 +3410,8 @@ function calculateAttributionBuckets(
       grossProfit: round(grossProfit, 8),
       grossLoss: round(grossLoss, 8),
       averageConfidence: round(
-        bucket.reduce((sum, trade) => sum + (trade.confidence ?? 0), 0) / Math.max(1, bucket.length),
+        bucket.reduce((sum, trade) => sum + (trade.confidence ?? 0), 0) /
+          Math.max(1, bucket.length),
         6
       )
     };
@@ -3118,7 +3470,8 @@ async function vaultStatus(env: Env): Promise<JsonRecord> {
 
   return {
     entries,
-    rotationPolicy: "Use encrypted RISK_VAULT requests for short-lived rotation workflow; promote durable credentials with wrangler secret in production."
+    rotationPolicy:
+      "Use encrypted RISK_VAULT requests for short-lived rotation workflow; promote durable credentials with wrangler secret in production."
   };
 }
 
@@ -3152,11 +3505,10 @@ function backendSettings(env: Env): JsonRecord {
       logSinkProvider: env.LOG_SINK_PROVIDER ?? "disabled",
       logSinkConfigured: Boolean(
         env.LOG_SINK_PROVIDER &&
-          env.LOG_SINK_PROVIDER !== "disabled" &&
-          (env.LOG_SINK_TOKEN || env.LOG_SINK_URL)
+        env.LOG_SINK_PROVIDER !== "disabled" &&
+        (env.LOG_SINK_TOKEN || env.LOG_SINK_URL)
       ),
-      logSinkDataset:
-        env.LOG_SINK_DATASET ?? env.AXIOM_DATASET ?? env.HONEYCOMB_DATASET ?? null
+      logSinkDataset: env.LOG_SINK_DATASET ?? env.AXIOM_DATASET ?? env.HONEYCOMB_DATASET ?? null
     },
     ingest: {
       nativeSource: "DWELLIR_HYPERLIQUID_GRPC",
@@ -3213,6 +3565,10 @@ function backendSettings(env: Env): JsonRecord {
       liveReadinessMinPaperPnlUsd: stringNumber(env.LIVE_READINESS_MIN_PAPER_PNL_USD),
       liveReadinessRequireSingleAsset: env.LIVE_READINESS_REQUIRE_SINGLE_ASSET ?? "true",
       liveReadinessAllowHype: env.LIVE_READINESS_ALLOW_HYPE ?? "false",
+      cascadeLiveReadinessMinPaperTrades: stringNumber(env.CASCADE_LIVE_READINESS_MIN_PAPER_TRADES),
+      cascadeLiveReadinessMinPaperPnlR: stringNumber(env.CASCADE_LIVE_READINESS_MIN_PAPER_PNL_R),
+      cascadeLiveReadinessMinDaysPaper: stringNumber(env.CASCADE_LIVE_READINESS_MIN_DAYS_PAPER),
+      cascadeTwoPersonApprovalWindowMs: CASCADE_TWO_PERSON_APPROVAL_WINDOW_MS,
       signatureAlgorithm: env.SIGNATURE_ALGORITHM ?? null
     },
     riskAndStrategy: {
@@ -3282,10 +3638,7 @@ function sanitizeReason(value: string | undefined): string | null {
 }
 
 function normalizeAlertPriority(value: AlertPriority | undefined): AlertPriority {
-  return value === "LOW" ||
-    value === "MEDIUM" ||
-    value === "HIGH" ||
-    value === "CRITICAL"
+  return value === "LOW" || value === "MEDIUM" || value === "HIGH" || value === "CRITICAL"
     ? value
     : "HIGH";
 }
@@ -3465,9 +3818,7 @@ function buildTradeFilters(url: URL): {
   const agent = normalizeEnum(url.searchParams.get("agent"), AGENT_NAMES);
   const rawStatus = url.searchParams.get("status")?.trim().toUpperCase() ?? null;
   const status =
-    rawStatus === "ALL"
-      ? null
-      : normalizeEnum(rawStatus, TRADE_STATUSES) ?? "FILLED";
+    rawStatus === "ALL" ? null : (normalizeEnum(rawStatus, TRADE_STATUSES) ?? "FILLED");
   const asset = normalizeAsset(url.searchParams.get("asset"));
   const dateRange = parseDateRange(url);
 
@@ -3544,7 +3895,7 @@ function formatTradeRow(row: TradeHistoryRow): JsonRecord {
     fees: row.fees,
     status: row.status,
     exchangeTradeId: row.exchange_trade_id,
-    rawExecution: parseJsonRecord(row.raw_execution_json),
+    rawExecution: parseJsonRecord(row.raw_execution_json) ?? {},
     agentName: row.agent_name,
     traceId: row.trace_id,
     executedAt: row.executed_at,
@@ -3552,11 +3903,25 @@ function formatTradeRow(row: TradeHistoryRow): JsonRecord {
   };
 }
 
-function pagination(
-  page: number,
-  limit: number,
-  total: number
-): JsonRecord {
+function formatPaperLedgerFill(row: PaperLedgerFillRow): PaperLedgerFillInput {
+  return {
+    tradeId: row.trade_id,
+    orderId: row.order_id,
+    asset: row.asset,
+    side: row.side === "SELL" ? "SELL" : "BUY",
+    price: row.price,
+    size: row.size,
+    notional: row.notional,
+    fees: row.fees,
+    status: "GHOST_FILL",
+    primaryDriver: row.primary_driver ?? null,
+    rawExecution: parseJsonRecord(row.raw_execution_json) ?? {},
+    executedAt: row.executed_at,
+    createdAt: row.created_at
+  };
+}
+
+function pagination(page: number, limit: number, total: number): JsonRecord {
   const pageCount = Math.ceil(total / limit);
 
   return {
@@ -3569,10 +3934,7 @@ function pagination(
   };
 }
 
-function normalizeEnum<T extends string>(
-  value: string | null,
-  allowed: readonly T[]
-): T | null {
+function normalizeEnum<T extends string>(value: string | null, allowed: readonly T[]): T | null {
   if (!value) {
     return null;
   }
@@ -3599,8 +3961,7 @@ function normalizeAsset(value: string | null): string | null {
 }
 
 function parseDateRange(url: URL): DateRangeFilter {
-  const compactRange =
-    url.searchParams.get("date_range") ?? url.searchParams.get("dateRange");
+  const compactRange = url.searchParams.get("date_range") ?? url.searchParams.get("dateRange");
   const [rangeFrom, rangeTo] = compactRange?.split(/[|,]/, 2) ?? [];
   const from =
     normalizeIsoDate(url.searchParams.get("from")) ??
@@ -3674,10 +4035,7 @@ function finiteNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function numberOption(
-  bodyValue: unknown,
-  queryValue: string | null
-): number | undefined {
+function numberOption(bodyValue: unknown, queryValue: string | null): number | undefined {
   const candidate = bodyValue ?? queryValue;
   const parsed = Number(candidate);
   return Number.isFinite(parsed) ? parsed : undefined;
@@ -3689,9 +4047,7 @@ function round(value: number, decimalPlaces: number): number {
 }
 
 function nullableRound(value: number | null | undefined, decimalPlaces: number): number | null {
-  return typeof value === "number" && Number.isFinite(value)
-    ? round(value, decimalPlaces)
-    : null;
+  return typeof value === "number" && Number.isFinite(value) ? round(value, decimalPlaces) : null;
 }
 
 function isJsonRecord(value: unknown): value is JsonRecord {
@@ -3779,9 +4135,7 @@ function placementColo(placement: string | null): string | null {
 
 function configuredPlacementFallback(targetColo: string | undefined): string | null {
   const normalized = targetColo?.trim().toUpperCase();
-  return normalized && /^[A-Z0-9]{3,4}$/.test(normalized)
-    ? `remote-${normalized}`
-    : null;
+  return normalized && /^[A-Z0-9]{3,4}$/.test(normalized) ? `remote-${normalized}` : null;
 }
 
 function withTopologyHeaders(
@@ -3805,11 +4159,7 @@ function withTopologyHeaders(
   return new Request(request, { headers, signal });
 }
 
-function setTopologyHeader(
-  headers: Headers,
-  key: string,
-  value: string | null
-): void {
+function setTopologyHeader(headers: Headers, key: string, value: string | null): void {
   if (value !== null) {
     headers.set(`${TOPOLOGY_HEADER_PREFIX}${key}`, value);
   }
@@ -3867,6 +4217,7 @@ function diffConfig(
 ): Record<string, { before: boolean | number | string; after: boolean | number | string }> {
   const fields = [
     "TRADING_ENABLED",
+    "STRATEGY_MODE",
     "ORACLE_ENABLED",
     "SENTIMENT_ENABLED",
     "PROFILER_ENABLED",
@@ -3890,9 +4241,79 @@ function diffConfig(
     "VAR_CONFIDENCE_Z",
     "ORACLE_GOVERNANCE_MODE",
     "ORACLE_MANUAL_SKEPTICISM",
-    "ORACLE_MAX_SKEPTICISM"
+    "ORACLE_MAX_SKEPTICISM",
+    "HEDGE_ENABLED",
+    "HEDGE_TRIGGER_INVENTORY_PCT",
+    "HEDGE_COOLDOWN_MS",
+    "HEDGE_MAX_SLIPPAGE_BPS",
+    "CASCADE_TAKER_ENABLED",
+    "CASCADE_INSTRUMENTS",
+    "MAX_SPREAD_BPS_FOR_TAKER",
+    "MAX_SINGLE_ORDER_NOTIONAL_USD",
+    "SLICE_NOTIONAL_THRESHOLD_USD",
+    "SLICE_NOTIONAL_PER_CHUNK",
+    "SLICE_INTERVAL_MS",
+    "SLICE_JITTER_MS",
+    "MIN_FILL_RATIO",
+    "LAYERED_QUOTE_LEVELS",
+    "LAYERED_QUOTE_SIZE_DECAY",
+    "LAYERED_QUOTE_SPREAD_STEP_BPS",
+    "CVAR_CONFIDENCE",
+    "CVAR_MAX_TAIL_LOSS_BPS",
+    "CVAR_LOOKBACK_TRADES",
+    "SENTIMENT_ALPHA_MODE",
+    "TOXICITY_CLASSIFIER_ENABLED",
+    "TOXICITY_CLASSIFIER_THRESHOLD",
+    "FUNDING_PRE_SETTLEMENT_WINDOW_MS",
+    "FUNDING_PRE_SETTLEMENT_BIAS_MULTIPLIER",
+    "AM_VPIN_BUCKET_VOLUME",
+    "AM_VPIN_ROLLING_WINDOW",
+    "AM_VPIN_DIRECTIONAL_DECAY",
+    "AM_VPIN_NORMAL_THRESHOLD",
+    "AM_VPIN_TOXIC_THRESHOLD",
+    "AM_VPIN_CRITICAL_THRESHOLD",
+    "AM_VPIN_OBI_DEPTH",
+    "AM_VPIN_CRITICAL_OBI",
+    "AM_VPIN_CONTESTED_SPREAD_MULTIPLIER",
+    "AM_VPIN_TOXIC_SPREAD_MULTIPLIER",
+    "AM_VPIN_QUOTE_HALT_MS",
+    "CASCADE_WINDOW_MS",
+    "CASCADE_NOTIONAL_THRESHOLD_USD",
+    "CASCADE_ZSCORE_THRESHOLD",
+    "CASCADE_LOOKBACK_HOURS",
+    "CASCADE_DIRECTIONAL_PCT",
+    "CASCADE_MIN_PRICE_MOVE_ATR",
+    "ABSORPTION_WINDOW_MS",
+    "ABSORPTION_PRICE_BAND_BPS",
+    "ABSORPTION_MIN_HOLD_SECONDS",
+    "ENTRY_WINDOW_SECONDS",
+    "IMPULSIVE_BAR_BODY_ATR",
+    "IMPULSIVE_BAR_VOLUME_MULT",
+    "STOP_BUFFER_ATR",
+    "MIN_STOP_DISTANCE_BPS",
+    "MAX_STOP_DISTANCE_BPS",
+    "MIN_TIME_SINCE_LAST_CASCADE_SECONDS",
+    "NEWS_BLACKOUT_MINUTES",
+    "MAX_REALIZED_VOL_PERCENTILE",
+    "CASCADE_TIME_STOP_HOURS",
+    "PARTIAL_1_R",
+    "PARTIAL_1_SIZE_PCT",
+    "PARTIAL_2_R",
+    "PARTIAL_2_SIZE_PCT",
+    "TRAILING_STOP_TYPE",
+    "TRAILING_STOP_PARAM",
+    "RISK_PER_TRADE_PCT",
+    "HEAT_CAP_PCT",
+    "MAX_POSITION_NOTIONAL_PCT",
+    "ASSET_LIQUIDITY_CAP_USD",
+    "DAILY_LOSS_LIMIT_PCT",
+    "WEEKLY_LOSS_LIMIT_PCT",
+    "MAX_CONSECUTIVE_LOSSES"
   ] as const;
-  const diff: Record<string, { before: boolean | number | string; after: boolean | number | string }> = {};
+  const diff: Record<
+    string,
+    { before: boolean | number | string; after: boolean | number | string }
+  > = {};
 
   for (const field of fields) {
     if (before[field] !== after[field]) {
@@ -3907,11 +4328,15 @@ function diffConfig(
 }
 
 function requiresHighImpactConfirmation(
-  changedParameters: Record<string, { before: boolean | number | string; after: boolean | number | string }>,
+  changedParameters: Record<
+    string,
+    { before: boolean | number | string; after: boolean | number | string }
+  >,
   update: AdminConfigUpdate
 ): boolean {
   const highImpact = new Set([
     "TRADING_ENABLED",
+    "STRATEGY_MODE",
     "ORACLE_ENABLED",
     "SENTIMENT_ENABLED",
     "PROFILER_ENABLED",
@@ -3925,7 +4350,14 @@ function requiresHighImpactConfirmation(
     "KELLY_FRACTION",
     "MIN_EV_THRESHOLD",
     "LATENCY_THRESHOLD_MS",
-    "GOLDEN_COLOS"
+    "GOLDEN_COLOS",
+    "CASCADE_TAKER_ENABLED",
+    "CASCADE_INSTRUMENTS",
+    "RISK_PER_TRADE_PCT",
+    "HEAT_CAP_PCT",
+    "DAILY_LOSS_LIMIT_PCT",
+    "WEEKLY_LOSS_LIMIT_PCT",
+    "MAX_CONSECUTIVE_LOSSES"
   ]);
   const hasHighImpactChange = Object.keys(changedParameters).some((field) => highImpact.has(field));
   const updateRecord = update as Record<string, unknown>;
@@ -3937,34 +4369,92 @@ function requiresHighImpactConfirmation(
   return hasHighImpactChange && !confirmed;
 }
 
+function requestsCascadeLivePromotion(current: GlobalRiskConfig, next: GlobalRiskConfig): boolean {
+  return (
+    (current.STRATEGY_MODE !== "BOTH_LIVE" && next.STRATEGY_MODE === "BOTH_LIVE") ||
+    (current.CASCADE_TAKER_ENABLED !== true && next.CASCADE_TAKER_ENABLED === true)
+  );
+}
+
+async function recordCascadeConfigMetadata(
+  env: Env,
+  current: GlobalRiskConfig,
+  next: GlobalRiskConfig,
+  changedParameters: Record<
+    string,
+    { before: boolean | number | string; after: boolean | number | string }
+  >
+): Promise<void> {
+  const observedAt = new Date().toISOString();
+
+  if (current.STRATEGY_MODE !== "CASCADE_RECOVERY" && next.STRATEGY_MODE === "CASCADE_RECOVERY") {
+    await env.CONFIG_STORE.put(CASCADE_PAPER_ARMED_AT_KEY, observedAt);
+  } else if (next.STRATEGY_MODE === "OFF" || next.STRATEGY_MODE === "MARKET_MAKING") {
+    await env.CONFIG_STORE.delete(CASCADE_PAPER_ARMED_AT_KEY);
+  }
+
+  if (Object.keys(changedParameters).some(isCascadeConfigKey)) {
+    await env.CONFIG_STORE.put(CASCADE_LAST_CONFIG_CHANGE_AT_KEY, observedAt);
+  }
+}
+
+function isCascadeConfigKey(key: string): boolean {
+  return (
+    key === "STRATEGY_MODE" ||
+    key.startsWith("CASCADE_") ||
+    key.startsWith("ABSORPTION_") ||
+    key.startsWith("IMPULSIVE_") ||
+    key.startsWith("PARTIAL_") ||
+    key.startsWith("TRAILING_") ||
+    key === "ENTRY_WINDOW_SECONDS" ||
+    key === "STOP_BUFFER_ATR" ||
+    key === "MIN_STOP_DISTANCE_BPS" ||
+    key === "MAX_STOP_DISTANCE_BPS" ||
+    key === "MIN_TIME_SINCE_LAST_CASCADE_SECONDS" ||
+    key === "NEWS_BLACKOUT_MINUTES" ||
+    key === "MAX_REALIZED_VOL_PERCENTILE" ||
+    key === "RISK_PER_TRADE_PCT" ||
+    key === "HEAT_CAP_PCT" ||
+    key === "MAX_POSITION_NOTIONAL_PCT" ||
+    key === "ASSET_LIQUIDITY_CAP_USD" ||
+    key === "DAILY_LOSS_LIMIT_PCT" ||
+    key === "WEEKLY_LOSS_LIMIT_PCT" ||
+    key === "MAX_CONSECUTIVE_LOSSES" ||
+    key === "MAX_SPREAD_BPS_FOR_TAKER" ||
+    key === "MAX_SINGLE_ORDER_NOTIONAL_USD" ||
+    key.startsWith("SLICE_") ||
+    key === "MIN_FILL_RATIO"
+  );
+}
+
 function hasRiskConfigMutation(update: AdminConfigUpdate): boolean {
   return Boolean(
-      update.config ||
-      update.TRADING_ENABLED !== undefined ||
-      update.ORACLE_ENABLED !== undefined ||
-      update.SENTIMENT_ENABLED !== undefined ||
-      update.PROFILER_ENABLED !== undefined ||
-      update.CROUPIER_ENABLED !== undefined ||
-      update.PIT_BOSS_ENABLED !== undefined ||
-      update.MARKET_MAKING_MODE !== undefined ||
-      update.MAX_POSITION_SIZE !== undefined ||
-      update.MAX_POSITION_PCT !== undefined ||
-      update.MAX_INVENTORY_UNITS !== undefined ||
-      update.MAX_INVENTORY_DELTA !== undefined ||
-      update.MAX_DRAWDOWN_PCT !== undefined ||
-      update.LATENCY_THRESHOLD_MS !== undefined ||
-      update.GOLDEN_COLOS !== undefined ||
-      update.MIN_EV_THRESHOLD !== undefined ||
-      update.EXCHANGE_FEE_BPS !== undefined ||
-      update.KELLY_FRACTION !== undefined ||
-      update.RISK_AVERSION_FACTOR !== undefined ||
-      update.FUNDING_BIAS_THRESHOLD !== undefined ||
-      update.FUNDING_INVENTORY_BIAS !== undefined ||
-      update.QUOTE_HIBERNATE_MS !== undefined ||
-      update.VAR_CONFIDENCE_Z !== undefined ||
-      update.ORACLE_GOVERNANCE_MODE !== undefined ||
-      update.ORACLE_MANUAL_SKEPTICISM !== undefined ||
-      update.ORACLE_MAX_SKEPTICISM !== undefined
+    update.config ||
+    update.TRADING_ENABLED !== undefined ||
+    update.ORACLE_ENABLED !== undefined ||
+    update.SENTIMENT_ENABLED !== undefined ||
+    update.PROFILER_ENABLED !== undefined ||
+    update.CROUPIER_ENABLED !== undefined ||
+    update.PIT_BOSS_ENABLED !== undefined ||
+    update.MARKET_MAKING_MODE !== undefined ||
+    update.MAX_POSITION_SIZE !== undefined ||
+    update.MAX_POSITION_PCT !== undefined ||
+    update.MAX_INVENTORY_UNITS !== undefined ||
+    update.MAX_INVENTORY_DELTA !== undefined ||
+    update.MAX_DRAWDOWN_PCT !== undefined ||
+    update.LATENCY_THRESHOLD_MS !== undefined ||
+    update.GOLDEN_COLOS !== undefined ||
+    update.MIN_EV_THRESHOLD !== undefined ||
+    update.EXCHANGE_FEE_BPS !== undefined ||
+    update.KELLY_FRACTION !== undefined ||
+    update.RISK_AVERSION_FACTOR !== undefined ||
+    update.FUNDING_BIAS_THRESHOLD !== undefined ||
+    update.FUNDING_INVENTORY_BIAS !== undefined ||
+    update.QUOTE_HIBERNATE_MS !== undefined ||
+    update.VAR_CONFIDENCE_Z !== undefined ||
+    update.ORACLE_GOVERNANCE_MODE !== undefined ||
+    update.ORACLE_MANUAL_SKEPTICISM !== undefined ||
+    update.ORACLE_MAX_SKEPTICISM !== undefined
   );
 }
 
@@ -4038,6 +4528,8 @@ function configTelemetry(config: GlobalRiskConfig): Record<string, boolean | num
     RISK_AVERSION_FACTOR: config.RISK_AVERSION_FACTOR,
     FUNDING_BIAS_THRESHOLD: config.FUNDING_BIAS_THRESHOLD,
     FUNDING_INVENTORY_BIAS: config.FUNDING_INVENTORY_BIAS,
+    CASCADE_INSTRUMENTS: config.CASCADE_INSTRUMENTS,
+    CASCADE_TAKER_ENABLED: config.CASCADE_TAKER_ENABLED,
     QUOTE_HIBERNATE_MS: config.QUOTE_HIBERNATE_MS,
     VAR_CONFIDENCE_Z: config.VAR_CONFIDENCE_Z,
     ORACLE_GOVERNANCE_MODE: config.ORACLE_GOVERNANCE_MODE,
@@ -4084,7 +4576,8 @@ async function evaluateHyperliquidSecrets(env: Env): Promise<{
   if (!secret.value || !address.value) {
     return {
       ok: false,
-      detail: "HL_AGENT_SECRET or HL_AGENT_ADDRESS is not available from Workers secrets or the encrypted vault.",
+      detail:
+        "HL_AGENT_SECRET or HL_AGENT_ADDRESS is not available from Workers secrets or the encrypted vault.",
       metadata: {
         secretSource: secret.source,
         addressSource: address.source,
@@ -4139,9 +4632,7 @@ async function evaluateExecutionerHyperliquidSecrets(env: Env): Promise<{
       })
     );
     const body = await safeResponseJson(response);
-    const secretCheck = isJsonRecord(body?.hyperliquidSecrets)
-      ? body.hyperliquidSecrets
-      : null;
+    const secretCheck = isJsonRecord(body?.hyperliquidSecrets) ? body.hyperliquidSecrets : null;
 
     if (!secretCheck) {
       return {
@@ -4225,10 +4716,7 @@ async function decryptDiagnosticSecret(
 }
 
 async function readMoltworkerHealth(env: Env): Promise<Response> {
-  const heartbeat = await env.CONFIG_STORE.get<JsonRecord>(
-    MOLTWORKER_HEARTBEAT_KEY,
-    "json"
-  );
+  const heartbeat = await env.CONFIG_STORE.get<JsonRecord>(MOLTWORKER_HEARTBEAT_KEY, "json");
   const maxAgeMs = moltworkerHeartbeatMaxAgeMs(env);
 
   if (!heartbeat) {
@@ -4341,7 +4829,8 @@ async function evaluateMoltworkerHeartbeat(env: Env): Promise<{
     return {
       ok: false,
       status: "WARN",
-      detail: "MOLTWORKER_HEALTH_URL is not configured; supervisor heartbeat cannot be verified from the edge.",
+      detail:
+        "MOLTWORKER_HEALTH_URL is not configured; supervisor heartbeat cannot be verified from the edge.",
       metadata: { configured: false }
     };
   }
@@ -4364,18 +4853,17 @@ async function evaluateMoltworkerHeartbeat(env: Env): Promise<{
     const body = await safeResponseJson(response);
     const lastRun = isJsonRecord(body?.lastRun) ? body.lastRun : null;
     const lastRunMetadata = isJsonRecord(lastRun?.metadata) ? lastRun.metadata : null;
-    const runtime =
-      typeof lastRunMetadata?.runtime === "string" ? lastRunMetadata.runtime : null;
-    const source =
-      typeof lastRunMetadata?.source === "string" ? lastRunMetadata.source : null;
+    const runtime = typeof lastRunMetadata?.runtime === "string" ? lastRunMetadata.runtime : null;
+    const source = typeof lastRunMetadata?.source === "string" ? lastRunMetadata.source : null;
     const supervisorOk = body?.ok !== false;
 
     return {
       ok: response.ok && supervisorOk,
       status: response.ok && supervisorOk ? "OPTIMAL" : "ANOMALY",
-      detail: response.ok && supervisorOk
-        ? `Moltworker heartbeat responded in ${latencyMs}ms${runtime ? ` from ${runtime}` : ""}.`
-        : `Moltworker heartbeat returned HTTP ${response.status}.`,
+      detail:
+        response.ok && supervisorOk
+          ? `Moltworker heartbeat responded in ${latencyMs}ms${runtime ? ` from ${runtime}` : ""}.`
+          : `Moltworker heartbeat returned HTTP ${response.status}.`,
       metadata: {
         configured: true,
         status: response.status,
@@ -4443,6 +4931,10 @@ function maskAddress(value: string): string {
   return value.length > 12 ? `${value.slice(0, 6)}...${value.slice(-4)}` : "configured";
 }
 
+function maskTokenId(value: string): string {
+  return value.length > 12 ? `${value.slice(0, 6)}...${value.slice(-4)}` : "configured";
+}
+
 function hasEndpointPath(value: string | undefined): boolean {
   if (!value) {
     return false;
@@ -4481,11 +4973,7 @@ function toJsonRecord(value: unknown): JsonRecord {
   return JSON.parse(JSON.stringify(value ?? {})) as JsonRecord;
 }
 
-function json(
-  body: unknown,
-  status = 200,
-  headers: Record<string, string> = {}
-): Response {
+function json(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: {

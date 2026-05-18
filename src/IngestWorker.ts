@@ -18,6 +18,7 @@ import {
   durableObjectLocationOptions,
   getTradingEngineStub
 } from "./utils/TradingEngineStub";
+import { isHyperliquidLiquidationMessage } from "./strategy/cascade/LiquidationStream";
 import type {
   Env,
   AgentSignal,
@@ -2060,8 +2061,9 @@ class ExchangeStreamController {
       encoded === null
         ? JSON.stringify(payload)
         : encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength);
+    const endpoint = isHyperliquidLiquidationMessage(raw) ? "/liquidation" : "/hyperliquid/raw";
     const response = await engine.fetch(
-      new Request("https://trading-engine.internal/hyperliquid/raw", {
+      new Request(`https://trading-engine.internal${endpoint}`, {
         method: "POST",
         headers: {
           "content-type": useMsgpack ? "application/x-msgpack" : "application/json",
@@ -3422,8 +3424,16 @@ function augmentDwellirHyperliquidReadStreams(
         .filter(Boolean)
         .some((subscription) => isL2BookSubscription(subscription))
   );
+  const hasHyperliquidLiquidationSocket = configs.some(
+    (config) =>
+      normalizeSource(config.source) === "HYPERLIQUID" &&
+      normalizeTransport(config.transport) === "websocket" &&
+      (config.subscriptions ?? [config.subscription])
+        .filter(Boolean)
+        .some((subscription) => isLiquidationSubscription(subscription))
+  );
 
-  if (!hasDwellirGrpc || hasHyperliquidBookSocket) {
+  if (!hasDwellirGrpc || (hasHyperliquidBookSocket && hasHyperliquidLiquidationSocket)) {
     return configs;
   }
 
@@ -3431,9 +3441,29 @@ function augmentDwellirHyperliquidReadStreams(
   const activeCoins = coins.length > 0 ? coins : [...DEFAULT_HYPERLIQUID_ASSET_MATRIX];
   const subscriptionProfile = resolveDwellirSubscriptionProfile(env, activeCoins.length);
   const orderbookTransport = dwellirOrderbookTransport(env);
+  const liquidationUrl = resolveDwellirOrderbookWsUrl(env);
+  const liquidationStreams: ExchangeStreamConfig[] = hasHyperliquidLiquidationSocket
+    ? []
+    : activeCoins.map((coin) => ({
+        id: `hyperliquid-liquidations-${coin.toLowerCase()}`,
+        source: "HYPERLIQUID" as const,
+        source_exchange: "hyperliquid",
+        transport: "websocket" as const,
+        streamUrl: liquidationUrl,
+        weight: 1,
+        exchangeCode: "hyperliquid",
+        instrumentCode: `${coin.toLowerCase()}-usd`,
+        subscriptionProfile,
+        subscriptions: [
+          {
+            method: "subscribe",
+            subscription: { type: "liquidations", coin }
+          }
+        ]
+      }));
 
   if (orderbookTransport === "grpc") {
-    return configs.map((config) =>
+    return [...configs, ...liquidationStreams].map((config) =>
       isDwellirGrpcRawConfig(config, env)
         ? {
             ...config,
@@ -3466,34 +3496,36 @@ function augmentDwellirHyperliquidReadStreams(
       : config
   );
 
-  const orderbookStreams = activeCoins.map((coin) => ({
-    id: `dwellir-hyperliquid-orderbook-${coin.toLowerCase()}`,
-    source: "HYPERLIQUID" as const,
-    source_exchange: "hyperliquid",
-    transport: "websocket" as const,
-    streamUrl: orderbookUrl,
-    weight: 1,
-    exchangeCode: "hyperliquid",
-    instrumentCode: `${coin.toLowerCase()}-usd`,
-    subscriptionProfile,
-    subscriptions: [
-	      {
-	        method: "subscribe",
-	        subscription: {
-	          type: subscriptionProfile.l4BookEnabled ? "l4Book" : "l2Book",
-	          coin,
-	          ...(subscriptionProfile.l4BookEnabled
-	            ? {}
-	            : {
-	                nSigFigs: 5,
-	                strict: true
-	              })
-	        }
-	      }
-    ]
-  }));
+  const orderbookStreams: ExchangeStreamConfig[] = hasHyperliquidBookSocket
+    ? []
+    : activeCoins.map((coin) => ({
+        id: `dwellir-hyperliquid-orderbook-${coin.toLowerCase()}`,
+        source: "HYPERLIQUID" as const,
+        source_exchange: "hyperliquid",
+        transport: "websocket" as const,
+        streamUrl: orderbookUrl,
+        weight: 1,
+        exchangeCode: "hyperliquid",
+        instrumentCode: `${coin.toLowerCase()}-usd`,
+        subscriptionProfile,
+        subscriptions: [
+          {
+            method: "subscribe",
+            subscription: {
+              type: subscriptionProfile.l4BookEnabled ? "l4Book" : "l2Book",
+              coin,
+              ...(subscriptionProfile.l4BookEnabled
+                ? {}
+                : {
+                    nSigFigs: 5,
+                    strict: true
+                  })
+            }
+          }
+        ]
+      }));
 
-  return [...normalized, ...orderbookStreams];
+  return [...normalized, ...orderbookStreams, ...liquidationStreams];
 }
 
 function defaultHyperliquidStreamConfig(env: Env): ExchangeStreamConfig[] {
@@ -3530,7 +3562,8 @@ function defaultHyperliquidStreamConfig(env: Env): ExchangeStreamConfig[] {
       subscriptions: activeCoins.flatMap((coin) => [
         { method: "subscribe", subscription: { type: "l2Book", coin } },
         { method: "subscribe", subscription: { type: "trades", coin } },
-        { method: "subscribe", subscription: { type: "activeAssetCtx", coin } }
+        { method: "subscribe", subscription: { type: "activeAssetCtx", coin } },
+        { method: "subscribe", subscription: { type: "liquidations", coin } }
       ]),
       instrumentCode:
         activeCoins.length === 1 ? `${activeCoins[0].toLowerCase()}-usd` : undefined,
@@ -3806,6 +3839,20 @@ function isL2BookSubscription(subscription: string | JsonRecord | undefined): bo
   const payload = subscription.subscription;
   const type = isRecord(payload) ? normalizeString(payload.type) : null;
   return type === "L2BOOK" || type === "L4BOOK";
+}
+
+function isLiquidationSubscription(subscription: string | JsonRecord | undefined): boolean {
+  if (!subscription) {
+    return false;
+  }
+
+  if (typeof subscription === "string") {
+    return subscription.toLowerCase().includes("liquidation");
+  }
+
+  const payload = subscription.subscription;
+  const type = isRecord(payload) ? normalizeString(payload.type) : null;
+  return type === "LIQUIDATION" || type === "LIQUIDATIONS";
 }
 
 function dwellirGrpcStreams(

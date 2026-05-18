@@ -44,6 +44,15 @@ jobs:
       - name: Typecheck Command Center
         run: npm run web:typecheck
 
+      - name: Lint Workers and Command Center
+        run: npm run lint
+
+      - name: Check formatting
+        run: npm run format:check
+
+      - name: Engine tests with coverage gate
+        run: npm run test:engine
+
       - name: Build Command Center static export
         env:
           NEXT_PUBLIC_SOVEREIGN_API_BASE: https://api.yevow.co

@@ -62,6 +62,25 @@ describe("quote engine toxicity gating", () => {
     expect(contested.quote?.orders.length).toBeGreaterThan(0);
     expect(contested.intent?.timeInForce).toBe("ALO");
   });
+
+  it("builds layered post-only quotes around Guéant-discretized prices", () => {
+    const decision = new CroupierAgent().evaluate({
+      ...croupierInput(),
+      minEvThreshold: -1_000_000_000,
+      layeredQuoteLevels: 3,
+      layeredQuoteSizeDecay: 0.5,
+      layeredQuoteSpreadStepBps: 100
+    });
+    const bidOrders = decision.quote?.orders.filter((order) => order.side === "BID") ?? [];
+    const askOrders = decision.quote?.orders.filter((order) => order.side === "ASK") ?? [];
+
+    expect(bidOrders).toHaveLength(3);
+    expect(askOrders).toHaveLength(3);
+    expect(bidOrders.every((order) => order.postOnly)).toBe(true);
+    expect(askOrders.every((order) => order.postOnly)).toBe(true);
+    expect(bidOrders[1].price).toBeLessThan(bidOrders[0].price);
+    expect(askOrders[1].price).toBeGreaterThan(askOrders[0].price);
+  });
 });
 
 function tradeTick(sequence: number, side: "buy" | "sell"): MarketTick {

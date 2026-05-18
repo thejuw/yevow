@@ -29,11 +29,19 @@ body {
   margin: 0;
   background:
     linear-gradient(90deg, rgba(255, 255, 255, 0.018) 1px, transparent 1px),
-    linear-gradient(rgba(255, 255, 255, 0.014) 1px, transparent 1px),
-    var(--bg);
-  background-size: 32px 32px, 32px 32px;
+    linear-gradient(rgba(255, 255, 255, 0.014) 1px, transparent 1px), var(--bg);
+  background-size:
+    32px 32px,
+    32px 32px;
   color: var(--text);
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-family:
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
   letter-spacing: 0;
 }
 
@@ -51,7 +59,10 @@ button {
   border-radius: 7px;
   padding: 7px 10px;
   cursor: pointer;
-  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    transform 160ms ease;
 }
 
 button:hover {
@@ -946,6 +957,7 @@ output {
   order: 7;
   grid-column: span 8;
   grid-row: span 3;
+  scroll-margin-top: 136px;
 }
 
 .cctv-panel {
@@ -1548,6 +1560,181 @@ output {
   overflow-wrap: anywhere;
 }
 
+.strategy-mode-panel,
+.cascade-ops-panel {
+  grid-column: 1 / -1;
+}
+
+.strategy-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.strategy-mode-grid button {
+  min-height: 42px;
+  justify-content: center;
+  border-color: rgba(188, 216, 255, 0.22);
+  font-family: "SFMono-Regular", Consolas, monospace;
+}
+
+.strategy-command-strip {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  border: 1px solid rgba(188, 216, 255, 0.18);
+  border-radius: 7px;
+  padding: 10px;
+  background: rgba(6, 8, 11, 0.36);
+}
+
+.strategy-command-strip > div:first-child,
+.asset-toggle-strip > span {
+  display: grid;
+  gap: 3px;
+  color: var(--muted);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.strategy-command-strip strong {
+  color: var(--text);
+  font-size: 13px;
+  letter-spacing: 0;
+}
+
+.compact-mode-grid {
+  grid-template-columns: repeat(5, minmax(74px, 1fr));
+}
+
+.compact-mode-grid button {
+  min-height: 34px;
+  padding: 6px 8px;
+  font-size: 11px;
+}
+
+.asset-toggle-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid rgba(188, 216, 255, 0.14);
+  border-radius: 7px;
+  padding: 8px 10px;
+  background: rgba(6, 8, 11, 0.28);
+}
+
+.asset-toggle {
+  min-height: 30px;
+  border-color: rgba(188, 216, 255, 0.18);
+  color: var(--muted);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+}
+
+.asset-toggle.active {
+  border-color: rgba(102, 227, 161, 0.52);
+  color: var(--green);
+  background: rgba(102, 227, 161, 0.08);
+}
+
+.inline-toggle-strip {
+  margin-top: 10px;
+}
+
+.settings-asset-toggle-strip {
+  margin-bottom: 10px;
+}
+
+.compact-summary {
+  margin-top: 10px;
+}
+
+.cascade-ops-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr) minmax(0, 1fr) 220px;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.cascade-stack,
+.cascade-heat-card {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  border: 1px solid var(--line-cold);
+  border-radius: 7px;
+  padding: 10px;
+  background: rgba(6, 8, 11, 0.42);
+}
+
+.cascade-row,
+.cascade-position-row,
+.cascade-signal-row {
+  display: grid;
+  gap: 8px;
+  align-items: center;
+  min-height: 38px;
+  border: 1px solid rgba(188, 216, 255, 0.12);
+  border-radius: 6px;
+  padding: 8px;
+  background: rgba(1, 8, 5, 0.35);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+}
+
+.cascade-row,
+.cascade-signal-row {
+  grid-template-columns: 0.8fr 1fr 1fr 0.7fr;
+}
+
+.cascade-position-row {
+  grid-template-columns: minmax(120px, 1fr) 0.8fr 0.9fr 0.6fr max-content;
+}
+
+.cascade-row strong,
+.cascade-position-row strong,
+.cascade-signal-row strong,
+.cascade-heat-card strong {
+  color: var(--text);
+}
+
+.cascade-row span,
+.cascade-position-row span,
+.cascade-signal-row span,
+.cascade-heat-card span {
+  color: var(--muted);
+}
+
+.cascade-heat-card {
+  justify-content: stretch;
+}
+
+.cascade-heat-card strong {
+  font-size: 28px;
+  letter-spacing: 0;
+}
+
+.compact-param-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.cascade-validation-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.compact-diagnostic-list {
+  max-height: 190px;
+  overflow: auto;
+  margin-top: 10px;
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -1642,6 +1829,8 @@ output {
   }
 
   .market-strip,
+  .strategy-mode-panel,
+  .cascade-ops-panel,
   .readiness-strip,
   .shadow-queue-panel,
   .hunt-grid,
@@ -1660,7 +1849,9 @@ output {
   }
 
   .param-grid,
-  .strategy-knob-grid {
+  .strategy-knob-grid,
+  .compact-param-grid,
+  .cascade-ops-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
@@ -1692,6 +1883,11 @@ output {
   .hunt-grid,
   .mode-grid,
   .mode-readout,
+  .strategy-mode-grid,
+  .cascade-ops-grid,
+  .cascade-row,
+  .cascade-position-row,
+  .cascade-signal-row,
   .bridge-metrics,
   .trade-summary,
   .shadow-queue-panel .trade-summary,

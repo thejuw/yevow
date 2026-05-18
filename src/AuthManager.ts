@@ -1,4 +1,14 @@
-export type AdminScope = "READ" | "WRITE";
+export type AdminScope =
+  | "READ"
+  | "WRITE"
+  | "TELEMETRY:READ"
+  | "CONFIG:WRITE"
+  | "TRADING:WRITE"
+  | "VAULT:WRITE"
+  | "SECURITY:WRITE"
+  | "REPLAY:WRITE"
+  | "ALERTS:WRITE"
+  | "STRATEGY:WRITE";
 
 export interface AuthClaims {
   [key: string]: unknown;
@@ -37,9 +47,7 @@ export class AuthManager {
       const header = parseJson<{ alg?: string; typ?: string }>(
         decodeBase64UrlToString(encodedHeader)
       );
-      const payload = parseJson<Record<string, unknown>>(
-        decodeBase64UrlToString(encodedPayload)
-      );
+      const payload = parseJson<Record<string, unknown>>(decodeBase64UrlToString(encodedPayload));
 
       if (
         !header ||
@@ -115,7 +123,19 @@ export class AuthManager {
   static hasScope(claims: AuthClaims, requiredScope: AdminScope): boolean {
     const scopes = AuthManager.normalizeScopes(claims.scopes);
 
-    return scopes.includes(requiredScope) || scopes.includes("WRITE");
+    if (scopes.includes("WRITE")) {
+      return true;
+    }
+
+    if (requiredScope === "READ") {
+      return scopes.includes("READ") || scopes.includes("TELEMETRY:READ");
+    }
+
+    if (requiredScope === "TELEMETRY:READ") {
+      return scopes.includes("TELEMETRY:READ") || scopes.includes("READ");
+    }
+
+    return scopes.includes(requiredScope);
   }
 
   static normalizeScopes(value: unknown): AdminScope[] {
@@ -129,7 +149,7 @@ export class AuthManager {
     for (const scope of rawScopes) {
       const normalized = String(scope).trim().toUpperCase();
 
-      if (normalized === "READ" || normalized === "WRITE") {
+      if (isAdminScope(normalized)) {
         scopes.add(normalized);
       }
     }
@@ -154,6 +174,21 @@ export class AuthManager {
       keyUsages
     );
   }
+}
+
+function isAdminScope(value: string): value is AdminScope {
+  return (
+    value === "READ" ||
+    value === "WRITE" ||
+    value === "TELEMETRY:READ" ||
+    value === "CONFIG:WRITE" ||
+    value === "TRADING:WRITE" ||
+    value === "VAULT:WRITE" ||
+    value === "SECURITY:WRITE" ||
+    value === "REPLAY:WRITE" ||
+    value === "ALERTS:WRITE" ||
+    value === "STRATEGY:WRITE"
+  );
 }
 
 function isWithinTokenWindow(payload: Record<string, unknown>): boolean {
@@ -194,20 +229,14 @@ async function constantTimeEqual(left: string, right: string): Promise<boolean> 
 }
 
 function encodeBase64Url(value: string | ArrayBuffer): string {
-  const bytes =
-    typeof value === "string"
-      ? textEncoder.encode(value)
-      : new Uint8Array(value);
+  const bytes = typeof value === "string" ? textEncoder.encode(value) : new Uint8Array(value);
   let binary = "";
 
   for (const byte of bytes) {
     binary += String.fromCharCode(byte);
   }
 
-  return btoa(binary)
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/g, "");
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
 function decodeBase64UrlToBytes(value: string): Uint8Array {
