@@ -196,6 +196,13 @@ import {
   buildCascadeExitTradeIntent
 } from "./engine/trading/cascade/CascadeTradeIntents";
 import {
+  absorptionConfirmedAlertMetadata,
+  absorptionConfirmedLogMetadata,
+  absorptionConfirmedTelemetryPayload,
+  buildCascadeAbsorptionObservation,
+  nextCascadeCvd
+} from "./engine/trading/cascade/CascadeAbsorptionRuntime";
+import {
   buildConfigRefreshLog,
   buildRuntimeConfigAppliedLog,
   shouldLogConfigRefresh,
@@ -398,7 +405,6 @@ import type {
 } from "./types";
 import type {
   AbsorptionAnalyzerConfig,
-  AbsorptionObservation,
   AbsorptionConfirmed,
   CascadeDetectorConfig,
   CascadeEvent,
@@ -1995,72 +2001,37 @@ export class TradingEngine {
       return;
     }
 
-    const signedNotional =
-      tick.side === "buy"
-        ? tick.price * tick.size
-        : tick.side === "sell"
-          ? -tick.price * tick.size
-          : 0;
-    const cumulativeVolumeDelta =
-      (this.cascadeCvdByInstrument.get(instrumentCode) ?? 0) + signedNotional;
+    const cumulativeVolumeDelta = nextCascadeCvd(
+      this.cascadeCvdByInstrument.get(instrumentCode) ?? 0,
+      tick
+    );
     this.cascadeCvdByInstrument.set(instrumentCode, cumulativeVolumeDelta);
 
-    const observation: AbsorptionObservation = {
-      instrumentCode,
-      observedAt: tick.receivedAt,
-      price: tick.price,
-      takerBuyVolume: tick.side === "buy" ? Math.max(0, tick.size) : 0,
-      takerSellVolume: tick.side === "sell" ? Math.max(0, tick.size) : 0,
-      cumulativeVolumeDelta,
-      openInterest: typeof tick.openInterest === "number" ? tick.openInterest : null
-    };
     this.absorptionAnalyzer.configure(this.currentAbsorptionAnalyzerConfig());
-    const confirmed = this.absorptionAnalyzer.observe(observation);
+    const confirmed = this.absorptionAnalyzer.observe(
+      buildCascadeAbsorptionObservation({
+        tick,
+        instrumentCode,
+        cumulativeVolumeDelta
+      })
+    );
 
     if (!confirmed) {
       return;
     }
 
     this.cascadeAbsorptionsById.set(confirmed.cascadeId, confirmed);
-    this.logger.info("ABSORPTION_CONFIRMED", "Liquidation cascade absorption confirmed", {
-      eventType: "ABSORPTION_CONFIRMED",
-      cascadeId: confirmed.cascadeId,
-      instrumentCode: confirmed.instrumentCode,
-      direction: confirmed.direction,
-      elapsedMs: confirmed.elapsedMs,
-      price: confirmed.price,
-      priceHeld: confirmed.criteria.priceHeld,
-      takerExhaustion: confirmed.criteria.takerExhaustion,
-      cvdReversal: confirmed.criteria.cvdReversal,
-      openInterestStabilized: confirmed.criteria.openInterestStabilized,
-      observations: confirmed.observations
-    });
-    this.publish("ABSORPTION_CONFIRMED", {
-      schemaVersion: confirmed.schemaVersion,
-      cascadeId: confirmed.cascadeId,
-      instrumentCode: confirmed.instrumentCode,
-      direction: confirmed.direction,
-      confirmedAt: confirmed.confirmedAt,
-      elapsedMs: confirmed.elapsedMs,
-      price: confirmed.price,
-      priceHeld: confirmed.criteria.priceHeld,
-      takerExhaustion: confirmed.criteria.takerExhaustion,
-      cvdReversal: confirmed.criteria.cvdReversal,
-      openInterestStabilized: confirmed.criteria.openInterestStabilized,
-      observations: confirmed.observations
-    });
+    this.logger.info(
+      "ABSORPTION_CONFIRMED",
+      "Liquidation cascade absorption confirmed",
+      absorptionConfirmedLogMetadata(confirmed)
+    );
+    this.publish("ABSORPTION_CONFIRMED", absorptionConfirmedTelemetryPayload(confirmed));
     this.emitCascadeOperationalAlert(
       "CASCADE_ABSORPTION_CONFIRMED",
       "Cascade absorption confirmed",
       `${confirmed.instrumentCode} absorption confirmed after ${confirmed.elapsedMs}ms.`,
-      {
-        cascadeId: confirmed.cascadeId,
-        instrumentCode: confirmed.instrumentCode,
-        direction: confirmed.direction,
-        elapsedMs: confirmed.elapsedMs,
-        price: confirmed.price,
-        confirmedAt: confirmed.confirmedAt
-      },
+      absorptionConfirmedAlertMetadata(confirmed),
       confirmed.cascadeId
     );
   }
