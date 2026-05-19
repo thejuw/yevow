@@ -154,7 +154,10 @@ import {
   buildCascadeEntryTradeIntent,
   buildCascadeExitTradeIntent
 } from "./engine/trading/cascade/CascadeTradeIntents";
-import { stateAfterRuntimeConfigUpdate } from "./engine/trading/config/ConfigRuntime";
+import {
+  stateAfterConfigRefresh,
+  stateAfterRuntimeConfigUpdate
+} from "./engine/trading/config/ConfigRuntime";
 import {
   absorptionAnalyzerConfig as buildAbsorptionAnalyzerConfig,
   cascadeAssetProfileFromConfig,
@@ -5639,6 +5642,7 @@ export class TradingEngine {
       this.engineState.quoteState,
       now
     );
+    const profilerStates = this.profilerRegistry.snapshot();
 
     const refreshedLocation = resolveEngineLocation(
       {
@@ -5659,38 +5663,24 @@ export class TradingEngine {
       this.engineState.location.observedLatencyMs
     );
 
-    this.engineState = {
-      ...this.engineState,
-      cachedConfig: nextConfig,
+    this.engineState = stateAfterConfigRefresh({
+      currentState: this.engineState,
+      nextConfig,
       macroBias: this.macroBias,
       temporaryOverride: this.activeTemporaryOverride,
-      assetQuoteStates: nextAssetQuoteStates,
-      quoteState: nextQuoteState,
+      nextAssetQuoteStates,
+      nextQuoteState,
       assetMatrix: this.calculateAssetMatrix(
         now,
         this.engineState.microstructure.instrumentCode ?? undefined,
         this.engineState.oracle,
-        this.profilerRegistry.snapshot(),
+        profilerStates,
         nextAssetQuoteStates
       ),
-      profilerStates: this.profilerRegistry.snapshot(),
-      maxLatencyMs: nextConfig.LATENCY_THRESHOLD_MS,
-      location: refreshedLocation,
-      risk: applyLocationRisk(
-        {
-          ...this.engineState.risk,
-          configVersion: nextConfig.version,
-          killSwitch: !nextConfig.TRADING_ENABLED,
-          maxOrderNotional: nextConfig.MAX_POSITION_SIZE,
-          maxDrawdownPct: nextConfig.MAX_DRAWDOWN_PCT,
-          updatedAt: now
-        },
-        nextConfig,
-        refreshedLocation,
-        now
-      ),
-      updatedAt: now
-    };
+      profilerStates,
+      refreshedLocation,
+      observedAt: now
+    });
 
     await this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "CONFIG_REFRESH");
 

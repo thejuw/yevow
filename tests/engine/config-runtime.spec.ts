@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { defaultConfig } from "../../src/ConfigManager";
 import { neutralMacroBias } from "../../src/Governor";
-import { stateAfterRuntimeConfigUpdate } from "../../src/engine/trading/config/ConfigRuntime";
+import {
+  stateAfterConfigRefresh,
+  stateAfterRuntimeConfigUpdate
+} from "../../src/engine/trading/config/ConfigRuntime";
 import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
 import type { AdminConfigUpdate } from "../../src/types";
 
@@ -84,5 +87,74 @@ describe("ConfigRuntime", () => {
         }
       }
     });
+  });
+
+  it("assembles refreshed config state with location-adjusted risk", () => {
+    const currentState = defaultEngineState("config-refresh");
+    const cachedConfig = {
+      ...defaultConfig,
+      TRADING_ENABLED: true,
+      MAX_POSITION_SIZE: 250,
+      MAX_DRAWDOWN_PCT: 0.03,
+      LATENCY_THRESHOLD_MS: 150,
+      version: "config-refresh-v1"
+    };
+    const refreshedLocation = {
+      ...currentState.location,
+      colo: "NRT",
+      positionSizeMultiplier: 0.7,
+      latencyRiskMultiplier: 1.2
+    };
+    const nextQuoteState = {
+      ...currentState.quoteState,
+      status: "ACTIVE" as const,
+      updatedAt: "2026-05-18T15:00:00.000Z"
+    };
+    const nextAssetQuoteStates = {
+      "btc-usd": nextQuoteState
+    };
+    const assetMatrix = {
+      "btc-usd": {
+        ...currentState.assetMatrix["btc-usd"],
+        selected: true
+      }
+    };
+    const profilerStates = {
+      "btc-usd": {
+        ...currentState.profilerStates["btc-usd"],
+        toxicityScore: 0.25
+      }
+    };
+
+    const result = stateAfterConfigRefresh({
+      currentState,
+      nextConfig: cachedConfig,
+      macroBias: neutralMacroBias(),
+      temporaryOverride: null,
+      nextAssetQuoteStates,
+      nextQuoteState,
+      assetMatrix,
+      profilerStates,
+      refreshedLocation,
+      observedAt: "2026-05-18T15:00:00.000Z"
+    });
+
+    expect(result).toMatchObject({
+      cachedConfig,
+      assetQuoteStates: nextAssetQuoteStates,
+      quoteState: nextQuoteState,
+      assetMatrix,
+      profilerStates,
+      maxLatencyMs: 150,
+      location: refreshedLocation,
+      updatedAt: "2026-05-18T15:00:00.000Z",
+      risk: {
+        configVersion: "config-refresh-v1",
+        killSwitch: false,
+        maxDrawdownPct: 0.03,
+        updatedAt: "2026-05-18T15:00:00.000Z"
+      }
+    });
+    expect(result.risk.maxOrderNotional).toBe(175);
   });
 });
