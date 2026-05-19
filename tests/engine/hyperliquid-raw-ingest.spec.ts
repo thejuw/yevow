@@ -7,6 +7,7 @@ import {
   calculateHyperliquidBookTotalLatencyMs,
   evaluateHyperliquidBookSequence,
   handleHyperliquidRawBatch,
+  hyperliquidBookDesyncLogMetadata,
   hyperliquidIngestConnectionKey,
   hyperliquidRawMessages,
   isActiveHyperliquidIngestConnection,
@@ -215,6 +216,25 @@ describe("hyperliquid raw ingest helpers", () => {
   });
 
   it("evaluates native L2 duplicate and sequence gap decisions", () => {
+    const bundle = buildHyperliquidL2BookSnapshotBundle(
+      {
+        data: {
+          coin: "BTC",
+          time: 1_767_000_000_000,
+          sequence: 20,
+          levels: [[{ px: "100", sz: "1" }], [{ px: "101", sz: "2" }]]
+        }
+      },
+      {
+        exchangeCode: "HL",
+        source_exchange: "hyperliquid",
+        receivedAt: "2026-01-01T00:00:00.050Z"
+      },
+      5_000,
+      "2026-01-01T00:00:00.050Z"
+    );
+    const desyncDecision = evaluateHyperliquidBookSequence(bookSync(10), 20, true, 5, "now");
+
     expect(evaluateHyperliquidBookSequence(undefined, 1, true, 5, "now")).toEqual({
       status: "ACCEPTED"
     });
@@ -233,6 +253,18 @@ describe("hyperliquid raw ingest helpers", () => {
     expect(evaluateHyperliquidBookSequence(bookSync(10), 20, false, 5, "now")).toEqual({
       status: "ACCEPTED"
     });
+    expect(desyncDecision.status).toBe("DESYNC");
+    if (desyncDecision.status === "DESYNC") {
+      expect(hyperliquidBookDesyncLogMetadata(bundle, desyncDecision)).toEqual({
+        instrumentCode: "btc-usd",
+        exchangeCode: "hl",
+        source_exchange: "hyperliquid",
+        previousSequence: 10,
+        sequence: 20,
+        gapMs: 10,
+        maxGapMs: 5
+      });
+    }
   });
 
   it("processes bounded native trade batches without allocating sliced trade arrays", async () => {

@@ -241,6 +241,7 @@ import {
   calculateHyperliquidBookTotalLatencyMs,
   evaluateHyperliquidBookSequence,
   handleHyperliquidRawBatch,
+  hyperliquidBookDesyncLogMetadata,
   processHyperliquidAssetContext,
   processHyperliquidTradeBatch,
   registerHyperliquidIngestConnection,
@@ -1527,8 +1528,6 @@ export class TradingEngine {
     );
     const {
       instrumentCode,
-      exchangeCode,
-      sourceExchange,
       exchangeTimestamp,
       receivedAt,
       hasExplicitSequence,
@@ -1560,15 +1559,11 @@ export class TradingEngine {
         existingSync.desyncReason = sequenceDecision.reason;
         existingSync.isSynced = false;
       }
-      this.logger.warn("ORDER_BOOK_DESYNC", "Hyperliquid native book sequence gap detected", {
-        instrumentCode,
-        exchangeCode,
-        source_exchange: sourceExchange,
-        previousSequence: sequenceDecision.previousSequence,
-        sequence,
-        gapMs: sequenceDecision.gapMs,
-        maxGapMs: sequenceDecision.maxGapMs
-      });
+      this.logger.warn(
+        "ORDER_BOOK_DESYNC",
+        "Hyperliquid native book sequence gap detected",
+        hyperliquidBookDesyncLogMetadata(snapshotBundle, sequenceDecision)
+      );
       return {
         accepted: false,
         status: "DESYNC",

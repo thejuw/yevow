@@ -22,6 +22,7 @@ import type { BookSyncState } from "../book/BookTypes";
 import type {
   EngineLocation,
   InternalOrderBook,
+  JsonRecord,
   LatencyMetrics,
   MarketTick,
   OrderBookSnapshot
@@ -517,4 +518,19 @@ export function evaluateHyperliquidBookSequence(
   }
 
   return { status: "ACCEPTED" };
+}
+
+export function hyperliquidBookDesyncLogMetadata(
+  bundle: HyperliquidL2BookSnapshotBundle,
+  decision: Extract<HyperliquidBookSequenceDecision, { status: "DESYNC" }>
+): JsonRecord {
+  return {
+    instrumentCode: bundle.instrumentCode,
+    exchangeCode: bundle.exchangeCode,
+    source_exchange: bundle.sourceExchange,
+    previousSequence: decision.previousSequence,
+    sequence: decision.sequence,
+    gapMs: decision.gapMs,
+    maxGapMs: decision.maxGapMs
+  };
 }
