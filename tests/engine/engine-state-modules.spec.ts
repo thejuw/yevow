@@ -10,12 +10,14 @@ import {
   syncStateMicrostructureFromBook
 } from "../../src/engine/trading/state/EngineDiagnostics";
 import { StorageWriteGuard } from "../../src/engine/trading/state/StorageWriteGuard";
+import { TradingTelemetryBus } from "../../src/engine/trading/telemetry/TelemetryBus";
 import { SortedBookSide } from "../../src/engine/trading/book/SortedBookSide";
 import type { BookSyncState } from "../../src/engine/trading/book/BookTypes";
 import type { ProfilerAgent } from "../../src/agents/ProfilerAgent";
 import type {
   AgentSignal,
   EngineState,
+  Env,
   InternalOrderBook,
   LatencyMetrics,
   MacroBias,
@@ -108,6 +110,200 @@ describe("engine stream helpers", () => {
     await pending.at(-1);
 
     expect(sentMessage(server, 1)).toEqual({ type: "ERROR", reason: "queue_failed" });
+  });
+});
+
+describe("trading telemetry bus", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("publishes, broadcasts, and flushes direct telemetry entries", async () => {
+    vi.useFakeTimers();
+    const db = new FakeTelemetryDb();
+    const socket = new FakeSocket();
+    const pending: Promise<unknown>[] = [];
+    const bus = new TradingTelemetryBus({
+      env: telemetryEnv(db),
+      adminSockets: new Set([socket as unknown as WebSocket]),
+      waitUntil: (promise) => pending.push(promise)
+    });
+
+    const message = bus.publish("CUSTOM_EVENT", { foo: "bar" }, "corr-1");
+    await bus.flushNow();
+
+    expect(message).toMatchObject({ type: "CUSTOM_EVENT", sequence: 1 });
+    expect(sentMessage(socket, 0)).toMatchObject({
+      type: "CUSTOM_EVENT",
+      sequence: 1,
+      payload: { foo: "bar" }
+    });
+    expect(pending).toHaveLength(1);
+    expect(db.batches).toHaveLength(1);
+    expect(logPayload(db.batches[0][0])).toMatchObject({
+      telemetryType: "CUSTOM_EVENT",
+      foo: "bar",
+      busSequence: 1
+    });
+
+    vi.clearAllTimers();
+  });
+
+  it("aggregates tick and event telemetry before writing D1", async () => {
+    vi.useFakeTimers();
+    const db = new FakeTelemetryDb();
+    const bus = new TradingTelemetryBus({
+      env: telemetryEnv(db),
+      adminSockets: new Set(),
+      waitUntil: () => undefined
+    });
+
+    bus.publish("TICK_TELEMETRY", {
+      status: "FRESH",
+      instrumentCode: "btc-usd",
+      exchangeCode: "hyperliquid",
+      sequence: 1,
+      cpuTimeMs: 1,
+      totalLatencyMs: 4,
+      websocketLatencyMs: 2,
+      processingLatencyMs: 2,
+      timeToBookMs: 1,
+      averageLatencyMs: 4,
+      orderBookDepth: 20,
+      toxicityScore: 0.2,
+      jitterMs: 0.3,
+      executionStatus: "STABLE",
+      weightedImbalance: 0.1,
+      midPrice: 100,
+      colo: "TYO",
+      placement: "smart",
+      isGoldenRegion: true,
+      latencyRiskMultiplier: 1
+    });
+    bus.publish("TICK_TELEMETRY", {
+      status: "STALE",
+      instrumentCode: "btc-usd",
+      sequence: 2,
+      cpuTimeMs: 3,
+      totalLatencyMs: 8,
+      websocketLatencyMs: 5,
+      processingLatencyMs: 3,
+      timeToBookMs: null
+    });
+    bus.publish("POST_QUOTE", { instrumentCode: "btc-usd", side: "BUY" }, "quote-1");
+    bus.publish("POST_QUOTE", { instrumentCode: "btc-usd", side: "SELL" }, "quote-2");
+
+    await bus.flushNow();
+    const payloads = db.batches[0].map((statement) => logPayload(statement));
+
+    expect(payloads).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          telemetryType: "TICK_TELEMETRY_AGGREGATE",
+          count: 2,
+          freshCount: 1,
+          staleCount: 1,
+          averageTotalLatencyMs: 6,
+          maxWebsocketLatencyMs: 5
+        }),
+        expect.objectContaining({
+          telemetryType: "POST_QUOTE",
+          count: 2,
+          latestPayload: { instrumentCode: "btc-usd", side: "SELL" }
+        })
+      ])
+    );
+
+    vi.clearAllTimers();
+  });
+
+  it("removes dead admin sockets and catches failed telemetry writes", async () => {
+    vi.useFakeTimers();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const db = new FakeTelemetryDb();
+    const socket = new FakeSocket();
+    const sockets = new Set([socket as unknown as WebSocket]);
+    const bus = new TradingTelemetryBus({
+      env: telemetryEnv(db),
+      adminSockets: sockets,
+      waitUntil: () => undefined
+    });
+
+    socket.throwOnSend = true;
+    db.failBatch = true;
+    bus.publish("CUSTOM_EVENT", { foo: "bar" });
+    await bus.flushNow();
+
+    expect(sockets.size).toBe(0);
+    expect(socket.closed).toBe(true);
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[Sovereign-Sigma] failed to write telemetry batch",
+      "batch_failed"
+    );
+
+    vi.clearAllTimers();
+  });
+
+  it("skips empty flushes without touching D1", async () => {
+    const db = new FakeTelemetryDb();
+    const bus = new TradingTelemetryBus({
+      env: telemetryEnv(db),
+      adminSockets: new Set(),
+      waitUntil: () => undefined
+    });
+
+    await bus.flushNow();
+
+    expect(db.batches).toEqual([]);
+  });
+
+  it("trims buffered telemetry to the configured hard cap", async () => {
+    vi.useFakeTimers();
+    const db = new FakeTelemetryDb();
+    const bus = new TradingTelemetryBus({
+      env: telemetryEnv(db),
+      adminSockets: new Set(),
+      waitUntil: () => undefined
+    });
+
+    for (let index = 0; index < 1_005; index += 1) {
+      bus.queueTelemetry({
+        telemetryType: "BUFFERED",
+        message: "Buffered telemetry",
+        correlationId: `buffer-${index}`,
+        payload: { index },
+        createdAt: "2026-01-01T00:00:00.000Z"
+      });
+    }
+
+    await bus.flushNow();
+
+    expect(db.batches[0]).toHaveLength(1_000);
+    expect(logPayload(db.batches[0][0])).toMatchObject({ index: 5 });
+    vi.clearAllTimers();
+  });
+
+  it("logs scheduled flush errors and resolves the waitUntil promise", async () => {
+    vi.useFakeTimers();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const db = new FakeTelemetryDb();
+    const pending: Promise<unknown>[] = [];
+    const bus = new TradingTelemetryBus({
+      env: telemetryEnv(db),
+      adminSockets: new Set(),
+      waitUntil: (promise) => pending.push(promise)
+    });
+
+    db.failPrepare = true;
+    bus.publish("CUSTOM_EVENT", { foo: "bar" });
+    await vi.runOnlyPendingTimersAsync();
+    await pending[0];
+
+    expect(errorSpy).toHaveBeenCalledWith(
+      "[Sovereign-Sigma] telemetry flush failed",
+      "prepare_failed"
+    );
   });
 });
 
@@ -522,12 +718,17 @@ class FakeSocket {
   readonly listeners = new Map<string, ((event: { data?: unknown }) => void)[]>();
   accepted = false;
   closed = false;
+  throwOnSend = false;
 
   accept(): void {
     this.accepted = true;
   }
 
   send(message: string): void {
+    if (this.throwOnSend) {
+      throw new Error("send_failed");
+    }
+
     this.sent.push(message);
   }
 
@@ -545,6 +746,50 @@ class FakeSocket {
     for (const listener of this.listeners.get(type) ?? []) {
       listener({ data });
     }
+  }
+}
+
+function telemetryEnv(db: FakeTelemetryDb): Env {
+  return {
+    TELEMETRY_FLUSH_INTERVAL_MS: "1000",
+    TRADING_DB: db
+  } as unknown as Env;
+}
+
+function logPayload(statement: FakeTelemetryStatement): Record<string, unknown> {
+  return JSON.parse(String(statement.values[5] ?? "{}")) as Record<string, unknown>;
+}
+
+class FakeTelemetryDb {
+  readonly batches: FakeTelemetryStatement[][] = [];
+  failBatch = false;
+  failPrepare = false;
+
+  prepare(sql: string): FakeTelemetryStatement {
+    if (this.failPrepare) {
+      throw new Error("prepare_failed");
+    }
+
+    return new FakeTelemetryStatement(sql);
+  }
+
+  async batch(statements: FakeTelemetryStatement[]): Promise<void> {
+    if (this.failBatch) {
+      throw new Error("batch_failed");
+    }
+
+    this.batches.push(statements);
+  }
+}
+
+class FakeTelemetryStatement {
+  readonly values: unknown[] = [];
+
+  constructor(readonly sql: string) {}
+
+  bind(...values: unknown[]): this {
+    this.values.push(...values);
+    return this;
   }
 }
 
