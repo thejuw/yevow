@@ -267,7 +267,9 @@ import type {
   TickIngestResult
 } from "./engine/trading/TradingEngineRouteTypes";
 import {
+  buildHealthReport,
   engineDiagnostics as buildEngineDiagnostics,
+  stateAfterHealthHeartbeat,
   syncStateMicrostructureFromBook as syncEngineStateMicrostructure
 } from "./engine/trading/state/EngineDiagnostics";
 import { nextTickAgentHealth } from "./engine/trading/state/AgentHealthRuntime";
@@ -574,19 +576,10 @@ import {
   readJsonOrNull,
   json
 } from "./TradingEngineRuntimeHelpers";
-interface PerformanceMemory {
-  usedJSHeapSize?: number;
-  totalJSHeapSize?: number;
-  jsHeapSizeLimit?: number;
-}
 
 interface TickHandlingOptions {
   shadowReplay?: boolean;
 }
-
-type RuntimeWithMemory = typeof globalThis & {
-  performance?: Performance & { memory?: PerformanceMemory };
-};
 
 export class TradingEngine {
   private readonly startedAt = Date.now();
@@ -1245,46 +1238,13 @@ export class TradingEngine {
   healthCheck(): HealthReport {
     const now = new Date().toISOString();
     this.syncStateMicrostructureFromBook();
-    this.engineState = {
-      ...this.engineState,
-      heartbeatAt: now,
-      updatedAt: now
-    };
+    this.engineState = stateAfterHealthHeartbeat(this.engineState, now);
     this.waitUntilStoragePut(ENGINE_STATE_KEY, this.engineState, "HEALTH_HEARTBEAT");
 
-    const memory = (globalThis as RuntimeWithMemory).performance?.memory;
-
-    return {
-      ok: this.engineState.mode !== "HALTED",
-      engineId: this.engineState.engineId,
-      mode: this.engineState.mode,
-      heartbeatAt: this.engineState.heartbeatAt,
-      uptimeMs: Date.now() - this.startedAt,
-      processedTicks: this.engineState.processedTicks,
-      acceptedSignals: this.engineState.acceptedSignals,
-      internalOrderBookDepth: this.engineState.internalOrderBookDepth,
-      averageLatency: this.engineState.averageLatency,
-      staleTickCount: this.engineState.staleTickCount,
-      toxicityScore: this.engineState.toxicityScore,
-      current_inventory_delta: this.engineState.current_inventory_delta,
-      location: this.engineState.location,
-      microstructure: this.engineState.microstructure,
-      quoteState: this.engineState.quoteState,
-      executionProfile: this.engineState.executionProfile,
-      anomaly: this.engineState.anomaly,
-      memoryUsage: {
-        available: Boolean(memory),
-        usedJSHeapSize: memory?.usedJSHeapSize ?? null,
-        totalJSHeapSize: memory?.totalJSHeapSize ?? null,
-        jsHeapSizeLimit: memory?.jsHeapSizeLimit ?? null,
-        stateBytesEstimate: JSON.stringify({
-          mode: this.engineState.mode,
-          processedTicks: this.engineState.processedTicks,
-          orderMapSize: Object.keys(this.engineState.orderMap).length,
-          orderBookDepth: this.engineState.internalOrderBookDepth
-        }).length
-      }
-    };
+    return buildHealthReport({
+      engineState: this.engineState,
+      uptimeMs: Date.now() - this.startedAt
+    });
   }
 
   private syncStateMicrostructureFromBook(): void {

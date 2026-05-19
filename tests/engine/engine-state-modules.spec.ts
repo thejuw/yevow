@@ -6,7 +6,9 @@ import {
   type EngineStreamContext
 } from "../../src/engine/trading/routes/EngineWebSocketStreams";
 import {
+  buildHealthReport,
   engineDiagnostics,
+  stateAfterHealthHeartbeat,
   syncStateMicrostructureFromBook
 } from "../../src/engine/trading/state/EngineDiagnostics";
 import {
@@ -387,6 +389,49 @@ describe("engine diagnostics helpers", () => {
       },
       shadowQueue: { active: 1 }
     });
+  });
+
+  it("builds health heartbeat state and report payloads", () => {
+    const observedAt = "2026-05-19T13:00:00.000Z";
+    const state = engineState({
+      engineId: "engine-health",
+      mode: "PAPER",
+      processedTicks: 12,
+      acceptedSignals: 3,
+      internalOrderBookDepth: 8,
+      averageLatency: 4.5,
+      staleTickCount: 1,
+      toxicityScore: 0.2,
+      current_inventory_delta: 0.1,
+      orderMap: {
+        "order-1": {} as never
+      }
+    });
+    const heartbeat = stateAfterHealthHeartbeat(state, observedAt);
+    const report = buildHealthReport({ engineState: heartbeat, uptimeMs: 1234 });
+
+    expect(heartbeat).toMatchObject({
+      heartbeatAt: observedAt,
+      updatedAt: observedAt
+    });
+    expect(report).toMatchObject({
+      ok: true,
+      engineId: "engine-health",
+      mode: "PAPER",
+      heartbeatAt: observedAt,
+      uptimeMs: 1234,
+      processedTicks: 12,
+      acceptedSignals: 3,
+      internalOrderBookDepth: 8,
+      averageLatency: 4.5,
+      staleTickCount: 1,
+      toxicityScore: 0.2,
+      current_inventory_delta: 0.1,
+      memoryUsage: {
+        available: false
+      }
+    });
+    expect(report.memoryUsage.stateBytesEstimate).toBeGreaterThan(0);
   });
 });
 

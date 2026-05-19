@@ -6,6 +6,7 @@ import { TARGET_ASSET_MATRIX } from "../../../TradingEngineConstants";
 import type {
   AssetRuntimeState,
   EngineState,
+  HealthReport,
   InternalOrderBook,
   JsonRecord,
   JsonValue,
@@ -48,6 +49,11 @@ export interface EngineDiagnosticsContext {
   profilerAgents: Map<string, ProfilerAgent>;
 }
 
+export interface HealthReportInput {
+  readonly engineState: EngineState;
+  readonly uptimeMs: number;
+}
+
 export function syncStateMicrostructureFromBook(
   context: MicrostructureSyncContext
 ): EngineState | null {
@@ -87,6 +93,53 @@ export function syncStateMicrostructureFromBook(
       context.engineState.assetQuoteStates
     ),
     updatedAt
+  };
+}
+
+export function stateAfterHealthHeartbeat(
+  engineState: EngineState,
+  observedAt: string
+): EngineState {
+  return {
+    ...engineState,
+    heartbeatAt: observedAt,
+    updatedAt: observedAt
+  };
+}
+
+export function buildHealthReport(input: HealthReportInput): HealthReport {
+  const memory = (globalThis as RuntimeWithMemory).performance?.memory;
+
+  return {
+    ok: input.engineState.mode !== "HALTED",
+    engineId: input.engineState.engineId,
+    mode: input.engineState.mode,
+    heartbeatAt: input.engineState.heartbeatAt,
+    uptimeMs: input.uptimeMs,
+    processedTicks: input.engineState.processedTicks,
+    acceptedSignals: input.engineState.acceptedSignals,
+    internalOrderBookDepth: input.engineState.internalOrderBookDepth,
+    averageLatency: input.engineState.averageLatency,
+    staleTickCount: input.engineState.staleTickCount,
+    toxicityScore: input.engineState.toxicityScore,
+    current_inventory_delta: input.engineState.current_inventory_delta,
+    location: input.engineState.location,
+    microstructure: input.engineState.microstructure,
+    quoteState: input.engineState.quoteState,
+    executionProfile: input.engineState.executionProfile,
+    anomaly: input.engineState.anomaly,
+    memoryUsage: {
+      available: Boolean(memory),
+      usedJSHeapSize: memory?.usedJSHeapSize ?? null,
+      totalJSHeapSize: memory?.totalJSHeapSize ?? null,
+      jsHeapSizeLimit: memory?.jsHeapSizeLimit ?? null,
+      stateBytesEstimate: JSON.stringify({
+        mode: input.engineState.mode,
+        processedTicks: input.engineState.processedTicks,
+        orderMapSize: Object.keys(input.engineState.orderMap).length,
+        orderBookDepth: input.engineState.internalOrderBookDepth
+      }).length
+    }
   };
 }
 
