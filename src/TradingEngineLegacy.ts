@@ -2698,6 +2698,55 @@ export class TradingEngine {
     );
   }
 
+  private async handleSoftStaleTick(
+    tick: MarketTick,
+    metrics: LatencyMetrics,
+    wakeUpTimeMs: number | null,
+    hotPathStartedAt: number
+  ): Promise<TickIngestResult> {
+    this.observeExecutionProfile(metrics, {
+      wakeUpTimeMs,
+      orderBookUpdateMs: null,
+      agentLogicMs: null,
+      hotPathStartedAt,
+      observedAt: metrics.brainTimestamp
+    });
+
+    const staleState = stateAfterStaleDataKillSwitch({
+      currentState: this.engineState,
+      metrics,
+      instrumentCode: tick.instrumentCode,
+      maxLatencyMs: this.maxLatencyMs,
+      quoteHibernateMs: resolveQuoteHibernateMs(this.cachedConfig, this.env.QUOTE_HIBERNATE_MS)
+    });
+    this.engineState = staleState.state;
+    const staleKillSwitch = {
+      tick,
+      metrics,
+      maxLatencyMs: this.maxLatencyMs
+    };
+
+    await this.persistHotStorageSnapshot(
+      this.latencyStorageWrites(staleDataKillSwitchStorageExtra(staleKillSwitch)),
+      "STALE_DATA_KILL_SWITCH"
+    );
+
+    this.logPerformance(metrics);
+    this.publish("STALE_DATA_KILL_SWITCH", staleDataKillSwitchTelemetryPayload(staleKillSwitch));
+    this.notifier.notify(staleDataKillSwitchNotification(staleKillSwitch));
+    if (this.cachedConfig.TRADING_ENABLED) {
+      this.state.waitUntil(this.cancelAllQuotes(tick.instrumentCode, "STALE_DATA_KILL_SWITCH"));
+    }
+    this.publishTickTelemetry(tick, metrics, "STALE", hotPathStartedAt);
+    this.maybeRecordAgentSnapshot(metrics.brainTimestamp);
+
+    return {
+      accepted: false,
+      status: "STALE",
+      metrics
+    };
+  }
+
   private async handleTick(
     tick: MarketTick,
     wakeUpTimeMs: number | null,
@@ -2885,47 +2934,7 @@ export class TradingEngine {
     this.latencyHistory = [...this.latencyHistory, metrics].slice(-PERFORMANCE_HISTORY_LIMIT);
 
     if (metrics.status === "STALE" && !options.shadowReplay && this.cachedConfig.TRADING_ENABLED) {
-      this.observeExecutionProfile(metrics, {
-        wakeUpTimeMs,
-        orderBookUpdateMs: null,
-        agentLogicMs: null,
-        hotPathStartedAt,
-        observedAt: metrics.brainTimestamp
-      });
-
-      const staleState = stateAfterStaleDataKillSwitch({
-        currentState: this.engineState,
-        metrics,
-        instrumentCode: tick.instrumentCode,
-        maxLatencyMs: this.maxLatencyMs,
-        quoteHibernateMs: resolveQuoteHibernateMs(this.cachedConfig, this.env.QUOTE_HIBERNATE_MS)
-      });
-      this.engineState = staleState.state;
-      const staleKillSwitch = {
-        tick,
-        metrics,
-        maxLatencyMs: this.maxLatencyMs
-      };
-
-      await this.persistHotStorageSnapshot(
-        this.latencyStorageWrites(staleDataKillSwitchStorageExtra(staleKillSwitch)),
-        "STALE_DATA_KILL_SWITCH"
-      );
-
-      this.logPerformance(metrics);
-      this.publish("STALE_DATA_KILL_SWITCH", staleDataKillSwitchTelemetryPayload(staleKillSwitch));
-      this.notifier.notify(staleDataKillSwitchNotification(staleKillSwitch));
-      if (this.cachedConfig.TRADING_ENABLED) {
-        this.state.waitUntil(this.cancelAllQuotes(tick.instrumentCode, "STALE_DATA_KILL_SWITCH"));
-      }
-      this.publishTickTelemetry(tick, metrics, "STALE", hotPathStartedAt);
-      this.maybeRecordAgentSnapshot(metrics.brainTimestamp);
-
-      return {
-        accepted: false,
-        status: "STALE",
-        metrics
-      };
+      return this.handleSoftStaleTick(tick, metrics, wakeUpTimeMs, hotPathStartedAt);
     }
 
     const fundingState = stateAfterFundingTick(this.engineState, tick, metrics.brainTimestamp);
