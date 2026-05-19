@@ -213,7 +213,10 @@ import {
   buildHotPathTickSnapshotWrites,
   shouldJournalMarketTick as shouldPersistMarketTick
 } from "./engine/trading/state/TickPersistenceRuntime";
-import { StorageWriteGuard } from "./engine/trading/state/StorageWriteGuard";
+import {
+  evaluateHotStorageSnapshotDecision,
+  StorageWriteGuard
+} from "./engine/trading/state/StorageWriteGuard";
 import {
   LOW_VALUE_OPERATIONAL_EVENT_TYPES,
   operationalEventPlaceholders,
@@ -1402,18 +1405,21 @@ export class TradingEngine {
     entries: Record<string, unknown>,
     reason: string
   ): Promise<void> {
-    const now = Date.now();
-    const tickCount = this.engineState.processedTicks;
-    const dueByTime = now - this.lastHotStorageSnapshotAt >= this.hotStorageSnapshotIntervalMs();
-    const dueByTicks =
-      tickCount - this.lastHotStorageSnapshotTick >= this.hotStorageSnapshotTickInterval();
+    const decision = evaluateHotStorageSnapshotDecision({
+      lastSnapshotAtMs: this.lastHotStorageSnapshotAt,
+      lastSnapshotTick: this.lastHotStorageSnapshotTick,
+      nowMs: Date.now(),
+      tickCount: this.engineState.processedTicks,
+      intervalMs: this.hotStorageSnapshotIntervalMs(),
+      tickInterval: this.hotStorageSnapshotTickInterval()
+    });
 
-    if (!dueByTime && !dueByTicks) {
+    if (!decision.shouldPersist) {
       return;
     }
 
-    this.lastHotStorageSnapshotAt = now;
-    this.lastHotStorageSnapshotTick = tickCount;
+    this.lastHotStorageSnapshotAt = decision.nextSnapshotAtMs;
+    this.lastHotStorageSnapshotTick = decision.nextSnapshotTick;
     await this.safeStoragePut(entries, reason);
   }
 

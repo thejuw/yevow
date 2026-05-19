@@ -1,3 +1,45 @@
+export interface HotStorageSnapshotDecisionInput {
+  readonly lastSnapshotAtMs: number;
+  readonly lastSnapshotTick: number;
+  readonly nowMs: number;
+  readonly tickCount: number;
+  readonly intervalMs: number;
+  readonly tickInterval: number;
+}
+
+export type HotStorageSnapshotDecision =
+  | {
+      readonly shouldPersist: true;
+      readonly nextSnapshotAtMs: number;
+      readonly nextSnapshotTick: number;
+    }
+  | {
+      readonly shouldPersist: false;
+      readonly nextSnapshotAtMs: number;
+      readonly nextSnapshotTick: number;
+    };
+
+export function evaluateHotStorageSnapshotDecision(
+  input: HotStorageSnapshotDecisionInput
+): HotStorageSnapshotDecision {
+  const dueByTime = input.nowMs - input.lastSnapshotAtMs >= input.intervalMs;
+  const dueByTicks = input.tickCount - input.lastSnapshotTick >= input.tickInterval;
+
+  if (!dueByTime && !dueByTicks) {
+    return {
+      shouldPersist: false,
+      nextSnapshotAtMs: input.lastSnapshotAtMs,
+      nextSnapshotTick: input.lastSnapshotTick
+    };
+  }
+
+  return {
+    shouldPersist: true,
+    nextSnapshotAtMs: input.nowMs,
+    nextSnapshotTick: input.tickCount
+  };
+}
+
 export class StorageWriteGuard {
   private disabledUntil = 0;
   private failures = 0;

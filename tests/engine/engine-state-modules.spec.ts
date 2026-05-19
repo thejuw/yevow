@@ -9,7 +9,10 @@ import {
   engineDiagnostics,
   syncStateMicrostructureFromBook
 } from "../../src/engine/trading/state/EngineDiagnostics";
-import { StorageWriteGuard } from "../../src/engine/trading/state/StorageWriteGuard";
+import {
+  evaluateHotStorageSnapshotDecision,
+  StorageWriteGuard
+} from "../../src/engine/trading/state/StorageWriteGuard";
 import { TradingTelemetryBus } from "../../src/engine/trading/telemetry/TelemetryBus";
 import { SortedBookSide } from "../../src/engine/trading/book/SortedBookSide";
 import type { BookSyncState } from "../../src/engine/trading/book/BookTypes";
@@ -444,6 +447,53 @@ describe("storage write guard", () => {
     await guard.delete(["ready"], "delete");
 
     expect(storage.deleted).toEqual([["ready"]]);
+  });
+
+  it("decides hot snapshot persistence by time or processed tick interval", () => {
+    expect(
+      evaluateHotStorageSnapshotDecision({
+        lastSnapshotAtMs: 1_000,
+        lastSnapshotTick: 10,
+        nowMs: 1_500,
+        tickCount: 12,
+        intervalMs: 1_000,
+        tickInterval: 5
+      })
+    ).toEqual({
+      shouldPersist: false,
+      nextSnapshotAtMs: 1_000,
+      nextSnapshotTick: 10
+    });
+
+    expect(
+      evaluateHotStorageSnapshotDecision({
+        lastSnapshotAtMs: 1_000,
+        lastSnapshotTick: 10,
+        nowMs: 2_000,
+        tickCount: 12,
+        intervalMs: 1_000,
+        tickInterval: 5
+      })
+    ).toEqual({
+      shouldPersist: true,
+      nextSnapshotAtMs: 2_000,
+      nextSnapshotTick: 12
+    });
+
+    expect(
+      evaluateHotStorageSnapshotDecision({
+        lastSnapshotAtMs: 1_000,
+        lastSnapshotTick: 10,
+        nowMs: 1_500,
+        tickCount: 15,
+        intervalMs: 1_000,
+        tickInterval: 5
+      })
+    ).toMatchObject({
+      shouldPersist: true,
+      nextSnapshotAtMs: 1_500,
+      nextSnapshotTick: 15
+    });
   });
 });
 
