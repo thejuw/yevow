@@ -1683,57 +1683,12 @@ export class TradingEngine {
     };
   }
 
-  private async handleHyperliquidL2Book(
-    raw: Record<string, unknown>,
+  private async handleAcceptedHyperliquidL2Book(
+    l2Decision: Extract<HyperliquidL2BookHotPathDecision, { kind: "ACCEPTED" }>,
     payload: HyperliquidRawIngestPayload,
     wakeUpTimeMs: number | null
   ): Promise<TickIngestResult> {
-    const hotPathStartedAt = highResolutionNow();
-    const nativeMaxLatencyMs = resolveNativeHyperliquidMaxLatencyMs({
-      transport: payload.transport,
-      streamId: payload.streamId,
-      dwellirMaxLatencyMs: this.env.DWELLIR_MAX_LATENCY_MS,
-      hlStaleAfterMs: this.env.HL_STALE_AFTER_MS,
-      currentMaxLatencyMs: this.maxLatencyMs
-    });
-    const l2Decision = evaluateHyperliquidL2BookHotPath({
-      raw,
-      payload,
-      resolveExistingSync: (marketKey) => this.bookSync.get(marketKey),
-      maxTimestampDriftMs: readPositiveNumber(
-        this.env.HL_BOOK_TIMESTAMP_MAX_DRIFT_MS,
-        DEFAULT_HL_BOOK_TIMESTAMP_MAX_DRIFT_MS
-      ),
-      sequenceGapMs: readPositiveNumber(this.env.HL_SEQUENCE_GAP_MS, DEFAULT_HL_SEQUENCE_GAP_MS),
-      nativeMaxLatencyMs,
-      averageLatencyMs: this.engineState.averageLatency,
-      sampleCount: this.engineState.latencySampleCount,
-      location: this.engineState.location
-    });
-    const { sequence, marketKey, snapshot } = l2Decision.bundle;
-
-    if (l2Decision.kind === "DUPLICATE_OR_OUT_OF_ORDER") {
-      return l2Decision.result;
-    }
-
-    if (l2Decision.kind === "DESYNC") {
-      markBookSyncDesynced({
-        syncState: this.bookSync.get(marketKey),
-        reason: l2Decision.sequenceDecision.reason,
-        observedAt: l2Decision.sequenceDecision.lastDesyncAt
-      });
-      this.logger.warn(
-        "ORDER_BOOK_DESYNC",
-        "Hyperliquid native book sequence gap detected",
-        hyperliquidBookDesyncLogMetadata(l2Decision.bundle, l2Decision.sequenceDecision)
-      );
-      return l2Decision.result;
-    }
-
-    if (l2Decision.kind === "STALE") {
-      return this.handleStaleHyperliquidL2Book(l2Decision, payload, wakeUpTimeMs, hotPathStartedAt);
-    }
-
+    const { sequence, snapshot } = l2Decision.bundle;
     const { brainTimestamp, totalLatencyMs } = l2Decision;
     const book = await this.applySnapshot(snapshot, { persist: false });
 
@@ -1766,6 +1721,60 @@ export class TradingEngine {
       book,
       processedCount: 1
     };
+  }
+
+  private async handleHyperliquidL2Book(
+    raw: Record<string, unknown>,
+    payload: HyperliquidRawIngestPayload,
+    wakeUpTimeMs: number | null
+  ): Promise<TickIngestResult> {
+    const hotPathStartedAt = highResolutionNow();
+    const nativeMaxLatencyMs = resolveNativeHyperliquidMaxLatencyMs({
+      transport: payload.transport,
+      streamId: payload.streamId,
+      dwellirMaxLatencyMs: this.env.DWELLIR_MAX_LATENCY_MS,
+      hlStaleAfterMs: this.env.HL_STALE_AFTER_MS,
+      currentMaxLatencyMs: this.maxLatencyMs
+    });
+    const l2Decision = evaluateHyperliquidL2BookHotPath({
+      raw,
+      payload,
+      resolveExistingSync: (marketKey) => this.bookSync.get(marketKey),
+      maxTimestampDriftMs: readPositiveNumber(
+        this.env.HL_BOOK_TIMESTAMP_MAX_DRIFT_MS,
+        DEFAULT_HL_BOOK_TIMESTAMP_MAX_DRIFT_MS
+      ),
+      sequenceGapMs: readPositiveNumber(this.env.HL_SEQUENCE_GAP_MS, DEFAULT_HL_SEQUENCE_GAP_MS),
+      nativeMaxLatencyMs,
+      averageLatencyMs: this.engineState.averageLatency,
+      sampleCount: this.engineState.latencySampleCount,
+      location: this.engineState.location
+    });
+    const { marketKey } = l2Decision.bundle;
+
+    if (l2Decision.kind === "DUPLICATE_OR_OUT_OF_ORDER") {
+      return l2Decision.result;
+    }
+
+    if (l2Decision.kind === "DESYNC") {
+      markBookSyncDesynced({
+        syncState: this.bookSync.get(marketKey),
+        reason: l2Decision.sequenceDecision.reason,
+        observedAt: l2Decision.sequenceDecision.lastDesyncAt
+      });
+      this.logger.warn(
+        "ORDER_BOOK_DESYNC",
+        "Hyperliquid native book sequence gap detected",
+        hyperliquidBookDesyncLogMetadata(l2Decision.bundle, l2Decision.sequenceDecision)
+      );
+      return l2Decision.result;
+    }
+
+    if (l2Decision.kind === "STALE") {
+      return this.handleStaleHyperliquidL2Book(l2Decision, payload, wakeUpTimeMs, hotPathStartedAt);
+    }
+
+    return this.handleAcceptedHyperliquidL2Book(l2Decision, payload, wakeUpTimeMs);
   }
 
   private async handleHyperliquidTrades(
