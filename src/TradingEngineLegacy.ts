@@ -152,7 +152,8 @@ import {
   buildCroupierEvaluationInput,
   buildOracleTickInput,
   buildProfilerContext,
-  disabledOracleTickResult
+  disabledOracleTickResult,
+  type OracleTickResult
 } from "./engine/trading/agents/AgentEvaluationRuntime";
 import { applyIntentPaperExecutionBudget } from "./engine/trading/execution/PaperExecutionBudgetRuntime";
 import {
@@ -3459,6 +3460,70 @@ export class TradingEngine {
     return { kind: "BOOK", book, orderBookUpdateMs };
   }
 
+  private evaluateProfilerForTick(
+    tick: MarketTick,
+    book: InternalOrderBook,
+    domSnapshot: DomAnalysisSnapshot,
+    observedAt: string,
+    jumpDetected: boolean,
+    metrics: LatencyMetrics,
+    wakeUpTimeMs: number | null,
+    orderBookUpdateMs: number,
+    hotPathStartedAt: number
+  ): { profilerResult: ProfilerEvaluation; profilerLatencyMs: number } {
+    const profilerAgent = this.profilerRegistry.forInstrument(tick.instrumentCode);
+    const profilerStartedAt = highResolutionNow();
+    const profilerResult: ProfilerEvaluation = this.cachedConfig.PROFILER_ENABLED
+      ? profilerAgent.processTick(
+          tick,
+          buildProfilerContext({
+            engineId: this.engineState.engineId,
+            observedAt,
+            book,
+            dom: domSnapshot,
+            liquidationHeatmap: this.engineState.liquidationHeatmap,
+            jumpDetected
+          })
+        )
+      : disabledProfilerEvaluation(profilerAgent.snapshot(), observedAt);
+    const profilerLatencyMs = this.cachedConfig.PROFILER_ENABLED
+      ? roundLatency(highResolutionNow() - profilerStartedAt)
+      : 0;
+
+    this.observeExecutionProfile(metrics, {
+      wakeUpTimeMs,
+      orderBookUpdateMs,
+      agentLogicMs: profilerLatencyMs,
+      hotPathStartedAt,
+      observedAt
+    });
+
+    return { profilerResult, profilerLatencyMs };
+  }
+
+  private evaluateOracleForTick(
+    tick: MarketTick,
+    book: InternalOrderBook,
+    observedAt: string
+  ): { oracleResult: OracleTickResult; oracleLatencyMs: number } {
+    const oracleStartedAt = highResolutionNow();
+    const oracleResult = this.cachedConfig.ORACLE_ENABLED
+      ? this.oracleAgent.processTick(
+          buildOracleTickInput({
+            tick,
+            book,
+            observedAt,
+            config: this.cachedConfig
+          })
+        )
+      : disabledOracleTickResult(this.engineState.oracle, observedAt);
+    const oracleLatencyMs = this.cachedConfig.ORACLE_ENABLED
+      ? roundLatency(highResolutionNow() - oracleStartedAt)
+      : 0;
+
+    return { oracleResult, oracleLatencyMs };
+  }
+
   private async handleTick(
     tick: MarketTick,
     wakeUpTimeMs: number | null,
@@ -3558,47 +3623,23 @@ export class TradingEngine {
       );
     }
 
-    const profilerAgent = this.profilerRegistry.forInstrument(tick.instrumentCode);
-    const profilerStartedAt = highResolutionNow();
-    const profilerResult: ProfilerEvaluation = this.cachedConfig.PROFILER_ENABLED
-      ? profilerAgent.processTick(
-          tick,
-          buildProfilerContext({
-            engineId: this.engineState.engineId,
-            observedAt: metrics.brainTimestamp,
-            book,
-            dom: domSnapshot,
-            liquidationHeatmap: this.engineState.liquidationHeatmap,
-            jumpDetected: volatilitySnapshot?.jumpDetected ?? false
-          })
-        )
-      : disabledProfilerEvaluation(profilerAgent.snapshot(), metrics.brainTimestamp);
-    const profilerLatencyMs = this.cachedConfig.PROFILER_ENABLED
-      ? roundLatency(highResolutionNow() - profilerStartedAt)
-      : 0;
-
-    this.observeExecutionProfile(metrics, {
+    const { profilerResult, profilerLatencyMs } = this.evaluateProfilerForTick(
+      tick,
+      book,
+      domSnapshot,
+      metrics.brainTimestamp,
+      volatilitySnapshot?.jumpDetected ?? false,
+      metrics,
       wakeUpTimeMs,
       orderBookUpdateMs,
-      agentLogicMs: profilerLatencyMs,
-      hotPathStartedAt,
-      observedAt: metrics.brainTimestamp
-    });
+      hotPathStartedAt
+    );
 
-    const oracleStartedAt = highResolutionNow();
-    const oracleResult = this.cachedConfig.ORACLE_ENABLED
-      ? this.oracleAgent.processTick(
-          buildOracleTickInput({
-            tick,
-            book,
-            observedAt: metrics.brainTimestamp,
-            config: this.cachedConfig
-          })
-        )
-      : disabledOracleTickResult(this.engineState.oracle, metrics.brainTimestamp);
-    const oracleLatencyMs = this.cachedConfig.ORACLE_ENABLED
-      ? roundLatency(highResolutionNow() - oracleStartedAt)
-      : 0;
+    const { oracleResult, oracleLatencyMs } = this.evaluateOracleForTick(
+      tick,
+      book,
+      metrics.brainTimestamp
+    );
     const leadLag = this.engineState.leadLag;
     const inventory = this.calculateInventoryState(metrics.brainTimestamp);
     const riskMetrics = this.updatePortfolioRisk(oracleResult.state, metrics.brainTimestamp);
