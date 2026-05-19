@@ -450,12 +450,14 @@ import type {
 import type {
   AbsorptionAnalyzerConfig,
   AbsorptionConfirmed,
+  Candle,
   CascadeDetectorConfig,
   CascadeEvent,
   CascadeOpenPosition,
   CascadePositionIntent,
   CascadeRecoverySignal,
   CascadeRecoverySignalRejection,
+  CascadeRecoverySignalResult,
   LiquidationEvent
 } from "./strategy/cascade/types";
 
@@ -2160,6 +2162,41 @@ export class TradingEngine {
     );
   }
 
+  private evaluateCascadeRecoverySignal(
+    cascade: CascadeEvent,
+    absorption: AbsorptionConfirmed,
+    reclaimCandle: Candle,
+    observedAt: string
+  ): CascadeRecoverySignalResult {
+    const recent1mCandles = this.candleAggregator.snapshot(reclaimCandle.instrumentCode, "1m", 64);
+    const latestRawEvent = cascade.rawEvents.at(-1) ?? null;
+    const blackout = this.cascadeNewsCalendar.isWithinBlackout(
+      new Date(observedAt),
+      baseAssetFromInstrument(reclaimCandle.instrumentCode)
+    );
+
+    return this.cascadeSignalEngineWithConfig().evaluate({
+      cascade,
+      absorption,
+      reclaimCandle,
+      recent1mCandles,
+      atr1m: calculateAtr(recent1mCandles, 14),
+      atr1h: latestRawEvent ? this.resolveCascadeAtr1h(latestRawEvent) : null,
+      preCascadeSwingLow: recentSwingLow(recent1mCandles),
+      preCascadeSwingHigh: recentSwingHigh(recent1mCandles),
+      cascadeVwap: calculateVwap(recent1mCandles),
+      cvd1m: cumulativeVolumeDelta(recent1mCandles),
+      openInterestDelta: 0,
+      oracleRegime: this.engineState.oracle.regime ?? "UNKNOWN",
+      recentSecondCascadeAt: latestCascadeAtForInstrument(this.cascadeEventsById, cascade),
+      majorNewsWithinBlackout: blackout.blocked,
+      realizedVolPercentile1h: 0.5,
+      dailyLossLimitBreached: !this.engineState.riskMetrics.isTradingEnabled,
+      weeklyLossLimitBreached: false,
+      observedAt
+    });
+  }
+
   private async evaluateCascadeStrategy(tick: MarketTick, observedAt: string): Promise<void> {
     if (
       this.cachedConfig.STRATEGY_MODE === "OFF" ||
@@ -2199,36 +2236,12 @@ export class TradingEngine {
         continue;
       }
 
-      const recent1mCandles = this.candleAggregator.snapshot(
-        reclaimCandle.instrumentCode,
-        "1m",
-        64
-      );
-      const latestRawEvent = cascade.rawEvents.at(-1) ?? null;
-      const blackout = this.cascadeNewsCalendar.isWithinBlackout(
-        new Date(observedAt),
-        baseAssetFromInstrument(reclaimCandle.instrumentCode)
-      );
-      const signalResult = this.cascadeSignalEngineWithConfig().evaluate({
+      const signalResult = this.evaluateCascadeRecoverySignal(
         cascade,
         absorption,
         reclaimCandle,
-        recent1mCandles,
-        atr1m: calculateAtr(recent1mCandles, 14),
-        atr1h: latestRawEvent ? this.resolveCascadeAtr1h(latestRawEvent) : null,
-        preCascadeSwingLow: recentSwingLow(recent1mCandles),
-        preCascadeSwingHigh: recentSwingHigh(recent1mCandles),
-        cascadeVwap: calculateVwap(recent1mCandles),
-        cvd1m: cumulativeVolumeDelta(recent1mCandles),
-        openInterestDelta: 0,
-        oracleRegime: this.engineState.oracle.regime ?? "UNKNOWN",
-        recentSecondCascadeAt: latestCascadeAtForInstrument(this.cascadeEventsById, cascade),
-        majorNewsWithinBlackout: blackout.blocked,
-        realizedVolPercentile1h: 0.5,
-        dailyLossLimitBreached: !this.engineState.riskMetrics.isTradingEnabled,
-        weeklyLossLimitBreached: false,
         observedAt
-      });
+      );
 
       if (!signalResult.accepted) {
         this.recordRejectedCascadeSignal(signalResult.rejection, observedAt);
