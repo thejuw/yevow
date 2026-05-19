@@ -128,6 +128,7 @@ import {
   recordProcessingLatencySample,
   shouldLogPerformanceSpikeEvent,
   stateAfterLatencyBaselineReset,
+  stateAfterNativeHyperliquidLatencyPull,
   stateAfterStaleDataKillSwitch,
   stateAfterHardStaleTickDrop,
   type ExecutionTraceInput
@@ -2598,26 +2599,17 @@ export class TradingEngine {
   ): void {
     this.updateLatencyAverage(metrics.totalLatencyMs);
     this.applyLocationLatency(metrics.totalLatencyMs, observedAt);
-    metrics.averageLatencyMs = this.engineState.averageLatency;
-    metrics.sampleCount = this.engineState.latencySampleCount;
-    metrics.latencyRiskMultiplier = this.engineState.location.latencyRiskMultiplier;
-    metrics.positionSizeMultiplier = this.engineState.location.positionSizeMultiplier;
-    this.latencyHistory = [...this.latencyHistory, metrics].slice(-PERFORMANCE_HISTORY_LIMIT);
-    const assetQuoteStates = suspendAssetQuoteStates(
-      this.engineState.assetQuoteStates,
-      "NATIVE_HL_LATENCY",
-      observedAt,
-      { instrumentCode, lastQuote: this.engineState.quoteState.lastQuote }
+    const stalePull = stateAfterNativeHyperliquidLatencyPull({
+      currentState: this.engineState,
+      metrics,
+      instrumentCode,
+      sequence,
+      observedAt
+    });
+    this.latencyHistory = [...this.latencyHistory, stalePull.metrics].slice(
+      -PERFORMANCE_HISTORY_LIMIT
     );
-    this.engineState = {
-      ...this.engineState,
-      processedTicks: this.engineState.processedTicks + 1,
-      staleTickCount: this.engineState.staleTickCount + 1,
-      quoteState: aggregateQuoteState(assetQuoteStates, this.engineState.quoteState, observedAt),
-      assetQuoteStates,
-      heartbeatAt: observedAt,
-      updatedAt: observedAt
-    };
+    this.engineState = stalePull.state;
     this.state.waitUntil(
       this.persistHotStorageSnapshot(
         {
@@ -2628,17 +2620,8 @@ export class TradingEngine {
         "NATIVE_HL_LATENCY_PULL"
       )
     );
-    this.logPerformance(metrics);
-    this.publish("STALE_DATA_KILL_SWITCH", {
-      instrumentCode,
-      exchangeCode: "hyperliquid",
-      source_exchange: "hyperliquid",
-      sequence,
-      totalLatencyMs: metrics.totalLatencyMs,
-      maxLatencyMs: metrics.maxLatencyMs,
-      action: "PULL_CURRENT_QUOTES",
-      source: "NATIVE_HYPERLIQUID"
-    });
+    this.logPerformance(stalePull.metrics);
+    this.publish(stalePull.telemetryType, stalePull.telemetryPayload);
   }
 
   private enqueueOrderBookReset(payload: Partial<OrderBookResetRequest>): Promise<void> {

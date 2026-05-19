@@ -9,6 +9,7 @@ import {
   recordProcessingLatencySample,
   shouldLogPerformanceSpikeEvent,
   stateAfterLatencyBaselineReset,
+  stateAfterNativeHyperliquidLatencyPull,
   stateAfterStaleDataKillSwitch,
   stateAfterHardStaleTickDrop
 } from "../../src/engine/trading/performance/LatencyRuntime";
@@ -209,6 +210,80 @@ describe("LatencyRuntime", () => {
       status: "SUSPENDED",
       reason: "STALE_DATA_KILL_SWITCH",
       suspendedUntil: "2026-05-18T15:01:00.250Z"
+    });
+  });
+
+  it("pulls native Hyperliquid quotes when latency exceeds the hot-path threshold", () => {
+    const currentState = defaultEngineState("native-latency-test");
+    currentState.averageLatency = 151;
+    currentState.latencySampleCount = 22;
+    currentState.processedTicks = 40;
+    currentState.staleTickCount = 5;
+    currentState.location = {
+      ...currentState.location,
+      latencyRiskMultiplier: 1.4,
+      positionSizeMultiplier: 0.6
+    };
+    currentState.quoteState = {
+      status: "ACTIVE",
+      reason: null,
+      suspendedUntil: null,
+      lastQuote: null,
+      updatedAt: "2026-05-18T15:00:00.000Z"
+    };
+    currentState.assetQuoteStates = Object.fromEntries(
+      Object.keys(currentState.assetQuoteStates).map((instrumentCode) => [
+        instrumentCode,
+        {
+          status: "ACTIVE" as const,
+          reason: null,
+          suspendedUntil: null,
+          lastQuote: null,
+          updatedAt: "2026-05-18T15:00:00.000Z"
+        }
+      ])
+    );
+
+    const result = stateAfterNativeHyperliquidLatencyPull({
+      currentState,
+      metrics: latencyMetrics({ totalLatencyMs: 180, maxLatencyMs: 150 }),
+      instrumentCode: "btc-usd",
+      sequence: 123,
+      observedAt: "2026-05-18T15:00:01.000Z"
+    });
+
+    expect(result.metrics).toMatchObject({
+      averageLatencyMs: 151,
+      sampleCount: 22,
+      latencyRiskMultiplier: 1.4,
+      positionSizeMultiplier: 0.6
+    });
+    expect(result.state).toMatchObject({
+      processedTicks: 41,
+      staleTickCount: 6,
+      quoteState: {
+        status: "ACTIVE",
+        reason: "PARTIAL_ASSET_SUSPENSION"
+      },
+      heartbeatAt: "2026-05-18T15:00:01.000Z",
+      updatedAt: "2026-05-18T15:00:01.000Z"
+    });
+    expect(result.state.assetQuoteStates["btc-usd"]).toMatchObject({
+      status: "SUSPENDED",
+      reason: "NATIVE_HL_LATENCY"
+    });
+    expect(result).toMatchObject({
+      telemetryType: "STALE_DATA_KILL_SWITCH",
+      telemetryPayload: {
+        instrumentCode: "btc-usd",
+        exchangeCode: "hyperliquid",
+        source_exchange: "hyperliquid",
+        sequence: 123,
+        totalLatencyMs: 180,
+        maxLatencyMs: 150,
+        action: "PULL_CURRENT_QUOTES",
+        source: "NATIVE_HYPERLIQUID"
+      }
     });
   });
 

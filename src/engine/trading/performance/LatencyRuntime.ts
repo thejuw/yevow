@@ -243,6 +243,67 @@ export function stateAfterStaleDataKillSwitch(
   };
 }
 
+export interface NativeHyperliquidLatencyPullInput {
+  readonly currentState: EngineState;
+  readonly metrics: LatencyMetrics;
+  readonly instrumentCode: string;
+  readonly sequence: number;
+  readonly observedAt: string;
+}
+
+export interface NativeHyperliquidLatencyPullResult {
+  readonly state: EngineState;
+  readonly metrics: LatencyMetrics;
+  readonly telemetryType: "STALE_DATA_KILL_SWITCH";
+  readonly telemetryPayload: Record<string, unknown>;
+}
+
+export function stateAfterNativeHyperliquidLatencyPull(
+  input: NativeHyperliquidLatencyPullInput
+): NativeHyperliquidLatencyPullResult {
+  const metrics: LatencyMetrics = {
+    ...input.metrics,
+    averageLatencyMs: input.currentState.averageLatency,
+    sampleCount: input.currentState.latencySampleCount,
+    latencyRiskMultiplier: input.currentState.location.latencyRiskMultiplier,
+    positionSizeMultiplier: input.currentState.location.positionSizeMultiplier
+  };
+  const assetQuoteStates = suspendAssetQuoteStates(
+    input.currentState.assetQuoteStates,
+    "NATIVE_HL_LATENCY",
+    input.observedAt,
+    { instrumentCode: input.instrumentCode, lastQuote: input.currentState.quoteState.lastQuote }
+  );
+
+  return {
+    metrics,
+    telemetryType: "STALE_DATA_KILL_SWITCH",
+    telemetryPayload: {
+      instrumentCode: input.instrumentCode,
+      exchangeCode: "hyperliquid",
+      source_exchange: "hyperliquid",
+      sequence: input.sequence,
+      totalLatencyMs: metrics.totalLatencyMs,
+      maxLatencyMs: metrics.maxLatencyMs,
+      action: "PULL_CURRENT_QUOTES",
+      source: "NATIVE_HYPERLIQUID"
+    },
+    state: {
+      ...input.currentState,
+      processedTicks: input.currentState.processedTicks + 1,
+      staleTickCount: input.currentState.staleTickCount + 1,
+      quoteState: aggregateQuoteState(
+        assetQuoteStates,
+        input.currentState.quoteState,
+        input.observedAt
+      ),
+      assetQuoteStates,
+      heartbeatAt: input.observedAt,
+      updatedAt: input.observedAt
+    }
+  };
+}
+
 export function recordProcessingLatencySample(
   samples: number[],
   processingLatencyMs: number,
