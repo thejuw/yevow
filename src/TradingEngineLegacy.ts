@@ -755,6 +755,23 @@ interface HistoricalReplayCompletionInput {
   readonly ticksLength: number;
 }
 
+interface HistoricalReplayStatusInput {
+  readonly replayId: string;
+  readonly ticksTotal: number;
+  readonly shadowBankroll: number;
+  readonly speedMultiplier: number;
+  readonly dateFrom: string | null;
+  readonly dateTo: string | null;
+  readonly scenario: ReplayScenario;
+  readonly startedAt: string;
+  readonly updatedAt: string;
+}
+
+interface LoadedReplayTicks {
+  readonly sourceTicks: MarketTick[];
+  readonly ticks: MarketTick[];
+}
+
 export class TradingEngine {
   private readonly startedAt = Date.now();
   private readonly initialized: Promise<void>;
@@ -5266,6 +5283,40 @@ export class TradingEngine {
     return result;
   }
 
+  private async writeHistoricalReplayRunningStatus(
+    input: HistoricalReplayStatusInput
+  ): Promise<void> {
+    await this.replayJournal.writeStatus(
+      buildReplayStatus({
+        replayId: input.replayId,
+        status: "RUNNING",
+        ticksTotal: input.ticksTotal,
+        ticksProcessed: 0,
+        speedMultiplier: input.speedMultiplier,
+        shadowBankroll: input.shadowBankroll,
+        dateFrom: input.dateFrom,
+        dateTo: input.dateTo,
+        scenario: input.scenario,
+        startedAt: input.startedAt,
+        updatedAt: input.updatedAt
+      })
+    );
+  }
+
+  private async loadScenarioReplayTicks(
+    limit: number,
+    dateFrom: string | null,
+    dateTo: string | null,
+    scenario: ReplayScenario
+  ): Promise<LoadedReplayTicks> {
+    const sourceTicks = await this.replayJournal.loadTicks(limit, dateFrom, dateTo);
+    const ticks = sourceTicks.map((tick, index) =>
+      applyReplayScenarioToTick(tick, scenario, index, sourceTicks.length)
+    );
+
+    return { sourceTicks, ticks };
+  }
+
   private async runHistoricalReplay(
     limit: number,
     shadowBankroll: number,
@@ -5286,25 +5337,23 @@ export class TradingEngine {
   ): Promise<ReplayResult> {
     const startedAt = new Date().toISOString();
     const replayId = crypto.randomUUID();
-    await this.replayJournal.writeStatus(
-      buildReplayStatus({
-        replayId,
-        status: "RUNNING",
-        ticksTotal: 0,
-        ticksProcessed: 0,
-        speedMultiplier,
-        shadowBankroll,
-        dateFrom,
-        dateTo,
-        scenario: replayOptions.scenario,
-        startedAt,
-        updatedAt: startedAt
-      })
-    );
+    await this.writeHistoricalReplayRunningStatus({
+      replayId,
+      ticksTotal: 0,
+      shadowBankroll,
+      speedMultiplier,
+      dateFrom,
+      dateTo,
+      scenario: replayOptions.scenario,
+      startedAt,
+      updatedAt: startedAt
+    });
     const liveSnapshot = this.captureReplaySnapshot();
-    const sourceTicks = await this.replayJournal.loadTicks(limit, dateFrom, dateTo);
-    const ticks = sourceTicks.map((tick, index) =>
-      applyReplayScenarioToTick(tick, replayOptions.scenario, index, sourceTicks.length)
+    const { ticks } = await this.loadScenarioReplayTicks(
+      limit,
+      dateFrom,
+      dateTo,
+      replayOptions.scenario
     );
     const initialShadowBankroll = resolveInitialShadowBankroll({
       requestedShadowBankroll: shadowBankroll,
@@ -5312,21 +5361,17 @@ export class TradingEngine {
       liveCash: this.engineState.bankroll.cash,
       fallbackBankroll: DEFAULT_PAPER_BANKROLL_USD
     });
-    await this.replayJournal.writeStatus(
-      buildReplayStatus({
-        replayId,
-        status: "RUNNING",
-        ticksTotal: ticks.length,
-        ticksProcessed: 0,
-        speedMultiplier,
-        shadowBankroll: initialShadowBankroll,
-        dateFrom,
-        dateTo,
-        scenario: replayOptions.scenario,
-        startedAt,
-        updatedAt: new Date().toISOString()
-      })
-    );
+    await this.writeHistoricalReplayRunningStatus({
+      replayId,
+      ticksTotal: ticks.length,
+      shadowBankroll: initialShadowBankroll,
+      speedMultiplier,
+      dateFrom,
+      dateTo,
+      scenario: replayOptions.scenario,
+      startedAt,
+      updatedAt: new Date().toISOString()
+    });
     const historicalTrades =
       ticks.length > 0
         ? await this.replayJournal.loadTrades(ticks[0].receivedAt, ticks.at(-1)!.receivedAt)
