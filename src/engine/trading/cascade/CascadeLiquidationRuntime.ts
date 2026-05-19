@@ -1,7 +1,7 @@
 import { nativeIso, normalizeSourceExchange } from "../../../TradingEngineRuntimeHelpers";
 import type { EngineState, JsonRecord, LiquidationHeatmapState } from "../../../types";
 import type { CascadeAssetProfile } from "../../../strategy/cascade/AssetProfiles";
-import type { CascadeEvent } from "../../../strategy/cascade/types";
+import type { CascadeEvent, LiquidationEvent } from "../../../strategy/cascade/types";
 
 export interface LiquidationEventContextInput {
   readonly payload: {
@@ -47,6 +47,11 @@ export interface LiquidationHeatmapStorageInput {
   readonly state: EngineState;
   readonly liquidationHeatmapKey: string;
   readonly heatmap: LiquidationHeatmapState;
+}
+
+export interface CascadeLiquidationJournalDb {
+  prepare(query: string): D1PreparedStatement;
+  batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]>;
 }
 
 export function resolveLiquidationEventContext(
@@ -104,6 +109,45 @@ export function liquidationEventProcessedCount(input: LiquidationEventProcessedC
     input.cascadeLiquidationCount,
     input.cascadeEventCount
   );
+}
+
+export function cascadeLiquidationInsertStatements(
+  db: CascadeLiquidationJournalDb,
+  events: readonly LiquidationEvent[]
+): D1PreparedStatement[] {
+  return events.map((event) =>
+    db
+      .prepare(
+        `INSERT OR REPLACE INTO cascade_liquidations (
+           event_id, instrument_code, source_exchange, side, forced_flow_side, price,
+           notional_usd, base_size, exchange_timestamp, observed_at, raw_json
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .bind(
+        event.eventId,
+        event.instrumentCode,
+        event.sourceExchange,
+        event.side,
+        event.forcedFlowSide,
+        event.price,
+        event.notionalUsd,
+        event.baseSize,
+        event.exchangeTimestamp,
+        event.observedAt,
+        JSON.stringify(event.raw)
+      )
+  );
+}
+
+export async function persistCascadeLiquidationEvents(
+  db: CascadeLiquidationJournalDb,
+  events: readonly LiquidationEvent[]
+): Promise<void> {
+  if (events.length === 0) {
+    return;
+  }
+
+  await db.batch(cascadeLiquidationInsertStatements(db, events));
 }
 
 export function cascadeDetectedLogMetadata(cascade: CascadeEvent): JsonRecord {

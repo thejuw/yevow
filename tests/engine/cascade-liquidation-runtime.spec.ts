@@ -1,18 +1,20 @@
 import { describe, expect, it } from "vitest";
 import { defaultLiquidationHeatmapState } from "../../src/agents/HeatmapAgent";
 import {
+  cascadeLiquidationInsertStatements,
   cascadeDetectedAlertMetadata,
   cascadeDetectedLogMetadata,
   cascadeDetectedTelemetryPayload,
   liquidationHeatmapStorageWrites,
   liquidationEventProcessedCount,
   liquidationEventTelemetry,
+  persistCascadeLiquidationEvents,
   resolveLiquidationEventContext,
   stateAfterLiquidationHeatmap
 } from "../../src/engine/trading/cascade/CascadeLiquidationRuntime";
 import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
 import type { CascadeAssetProfile } from "../../src/strategy/cascade/AssetProfiles";
-import type { CascadeEvent } from "../../src/strategy/cascade/types";
+import type { CascadeEvent, LiquidationEvent } from "../../src/strategy/cascade/types";
 
 const OBSERVED_AT = "2026-05-18T18:00:00.000Z";
 
@@ -182,6 +184,34 @@ describe("CascadeLiquidationRuntime", () => {
       detectedAt: OBSERVED_AT
     });
   });
+
+  it("builds and persists cascade liquidation journal statements", async () => {
+    const db = mockCascadeDb();
+    const event = liquidationEvent();
+    const statements = cascadeLiquidationInsertStatements(db, [event]);
+
+    expect(statements).toHaveLength(1);
+    expect(db.queries[0]).toContain("INSERT OR REPLACE INTO cascade_liquidations");
+    expect(db.binds[0]).toEqual([
+      "liq-1",
+      "btc-usd",
+      "hyperliquid",
+      "LONG",
+      "SELL",
+      96,
+      12_000_000,
+      125,
+      "2026-05-18T17:59:59.000Z",
+      OBSERVED_AT,
+      JSON.stringify({ source: "test" })
+    ]);
+
+    await persistCascadeLiquidationEvents(db, [event]);
+    await persistCascadeLiquidationEvents(db, []);
+
+    expect(db.batches).toHaveLength(1);
+    expect(db.batches[0]).toHaveLength(1);
+  });
 });
 
 function cascadeEvent(): CascadeEvent {
@@ -201,5 +231,53 @@ function cascadeEvent(): CascadeEvent {
     priceMoveAtr: 2.1,
     directionalPct: 0.9,
     rawEvents: []
+  };
+}
+
+function liquidationEvent(): LiquidationEvent {
+  return {
+    schemaVersion: "cascade.liquidation-event.v1",
+    eventId: "liq-1",
+    instrumentCode: "btc-usd",
+    sourceExchange: "hyperliquid",
+    side: "LONG",
+    forcedFlowSide: "SELL",
+    price: 96,
+    notionalUsd: 12_000_000,
+    baseSize: 125,
+    exchangeTimestamp: "2026-05-18T17:59:59.000Z",
+    observedAt: OBSERVED_AT,
+    raw: { source: "test" }
+  };
+}
+
+function mockCascadeDb(): {
+  prepare(query: string): D1PreparedStatement;
+  batch(statements: D1PreparedStatement[]): Promise<D1Result[]>;
+  queries: string[];
+  binds: unknown[][];
+  batches: D1PreparedStatement[][];
+} {
+  const queries: string[] = [];
+  const binds: unknown[][] = [];
+  const batches: D1PreparedStatement[][] = [];
+
+  return {
+    queries,
+    binds,
+    batches,
+    prepare(query: string): D1PreparedStatement {
+      queries.push(query);
+      return {
+        bind(...values: unknown[]) {
+          binds.push(values);
+          return this as D1PreparedStatement;
+        }
+      } as D1PreparedStatement;
+    },
+    async batch(statements: D1PreparedStatement[]): Promise<D1Result[]> {
+      batches.push(statements);
+      return [];
+    }
   };
 }

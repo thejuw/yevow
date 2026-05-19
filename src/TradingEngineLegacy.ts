@@ -187,6 +187,7 @@ import {
   liquidationHeatmapStorageWrites,
   liquidationEventProcessedCount,
   liquidationEventTelemetry,
+  persistCascadeLiquidationEvents,
   resolveLiquidationEventContext,
   stateAfterLiquidationHeatmap
 } from "./engine/trading/cascade/CascadeLiquidationRuntime";
@@ -1809,33 +1810,8 @@ export class TradingEngine {
   }
 
   private async persistCascadeLiquidations(events: LiquidationEvent[]): Promise<void> {
-    if (events.length === 0) {
-      return;
-    }
-
     try {
-      await this.env.TRADING_DB.batch(
-        events.map((event) =>
-          this.env.TRADING_DB.prepare(
-            `INSERT OR REPLACE INTO cascade_liquidations (
-               event_id, instrument_code, source_exchange, side, forced_flow_side, price,
-               notional_usd, base_size, exchange_timestamp, observed_at, raw_json
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-          ).bind(
-            event.eventId,
-            event.instrumentCode,
-            event.sourceExchange,
-            event.side,
-            event.forcedFlowSide,
-            event.price,
-            event.notionalUsd,
-            event.baseSize,
-            event.exchangeTimestamp,
-            event.observedAt,
-            JSON.stringify(event.raw)
-          )
-        )
-      );
+      await persistCascadeLiquidationEvents(this.env.TRADING_DB, events);
     } catch (error) {
       this.handleStorageWriteFailure("CASCADE_LIQUIDATION_JOURNAL", error);
     }
