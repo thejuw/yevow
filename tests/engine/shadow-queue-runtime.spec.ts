@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildShadowQueueTradeIntent,
   resolveShadowQueueSizingConfig,
+  shouldProcessShadowQueueTick,
   shadowQueueKellySize,
   shadowQueuePostOnlyPrice
 } from "../../src/engine/trading/shadow/ShadowQueueRuntime";
@@ -16,6 +17,14 @@ import type {
 const OBSERVED_AT = "2026-05-18T09:00:00.000Z";
 
 describe("ShadowQueueRuntime", () => {
+  it("gates VLO processing to synced live books with a valid mid", () => {
+    expect(shouldProcessShadowQueueTick({ book: book() })).toBe(true);
+    expect(shouldProcessShadowQueueTick({ book: book(), shadowReplay: true })).toBe(false);
+    expect(shouldProcessShadowQueueTick({ book: book({ isSynced: false }) })).toBe(false);
+    expect(shouldProcessShadowQueueTick({ book: book({ midPrice: null }) })).toBe(false);
+    expect(shouldProcessShadowQueueTick({ book: book({ midPrice: 0 }) })).toBe(false);
+  });
+
   it("snaps post-only prices away from the touch", () => {
     const baseBook = book({ bestBid: 99.5, bestAsk: 100.5, tickSize: 0.5, spread: 1 });
 

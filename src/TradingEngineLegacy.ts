@@ -68,6 +68,7 @@ import {
 import {
   buildShadowQueueTradeIntent,
   resolveShadowQueueSizingConfig,
+  shouldProcessShadowQueueTick,
   shadowQueueKellySize as calculateShadowQueueKellySize,
   shadowQueuePostOnlyPrice as calculateShadowQueuePostOnlyPrice
 } from "./engine/trading/shadow/ShadowQueueRuntime";
@@ -4035,7 +4036,7 @@ export class TradingEngine {
     observedAt: string,
     options: TickHandlingOptions
   ): ShadowQueueState {
-    if (options.shadowReplay || !book.isSynced || book.midPrice === null || book.midPrice <= 0) {
+    if (!shouldProcessShadowQueueTick({ book, shadowReplay: options.shadowReplay })) {
       return this.ghostBook.snapshot(observedAt);
     }
 

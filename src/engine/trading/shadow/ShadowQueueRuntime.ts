@@ -35,6 +35,20 @@ export interface ShadowQueueIntentInput {
   readonly price: number;
 }
 
+export interface ShadowQueueTickGateInput {
+  readonly book: InternalOrderBook;
+  readonly shadowReplay?: boolean;
+}
+
+export function shouldProcessShadowQueueTick(input: ShadowQueueTickGateInput): boolean {
+  return (
+    !input.shadowReplay &&
+    input.book.isSynced &&
+    input.book.midPrice !== null &&
+    input.book.midPrice > 0
+  );
+}
+
 export function shadowQueuePostOnlyPrice(
   action: "BUY" | "SELL",
   book: InternalOrderBook,
