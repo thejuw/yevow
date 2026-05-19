@@ -226,7 +226,13 @@ import {
   syncStateMicrostructureFromBook as syncEngineStateMicrostructure
 } from "./engine/trading/state/EngineDiagnostics";
 import { nextTickAgentHealth } from "./engine/trading/state/AgentHealthRuntime";
-import { stateAfterAcceptedTick } from "./engine/trading/state/TickStateRuntime";
+import {
+  shouldAutoResumeShadowMode,
+  shouldBlockHaltedTrading,
+  shouldLogDisabledTrading,
+  stateAfterAcceptedTick,
+  stateAfterShadowModeAutoResume
+} from "./engine/trading/state/TickStateRuntime";
 import {
   buildHotPathTickSnapshotWrites,
   shouldJournalMarketTick as shouldPersistMarketTick
@@ -3040,10 +3046,12 @@ export class TradingEngine {
     }
 
     if (
-      !options.shadowReplay &&
-      isShadowMode(this.env) &&
-      this.cachedConfig.TRADING_ENABLED &&
-      this.engineState.mode === "HALTED"
+      shouldAutoResumeShadowMode({
+        shadowReplay: options.shadowReplay === true,
+        shadowMode: isShadowMode(this.env),
+        tradingEnabled: this.cachedConfig.TRADING_ENABLED,
+        mode: this.engineState.mode
+      })
     ) {
       const resumedAt = new Date().toISOString();
       const assetQuoteStates = normalizeAssetQuoteStates(
@@ -3052,20 +3060,13 @@ export class TradingEngine {
         this.macroBias,
         resumedAt
       );
-      this.engineState = {
-        ...this.engineState,
-        mode: "PAPER",
-        bankroll: normalizePaperBankroll(this.engineState.bankroll, this.env, resumedAt),
-        risk: {
-          ...this.engineState.risk,
-          killSwitch: false,
-          updatedAt: resumedAt
-        },
-        quoteState: aggregateQuoteState(assetQuoteStates, this.engineState.quoteState, resumedAt),
+      this.engineState = stateAfterShadowModeAutoResume({
+        currentState: this.engineState,
+        normalizedBankroll: normalizePaperBankroll(this.engineState.bankroll, this.env, resumedAt),
         assetQuoteStates,
-        heartbeatAt: resumedAt,
-        updatedAt: resumedAt
-      };
+        quoteState: aggregateQuoteState(assetQuoteStates, this.engineState.quoteState, resumedAt),
+        observedAt: resumedAt
+      });
       this.killSwitchLogged = false;
       this.logger.warn(
         "SHADOW_MODE_AUTO_RESUME",
@@ -3084,9 +3085,12 @@ export class TradingEngine {
     }
 
     if (
-      !options.shadowReplay &&
-      this.engineState.mode === "HALTED" &&
-      this.cachedConfig.TRADING_ENABLED
+      shouldBlockHaltedTrading({
+        shadowReplay: options.shadowReplay === true,
+        shadowMode: isShadowMode(this.env),
+        tradingEnabled: this.cachedConfig.TRADING_ENABLED,
+        mode: this.engineState.mode
+      })
     ) {
       if (!this.killSwitchLogged) {
         this.logger.warn("KILL_SWITCH_ACTIVE", "Trading halted by cached config", {
@@ -3105,7 +3109,13 @@ export class TradingEngine {
       };
     }
 
-    if (!options.shadowReplay && !this.cachedConfig.TRADING_ENABLED && !this.killSwitchLogged) {
+    if (
+      shouldLogDisabledTrading({
+        shadowReplay: options.shadowReplay === true,
+        tradingEnabled: this.cachedConfig.TRADING_ENABLED,
+        killSwitchLogged: this.killSwitchLogged
+      })
+    ) {
       this.logger.warn("KILL_SWITCH_ACTIVE", "Trading disabled; market data remains enabled", {
         instrumentCode: tick.instrumentCode,
         configVersion: this.cachedConfig.version,

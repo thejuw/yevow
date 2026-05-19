@@ -1,11 +1,94 @@
 import { describe, expect, it } from "vitest";
-import { stateAfterAcceptedTick } from "../../src/engine/trading/state/TickStateRuntime";
+import {
+  shouldAutoResumeShadowMode,
+  shouldBlockHaltedTrading,
+  shouldLogDisabledTrading,
+  stateAfterAcceptedTick,
+  stateAfterShadowModeAutoResume
+} from "../../src/engine/trading/state/TickStateRuntime";
 import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
 import type { DomAnalysisSnapshot, InternalOrderBook, ManagedOrder } from "../../src/types";
 
 const OBSERVED_AT = "2026-05-18T19:00:00.000Z";
 
 describe("TickStateRuntime", () => {
+  it("evaluates tick preflight mode gates", () => {
+    expect(
+      shouldAutoResumeShadowMode({
+        shadowReplay: false,
+        shadowMode: true,
+        tradingEnabled: true,
+        mode: "HALTED"
+      })
+    ).toBe(true);
+    expect(
+      shouldAutoResumeShadowMode({
+        shadowReplay: true,
+        shadowMode: true,
+        tradingEnabled: true,
+        mode: "HALTED"
+      })
+    ).toBe(false);
+    expect(
+      shouldBlockHaltedTrading({
+        shadowReplay: false,
+        shadowMode: false,
+        tradingEnabled: true,
+        mode: "HALTED"
+      })
+    ).toBe(true);
+    expect(
+      shouldLogDisabledTrading({
+        shadowReplay: false,
+        tradingEnabled: false,
+        killSwitchLogged: false
+      })
+    ).toBe(true);
+  });
+
+  it("resumes shadow-mode paper trading from a halted state", () => {
+    const currentState = defaultEngineState("shadow-resume");
+    currentState.mode = "HALTED";
+    currentState.risk = {
+      ...currentState.risk,
+      killSwitch: true
+    };
+    const assetQuoteStates = currentState.assetQuoteStates;
+    const quoteState = {
+      ...currentState.quoteState,
+      status: "ACTIVE" as const,
+      reason: null,
+      updatedAt: OBSERVED_AT
+    };
+    const bankroll = {
+      ...currentState.bankroll,
+      equity: 300,
+      cash: 300,
+      updatedAt: OBSERVED_AT
+    };
+
+    const next = stateAfterShadowModeAutoResume({
+      currentState,
+      normalizedBankroll: bankroll,
+      assetQuoteStates,
+      quoteState,
+      observedAt: OBSERVED_AT
+    });
+
+    expect(next).toMatchObject({
+      mode: "PAPER",
+      bankroll,
+      risk: {
+        killSwitch: false,
+        updatedAt: OBSERVED_AT
+      },
+      quoteState,
+      assetQuoteStates,
+      heartbeatAt: OBSERVED_AT,
+      updatedAt: OBSERVED_AT
+    });
+  });
+
   it("assembles accepted tick engine state and tracks newly managed orders", () => {
     const currentState = defaultEngineState("tick-state-test");
     currentState.mode = "HALTED";

@@ -1,11 +1,28 @@
 import type {
   DomAnalysisSnapshot,
+  EngineMode,
   EngineState,
   InternalOrderBook,
+  GlobalRiskConfig,
   LatencyStatus,
   ManagedOrder
 } from "../../../types";
 import { microstructureFromBook } from "../book/BookReconstruction";
+
+export interface TickPreflightModeInput {
+  readonly shadowReplay: boolean;
+  readonly shadowMode: boolean;
+  readonly tradingEnabled: boolean;
+  readonly mode: EngineMode;
+}
+
+export interface ShadowModeAutoResumeInput {
+  readonly currentState: EngineState;
+  readonly normalizedBankroll: EngineState["bankroll"];
+  readonly assetQuoteStates: EngineState["assetQuoteStates"];
+  readonly quoteState: EngineState["quoteState"];
+  readonly observedAt: string;
+}
 
 export interface AcceptedTickStateInput {
   readonly currentState: EngineState;
@@ -35,6 +52,39 @@ export interface AcceptedTickStateInput {
   readonly agentHealth: EngineState["agentHealth"];
   readonly maxLatencyMs: number;
   readonly observedAt: string;
+}
+
+export function shouldAutoResumeShadowMode(input: TickPreflightModeInput): boolean {
+  return !input.shadowReplay && input.shadowMode && input.tradingEnabled && input.mode === "HALTED";
+}
+
+export function shouldBlockHaltedTrading(input: TickPreflightModeInput): boolean {
+  return !input.shadowReplay && input.mode === "HALTED" && input.tradingEnabled;
+}
+
+export function shouldLogDisabledTrading(input: {
+  readonly shadowReplay: boolean;
+  readonly tradingEnabled: GlobalRiskConfig["TRADING_ENABLED"];
+  readonly killSwitchLogged: boolean;
+}): boolean {
+  return !input.shadowReplay && !input.tradingEnabled && !input.killSwitchLogged;
+}
+
+export function stateAfterShadowModeAutoResume(input: ShadowModeAutoResumeInput): EngineState {
+  return {
+    ...input.currentState,
+    mode: "PAPER",
+    bankroll: input.normalizedBankroll,
+    risk: {
+      ...input.currentState.risk,
+      killSwitch: false,
+      updatedAt: input.observedAt
+    },
+    quoteState: input.quoteState,
+    assetQuoteStates: input.assetQuoteStates,
+    heartbeatAt: input.observedAt,
+    updatedAt: input.observedAt
+  };
 }
 
 export function stateAfterAcceptedTick(input: AcceptedTickStateInput): EngineState {
