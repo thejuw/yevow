@@ -109,9 +109,10 @@ import type {
   BookSyncState
 } from "./engine/trading/book/BookTypes";
 import {
+  buildHyperliquidL2BookSnapshotBundle,
+  evaluateHyperliquidBookSequence,
   handleHyperliquidRawBatch,
   hyperliquidIngestConnectionKey,
-  resolveHyperliquidBookTimestamp,
   type HyperliquidRawIngestPayload
 } from "./engine/trading/ingest/HyperliquidRawIngest";
 import { handleTradingEngineHttpRoute } from "./engine/trading/routes/EngineHttpRoutes";
@@ -337,13 +338,9 @@ import {
   isNativeRecord,
   nativeObject,
   nativeString,
-  requireNativeString,
   nativeIso,
-  nativeExchangeTimestamp,
   epochMillis,
-  nativeSequence,
   nativeHashSequence,
-  hyperliquidNativeInstrumentCode,
   normalizeNativeCoin,
   normalizeNativeInstrumentCode,
   normalizeInstrumentSelector,
@@ -355,7 +352,6 @@ import {
   isOpenCascadePosition,
   recentSwingLow,
   recentSwingHigh,
-  parseHyperliquidNativeLevels,
   nativeBookSideLevels,
   nativeNumber,
   nativeSide,
@@ -1497,85 +1493,65 @@ export class TradingEngine {
     wakeUpTimeMs: number | null
   ): Promise<TickIngestResult> {
     const hotPathStartedAt = highResolutionNow();
-    const data = nativeObject(raw.data);
-
-    if (!data) {
-      throw new Error("INVALID_HYPERLIQUID_L2BOOK");
-    }
-
-    const receivedAt = nativeIso(payload.receivedAt) ?? new Date().toISOString();
-    const coin = requireNativeString(data.coin ?? payload.instrumentCode, "coin");
-    const instrumentCode = hyperliquidNativeInstrumentCode(coin, payload.instrumentCode);
-    const exchangeCode = (payload.exchangeCode ?? "hyperliquid").toLowerCase();
-    const sourceExchange = normalizeSourceExchange(payload.source_exchange ?? "hyperliquid");
-    const sourceWeight = normalizeSourceWeight(payload.sourceWeight);
-    const rawExchangeTimestamp = nativeExchangeTimestamp(data.time ?? data.timestamp);
-    const exchangeTimestamp = resolveHyperliquidBookTimestamp(
-      rawExchangeTimestamp,
+    const {
+      coin,
+      instrumentCode,
+      exchangeCode,
+      sourceExchange,
+      sourceWeight,
+      exchangeTimestamp,
       receivedAt,
+      hasExplicitSequence,
+      sequence,
+      marketKey,
+      snapshot
+    } = buildHyperliquidL2BookSnapshotBundle(
+      raw,
+      payload,
       readPositiveNumber(
         this.env.HL_BOOK_TIMESTAMP_MAX_DRIFT_MS,
         DEFAULT_HL_BOOK_TIMESTAMP_MAX_DRIFT_MS
       )
     );
-    const explicitSequenceValue = data.sequence ?? data.seq;
-    const explicitSequence = Number(explicitSequenceValue);
-    const hasExplicitSequence =
-      explicitSequenceValue !== undefined &&
-      Number.isSafeInteger(explicitSequence) &&
-      explicitSequence >= 0;
-    const sequence = nativeSequence(
-      hasExplicitSequence ? explicitSequenceValue : (data.time ?? data.timestamp)
-    );
-    const marketKey = buildMarketKey(sourceExchange, instrumentCode);
     const existingSync = this.bookSync.get(marketKey);
-    const gapMs = readPositiveNumber(this.env.HL_SEQUENCE_GAP_MS, DEFAULT_HL_SEQUENCE_GAP_MS);
-    const [bids, asks] = parseHyperliquidNativeLevels(data.levels, receivedAt);
-    const snapshot: OrderBookSnapshot = {
-      schemaVersion: "order-book.snapshot.v1",
-      source: "HYPERLIQUID",
-      source_exchange: sourceExchange,
-      exchangeCode,
-      instrumentCode,
-      marketKey,
-      sourceWeight,
+    const sequenceDecision = evaluateHyperliquidBookSequence(
+      existingSync,
       sequence,
-      exchangeTimestamp,
-      receivedAt,
-      bids,
-      asks
-    };
+      hasExplicitSequence,
+      readPositiveNumber(this.env.HL_SEQUENCE_GAP_MS, DEFAULT_HL_SEQUENCE_GAP_MS),
+      receivedAt
+    );
 
-    if (existingSync?.lastSequence !== null && existingSync?.lastSequence !== undefined) {
-      if (sequence <= existingSync.lastSequence) {
-        return {
-          accepted: false,
-          status: "DUPLICATE_OR_OUT_OF_ORDER",
-          reason: "DUPLICATE_OR_OUT_OF_ORDER",
-          processedCount: 0
-        };
-      }
+    if (sequenceDecision.status === "DUPLICATE_OR_OUT_OF_ORDER") {
+      return {
+        accepted: false,
+        status: "DUPLICATE_OR_OUT_OF_ORDER",
+        reason: "DUPLICATE_OR_OUT_OF_ORDER",
+        processedCount: 0
+      };
+    }
 
-      if (hasExplicitSequence && sequence - existingSync.lastSequence > gapMs) {
-        existingSync.lastDesyncAt = receivedAt;
-        existingSync.desyncReason = "HYPERLIQUID_SEQUENCE_GAP";
+    if (sequenceDecision.status === "DESYNC") {
+      if (existingSync) {
+        existingSync.lastDesyncAt = sequenceDecision.lastDesyncAt;
+        existingSync.desyncReason = sequenceDecision.reason;
         existingSync.isSynced = false;
-        this.logger.warn("ORDER_BOOK_DESYNC", "Hyperliquid native book sequence gap detected", {
-          instrumentCode,
-          exchangeCode,
-          source_exchange: sourceExchange,
-          previousSequence: existingSync.lastSequence,
-          sequence,
-          gapMs: sequence - existingSync.lastSequence,
-          maxGapMs: gapMs
-        });
-        return {
-          accepted: false,
-          status: "DESYNC",
-          reason: "HYPERLIQUID_SEQUENCE_GAP",
-          processedCount: 0
-        };
       }
+      this.logger.warn("ORDER_BOOK_DESYNC", "Hyperliquid native book sequence gap detected", {
+        instrumentCode,
+        exchangeCode,
+        source_exchange: sourceExchange,
+        previousSequence: sequenceDecision.previousSequence,
+        sequence,
+        gapMs: sequenceDecision.gapMs,
+        maxGapMs: sequenceDecision.maxGapMs
+      });
+      return {
+        accepted: false,
+        status: "DESYNC",
+        reason: sequenceDecision.reason,
+        processedCount: 0
+      };
     }
 
     const brainTimestamp = new Date().toISOString();
@@ -1591,7 +1567,7 @@ export class TradingEngine {
 
     if (totalLatencyMs > nativeMaxLatencyMs) {
       const book =
-        bids.length > 0 || asks.length > 0
+        snapshot.bids.length > 0 || snapshot.asks.length > 0
           ? await this.applySnapshot(snapshot, { telemetry: false, persist: false })
           : undefined;
       if (book) {

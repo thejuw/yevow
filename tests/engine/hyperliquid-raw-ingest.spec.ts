@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildHyperliquidL2BookSnapshotBundle,
+  evaluateHyperliquidBookSequence,
   handleHyperliquidRawBatch,
   hyperliquidIngestConnectionKey,
   hyperliquidRawMessages,
   isActiveHyperliquidIngestConnection,
   resolveHyperliquidBookTimestamp
 } from "../../src/engine/trading/ingest/HyperliquidRawIngest";
+import type { BookSyncState } from "../../src/engine/trading/book/BookTypes";
 import type { TickIngestResult } from "../../src/engine/trading/TradingEngineRouteTypes";
 
 describe("hyperliquid raw ingest helpers", () => {
@@ -57,6 +60,67 @@ describe("hyperliquid raw ingest helpers", () => {
     expect(resolveHyperliquidBookTimestamp("2026-01-01T00:00:00.000Z", receivedAt, 500)).toBe(
       receivedAt
     );
+  });
+
+  it("builds native L2 snapshot bundles from Hyperliquid payloads", () => {
+    const bundle = buildHyperliquidL2BookSnapshotBundle(
+      {
+        data: {
+          coin: "BTC",
+          time: 1_767_000_000_000,
+          sequence: 42,
+          levels: [[{ px: "100", sz: "1.25" }], [{ px: "101", sz: "2.5" }]]
+        }
+      },
+      {
+        source_exchange: "HyperLiquid",
+        exchangeCode: "HL",
+        instrumentCode: "btc-usd",
+        sourceWeight: 2,
+        receivedAt: "2026-01-01T00:00:01.000Z"
+      },
+      5_000,
+      "2026-01-01T00:00:02.000Z"
+    );
+
+    expect(bundle).toMatchObject({
+      coin: "BTC",
+      instrumentCode: "btc-usd",
+      exchangeCode: "hl",
+      sourceExchange: "hyperliquid",
+      sourceWeight: 2,
+      hasExplicitSequence: true,
+      sequence: 42,
+      marketKey: "hyperliquid:btc-usd"
+    });
+    expect(bundle.snapshot).toMatchObject({
+      schemaVersion: "order-book.snapshot.v1",
+      source: "HYPERLIQUID",
+      marketKey: "hyperliquid:btc-usd",
+      bids: [{ price: 100, size: 1.25 }],
+      asks: [{ price: 101, size: 2.5 }]
+    });
+  });
+
+  it("evaluates native L2 duplicate and sequence gap decisions", () => {
+    expect(evaluateHyperliquidBookSequence(undefined, 1, true, 5, "now")).toEqual({
+      status: "ACCEPTED"
+    });
+    expect(evaluateHyperliquidBookSequence(bookSync(10), 10, true, 5, "now")).toEqual({
+      status: "DUPLICATE_OR_OUT_OF_ORDER"
+    });
+    expect(evaluateHyperliquidBookSequence(bookSync(10), 20, true, 5, "now")).toEqual({
+      status: "DESYNC",
+      reason: "HYPERLIQUID_SEQUENCE_GAP",
+      previousSequence: 10,
+      sequence: 20,
+      gapMs: 10,
+      maxGapMs: 5,
+      lastDesyncAt: "now"
+    });
+    expect(evaluateHyperliquidBookSequence(bookSync(10), 20, false, 5, "now")).toEqual({
+      status: "ACCEPTED"
+    });
   });
 
   it("drops stale batches and stops processing on terminal statuses", async () => {
@@ -118,5 +182,25 @@ function freshResult(): TickIngestResult {
     accepted: true,
     status: "FRESH",
     processedCount: 1
+  };
+}
+
+function bookSync(lastSequence: number | null): BookSyncState {
+  return {
+    marketKey: "hyperliquid:btc-usd",
+    source: "HYPERLIQUID",
+    source_exchange: "hyperliquid",
+    sourceWeight: 1,
+    instrumentCode: "btc-usd",
+    exchangeCode: "hl",
+    lastSequence,
+    lastSnapshotAt: null,
+    lastDeltaAt: null,
+    lastDesyncAt: null,
+    desyncReason: null,
+    isSynced: true,
+    tickSize: 0.01,
+    ttbLatencyMs: null,
+    lastCrossCheckAt: 0
   };
 }

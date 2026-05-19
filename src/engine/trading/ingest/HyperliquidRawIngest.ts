@@ -1,5 +1,18 @@
-import { normalizeSourceExchange } from "../../../TradingEngineRuntimeHelpers";
+import {
+  buildMarketKey,
+  hyperliquidNativeInstrumentCode,
+  nativeExchangeTimestamp,
+  nativeIso,
+  nativeObject,
+  nativeSequence,
+  normalizeSourceExchange,
+  normalizeSourceWeight,
+  parseHyperliquidNativeLevels,
+  requireNativeString
+} from "../../../TradingEngineRuntimeHelpers";
 import type { TickIngestResult } from "../TradingEngineRouteTypes";
+import type { BookSyncState } from "../book/BookTypes";
+import type { OrderBookSnapshot } from "../../../types";
 
 export interface HyperliquidRawIngestPayload {
   streamId?: string;
@@ -106,4 +119,131 @@ export function resolveHyperliquidBookTimestamp(
   }
 
   return receivedMs - rawMs > maxDriftMs ? receivedAt : rawExchangeTimestamp;
+}
+
+export interface HyperliquidL2BookSnapshotBundle {
+  readonly data: Record<string, unknown>;
+  readonly receivedAt: string;
+  readonly coin: string;
+  readonly instrumentCode: string;
+  readonly exchangeCode: string;
+  readonly sourceExchange: string;
+  readonly sourceWeight: number;
+  readonly exchangeTimestamp: string;
+  readonly explicitSequenceValue: unknown;
+  readonly hasExplicitSequence: boolean;
+  readonly sequence: number;
+  readonly marketKey: string;
+  readonly snapshot: OrderBookSnapshot;
+}
+
+export function buildHyperliquidL2BookSnapshotBundle(
+  raw: Record<string, unknown>,
+  payload: HyperliquidRawIngestPayload,
+  maxTimestampDriftMs: number,
+  fallbackReceivedAt = new Date().toISOString()
+): HyperliquidL2BookSnapshotBundle {
+  const data = nativeObject(raw.data);
+
+  if (!data) {
+    throw new Error("INVALID_HYPERLIQUID_L2BOOK");
+  }
+
+  const receivedAt = nativeIso(payload.receivedAt) ?? fallbackReceivedAt;
+  const coin = requireNativeString(data.coin ?? payload.instrumentCode, "coin");
+  const instrumentCode = hyperliquidNativeInstrumentCode(coin, payload.instrumentCode);
+  const exchangeCode = (payload.exchangeCode ?? "hyperliquid").toLowerCase();
+  const sourceExchange = normalizeSourceExchange(payload.source_exchange ?? "hyperliquid");
+  const sourceWeight = normalizeSourceWeight(payload.sourceWeight);
+  const rawExchangeTimestamp = nativeExchangeTimestamp(data.time ?? data.timestamp);
+  const exchangeTimestamp = resolveHyperliquidBookTimestamp(
+    rawExchangeTimestamp,
+    receivedAt,
+    maxTimestampDriftMs
+  );
+  const explicitSequenceValue = data.sequence ?? data.seq;
+  const explicitSequence = Number(explicitSequenceValue);
+  const hasExplicitSequence =
+    explicitSequenceValue !== undefined &&
+    Number.isSafeInteger(explicitSequence) &&
+    explicitSequence >= 0;
+  const sequence = nativeSequence(
+    hasExplicitSequence ? explicitSequenceValue : (data.time ?? data.timestamp)
+  );
+  const marketKey = buildMarketKey(sourceExchange, instrumentCode);
+  const [bids, asks] = parseHyperliquidNativeLevels(data.levels, receivedAt);
+  const snapshot: OrderBookSnapshot = {
+    schemaVersion: "order-book.snapshot.v1",
+    source: "HYPERLIQUID",
+    source_exchange: sourceExchange,
+    exchangeCode,
+    instrumentCode,
+    marketKey,
+    sourceWeight,
+    sequence,
+    exchangeTimestamp,
+    receivedAt,
+    bids,
+    asks
+  };
+
+  return {
+    data,
+    receivedAt,
+    coin,
+    instrumentCode,
+    exchangeCode,
+    sourceExchange,
+    sourceWeight,
+    exchangeTimestamp,
+    explicitSequenceValue,
+    hasExplicitSequence,
+    sequence,
+    marketKey,
+    snapshot
+  };
+}
+
+export type HyperliquidBookSequenceDecision =
+  | { readonly status: "ACCEPTED" }
+  | { readonly status: "DUPLICATE_OR_OUT_OF_ORDER" }
+  | {
+      readonly status: "DESYNC";
+      readonly reason: "HYPERLIQUID_SEQUENCE_GAP";
+      readonly previousSequence: number;
+      readonly sequence: number;
+      readonly gapMs: number;
+      readonly maxGapMs: number;
+      readonly lastDesyncAt: string;
+    };
+
+export function evaluateHyperliquidBookSequence(
+  existingSync: BookSyncState | undefined,
+  sequence: number,
+  hasExplicitSequence: boolean,
+  gapMs: number,
+  observedAt: string
+): HyperliquidBookSequenceDecision {
+  if (existingSync?.lastSequence === null || existingSync?.lastSequence === undefined) {
+    return { status: "ACCEPTED" };
+  }
+
+  if (sequence <= existingSync.lastSequence) {
+    return { status: "DUPLICATE_OR_OUT_OF_ORDER" };
+  }
+
+  const sequenceGap = sequence - existingSync.lastSequence;
+  if (hasExplicitSequence && sequenceGap > gapMs) {
+    return {
+      status: "DESYNC",
+      reason: "HYPERLIQUID_SEQUENCE_GAP",
+      previousSequence: existingSync.lastSequence,
+      sequence,
+      gapMs: sequenceGap,
+      maxGapMs: gapMs,
+      lastDesyncAt: observedAt
+    };
+  }
+
+  return { status: "ACCEPTED" };
 }
