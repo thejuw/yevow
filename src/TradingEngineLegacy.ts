@@ -4131,7 +4131,16 @@ export class TradingEngine {
     observedAt: string
   ): ShadowQueueDecision {
     if (decision.action === "NO_EDGE" || decision.dispatchSide === null) {
-      if (this.shouldLogShadowQueueNoEdge(decision.instrumentCode)) {
+      if (
+        shouldLogShadowQueueNoEdgeEvent({
+          lastLoggedAtByInstrument: this.shadowQueueNoEdgeLogAt,
+          instrumentCode: decision.instrumentCode,
+          nowMs: Date.now(),
+          intervalMs: resolveShadowQueueNoEdgeLogInterval(
+            this.env.SHADOW_QUEUE_NO_EDGE_LOG_INTERVAL_MS
+          )
+        })
+      ) {
         this.logger.info("SHADOW_QUEUE_NO_EDGE", "Virtual fill drift stayed inside one tick", {
           decisionId: decision.decisionId,
           fillId: decision.fillId,
@@ -4218,15 +4227,6 @@ export class TradingEngine {
     }
 
     return updatedDecision;
-  }
-
-  private shouldLogShadowQueueNoEdge(instrumentCode: string): boolean {
-    return shouldLogShadowQueueNoEdgeEvent({
-      lastLoggedAtByInstrument: this.shadowQueueNoEdgeLogAt,
-      instrumentCode,
-      nowMs: Date.now(),
-      intervalMs: resolveShadowQueueNoEdgeLogInterval(this.env.SHADOW_QUEUE_NO_EDGE_LOG_INTERVAL_MS)
-    });
   }
 
   private createShadowQueueTradeIntent(
