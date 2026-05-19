@@ -97,6 +97,8 @@ import {
   stateAfterAnomalyEmergencyPause
 } from "./engine/trading/anomaly/AnomalyRuntime";
 import {
+  crossAssetHypeCancelLogMetadata,
+  crossAssetHypeCancelTelemetry,
   evaluateCrossAssetHypeQuoteCancel,
   updateLeadLagMetrics as updateLeadLagRuntimeMetrics
 } from "./engine/trading/leadlag/LeadLagRuntime";
@@ -4031,21 +4033,18 @@ export class TradingEngine {
     }
 
     this.crossAssetCancelLogAt.set("hype-usd", decision.nowMs);
-    this.logger.warn("CROSS_ASSET_HYPE_CANCEL", "BTC lead move invalidated HYPE resting quotes", {
-      leadInstrument: "btc-usd",
-      lagInstrument: "hype-usd",
-      moveBps: roundMetric(decision.moveBps, 4),
-      thresholdBps: leadThresholdBps,
-      jumpDetected: volatility?.jumpDetected ?? false,
-      jumpZScore: roundMetric(volatility?.jumpZScore ?? 0, 4)
-    });
-    this.publish("SUSPEND_QUOTES", {
-      instrumentCode: "hype-usd",
-      reason: "BTC_LEAD_MOVE",
-      moveBps: decision.moveBps,
-      jumpDetected: volatility?.jumpDetected ?? false,
+    const artifacts = {
+      decision,
+      volatility,
+      leadThresholdBps,
       observedAt
-    });
+    };
+    this.logger.warn(
+      "CROSS_ASSET_HYPE_CANCEL",
+      "BTC lead move invalidated HYPE resting quotes",
+      crossAssetHypeCancelLogMetadata(artifacts)
+    );
+    this.publish("SUSPEND_QUOTES", crossAssetHypeCancelTelemetry(artifacts));
     this.state.waitUntil(this.cancelAllQuotes("hype-usd", "BTC_LEAD_MOVE"));
   }
 

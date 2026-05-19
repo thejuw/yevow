@@ -1,6 +1,7 @@
-import type { EngineState } from "../../../types";
+import type { EngineState, JsonRecord } from "../../../types";
 import { pearson, returns } from "../../../TradingEngineRuntimeHelpers";
 import type { MultiScaleVolatilitySnapshot } from "../../MultiScaleVolatility";
+import { roundMetric } from "../book/SortedBookSide";
 
 export interface LeadLagSample {
   price: number;
@@ -37,6 +38,13 @@ export interface CrossAssetHypeCancelDecision {
   readonly nowMs: number;
   readonly moveBps: number;
   readonly reason: string | null;
+}
+
+export interface CrossAssetHypeCancelArtifactsInput {
+  readonly decision: CrossAssetHypeCancelDecision;
+  readonly volatility: MultiScaleVolatilitySnapshot | null;
+  readonly leadThresholdBps: number;
+  readonly observedAt: string;
 }
 
 export function updateLeadLagMetrics(input: LeadLagUpdateInput): EngineState["leadLag"] {
@@ -129,6 +137,31 @@ export function evaluateCrossAssetHypeQuoteCancel(
     nowMs,
     moveBps,
     reason: "BTC_LEAD_MOVE"
+  };
+}
+
+export function crossAssetHypeCancelLogMetadata(
+  input: CrossAssetHypeCancelArtifactsInput
+): JsonRecord {
+  return {
+    leadInstrument: "btc-usd",
+    lagInstrument: "hype-usd",
+    moveBps: roundMetric(input.decision.moveBps, 4),
+    thresholdBps: input.leadThresholdBps,
+    jumpDetected: input.volatility?.jumpDetected ?? false,
+    jumpZScore: roundMetric(input.volatility?.jumpZScore ?? 0, 4)
+  };
+}
+
+export function crossAssetHypeCancelTelemetry(
+  input: CrossAssetHypeCancelArtifactsInput
+): JsonRecord {
+  return {
+    instrumentCode: "hype-usd",
+    reason: "BTC_LEAD_MOVE",
+    moveBps: input.decision.moveBps,
+    jumpDetected: input.volatility?.jumpDetected ?? false,
+    observedAt: input.observedAt
   };
 }
 

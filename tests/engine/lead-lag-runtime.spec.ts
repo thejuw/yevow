@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  crossAssetHypeCancelLogMetadata,
+  crossAssetHypeCancelTelemetry,
   evaluateCrossAssetHypeQuoteCancel,
   updateLeadLagMetrics,
   type LeadLagSample
@@ -131,6 +133,37 @@ describe("LeadLagRuntime", () => {
         tickInstrumentCode: "eth-usd"
       })
     ).toMatchObject({ shouldCancel: false, reason: "INELIGIBLE" });
+  });
+
+  it("builds cross-asset HYPE cancellation log and telemetry artifacts", () => {
+    const decision = {
+      shouldCancel: true,
+      nowMs: Date.parse(OBSERVED_AT),
+      moveBps: 12.34567,
+      reason: "BTC_LEAD_MOVE"
+    };
+    const artifacts = {
+      decision,
+      volatility: volatility({ jumpDetected: true, jumpZScore: 6.78912 }),
+      leadThresholdBps: 5,
+      observedAt: OBSERVED_AT
+    };
+
+    expect(crossAssetHypeCancelLogMetadata(artifacts)).toEqual({
+      leadInstrument: "btc-usd",
+      lagInstrument: "hype-usd",
+      moveBps: 12.3457,
+      thresholdBps: 5,
+      jumpDetected: true,
+      jumpZScore: 6.7891
+    });
+    expect(crossAssetHypeCancelTelemetry(artifacts)).toEqual({
+      instrumentCode: "hype-usd",
+      reason: "BTC_LEAD_MOVE",
+      moveBps: 12.34567,
+      jumpDetected: true,
+      observedAt: OBSERVED_AT
+    });
   });
 });
 
