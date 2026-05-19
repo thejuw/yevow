@@ -47,6 +47,7 @@ import {
 } from "./engine/trading/book/BookReconstruction";
 import {
   calculateOrderBookPriceDiscovery,
+  currentMarkPriceForInstrument,
   currentBookForMarketTick,
   currentOrderBookSnapshot,
   findBestAssetBook as findBestOrderBookForAsset,
@@ -5097,9 +5098,14 @@ export class TradingEngine {
   }
 
   private currentMarkPrice(instrumentCode: string, fallback: number): number {
-    const selected = this.selectMarketKey(instrumentCode);
-    const mark = selected ? this.orderBook.get(selected.marketKey)?.midPrice : null;
-    return typeof mark === "number" && Number.isFinite(mark) && mark > 0 ? mark : fallback;
+    return currentMarkPriceForInstrument(
+      {
+        orderBook: this.orderBook,
+        microstructure: this.engineState.microstructure
+      },
+      instrumentCode,
+      fallback
+    );
   }
 
   private async runJanitor(source: "ALARM" | "ADMIN" = "ALARM"): Promise<void> {

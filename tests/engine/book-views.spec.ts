@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   calculateOrderBookPriceDiscovery,
   currentBookForMarketTick,
+  currentMarkPriceForInstrument,
   currentOrderBookSnapshot,
   findBestAssetBook,
   selectOrderBookMarketKey
@@ -197,6 +198,35 @@ describe("BookViews", () => {
       sourceCount: 3,
       updatedAt: OBSERVED_AT
     });
+  });
+
+  it("resolves current mark prices from selected books with a fallback", () => {
+    const orderBook = new Map<string, InternalOrderBook>([
+      [
+        "hyperliquid:btc-usd",
+        book({
+          marketKey: "hyperliquid:btc-usd",
+          instrumentCode: "btc-usd",
+          midPrice: 100
+        })
+      ],
+      [
+        "hyperliquid:eth-usd",
+        book({
+          marketKey: "hyperliquid:eth-usd",
+          instrumentCode: "eth-usd",
+          midPrice: null
+        })
+      ]
+    ]);
+    const context = {
+      orderBook,
+      microstructure: micro({ marketKey: "hyperliquid:btc-usd", instrumentCode: "btc-usd" })
+    };
+
+    expect(currentMarkPriceForInstrument(context, "BTC", 99)).toBe(100);
+    expect(currentMarkPriceForInstrument(context, "ETH", 2_000)).toBe(2_000);
+    expect(currentMarkPriceForInstrument(context, "SOL", 150)).toBe(150);
   });
 
   it("builds current snapshots from side stores and sync fallback state", () => {

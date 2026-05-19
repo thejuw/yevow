@@ -170,6 +170,17 @@ export function calculateOrderBookPriceDiscovery(
   };
 }
 
+export function currentMarkPriceForInstrument(
+  context: BookSelectionContext,
+  instrumentCode: string,
+  fallback: number
+): number {
+  const selected = selectOrderBookMarketKey(context, instrumentCode);
+  const mark = selected ? context.orderBook.get(selected.marketKey)?.midPrice : null;
+
+  return typeof mark === "number" && Number.isFinite(mark) && mark > 0 ? mark : fallback;
+}
+
 export function currentOrderBookSnapshot(
   context: BookSnapshotContext,
   instrumentCode: string | undefined,
