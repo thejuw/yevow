@@ -7,6 +7,7 @@ import type {
   MarketTick,
   ShadowQueueFill,
   ShadowQueueDecision,
+  SlippageAnalytics,
   TradeExecution,
   TradeIntent
 } from "../../../types";
@@ -19,7 +20,11 @@ import {
   DEFAULT_SHADOW_QUEUE_NO_EDGE_LOG_INTERVAL_MS,
   DEFAULT_SHADOW_VLO_MIN_SIZE
 } from "../../../TradingEngineConstants";
-import { readPositiveInteger } from "../../../TradingEngineRuntimeHelpers";
+import {
+  adverseAdjustedPaperFillPrice,
+  readPositiveInteger
+} from "../../../TradingEngineRuntimeHelpers";
+import { bootstrapPaperAdverseSelection } from "../../PaperReplayModel";
 
 export interface ShadowQueueSizingInput {
   readonly action: "BUY" | "SELL";
@@ -76,6 +81,23 @@ export interface ShadowQueueGhostFillRecordInput {
   readonly paperFillPrice: number;
   readonly paperSizeCap: number;
   readonly executablePaperSize: number;
+}
+
+export interface ShadowQueueGhostFillRuntimeInput {
+  readonly fill: ShadowQueueFill;
+  readonly tick: MarketTick;
+  readonly book: InternalOrderBook;
+  readonly observedAt: string;
+  readonly slippage: SlippageAnalytics;
+  readonly fallbackAdverseBps: number;
+  readonly participationRate: number;
+  readonly makerFeeBps: number;
+  readonly cachedConfig: GlobalRiskConfig;
+  readonly envMaxPositionPct: number;
+  readonly envKellyFraction: number;
+  readonly equity: number;
+  readonly inventory: InventoryState;
+  readonly positionSizeMultiplier: number;
 }
 
 export interface ShadowQueueGhostFillRecord {
@@ -230,6 +252,55 @@ export function buildShadowQueueGhostFillRecord(
     trade,
     eventPayload: trade as unknown as Record<string, unknown>
   };
+}
+
+export function buildShadowQueueGhostFillRuntimeRecord(
+  input: ShadowQueueGhostFillRuntimeInput
+): ShadowQueueGhostFillRecord {
+  const paperFillModel = bootstrapPaperAdverseSelection({
+    slippage: input.slippage,
+    fallbackAdverseBps: input.fallbackAdverseBps,
+    side: input.fill.side
+  });
+  const adverseBps = paperFillModel.adverseBps;
+  const paperFillPrice = adverseAdjustedPaperFillPrice(
+    input.fill.side,
+    input.fill.price,
+    adverseBps,
+    input.book.tickSize
+  );
+  const sizing = resolveShadowQueueSizingConfig({
+    cachedConfig: input.cachedConfig,
+    envMaxPositionPct: input.envMaxPositionPct,
+    envKellyFraction: input.envKellyFraction
+  });
+  const paperSizeCap = shadowQueueKellySize({
+    action: input.fill.side,
+    price: paperFillPrice,
+    book: input.book,
+    equity: input.equity,
+    maxPositionPct: sizing.maxPositionPct,
+    kellyFraction: sizing.kellyFraction,
+    inventory: input.inventory,
+    positionSizeMultiplier: input.positionSizeMultiplier
+  });
+  const executablePaperSize = roundCrypto(
+    Math.min(input.fill.size * input.participationRate, paperSizeCap)
+  );
+
+  return buildShadowQueueGhostFillRecord({
+    fill: input.fill,
+    tick: input.tick,
+    book: input.book,
+    observedAt: input.observedAt,
+    participationRate: input.participationRate,
+    adverseBps,
+    makerFeeBps: input.makerFeeBps,
+    fillModelSource: paperFillModel.source,
+    paperFillPrice,
+    paperSizeCap,
+    executablePaperSize
+  });
 }
 
 export function shouldLogShadowQueueNoEdge(input: ShadowQueueNoEdgeThrottleInput): boolean {

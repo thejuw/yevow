@@ -38,7 +38,6 @@ import {
 import {
   DEFAULT_ORDER_BOOK_TICK_SIZE,
   priceKey,
-  roundCrypto,
   roundMetric,
   SortedBookSide
 } from "./engine/trading/book/SortedBookSide";
@@ -81,7 +80,7 @@ import {
 } from "./engine/trading/book/DomAnalyzer";
 import {
   buildShadowQueueDecisionAction,
-  buildShadowQueueGhostFillRecord,
+  buildShadowQueueGhostFillRuntimeRecord,
   buildShadowQueueDecisionTrace,
   buildShadowQueueLatencyBreachTelemetry,
   buildShadowQueueNoEdgeTelemetry,
@@ -90,8 +89,7 @@ import {
   resolveShadowQueueNoEdgeLogInterval,
   resolveShadowQueueSizingConfig,
   shouldLogShadowQueueNoEdge as shouldLogShadowQueueNoEdgeEvent,
-  shouldProcessShadowQueueTick,
-  shadowQueueKellySize as calculateShadowQueueKellySize
+  shouldProcessShadowQueueTick
 } from "./engine/trading/shadow/ShadowQueueRuntime";
 import {
   anomalyEmergencyPauseStorageWrites,
@@ -362,7 +360,6 @@ import {
   MultiScaleVolatilityModel,
   type MultiScaleVolatilitySnapshot
 } from "./engine/MultiScaleVolatility";
-import { bootstrapPaperAdverseSelection } from "./engine/PaperReplayModel";
 import { QueuePositionModel } from "./engine/QueuePositionModel";
 import { createShadowQueue } from "./engine/ShadowQueue";
 import { isInventoryHedgeIntent } from "./execution/RiskGuards";
@@ -592,7 +589,6 @@ import {
   suspendAssetQuoteStates,
   aggregateQuoteState,
   quotePriceMovedTicks,
-  adverseAdjustedPaperFillPrice,
   normalizeMarketKey,
   normalizeSourceExchange,
   normalizeSourceWeight,
@@ -3641,52 +3637,27 @@ export class TradingEngine {
       0,
       100
     );
-    const paperFillModel = bootstrapPaperAdverseSelection({
-      slippage: this.engineState.slippage,
-      fallbackAdverseBps,
-      side: fill.side
-    });
-    const adverseBps = paperFillModel.adverseBps;
     const makerFeeBps = readBoundedNumber(
       this.env.PAPER_MAKER_FEE_BPS ?? this.env.EXCHANGE_FEE_BPS,
       DEFAULT_PAPER_MAKER_FEE_BPS,
       0,
       100
     );
-    const paperFillPrice = adverseAdjustedPaperFillPrice(
-      fill.side,
-      fill.price,
-      adverseBps,
-      book.tickSize
-    );
-    const sizing = resolveShadowQueueSizingConfig({
-      cachedConfig: this.cachedConfig,
-      envMaxPositionPct: readPositiveNumber(this.env.MAX_POSITION_PCT, DEFAULT_MAX_POSITION_PCT),
-      envKellyFraction: readPositiveNumber(this.env.KELLY_FRACTION, 0.5)
-    });
-    const paperSizeCap = calculateShadowQueueKellySize({
-      action: fill.side,
-      price: paperFillPrice,
-      book,
-      equity: this.engineState.bankroll.equity,
-      maxPositionPct: sizing.maxPositionPct,
-      kellyFraction: sizing.kellyFraction,
-      inventory: this.engineState.inventory,
-      positionSizeMultiplier: this.engineState.location.positionSizeMultiplier
-    });
-    const executablePaperSize = roundCrypto(Math.min(fill.size * participationRate, paperSizeCap));
-    const ghostFillRecord = buildShadowQueueGhostFillRecord({
+    const ghostFillRecord = buildShadowQueueGhostFillRuntimeRecord({
       fill,
       tick,
       book,
       observedAt,
+      slippage: this.engineState.slippage,
+      fallbackAdverseBps,
       participationRate,
-      adverseBps,
       makerFeeBps,
-      fillModelSource: paperFillModel.source,
-      paperFillPrice,
-      paperSizeCap,
-      executablePaperSize
+      cachedConfig: this.cachedConfig,
+      envMaxPositionPct: readPositiveNumber(this.env.MAX_POSITION_PCT, DEFAULT_MAX_POSITION_PCT),
+      envKellyFraction: readPositiveNumber(this.env.KELLY_FRACTION, 0.5),
+      equity: this.engineState.bankroll.equity,
+      inventory: this.engineState.inventory,
+      positionSizeMultiplier: this.engineState.location.positionSizeMultiplier
     });
 
     if (!ghostFillRecord.trade) {

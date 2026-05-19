@@ -3,6 +3,7 @@ import {
   buildShadowQueueDecisionAction,
   buildShadowQueueDecisionTrace,
   buildShadowQueueGhostFillRecord,
+  buildShadowQueueGhostFillRuntimeRecord,
   buildShadowQueueLatencyBreachTelemetry,
   buildShadowQueueNoEdgeTelemetry,
   buildShadowQueueTradeIntent,
@@ -22,7 +23,8 @@ import type {
   InventoryState,
   MarketTick,
   ShadowQueueFill,
-  ShadowQueueDecision
+  ShadowQueueDecision,
+  SlippageAnalytics
 } from "../../src/types";
 
 const OBSERVED_AT = "2026-05-18T09:00:00.000Z";
@@ -112,6 +114,42 @@ describe("ShadowQueueRuntime", () => {
       }
     });
     expect(record.eventPayload).toBe(record.trade);
+  });
+
+  it("models runtime ghost fills from slippage, participation, and Kelly caps", () => {
+    const record = buildShadowQueueGhostFillRuntimeRecord({
+      fill: shadowFill(),
+      tick: marketTick(),
+      book: book(),
+      observedAt: OBSERVED_AT,
+      slippage: slippageAnalytics(),
+      fallbackAdverseBps: 1.5,
+      participationRate: 0.35,
+      makerFeeBps: 1,
+      cachedConfig: { ...defaultConfig, MAX_POSITION_PCT: 0.1, KELLY_FRACTION: 0.5 },
+      envMaxPositionPct: 0.01,
+      envKellyFraction: 0.1,
+      equity: 1_000,
+      inventory: inventory({ netDelta: 0, maxInventoryUnits: 2 }),
+      positionSizeMultiplier: 1
+    });
+
+    expect(record.trade).toMatchObject({
+      side: "BUY",
+      price: 100,
+      size: 0.2,
+      slippageBps: 5,
+      fees: 0.002,
+      metadata: {
+        fillModelSource: "EMPIRICAL_BOOTSTRAP",
+        paperExecutionSize: 0.2,
+        paperSizeCap: 0.2,
+        participationRate: 0.35,
+        adverseBps: 5,
+        makerFeeBps: 1,
+        sizeCapped: true
+      }
+    });
   });
 
   it("throttles no-edge shadow queue logs per instrument", () => {
@@ -605,6 +643,24 @@ function marketTick(overrides: Partial<MarketTick> = {}): MarketTick {
     receivedAt: OBSERVED_AT,
     sourceWeight: 1,
     ...overrides
+  };
+}
+
+function slippageAnalytics(): SlippageAnalytics {
+  return {
+    schemaVersion: "slippage.v1",
+    points: Array.from({ length: 20 }, () => ({
+      expectedPrice: 100,
+      achievedPrice: 100.05,
+      slippageBps: 5,
+      implementationShortfall: 0.05,
+      latencyMs: 1,
+      observedAt: OBSERVED_AT
+    })),
+    averageSlippageBps: 2.15,
+    latencyCorrelation: null,
+    executionCostBufferBps: 2.15,
+    updatedAt: OBSERVED_AT
   };
 }
 
