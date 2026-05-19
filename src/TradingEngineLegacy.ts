@@ -179,7 +179,10 @@ import {
 import { TradingTelemetryBus } from "./engine/trading/telemetry/TelemetryBus";
 import { stateAfterAcceptedAgentSignal } from "./engine/trading/telemetry/AgentSignalRuntime";
 import { buildAgentStateSnapshot } from "./engine/trading/telemetry/AgentSnapshotRuntime";
-import { buildCascadeSignalTelemetry } from "./engine/trading/telemetry/CascadeSignalTelemetryRuntime";
+import {
+  buildCascadeOperationalAlertTelemetry,
+  buildCascadeSignalTelemetry
+} from "./engine/trading/telemetry/CascadeSignalTelemetryRuntime";
 import {
   buildAmVpinTelemetry,
   buildProfilerAlertTelemetry
@@ -246,10 +249,7 @@ import { cumulativeVolumeDelta } from "./strategy/cascade/indicators/CumulativeV
 import { HyperliquidLiquidationStream } from "./strategy/cascade/LiquidationStream";
 import { HeatManager } from "./strategy/cascade/HeatManager";
 import { NewsCalendar } from "./strategy/cascade/NewsCalendar";
-import {
-  cascadeAlertPolicy,
-  type CascadeAlertEventType
-} from "./strategy/cascade/OperationalSafeguards";
+import type { CascadeAlertEventType } from "./strategy/cascade/OperationalSafeguards";
 import { PositionManager } from "./strategy/cascade/PositionManager";
 import { calculatePositionSize } from "./strategy/cascade/PositionSizer";
 import { calculateVwap } from "./strategy/cascade/indicators/VWAP";
@@ -6297,27 +6297,20 @@ export class TradingEngine {
     metadata: JsonRecord,
     dedupeKey: string
   ): void {
-    const policy = cascadeAlertPolicy(eventType);
-    const payload: JsonRecord = {
+    const event = buildCascadeOperationalAlertTelemetry(
       eventType,
-      priority: policy.priority,
-      routes: policy.routes,
-      externalDelivery: policy.externalDelivery,
-      ...metadata
-    };
+      title,
+      message,
+      metadata,
+      dedupeKey
+    );
 
-    this.publish("CASCADE_ALERT", payload, dedupeKey);
-    if (!policy.externalDelivery) {
+    this.publish(event.telemetryType, event.payload, event.correlationId);
+    if (!event.notification) {
       return;
     }
 
-    this.notifier.notify({
-      priority: policy.priority,
-      title,
-      message,
-      dedupeKey: `cascade:${eventType}:${dedupeKey}`,
-      metadata: payload
-    });
+    this.notifier.notify(event.notification);
   }
 
   private async ensureCascadePaperModeArmed(observedAt: string): Promise<void> {
