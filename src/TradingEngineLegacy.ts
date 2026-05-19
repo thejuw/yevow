@@ -2988,6 +2988,44 @@ export class TradingEngine {
     );
   }
 
+  private dispatchExecutionPlans(
+    executionPlans: readonly ApprovedExecutionPlan[],
+    shadowReplay: boolean
+  ): void {
+    for (const plan of executionPlans) {
+      const dispatchGate = evaluateIntentDispatchGate(this.engineState, plan.intent);
+      const dispatchAction = buildExecutionPlanDispatchAction({
+        plan,
+        dispatchGate,
+        shadowReplay,
+        tradingEnabled: this.cachedConfig.TRADING_ENABLED
+      });
+
+      if (dispatchAction.kind === "AUTHORIZED") {
+        this.logger.info(
+          "TRADE_INTENT_AUTHORIZED",
+          "PitBoss authorized executable intent",
+          dispatchAction.metadata
+        );
+        for (const childIntent of dispatchAction.childIntents) {
+          this.state.waitUntil(this.dispatchExecution(childIntent, dispatchAction.timingJitterMs));
+        }
+      } else if (dispatchAction.kind === "BLOCKED") {
+        this.logger.warn(
+          "TRADE_INTENT_DISPATCH_BLOCKED",
+          "Intent dispatch gate blocked execution",
+          dispatchAction.metadata
+        );
+      } else if (dispatchAction.kind === "SHADOW") {
+        this.logger.info(
+          "SHADOW_TRADE_INTENT_AUTHORIZED",
+          "Replay generated shadow trade intent",
+          dispatchAction.metadata
+        );
+      }
+    }
+  }
+
   private async handleTick(
     tick: MarketTick,
     wakeUpTimeMs: number | null,
@@ -3534,39 +3572,7 @@ export class TradingEngine {
     });
 
     this.handleCroupierQuoteAction(tick.instrumentCode, croupierQuoteAction);
-
-    for (const plan of executionPlans) {
-      const dispatchGate = evaluateIntentDispatchGate(this.engineState, plan.intent);
-      const dispatchAction = buildExecutionPlanDispatchAction({
-        plan,
-        dispatchGate,
-        shadowReplay: options.shadowReplay === true,
-        tradingEnabled: this.cachedConfig.TRADING_ENABLED
-      });
-
-      if (dispatchAction.kind === "AUTHORIZED") {
-        this.logger.info(
-          "TRADE_INTENT_AUTHORIZED",
-          "PitBoss authorized executable intent",
-          dispatchAction.metadata
-        );
-        for (const childIntent of dispatchAction.childIntents) {
-          this.state.waitUntil(this.dispatchExecution(childIntent, dispatchAction.timingJitterMs));
-        }
-      } else if (dispatchAction.kind === "BLOCKED") {
-        this.logger.warn(
-          "TRADE_INTENT_DISPATCH_BLOCKED",
-          "Intent dispatch gate blocked execution",
-          dispatchAction.metadata
-        );
-      } else if (dispatchAction.kind === "SHADOW") {
-        this.logger.info(
-          "SHADOW_TRADE_INTENT_AUTHORIZED",
-          "Replay generated shadow trade intent",
-          dispatchAction.metadata
-        );
-      }
-    }
+    this.dispatchExecutionPlans(executionPlans, options.shadowReplay === true);
 
     const hedge = buildInventoryHedgeIntent({
       book,
