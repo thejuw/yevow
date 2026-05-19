@@ -4338,7 +4338,15 @@ export class TradingEngine {
       baseAsset,
       baseReferencePrice: this.referencePriceForBaseAsset(baseAsset),
       configuredWeights: parseDeltaNormalizationWeights(this.env.DELTA_NORMALIZATION_WEIGHTS),
-      markPrice: (instrumentCode, fallback) => this.currentMarkPrice(instrumentCode, fallback)
+      markPrice: (instrumentCode, fallback) =>
+        currentMarkPriceForInstrument(
+          {
+            orderBook: this.orderBook,
+            microstructure: this.engineState.microstructure
+          },
+          instrumentCode,
+          fallback
+        )
     });
   }
 
@@ -5021,13 +5029,28 @@ export class TradingEngine {
     const accounting = applyExecutionAccounting({
       state: this.engineState,
       report,
-      markPrice: (instrumentCode, fallback) => this.currentMarkPrice(instrumentCode, fallback)
+      markPrice: (instrumentCode, fallback) =>
+        currentMarkPriceForInstrument(
+          {
+            orderBook: this.orderBook,
+            microstructure: this.engineState.microstructure
+          },
+          instrumentCode,
+          fallback
+        )
     });
     const inventory = this.calculateInventoryState(accounting.observedAt, accounting.openPositions);
     this.adverseSelectionModel.observeExecutionReport(
       report,
       accounting.order,
-      this.currentMarkPrice(accounting.order.instrumentCode, accounting.order.price),
+      currentMarkPriceForInstrument(
+        {
+          orderBook: this.orderBook,
+          microstructure: this.engineState.microstructure
+        },
+        accounting.order.instrumentCode,
+        accounting.order.price
+      ),
       this.engineState.oracle.regime
     );
 
@@ -5061,17 +5084,6 @@ export class TradingEngine {
       "TRADE_EXECUTION_UPDATE",
       accounting.tradeExecution as unknown as Record<string, unknown>,
       accounting.tradeExecution.tradeId
-    );
-  }
-
-  private currentMarkPrice(instrumentCode: string, fallback: number): number {
-    return currentMarkPriceForInstrument(
-      {
-        orderBook: this.orderBook,
-        microstructure: this.engineState.microstructure
-      },
-      instrumentCode,
-      fallback
     );
   }
 
