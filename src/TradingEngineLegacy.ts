@@ -148,6 +148,7 @@ import {
   calculateTickLatency,
   hardStalePullTelemetryPayload,
   hardStaleTickDropLogMetadata,
+  nativeHyperliquidLatencyPullStorageWrites,
   nextExecutionProfile,
   nextLatencyAverage,
   recordProcessingLatencySample,
@@ -2502,11 +2503,14 @@ export class TradingEngine {
     this.engineState = stalePull.state;
     this.state.waitUntil(
       this.persistHotStorageSnapshot(
-        {
-          [ENGINE_STATE_KEY]: this.engineState,
-          [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
-          [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples
-        },
+        nativeHyperliquidLatencyPullStorageWrites({
+          engineStateKey: ENGINE_STATE_KEY,
+          state: this.engineState,
+          performanceHistoryKey: PERFORMANCE_HISTORY_KEY,
+          latencyHistory: this.latencyHistory,
+          processingLatencySamplesKey: PROCESSING_LATENCY_SAMPLES_KEY,
+          processingLatencySamples: this.processingLatencySamples
+        }),
         "NATIVE_HL_LATENCY_PULL"
       )
     );

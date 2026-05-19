@@ -6,6 +6,7 @@ import {
   calculateTickLatency,
   hardStalePullTelemetryPayload,
   hardStaleTickDropLogMetadata,
+  nativeHyperliquidLatencyPullStorageWrites,
   nextExecutionProfile,
   nextLatencyAverage,
   recordProcessingLatencySample,
@@ -349,6 +350,27 @@ describe("LatencyRuntime", () => {
         action: "PULL_CURRENT_QUOTES",
         source: "NATIVE_HYPERLIQUID"
       }
+    });
+  });
+
+  it("builds native Hyperliquid latency-pull storage writes", () => {
+    const state = defaultEngineState("native-latency-storage");
+    const latencyHistory = [latencyMetrics({ totalLatencyMs: 180 })];
+    const processingLatencySamples = [2, 3, 5];
+
+    expect(
+      nativeHyperliquidLatencyPullStorageWrites({
+        engineStateKey: "engine:state",
+        state,
+        performanceHistoryKey: "latency:history",
+        latencyHistory,
+        processingLatencySamplesKey: "latency:samples",
+        processingLatencySamples
+      })
+    ).toEqual({
+      "engine:state": state,
+      "latency:history": latencyHistory,
+      "latency:samples": processingLatencySamples
     });
   });
 
