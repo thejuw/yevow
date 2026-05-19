@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildQuoteDispatchIntents } from "../../src/engine/trading/quotes/QuoteDispatchRuntime";
+import {
+  buildQuoteDispatchIntents,
+  dispatchedQuoteSnapshot,
+  evaluateQuoteRefreshThrottle
+} from "../../src/engine/trading/quotes/QuoteDispatchRuntime";
 import type { QuoteSignal } from "../../src/types";
 
 describe("QuoteDispatchRuntime", () => {
@@ -117,6 +121,70 @@ describe("QuoteDispatchRuntime", () => {
       confidence: 2
     });
     expect(result.intents[0].rationale).toContain("cluster cluster-7");
+  });
+
+  it("evaluates quote refresh throttles from queue advice and log cadence", () => {
+    const previousQuote = { bid: 100, ask: 101, updatedAtMs: Date.parse(quoteSignal().createdAt) };
+    const quote = quoteSignal({ createdAt: "2026-05-18T17:00:00.750Z" });
+
+    expect(
+      evaluateQuoteRefreshThrottle({
+        previousQuote,
+        quote,
+        advice: { shouldRefresh: true, reason: "MID_MOVED", queuePressure: 2 },
+        minIntervalMs: 750,
+        minPriceTicks: 1,
+        nowMs: Date.parse(quote.createdAt),
+        lastLogAtMs: 0,
+        logThrottleMs: 10_000
+      })
+    ).toMatchObject({ shouldThrottle: false, shouldLog: false });
+
+    expect(
+      evaluateQuoteRefreshThrottle({
+        previousQuote,
+        quote,
+        advice: { shouldRefresh: false, reason: "HOLD_FRONT_OF_QUEUE", queuePressure: 0.2 },
+        minIntervalMs: 750,
+        minPriceTicks: 1,
+        nowMs: Date.parse(quote.createdAt),
+        lastLogAtMs: 0,
+        logThrottleMs: 10_000
+      })
+    ).toEqual({
+      shouldThrottle: true,
+      shouldLog: true,
+      nextLogAtMs: Date.parse(quote.createdAt),
+      elapsedMs: 750,
+      queuePressure: 0.2,
+      queueReason: "HOLD_FRONT_OF_QUEUE"
+    });
+
+    expect(
+      evaluateQuoteRefreshThrottle({
+        previousQuote,
+        quote,
+        advice: { shouldRefresh: false, reason: "UNCHANGED", queuePressure: 0.5 },
+        minIntervalMs: 750,
+        minPriceTicks: 1,
+        nowMs: Date.parse(quote.createdAt),
+        lastLogAtMs: Date.parse(quote.createdAt) - 1_000,
+        logThrottleMs: 10_000
+      })
+    ).toMatchObject({ shouldThrottle: true, shouldLog: false });
+  });
+
+  it("captures dispatched quote snapshots with parsed and fallback timestamps", () => {
+    expect(dispatchedQuoteSnapshot(quoteSignal(), 1)).toEqual({
+      bid: 100,
+      ask: 101,
+      updatedAtMs: Date.parse("2026-05-18T17:00:00.000Z")
+    });
+    expect(dispatchedQuoteSnapshot(quoteSignal({ createdAt: "not-a-date" }), 42)).toEqual({
+      bid: 100,
+      ask: 101,
+      updatedAtMs: 42
+    });
   });
 });
 

@@ -96,7 +96,11 @@ import {
   resumeExpiredQuoteStates,
   strategyQuoteDisabledReason as runtimeStrategyQuoteDisabledReason
 } from "./engine/trading/quotes/QuoteStateRuntime";
-import { buildQuoteDispatchIntents } from "./engine/trading/quotes/QuoteDispatchRuntime";
+import {
+  buildQuoteDispatchIntents,
+  dispatchedQuoteSnapshot,
+  evaluateQuoteRefreshThrottle
+} from "./engine/trading/quotes/QuoteDispatchRuntime";
 import { buildExecutionPlanArtifacts } from "./engine/trading/execution/ExecutionPlanRuntime";
 import { applyPaperExecutionBudget } from "./engine/trading/execution/PaperExecutionBudgetRuntime";
 import { calculateAssetMatrix as calculateRuntimeAssetMatrix } from "./engine/trading/state/AssetMatrixRuntime";
@@ -4733,42 +4737,47 @@ export class TradingEngine {
       tickSize
     });
 
-    if (advice.shouldRefresh) {
-      return false;
-    }
-
     const logKey = quote.instrumentCode;
     const logAt = this.quoteRefreshThrottleLogAt.get(logKey) ?? 0;
     const nowMs = Date.now();
-    if (nowMs - logAt >= HOT_PATH_LOG_THROTTLE_MS) {
-      this.quoteRefreshThrottleLogAt.set(logKey, nowMs);
+    const throttle = evaluateQuoteRefreshThrottle({
+      previousQuote: last,
+      quote,
+      advice,
+      minIntervalMs,
+      minPriceTicks,
+      nowMs,
+      lastLogAtMs: logAt,
+      logThrottleMs: HOT_PATH_LOG_THROTTLE_MS
+    });
+
+    if (throttle.shouldLog) {
+      this.quoteRefreshThrottleLogAt.set(logKey, throttle.nextLogAtMs);
       this.logger.info(
         "QUOTE_REFRESH_THROTTLED",
         "Skipped quote refresh inside minimum cadence window",
         {
           instrumentCode: quote.instrumentCode,
-          elapsedMs,
+          elapsedMs: throttle.elapsedMs,
           minIntervalMs,
           minPriceTicks,
           signalId: quote.signalId,
-          queuePressure: roundMetric(advice.queuePressure, 4),
-          queueReason: advice.reason
+          queuePressure: roundMetric(throttle.queuePressure, 4),
+          queueReason: throttle.queueReason
         }
       );
     }
 
-    return true;
+    return throttle.shouldThrottle;
   }
 
   private rememberDispatchedQuote(
     quote: NonNullable<EngineState["quoteState"]["lastQuote"]>
   ): void {
-    const observedAtMs = Date.parse(quote.createdAt);
-    this.lastDispatchedQuoteByInstrument.set(quote.instrumentCode, {
-      bid: quote.orders.find((order) => order.side === "BID")?.price ?? null,
-      ask: quote.orders.find((order) => order.side === "ASK")?.price ?? null,
-      updatedAtMs: Number.isFinite(observedAtMs) ? observedAtMs : Date.now()
-    });
+    this.lastDispatchedQuoteByInstrument.set(
+      quote.instrumentCode,
+      dispatchedQuoteSnapshot(quote, Date.now())
+    );
   }
 
   private createInventoryHedgeIntent(

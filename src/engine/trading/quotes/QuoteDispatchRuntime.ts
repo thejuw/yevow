@@ -1,4 +1,5 @@
 import type { QuoteOrder, QuoteSignal, TradeIntent } from "../../../types";
+import type { QueueRefreshAdvice } from "../../QueuePositionModel";
 import { roundCrypto, roundMetric } from "../book/SortedBookSide";
 
 export interface QuoteDispatchIntentInput {
@@ -28,6 +29,32 @@ export interface QuoteDispatchIntentResult {
   readonly intents: TradeIntent[];
   readonly skippedOrders: SkippedQuoteOrder[];
   readonly maxOrderNotional: number;
+}
+
+export interface DispatchedQuoteSnapshot {
+  readonly bid: number | null;
+  readonly ask: number | null;
+  readonly updatedAtMs: number;
+}
+
+export interface QuoteRefreshThrottleInput {
+  readonly previousQuote: DispatchedQuoteSnapshot | undefined;
+  readonly quote: QuoteSignal;
+  readonly advice: QueueRefreshAdvice;
+  readonly minIntervalMs: number;
+  readonly minPriceTicks: number;
+  readonly nowMs: number;
+  readonly lastLogAtMs: number;
+  readonly logThrottleMs: number;
+}
+
+export interface QuoteRefreshThrottleDecision {
+  readonly shouldThrottle: boolean;
+  readonly shouldLog: boolean;
+  readonly nextLogAtMs: number;
+  readonly elapsedMs: number;
+  readonly queuePressure: number;
+  readonly queueReason: QueueRefreshAdvice["reason"];
 }
 
 export function buildQuoteDispatchIntents(
@@ -99,6 +126,48 @@ export function buildQuoteDispatchIntents(
   }
 
   return { intents, skippedOrders, maxOrderNotional };
+}
+
+export function evaluateQuoteRefreshThrottle(
+  input: QuoteRefreshThrottleInput
+): QuoteRefreshThrottleDecision {
+  if (!input.previousQuote || input.advice.shouldRefresh) {
+    return {
+      shouldThrottle: false,
+      shouldLog: false,
+      nextLogAtMs: input.lastLogAtMs,
+      elapsedMs: 0,
+      queuePressure: input.advice.queuePressure,
+      queueReason: input.advice.reason
+    };
+  }
+
+  const quoteObservedAtMs = Date.parse(input.quote.createdAt);
+  const elapsedMs = Number.isFinite(quoteObservedAtMs)
+    ? quoteObservedAtMs - input.previousQuote.updatedAtMs
+    : input.nowMs - input.previousQuote.updatedAtMs;
+  const shouldLog = input.nowMs - input.lastLogAtMs >= input.logThrottleMs;
+
+  return {
+    shouldThrottle: true,
+    shouldLog,
+    nextLogAtMs: shouldLog ? input.nowMs : input.lastLogAtMs,
+    elapsedMs,
+    queuePressure: input.advice.queuePressure,
+    queueReason: input.advice.reason
+  };
+}
+
+export function dispatchedQuoteSnapshot(
+  quote: QuoteSignal,
+  fallbackNowMs: number
+): DispatchedQuoteSnapshot {
+  const observedAtMs = Date.parse(quote.createdAt);
+  return {
+    bid: quote.orders.find((order) => order.side === "BID")?.price ?? null,
+    ask: quote.orders.find((order) => order.side === "ASK")?.price ?? null,
+    updatedAtMs: Number.isFinite(observedAtMs) ? observedAtMs : fallbackNowMs
+  };
 }
 
 function quoteOrderAction(order: QuoteOrder): TradeIntent["action"] {
