@@ -80,7 +80,10 @@ import {
   shouldProcessShadowQueueTick,
   shadowQueueKellySize as calculateShadowQueueKellySize
 } from "./engine/trading/shadow/ShadowQueueRuntime";
-import { stateAfterAnomalyEmergencyPause } from "./engine/trading/anomaly/AnomalyRuntime";
+import {
+  buildAnomalyEmergencyPauseTelemetry,
+  stateAfterAnomalyEmergencyPause
+} from "./engine/trading/anomaly/AnomalyRuntime";
 import {
   evaluateCrossAssetHypeQuoteCancel,
   updateLeadLagMetrics as updateLeadLagRuntimeMetrics
@@ -5723,71 +5726,23 @@ export class TradingEngine {
     anomalyResult: AnomalyDetectionResult,
     metrics: LatencyMetrics
   ): void {
-    const primaryAnomaly = anomalyResult.anomalies[0] ?? null;
-    const correlationId =
-      primaryAnomaly?.anomalyId ?? `${tick.instrumentCode}:${tick.sequence}:anomaly`;
-    const snapshot = {
+    const event = buildAnomalyEmergencyPauseTelemetry({
       tick,
       book,
-      dom: domSnapshot,
-      latency: metrics,
-      anomaly: anomalyResult.status,
-      anomalies: anomalyResult.anomalies,
-      engineState: {
-        engineId: this.engineState.engineId,
-        mode: this.engineState.mode,
-        risk: this.engineState.risk,
-        microstructure: this.engineState.microstructure,
-        executionProfile: this.engineState.executionProfile,
-        toxicityScore: this.engineState.toxicityScore,
-        processedTicks: this.engineState.processedTicks,
-        location: this.engineState.location
-      }
-    };
+      domSnapshot,
+      anomalyResult,
+      metrics,
+      engineState: this.engineState
+    });
 
     this.logger.writeLog(
       "CRITICAL",
       "TradingEngine",
       "Emergency pause triggered by market anomaly detector",
-      {
-        eventType: "MARKET_ANOMALY_EMERGENCY_PAUSE",
-        correlationId,
-        anomalyTypes: anomalyResult.anomalies.flatMap((event) => event.types),
-        severity: primaryAnomaly?.severity ?? "CRITICAL",
-        reason: primaryAnomaly?.reason ?? "ANOMALY_DETECTED",
-        marketSnapshot: snapshot
-      }
+      event.logMetadata
     );
-
-    this.publish(
-      "EMERGENCY_PAUSE",
-      {
-        anomalyTypes: anomalyResult.anomalies.flatMap((event) => event.types),
-        severity: primaryAnomaly?.severity ?? "CRITICAL",
-        reason: primaryAnomaly?.reason ?? "ANOMALY_DETECTED",
-        instrumentCode: tick.instrumentCode,
-        exchangeCode: tick.exchangeCode,
-        sequence: tick.sequence,
-        priceZScore: anomalyResult.status.priceZScore,
-        volumeZScore: anomalyResult.status.volumeZScore,
-        cancellationToExecutionRatio: anomalyResult.status.cancellationToExecutionRatio,
-        mode: this.engineState.mode,
-        killSwitch: this.engineState.risk.killSwitch
-      },
-      correlationId
-    );
-    this.notifier.notify({
-      priority: "CRITICAL",
-      title: "Sovereign-Sigma emergency pause",
-      message: `${tick.instrumentCode} halted by anomaly detector: ${primaryAnomaly?.reason ?? "ANOMALY_DETECTED"}`,
-      dedupeKey: `emergency:${tick.instrumentCode}:${primaryAnomaly?.severity ?? "CRITICAL"}`,
-      metadata: {
-        instrumentCode: tick.instrumentCode,
-        sequence: tick.sequence,
-        anomalyTypes: anomalyResult.anomalies.flatMap((event) => event.types),
-        mode: this.engineState.mode
-      }
-    });
+    this.publish("EMERGENCY_PAUSE", event.payload, event.correlationId);
+    this.notifier.notify(event.notification);
   }
 
   private publishProfilerAlert(signal: AgentSignal, profilerState: ProfilerState): void {

@@ -1,7 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { stateAfterAnomalyEmergencyPause } from "../../src/engine/trading/anomaly/AnomalyRuntime";
+import {
+  buildAnomalyEmergencyPauseTelemetry,
+  stateAfterAnomalyEmergencyPause
+} from "../../src/engine/trading/anomaly/AnomalyRuntime";
+import type { AnomalyDetectionResult } from "../../src/agents/AnomalyDetector";
 import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
-import type { AnomalyStatus, DomAnalysisSnapshot, InternalOrderBook } from "../../src/types";
+import type {
+  AnomalyStatus,
+  DomAnalysisSnapshot,
+  InternalOrderBook,
+  LatencyMetrics,
+  MarketTick
+} from "../../src/types";
 
 const OBSERVED_AT = "2026-05-18T18:00:00.000Z";
 
@@ -36,6 +46,59 @@ describe("AnomalyRuntime", () => {
     });
     expect(next.dom?.instrumentCode).toBe("btc-usd");
   });
+
+  it("builds emergency pause audit, bus, and notification payloads", () => {
+    const engineState = defaultEngineState("anomaly-test");
+    engineState.mode = "PAPER";
+    engineState.processedTicks = 4;
+    engineState.risk.killSwitch = true;
+
+    const event = buildAnomalyEmergencyPauseTelemetry({
+      tick: tick(),
+      book: book(),
+      domSnapshot: dom(),
+      anomalyResult: anomalyResult(),
+      metrics: latency(),
+      engineState
+    });
+
+    expect(event).toMatchObject({
+      correlationId: "anomaly-1",
+      logMetadata: {
+        eventType: "MARKET_ANOMALY_EMERGENCY_PAUSE",
+        correlationId: "anomaly-1",
+        anomalyTypes: ["FLASH_CRASH"],
+        severity: "CRITICAL",
+        reason: "flash crash"
+      },
+      payload: {
+        instrumentCode: "btc-usd",
+        exchangeCode: "hyperliquid",
+        sequence: 42,
+        priceZScore: -8,
+        volumeZScore: 6,
+        cancellationToExecutionRatio: 10,
+        mode: "PAPER",
+        killSwitch: true
+      },
+      notification: {
+        priority: "CRITICAL",
+        title: "Sovereign-Sigma emergency pause",
+        message: "btc-usd halted by anomaly detector: flash crash",
+        dedupeKey: "emergency:btc-usd:CRITICAL",
+        metadata: {
+          instrumentCode: "btc-usd",
+          sequence: 42,
+          anomalyTypes: ["FLASH_CRASH"],
+          mode: "PAPER"
+        }
+      }
+    });
+    expect(event.logMetadata.marketSnapshot).toMatchObject({
+      tick: { instrumentCode: "btc-usd" },
+      engineState: { engineId: "anomaly-test", processedTicks: 4 }
+    });
+  });
 });
 
 function anomaly(): AnomalyStatus {
@@ -48,6 +111,97 @@ function anomaly(): AnomalyStatus {
     executionCount: 1,
     lastAnomaly: null,
     updatedAt: OBSERVED_AT
+  };
+}
+
+function anomalyResult(): AnomalyDetectionResult {
+  const status = anomaly();
+
+  return {
+    state: {
+      schemaVersion: "anomaly-detector.v1",
+      priceWindowMs: 60_000,
+      volumeWindowMs: 600_000,
+      topOfBookWindowMs: 600_000,
+      priceBuckets: [],
+      volumeBuckets: [],
+      topOfBookBuckets: [],
+      lastTopOfBook: null,
+      status,
+      updatedAt: OBSERVED_AT
+    },
+    status,
+    anomalies: [
+      {
+        anomalyId: "anomaly-1",
+        types: ["FLASH_CRASH"],
+        severity: "CRITICAL",
+        instrumentCode: "btc-usd",
+        exchangeCode: "hyperliquid",
+        sequence: 42,
+        priceZScore: -8,
+        volumeZScore: 6,
+        cancellationToExecutionRatio: 10,
+        reason: "flash crash",
+        triggeredPause: true,
+        observedAt: OBSERVED_AT
+      }
+    ],
+    emergencyPause: true
+  };
+}
+
+function tick(): MarketTick {
+  return {
+    schemaVersion: "universal-tick.v1",
+    source: "HYPERLIQUID",
+    source_exchange: "hyperliquid",
+    transport: "grpc",
+    streamId: "stream-1",
+    connectionId: "conn-1",
+    sourceChannel: "trades",
+    exchangeCode: "hyperliquid",
+    instrumentCode: "btc-usd",
+    baseAsset: "BTC",
+    quoteAsset: "USD",
+    price: 100,
+    size: 1,
+    side: "sell",
+    sequence: 42,
+    providerTimestamp: OBSERVED_AT,
+    exchangeTimestamp: OBSERVED_AT,
+    synchronizedExchangeTimestamp: OBSERVED_AT,
+    clockOffsetMs: 0,
+    receivedAt: OBSERVED_AT,
+    sourceWeight: 1
+  };
+}
+
+function latency(): LatencyMetrics {
+  return {
+    instrumentCode: "btc-usd",
+    exchangeCode: "hyperliquid",
+    source: "HYPERLIQUID",
+    sourceExchange: "hyperliquid",
+    sourceWeight: 1,
+    sequence: 42,
+    providerTimestamp: OBSERVED_AT,
+    sourceTimestamp: OBSERVED_AT,
+    ingestTimestamp: OBSERVED_AT,
+    brainTimestamp: OBSERVED_AT,
+    clockOffsetMs: 0,
+    networkLatencyMs: 1,
+    processingLatencyMs: 1,
+    totalLatencyMs: 2,
+    maxLatencyMs: 150,
+    averageLatencyMs: 2,
+    sampleCount: 1,
+    status: "FRESH",
+    colo: "NRT",
+    placement: "golden",
+    latencyRiskMultiplier: 1,
+    positionSizeMultiplier: 1,
+    timeToBookMs: 1
   };
 }
 
