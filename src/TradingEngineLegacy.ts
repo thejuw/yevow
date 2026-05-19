@@ -50,6 +50,7 @@ import {
   shouldEmitBookSnapshotTelemetry,
   stateAfterAcceptedBookDelta,
   stateAfterBookSnapshot,
+  stateAfterInformationalBookNotReady,
   stateAfterOrderBookReset,
   stateAfterRebuiltBookSnapshot
 } from "./engine/trading/book/BookRuntimeState";
@@ -3382,32 +3383,13 @@ export class TradingEngine {
           observedAt: metrics.brainTimestamp
         });
 
-        const assetQuoteStates = this.cachedConfig.TRADING_ENABLED
-          ? suspendAssetQuoteStates(
-              this.engineState.assetQuoteStates,
-              "ORDER_BOOK_NOT_READY",
-              metrics.brainTimestamp,
-              {
-                instrumentCode: tick.instrumentCode,
-                lastQuote: this.engineState.quoteState.lastQuote
-              }
-            )
-          : this.engineState.assetQuoteStates;
-        this.engineState = {
-          ...this.engineState,
-          processedTicks: this.engineState.processedTicks + 1,
-          quoteState: this.cachedConfig.TRADING_ENABLED
-            ? aggregateQuoteState(
-                assetQuoteStates,
-                this.engineState.quoteState,
-                metrics.brainTimestamp
-              )
-            : this.engineState.quoteState,
-          assetQuoteStates,
+        this.engineState = stateAfterInformationalBookNotReady({
+          currentState: this.engineState,
+          tradingEnabled: this.cachedConfig.TRADING_ENABLED,
+          instrumentCode: tick.instrumentCode,
           maxLatencyMs: this.maxLatencyMs,
-          heartbeatAt: metrics.brainTimestamp,
-          updatedAt: metrics.brainTimestamp
-        };
+          observedAt: metrics.brainTimestamp
+        });
 
         await this.persistHotStorageSnapshot(
           {

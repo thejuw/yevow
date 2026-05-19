@@ -5,7 +5,12 @@ import type {
   MicrostructureMetrics,
   PriceDiscoveryMetrics
 } from "../../../types";
-import { defaultMicrostructure, defaultPriceDiscovery } from "../../../TradingEngineRuntimeHelpers";
+import {
+  aggregateQuoteState,
+  defaultMicrostructure,
+  defaultPriceDiscovery,
+  suspendAssetQuoteStates
+} from "../../../TradingEngineRuntimeHelpers";
 import { microstructureFromBook } from "./BookReconstruction";
 
 export interface BookResetStateInput {
@@ -37,6 +42,14 @@ export interface RebuiltBookStateInput {
   readonly currentState: EngineState;
   readonly microstructure: MicrostructureMetrics;
   readonly priceDiscovery: PriceDiscoveryMetrics;
+}
+
+export interface InformationalBookNotReadyStateInput {
+  readonly currentState: EngineState;
+  readonly tradingEnabled: boolean;
+  readonly instrumentCode: string;
+  readonly maxLatencyMs: number;
+  readonly observedAt: string;
 }
 
 export function stateAfterOrderBookReset(input: BookResetStateInput): EngineState {
@@ -86,6 +99,34 @@ export function stateAfterRebuiltBookSnapshot(input: RebuiltBookStateInput): Eng
     ...input.currentState,
     microstructure: input.microstructure,
     priceDiscovery: input.priceDiscovery
+  };
+}
+
+export function stateAfterInformationalBookNotReady(
+  input: InformationalBookNotReadyStateInput
+): EngineState {
+  const assetQuoteStates = input.tradingEnabled
+    ? suspendAssetQuoteStates(
+        input.currentState.assetQuoteStates,
+        "ORDER_BOOK_NOT_READY",
+        input.observedAt,
+        {
+          instrumentCode: input.instrumentCode,
+          lastQuote: input.currentState.quoteState.lastQuote
+        }
+      )
+    : input.currentState.assetQuoteStates;
+
+  return {
+    ...input.currentState,
+    processedTicks: input.currentState.processedTicks + 1,
+    quoteState: input.tradingEnabled
+      ? aggregateQuoteState(assetQuoteStates, input.currentState.quoteState, input.observedAt)
+      : input.currentState.quoteState,
+    assetQuoteStates,
+    maxLatencyMs: input.maxLatencyMs,
+    heartbeatAt: input.observedAt,
+    updatedAt: input.observedAt
   };
 }
 

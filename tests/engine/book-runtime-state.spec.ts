@@ -3,6 +3,7 @@ import {
   shouldEmitBookSnapshotTelemetry,
   stateAfterAcceptedBookDelta,
   stateAfterBookSnapshot,
+  stateAfterInformationalBookNotReady,
   stateAfterOrderBookReset,
   stateAfterRebuiltBookSnapshot
 } from "../../src/engine/trading/book/BookRuntimeState";
@@ -147,6 +148,65 @@ describe("BookRuntimeState", () => {
         interval: 1000
       })
     ).toBe(false);
+  });
+
+  it("marks informational ticks as book-not-ready without mutating quote state when disabled", () => {
+    const currentState = defaultEngineState("engine-test");
+    currentState.processedTicks = 4;
+    const disabled = stateAfterInformationalBookNotReady({
+      currentState,
+      tradingEnabled: false,
+      instrumentCode: "btc-usd",
+      maxLatencyMs: 150,
+      observedAt: OBSERVED_AT
+    });
+
+    expect(disabled.processedTicks).toBe(5);
+    expect(disabled.quoteState).toBe(currentState.quoteState);
+    expect(disabled.assetQuoteStates).toBe(currentState.assetQuoteStates);
+    expect(disabled.maxLatencyMs).toBe(150);
+    expect(disabled.updatedAt).toBe(OBSERVED_AT);
+  });
+
+  it("suspends the instrument quote state when trading is enabled but no book exists", () => {
+    const currentState = defaultEngineState("engine-test");
+    currentState.quoteState = {
+      status: "ACTIVE",
+      reason: null,
+      suspendedUntil: null,
+      lastQuote: null,
+      updatedAt: OBSERVED_AT
+    };
+    currentState.assetQuoteStates = Object.fromEntries(
+      Object.keys(currentState.assetQuoteStates).map((instrumentCode) => [
+        instrumentCode,
+        {
+          status: "ACTIVE" as const,
+          reason: null,
+          suspendedUntil: null,
+          lastQuote: null,
+          updatedAt: OBSERVED_AT
+        }
+      ])
+    );
+
+    const next = stateAfterInformationalBookNotReady({
+      currentState,
+      tradingEnabled: true,
+      instrumentCode: "btc-usd",
+      maxLatencyMs: 150,
+      observedAt: OBSERVED_AT
+    });
+
+    expect(next.processedTicks).toBe(1);
+    expect(next.quoteState).toMatchObject({
+      status: "ACTIVE",
+      reason: "PARTIAL_ASSET_SUSPENSION"
+    });
+    expect(next.assetQuoteStates["btc-usd"]).toMatchObject({
+      status: "SUSPENDED",
+      reason: "ORDER_BOOK_NOT_READY"
+    });
   });
 });
 
