@@ -1,10 +1,12 @@
 import type { PerformanceSnapshot } from "../../../Logger";
 import {
+  aggregateQuoteState,
   defaultExecutionProfile,
   parseTimestampMs,
   processingLatencyStats,
   prometheusMetric,
-  roundLatency
+  roundLatency,
+  suspendAssetQuoteStates
 } from "../../../TradingEngineRuntimeHelpers";
 import type {
   EngineState,
@@ -88,6 +90,57 @@ export function nextLatencyAverage(
   return {
     averageLatency: roundLatency(nextMean),
     latencySampleCount
+  };
+}
+
+export interface HardStaleTickDropInput {
+  readonly currentState: EngineState;
+  readonly metrics: LatencyMetrics;
+  readonly hardStaleDropMs: number;
+}
+
+export interface HardStaleTickDropResult {
+  readonly state: EngineState;
+  readonly metrics: LatencyMetrics;
+  readonly nextStaleTickCount: number;
+  readonly shouldResetLatencyBaseline: boolean;
+}
+
+export function stateAfterHardStaleTickDrop(
+  input: HardStaleTickDropInput
+): HardStaleTickDropResult {
+  const nextStaleTickCount = input.currentState.staleTickCount + 1;
+  const metrics: LatencyMetrics = {
+    ...input.metrics,
+    status: "STALE",
+    maxLatencyMs: input.hardStaleDropMs,
+    averageLatencyMs: input.currentState.averageLatency,
+    sampleCount: input.currentState.latencySampleCount
+  };
+  const assetQuoteStates = suspendAssetQuoteStates(
+    input.currentState.assetQuoteStates,
+    "HARD_STALE_DROP",
+    metrics.brainTimestamp,
+    { lastQuote: input.currentState.quoteState.lastQuote }
+  );
+
+  return {
+    metrics,
+    nextStaleTickCount,
+    shouldResetLatencyBaseline: input.currentState.averageLatency > input.hardStaleDropMs,
+    state: {
+      ...input.currentState,
+      processedTicks: input.currentState.processedTicks + 1,
+      staleTickCount: nextStaleTickCount,
+      quoteState: aggregateQuoteState(
+        assetQuoteStates,
+        input.currentState.quoteState,
+        metrics.brainTimestamp
+      ),
+      assetQuoteStates,
+      heartbeatAt: metrics.brainTimestamp,
+      updatedAt: metrics.brainTimestamp
+    }
   };
 }
 

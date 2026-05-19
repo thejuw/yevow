@@ -90,6 +90,7 @@ import {
   nextExecutionProfile,
   nextLatencyAverage,
   recordProcessingLatencySample,
+  stateAfterHardStaleTickDrop,
   type ExecutionTraceInput
 } from "./engine/trading/performance/LatencyRuntime";
 import { reconcileJanitorOrders } from "./engine/trading/janitor/JanitorRuntime";
@@ -3212,34 +3213,15 @@ export class TradingEngine {
     const isHardStale = !options.shadowReplay && metrics.totalLatencyMs > hardStaleDropMs;
 
     if (isHardStale) {
-      const nextStaleTickCount = this.engineState.staleTickCount + 1;
-      metrics.status = "STALE";
-      metrics.maxLatencyMs = hardStaleDropMs;
-      metrics.averageLatencyMs = this.engineState.averageLatency;
-      metrics.sampleCount = this.engineState.latencySampleCount;
-      const assetQuoteStates = suspendAssetQuoteStates(
-        this.engineState.assetQuoteStates,
-        "HARD_STALE_DROP",
-        metrics.brainTimestamp,
-        { lastQuote: this.engineState.quoteState.lastQuote }
-      );
+      const hardStale = stateAfterHardStaleTickDrop({
+        currentState: this.engineState,
+        metrics,
+        hardStaleDropMs
+      });
+      this.engineState = hardStale.state;
 
-      this.engineState = {
-        ...this.engineState,
-        processedTicks: this.engineState.processedTicks + 1,
-        staleTickCount: nextStaleTickCount,
-        quoteState: aggregateQuoteState(
-          assetQuoteStates,
-          this.engineState.quoteState,
-          metrics.brainTimestamp
-        ),
-        assetQuoteStates,
-        heartbeatAt: metrics.brainTimestamp,
-        updatedAt: metrics.brainTimestamp
-      };
-
-      if (this.engineState.averageLatency > hardStaleDropMs) {
-        this.resetLatencyBaseline(metrics.brainTimestamp, "HARD_STALE_DROP");
+      if (hardStale.shouldResetLatencyBaseline) {
+        this.resetLatencyBaseline(hardStale.metrics.brainTimestamp, "HARD_STALE_DROP");
       }
 
       await this.persistHotStorageSnapshot(
@@ -3251,7 +3233,7 @@ export class TradingEngine {
         "HARD_STALE_TICK_DROPPED"
       );
 
-      if (nextStaleTickCount <= 5 || nextStaleTickCount % 500 === 0) {
+      if (hardStale.nextStaleTickCount <= 5 || hardStale.nextStaleTickCount % 500 === 0) {
         this.logger.warn("HARD_STALE_TICK_DROPPED", "Dropped tick beyond hard stale threshold", {
           instrumentCode: tick.instrumentCode,
           exchangeCode: tick.exchangeCode,
@@ -3259,13 +3241,13 @@ export class TradingEngine {
           transport: tick.transport,
           streamId,
           sequence: tick.sequence,
-          totalLatencyMs: metrics.totalLatencyMs,
-          networkLatencyMs: metrics.networkLatencyMs,
-          processingLatencyMs: metrics.processingLatencyMs,
+          totalLatencyMs: hardStale.metrics.totalLatencyMs,
+          networkLatencyMs: hardStale.metrics.networkLatencyMs,
+          processingLatencyMs: hardStale.metrics.processingLatencyMs,
           hardStaleDropMs
         });
       }
-      this.logPerformance(metrics);
+      this.logPerformance(hardStale.metrics);
       this.publish("STALE_DATA_KILL_SWITCH", {
         instrumentCode: tick.instrumentCode,
         exchangeCode: tick.exchangeCode,
@@ -3273,7 +3255,7 @@ export class TradingEngine {
         transport: tick.transport,
         streamId,
         sequence: tick.sequence,
-        totalLatencyMs: metrics.totalLatencyMs,
+        totalLatencyMs: hardStale.metrics.totalLatencyMs,
         maxLatencyMs: hardStaleDropMs,
         action: "PULL_ALL_QUOTES",
         source: "NATIVE_HYPERLIQUID"
@@ -3286,7 +3268,7 @@ export class TradingEngine {
         accepted: false,
         status: "STALE_DROPPED",
         reason: "TICK_EXCEEDED_HARD_STALE_THRESHOLD",
-        metrics
+        metrics: hardStale.metrics
       };
     }
 

@@ -5,9 +5,11 @@ import {
   calculateTickLatency,
   nextExecutionProfile,
   nextLatencyAverage,
-  recordProcessingLatencySample
+  recordProcessingLatencySample,
+  stateAfterHardStaleTickDrop
 } from "../../src/engine/trading/performance/LatencyRuntime";
-import type { EngineState, ExecutionProfile, MarketTick } from "../../src/types";
+import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
+import type { EngineState, ExecutionProfile, LatencyMetrics, MarketTick } from "../../src/types";
 
 describe("LatencyRuntime", () => {
   it("calculates tick-to-brain latency while clamping future ingest skew", () => {
@@ -50,6 +52,36 @@ describe("LatencyRuntime", () => {
     const samples = [1, 2];
     expect(recordProcessingLatencySample(samples, 3.1234, 2)).toBe(3.123);
     expect(samples).toEqual([2, 3.123]);
+  });
+
+  it("marks hard-stale drops and suspends quote state", () => {
+    const currentState = defaultEngineState("latency-test");
+    currentState.averageLatency = 180;
+    currentState.latencySampleCount = 7;
+    currentState.processedTicks = 3;
+    currentState.staleTickCount = 4;
+
+    const result = stateAfterHardStaleTickDrop({
+      currentState,
+      metrics: latencyMetrics(),
+      hardStaleDropMs: 150
+    });
+
+    expect(result.metrics).toMatchObject({
+      status: "STALE",
+      maxLatencyMs: 150,
+      averageLatencyMs: 180,
+      sampleCount: 7
+    });
+    expect(result.nextStaleTickCount).toBe(5);
+    expect(result.shouldResetLatencyBaseline).toBe(true);
+    expect(result.state).toMatchObject({
+      processedTicks: 4,
+      staleTickCount: 5,
+      quoteState: { status: "SUSPENDED", reason: "HARD_STALE_DROP" },
+      heartbeatAt: "2026-05-18T15:00:00.250Z",
+      updatedAt: "2026-05-18T15:00:00.250Z"
+    });
   });
 
   it("computes execution profile jitter at the configured interval", () => {
@@ -144,6 +176,34 @@ function location(): EngineState["location"] {
     positionSizeMultiplier: 1,
     updatedAt: "2026-05-18T15:00:00.000Z"
   } as EngineState["location"];
+}
+
+function latencyMetrics(overrides: Partial<LatencyMetrics> = {}): LatencyMetrics {
+  return {
+    instrumentCode: "btc-usd",
+    exchangeCode: "HL",
+    source: "HYPERLIQUID",
+    sourceExchange: "hyperliquid",
+    sourceWeight: 1,
+    sequence: 10,
+    providerTimestamp: "2026-05-18T15:00:00.000Z",
+    sourceTimestamp: "2026-05-18T15:00:00.000Z",
+    ingestTimestamp: "2026-05-18T15:00:00.100Z",
+    brainTimestamp: "2026-05-18T15:00:00.250Z",
+    clockOffsetMs: 0,
+    networkLatencyMs: 100,
+    processingLatencyMs: 150,
+    totalLatencyMs: 250,
+    maxLatencyMs: 500,
+    averageLatencyMs: 0,
+    sampleCount: 0,
+    status: "FRESH",
+    colo: "NRT",
+    placement: "tokyo",
+    latencyRiskMultiplier: 1,
+    positionSizeMultiplier: 1,
+    ...overrides
+  };
 }
 
 function profile(overrides: Partial<ExecutionProfile> = {}): ExecutionProfile {
