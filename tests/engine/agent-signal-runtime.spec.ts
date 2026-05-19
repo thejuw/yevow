@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { stateAfterAcceptedAgentSignal } from "../../src/engine/trading/telemetry/AgentSignalRuntime";
+import {
+  recordAgentSignalInBuffers,
+  stateAfterAcceptedAgentSignal
+} from "../../src/engine/trading/telemetry/AgentSignalRuntime";
 import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
-import type { AgentSignal } from "../../src/types";
+import type { AgentName, AgentSignal } from "../../src/types";
 
 describe("AgentSignalRuntime", () => {
   it("updates agent health and emits the accepted signal telemetry", () => {
@@ -61,6 +64,24 @@ describe("AgentSignalRuntime", () => {
       reason: "HAWKES_FLOW_CLUSTER",
       suspendedUntil: "2026-05-19T12:01:00.000Z"
     });
+  });
+
+  it("records signals in capped buffers and latest-agent indexes", () => {
+    const signals = [
+      signal({ signalId: "old-1", sourceAgent: "ORACLE" }),
+      signal({ signalId: "old-2", sourceAgent: "PROFILER" })
+    ];
+    const latestAgentSignals = new Map<AgentName, AgentSignal>();
+
+    recordAgentSignalInBuffers({
+      signals,
+      latestAgentSignals,
+      signal: signal({ signalId: "new-1", sourceAgent: "ORACLE" }),
+      signalBufferLimit: 2
+    });
+
+    expect(signals.map((item) => item.signalId)).toEqual(["old-2", "new-1"]);
+    expect(latestAgentSignals.get("ORACLE")?.signalId).toBe("new-1");
   });
 });
 

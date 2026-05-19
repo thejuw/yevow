@@ -24,6 +24,23 @@ export interface AcceptedAgentSignalResult {
   readonly telemetry: AgentSignalTelemetry;
 }
 
+export interface AgentSignalBufferInput {
+  readonly signals: AgentSignal[];
+  readonly latestAgentSignals: Map<AgentName, AgentSignal>;
+  readonly signal: AgentSignal;
+  readonly signalBufferLimit: number;
+}
+
+export function recordAgentSignalInBuffers(input: AgentSignalBufferInput): void {
+  input.signals.push(input.signal);
+
+  if (input.signals.length > input.signalBufferLimit) {
+    input.signals.splice(0, input.signals.length - input.signalBufferLimit);
+  }
+
+  input.latestAgentSignals.set(input.signal.sourceAgent, input.signal);
+}
+
 export function stateAfterAcceptedAgentSignal(
   input: AcceptedAgentSignalInput
 ): AcceptedAgentSignalResult {

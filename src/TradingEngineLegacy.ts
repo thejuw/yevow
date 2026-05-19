@@ -179,7 +179,10 @@ import {
   acceptTelemetryStream as acceptTradingTelemetryStream
 } from "./engine/trading/routes/EngineWebSocketStreams";
 import { TradingTelemetryBus } from "./engine/trading/telemetry/TelemetryBus";
-import { stateAfterAcceptedAgentSignal } from "./engine/trading/telemetry/AgentSignalRuntime";
+import {
+  recordAgentSignalInBuffers,
+  stateAfterAcceptedAgentSignal
+} from "./engine/trading/telemetry/AgentSignalRuntime";
 import { buildAgentStateSnapshot } from "./engine/trading/telemetry/AgentSnapshotRuntime";
 import {
   buildCascadeOperationalAlertTelemetry,
@@ -6229,13 +6232,12 @@ export class TradingEngine {
   }
 
   private async acceptAgentSignal(signal: AgentSignal, latencyMs: number): Promise<void> {
-    this.signals.push(signal);
-
-    if (this.signals.length > SIGNAL_BUFFER_LIMIT) {
-      this.signals.splice(0, this.signals.length - SIGNAL_BUFFER_LIMIT);
-    }
-
-    this.latestAgentSignals.set(signal.sourceAgent, signal);
+    recordAgentSignalInBuffers({
+      signals: this.signals,
+      latestAgentSignals: this.latestAgentSignals,
+      signal,
+      signalBufferLimit: SIGNAL_BUFFER_LIMIT
+    });
     const acceptedSignal = stateAfterAcceptedAgentSignal({
       engineState: this.engineState,
       signal,
@@ -6314,13 +6316,12 @@ export class TradingEngine {
     signal: AgentSignal,
     outcome: "TAKEN" | "SKIPPED" | "CLOSED"
   ): void {
-    this.signals.push(signal);
-
-    if (this.signals.length > SIGNAL_BUFFER_LIMIT) {
-      this.signals.splice(0, this.signals.length - SIGNAL_BUFFER_LIMIT);
-    }
-
-    this.latestAgentSignals.set(signal.sourceAgent, signal);
+    recordAgentSignalInBuffers({
+      signals: this.signals,
+      latestAgentSignals: this.latestAgentSignals,
+      signal,
+      signalBufferLimit: SIGNAL_BUFFER_LIMIT
+    });
     this.state.waitUntil(
       this.safeStoragePut(`signal:${signal.signalId}`, signal, "CASCADE_SIGNAL")
     );
