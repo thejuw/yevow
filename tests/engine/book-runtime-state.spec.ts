@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   bookSnapshotTelemetry,
+  bookSnapshotStorageWrites,
   shouldEmitBookSnapshotTelemetry,
   stateAfterAcceptedBookDelta,
   stateAfterBookSnapshot,
@@ -171,6 +172,28 @@ describe("BookRuntimeState", () => {
       askLevels: 19,
       tickSize: 0.5,
       timeToBookMs: 3
+    });
+  });
+
+  it("builds snapshot storage writes with book and DOM history keys", () => {
+    const state = defaultEngineState("book-storage");
+    const snapshotBook = book({ marketKey: "hyperliquid:hype-usd", instrumentCode: "hype-usd" });
+    const domWallHistory = [dom("hype-usd")];
+
+    expect(
+      bookSnapshotStorageWrites({
+        engineStateKey: "engine:state",
+        state,
+        domWallHistoryKey: "dom:walls",
+        domWallHistory,
+        orderBookPrefix: "book:",
+        marketKey: snapshotBook.marketKey,
+        book: snapshotBook
+      })
+    ).toEqual({
+      "engine:state": state,
+      "dom:walls": domWallHistory,
+      "book:hyperliquid:hype-usd": snapshotBook
     });
   });
 

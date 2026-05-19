@@ -34,6 +34,16 @@ export interface BookSnapshotStateInput {
   readonly updatedAt: string;
 }
 
+export interface BookSnapshotStorageInput {
+  readonly engineStateKey: string;
+  readonly state: EngineState;
+  readonly domWallHistoryKey: string;
+  readonly domWallHistory: unknown;
+  readonly orderBookPrefix: string;
+  readonly marketKey: string;
+  readonly book: InternalOrderBook;
+}
+
 export interface BookDeltaStateInput {
   readonly currentState: EngineState;
   readonly book: InternalOrderBook;
@@ -92,6 +102,16 @@ export function stateAfterBookSnapshot(input: BookSnapshotStateInput): EngineSta
     dom: input.dom,
     heartbeatAt: input.updatedAt,
     updatedAt: input.updatedAt
+  };
+}
+
+export function bookSnapshotStorageWrites(
+  input: BookSnapshotStorageInput
+): Record<string, unknown> {
+  return {
+    [input.engineStateKey]: input.state,
+    [input.domWallHistoryKey]: input.domWallHistory,
+    [`${input.orderBookPrefix}${input.marketKey}`]: input.book
   };
 }
 

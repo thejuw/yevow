@@ -62,7 +62,8 @@ import {
   stateAfterInformationalBookNotReady,
   stateAfterOrderBookReset,
   stateAfterRejectedBookDelta,
-  bookSnapshotTelemetry
+  bookSnapshotTelemetry,
+  bookSnapshotStorageWrites
 } from "./engine/trading/book/BookRuntimeState";
 import {
   applyOrderBookResetStores,
@@ -2716,11 +2717,15 @@ export class TradingEngine {
 
     if (options.persist !== false) {
       await this.safeStoragePut(
-        {
-          [ENGINE_STATE_KEY]: this.engineState,
-          [DOM_WALL_HISTORY_KEY]: this.domWallHistory,
-          [`${ORDER_BOOK_PREFIX}${applied.marketKey}`]: book
-        },
+        bookSnapshotStorageWrites({
+          engineStateKey: ENGINE_STATE_KEY,
+          state: this.engineState,
+          domWallHistoryKey: DOM_WALL_HISTORY_KEY,
+          domWallHistory: this.domWallHistory,
+          orderBookPrefix: ORDER_BOOK_PREFIX,
+          marketKey: applied.marketKey,
+          book
+        }),
         "ORDER_BOOK_SNAPSHOT_APPLIED"
       );
     }
