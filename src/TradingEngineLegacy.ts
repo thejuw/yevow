@@ -3334,6 +3334,65 @@ export class TradingEngine {
     };
   }
 
+  private prepareTickLatency(
+    tick: MarketTick,
+    shadowReplay: boolean
+  ): {
+    metrics: LatencyMetrics;
+    streamId: string | null;
+    hardStaleDropMs: number;
+    isHardStale: boolean;
+  } {
+    const metrics = calculateTickLatency({
+      tick,
+      brainTimestamp: new Date().toISOString(),
+      maxLatencyMs: this.maxLatencyMs,
+      averageLatencyMs: this.engineState.averageLatency,
+      sampleCount: this.engineState.latencySampleCount,
+      location: this.engineState.location
+    });
+    const streamId = extractTickStreamId(tick);
+    const hardStaleDropMs = resolveNativeHyperliquidMaxLatencyMs({
+      transport: tick.transport,
+      streamId,
+      dwellirMaxLatencyMs: this.env.DWELLIR_MAX_LATENCY_MS,
+      hlStaleAfterMs: this.env.HL_STALE_AFTER_MS,
+      currentMaxLatencyMs: this.maxLatencyMs
+    });
+    const isHardStale = !shadowReplay && metrics.totalLatencyMs > hardStaleDropMs;
+
+    if (isHardStale) {
+      return { metrics, streamId, hardStaleDropMs, isHardStale };
+    }
+
+    if (
+      !shadowReplay &&
+      this.engineState.averageLatency > hardStaleDropMs &&
+      metrics.totalLatencyMs <= hardStaleDropMs
+    ) {
+      this.resetLatencyBaseline(metrics.brainTimestamp, "FRESH_SAMPLE_AFTER_BACKLOG");
+    }
+
+    metrics.maxLatencyMs = this.maxLatencyMs;
+    metrics.status =
+      !shadowReplay && metrics.totalLatencyMs > this.maxLatencyMs ? "STALE" : "FRESH";
+
+    if (metrics.status === "FRESH") {
+      this.updateLatencyAverage(metrics.totalLatencyMs);
+    }
+
+    this.applyLocationLatency(metrics.totalLatencyMs, metrics.brainTimestamp);
+
+    metrics.averageLatencyMs = this.engineState.averageLatency;
+    metrics.sampleCount = this.engineState.latencySampleCount;
+    metrics.latencyRiskMultiplier = this.engineState.location.latencyRiskMultiplier;
+    metrics.positionSizeMultiplier = this.engineState.location.positionSizeMultiplier;
+
+    this.latencyHistory = [...this.latencyHistory, metrics].slice(-PERFORMANCE_HISTORY_LIMIT);
+
+    return { metrics, streamId, hardStaleDropMs, isHardStale };
+  }
+
   private async handleTick(
     tick: MarketTick,
     wakeUpTimeMs: number | null,
@@ -3361,54 +3420,16 @@ export class TradingEngine {
     this.lastTickTimestamp = tick.receivedAt;
     this.observeCascadeAbsorption(tick);
 
-    const metrics = calculateTickLatency({
+    const { metrics, streamId, hardStaleDropMs, isHardStale } = this.prepareTickLatency(
       tick,
-      brainTimestamp: new Date().toISOString(),
-      maxLatencyMs: this.maxLatencyMs,
-      averageLatencyMs: this.engineState.averageLatency,
-      sampleCount: this.engineState.latencySampleCount,
-      location: this.engineState.location
-    });
-    const streamId = extractTickStreamId(tick);
-    const hardStaleDropMs = resolveNativeHyperliquidMaxLatencyMs({
-      transport: tick.transport,
-      streamId,
-      dwellirMaxLatencyMs: this.env.DWELLIR_MAX_LATENCY_MS,
-      hlStaleAfterMs: this.env.HL_STALE_AFTER_MS,
-      currentMaxLatencyMs: this.maxLatencyMs
-    });
-    const isHardStale = !options.shadowReplay && metrics.totalLatencyMs > hardStaleDropMs;
+      shadowReplay
+    );
 
     if (isHardStale) {
       return this.handleHardStaleTickDrop(tick, metrics, streamId, hardStaleDropMs);
     }
 
-    if (
-      !options.shadowReplay &&
-      this.engineState.averageLatency > hardStaleDropMs &&
-      metrics.totalLatencyMs <= hardStaleDropMs
-    ) {
-      this.resetLatencyBaseline(metrics.brainTimestamp, "FRESH_SAMPLE_AFTER_BACKLOG");
-    }
-
-    metrics.maxLatencyMs = this.maxLatencyMs;
-    metrics.status =
-      !options.shadowReplay && metrics.totalLatencyMs > this.maxLatencyMs ? "STALE" : "FRESH";
-
-    if (metrics.status === "FRESH") {
-      this.updateLatencyAverage(metrics.totalLatencyMs);
-    }
-
-    this.applyLocationLatency(metrics.totalLatencyMs, metrics.brainTimestamp);
-
-    metrics.averageLatencyMs = this.engineState.averageLatency;
-    metrics.sampleCount = this.engineState.latencySampleCount;
-    metrics.latencyRiskMultiplier = this.engineState.location.latencyRiskMultiplier;
-    metrics.positionSizeMultiplier = this.engineState.location.positionSizeMultiplier;
-
-    this.latencyHistory = [...this.latencyHistory, metrics].slice(-PERFORMANCE_HISTORY_LIMIT);
-
-    if (metrics.status === "STALE" && !options.shadowReplay && this.cachedConfig.TRADING_ENABLED) {
+    if (metrics.status === "STALE" && !shadowReplay && this.cachedConfig.TRADING_ENABLED) {
       return this.handleSoftStaleTick(tick, metrics, wakeUpTimeMs, hotPathStartedAt);
     }
 
