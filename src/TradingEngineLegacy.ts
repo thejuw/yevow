@@ -254,11 +254,14 @@ import { buildTickTelemetryPayload } from "./engine/trading/telemetry/TickTeleme
 import { type ReplayOptions, type ReplayScenario } from "./engine/trading/routes/ReplayAdminRoutes";
 import { markHistoricalReplayTrades, ReplayJournal } from "./engine/trading/replay/ReplayJournal";
 import {
+  runShadowReplayLoop,
+  type ShadowReplayLoopResult
+} from "./engine/trading/replay/ReplayLoopRuntime";
+import {
   buildHistoricalReplayResult,
   buildReplayStatus,
   buildShadowReplayConfig,
   buildShadowReplayEngineState,
-  calculateReplayShadowBankroll,
   resolveInitialShadowBankroll
 } from "./engine/trading/replay/ReplayResultRuntime";
 import {
@@ -564,7 +567,6 @@ import {
   readNumber,
   readPositiveNumber,
   applyReplayScenarioToTick,
-  modelReplayIntentTrade,
   readPositiveInteger,
   readBoundedNumber,
   resolveGhostBookConfig,
@@ -4836,9 +4838,6 @@ export class TradingEngine {
         ? await this.replayJournal.loadTrades(ticks[0].receivedAt, ticks.at(-1)!.receivedAt)
         : [];
     const shadowTrades = markHistoricalReplayTrades(historicalTrades, ticks);
-    const modeledTrades: ReplayResult["shadowTrades"] = [];
-    let ticksReplayed = 0;
-    let generatedIntentCount = 0;
 
     this.cachedConfig = buildShadowReplayConfig({
       currentConfig: this.cachedConfig,
@@ -4868,96 +4867,40 @@ export class TradingEngine {
     this.oracleAgent.hydrate(null);
     this.sentimentAgent.hydrate(null);
 
+    let replayLoop: ShadowReplayLoopResult | null = null;
     try {
-      let previousTick: MarketTick | null = null;
-
-      for (const [index, tick] of ticks.entries()) {
-        if (previousTick) {
-          const intervalMs = Math.max(
-            0,
-            Date.parse(tick.receivedAt) - Date.parse(previousTick.receivedAt)
-          );
-
-          if (intervalMs > 0) {
-            await wait(Math.round(intervalMs / Math.max(0.000001, speedMultiplier)));
-          }
-        }
-
-        const previousIntentId = this.engineState.lastTradeIntent?.intentId ?? null;
-        const result = await this.enqueueTick(tick, null, { shadowReplay: true });
-        ticksReplayed += result.accepted ? 1 : 0;
-
-        const nextIntentId = this.engineState.lastTradeIntent?.intentId ?? null;
-        if (nextIntentId && nextIntentId !== previousIntentId) {
-          generatedIntentCount += 1;
-          const modeled = modelReplayIntentTrade(
-            this.engineState.lastTradeIntent,
-            tick,
-            ticks,
-            index,
-            replayOptions,
-            this.engineState.oracle.regime
-          );
-          if (modeled) {
-            modeledTrades.push(modeled);
-          }
-        }
-
-        if (index === ticks.length - 1 || index % 25 === 0) {
-          await this.replayJournal.writeStatus(
-            buildReplayStatus({
-              replayId,
-              status: "RUNNING",
-              ticksTotal: ticks.length,
-              ticksProcessed: index + 1,
-              progressPct: ticks.length > 0 ? undefined : 100,
-              speedMultiplier,
-              shadowBankroll: calculateReplayShadowBankroll(initialShadowBankroll, modeledTrades),
-              dateFrom,
-              dateTo,
-              scenario: replayOptions.scenario,
-              startedAt,
-              updatedAt: new Date().toISOString()
-            })
-          );
-        }
-
-        previousTick = tick;
-      }
-    } catch (error) {
-      const failedAt = new Date().toISOString();
-      await this.replayJournal.writeStatus(
-        buildReplayStatus({
-          replayId,
-          status: "FAILED",
-          ticksTotal: ticks.length,
-          ticksProcessed: ticksReplayed,
-          speedMultiplier,
-          shadowBankroll: initialShadowBankroll,
-          dateFrom,
-          dateTo,
-          scenario: replayOptions.scenario,
-          error: error instanceof Error ? error.message : "UNKNOWN_REPLAY_ERROR",
-          startedAt,
-          updatedAt: failedAt,
-          completedAt: failedAt
-        })
-      );
-      throw error;
+      replayLoop = await runShadowReplayLoop({
+        replayId,
+        ticks,
+        replayOptions,
+        speedMultiplier,
+        initialShadowBankroll,
+        dateFrom,
+        dateTo,
+        startedAt,
+        enqueueShadowReplayTick: (tick) => this.enqueueTick(tick, null, { shadowReplay: true }),
+        lastTradeIntent: () => this.engineState.lastTradeIntent,
+        oracleRegime: () => this.engineState.oracle.regime,
+        writeStatus: (status) => this.replayJournal.writeStatus(status)
+      });
     } finally {
       await this.restoreReplaySnapshot(liveSnapshot);
+    }
+
+    if (!replayLoop) {
+      throw new Error("REPLAY_LOOP_DID_NOT_COMPLETE");
     }
 
     const completedAt = new Date().toISOString();
     const replayBuild = buildHistoricalReplayResult({
       replayId,
-      ticksReplayed,
+      ticksReplayed: replayLoop.ticksReplayed,
       initialShadowBankroll,
       historicalTradeCount: historicalTrades.length,
-      generatedIntentCount,
+      generatedIntentCount: replayLoop.generatedIntentCount,
       speedMultiplier,
       replayOptions,
-      modeledTrades,
+      modeledTrades: replayLoop.modeledTrades,
       shadowTrades,
       sentiment: this.engineState.sentiment,
       startedAt,
