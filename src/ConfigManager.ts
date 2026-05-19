@@ -317,6 +317,36 @@ export class ConfigManager {
   }
 }
 
+export interface AdminSnapshotConfigInput {
+  readonly currentConfig: GlobalRiskConfig;
+  readonly snapshot: GlobalRiskConfigUpdate;
+  readonly observedAt?: string;
+  readonly version?: string;
+}
+
+export function configFromAdminSnapshot(input: AdminSnapshotConfigInput): GlobalRiskConfig {
+  const observedAt = input.observedAt ?? new Date().toISOString();
+  const metadata = input.snapshot as Partial<GlobalRiskConfig>;
+
+  return {
+    ...defaultConfig,
+    ...input.currentConfig,
+    ...input.snapshot,
+    updatedAt:
+      typeof metadata.updatedAt === "string" && metadata.updatedAt.length > 0
+        ? metadata.updatedAt
+        : observedAt,
+    updatedBy:
+      typeof metadata.updatedBy === "string" && metadata.updatedBy.length > 0
+        ? metadata.updatedBy
+        : "admin",
+    version:
+      typeof metadata.version === "string" && metadata.version.length > 0
+        ? metadata.version
+        : (input.version ?? crypto.randomUUID())
+  };
+}
+
 function extractConfigUpdate(
   update: AdminConfigUpdate | GlobalRiskConfigUpdate
 ): GlobalRiskConfigUpdate {

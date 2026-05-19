@@ -1,4 +1,9 @@
-import { ConfigManager, configDefaultsFromEnv, defaultConfig } from "./ConfigManager";
+import {
+  ConfigManager,
+  configDefaultsFromEnv,
+  configFromAdminSnapshot,
+  defaultConfig
+} from "./ConfigManager";
 import { decode as msgpackDecode } from "@msgpack/msgpack";
 import { Governor, neutralMacroBias } from "./Governor";
 import { Logger, createLogSink, structuredConsoleLogsEnabled } from "./Logger";
@@ -263,7 +268,6 @@ import type {
   EngineState,
   Env,
   GlobalRiskConfig,
-  GlobalRiskConfigUpdate,
   HealthReport,
   InternalOrderBook,
   InventoryState,
@@ -6372,7 +6376,12 @@ export class TradingEngine {
 
   private async applyConfigUpdate(update: AdminConfigUpdate): Promise<void> {
     if (update.signal === "REFRESH_CONFIG" || update.config) {
-      const directConfig = update.config ? this.configFromAdminSnapshot(update.config) : undefined;
+      const directConfig = update.config
+        ? configFromAdminSnapshot({
+            currentConfig: this.cachedConfig,
+            snapshot: update.config
+          })
+        : undefined;
       await this.refreshConfig("ADMIN_SIGNAL", directConfig);
       await this.scheduleConfigRefresh();
       if (!hasRuntimeConfigUpdate(update)) {
@@ -6411,28 +6420,5 @@ export class TradingEngine {
       maxLatencyMs: this.maxLatencyMs,
       killSwitch: this.engineState.risk.killSwitch
     });
-  }
-
-  private configFromAdminSnapshot(snapshot: GlobalRiskConfigUpdate): GlobalRiskConfig {
-    const observedAt = new Date().toISOString();
-    const metadata = snapshot as Partial<GlobalRiskConfig>;
-
-    return {
-      ...defaultConfig,
-      ...this.cachedConfig,
-      ...snapshot,
-      updatedAt:
-        typeof metadata.updatedAt === "string" && metadata.updatedAt.length > 0
-          ? metadata.updatedAt
-          : observedAt,
-      updatedBy:
-        typeof metadata.updatedBy === "string" && metadata.updatedBy.length > 0
-          ? metadata.updatedBy
-          : "admin",
-      version:
-        typeof metadata.version === "string" && metadata.version.length > 0
-          ? metadata.version
-          : crypto.randomUUID()
-    };
   }
 }

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { ConfigManager, configDefaultsFromEnv } from "../../src/ConfigManager";
+import {
+  ConfigManager,
+  configDefaultsFromEnv,
+  configFromAdminSnapshot,
+  defaultConfig
+} from "../../src/ConfigManager";
 import {
   assetFromInstrument,
   cascadeAssetProfilesToJsonRecord,
@@ -84,6 +89,32 @@ describe("ConfigManager environment defaults", () => {
       maxPositionNotionalPct: 0.05,
       assetLiquidityCapUsd: 2_000,
       maxSlippageBps: 20
+    });
+  });
+
+  it("builds direct admin config snapshots with deterministic metadata fallbacks", () => {
+    const config = configFromAdminSnapshot({
+      currentConfig: {
+        ...defaultConfig,
+        TRADING_ENABLED: false,
+        MAX_POSITION_SIZE: 10,
+        updatedBy: "previous-admin",
+        version: "previous-version"
+      },
+      snapshot: {
+        TRADING_ENABLED: true,
+        MAX_POSITION_SIZE: 25
+      },
+      observedAt: "2026-05-19T12:00:00.000Z",
+      version: "version-1"
+    });
+
+    expect(config).toMatchObject({
+      TRADING_ENABLED: true,
+      MAX_POSITION_SIZE: 25,
+      updatedAt: "2026-05-19T12:00:00.000Z",
+      updatedBy: "admin",
+      version: "version-1"
     });
   });
 });
