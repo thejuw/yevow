@@ -73,6 +73,10 @@ import { calculateInventoryState as calculateInventoryRuntimeState } from "./eng
 import { calculatePortfolioRisk as calculatePortfolioRuntimeRisk } from "./engine/trading/risk/PortfolioRiskRuntime";
 import { calculateEnsembleState as calculateRuntimeEnsembleState } from "./engine/trading/ensemble/EnsembleRuntime";
 import {
+  currentFundingRate as resolveCurrentFundingRate,
+  nextFundingRatesAfterTick
+} from "./engine/trading/funding/FundingRuntime";
+import {
   nextQuoteStateForInstrument as nextRuntimeQuoteStateForInstrument,
   strategyQuoteDisabledReason as runtimeStrategyQuoteDisabledReason
 } from "./engine/trading/quotes/QuoteStateRuntime";
@@ -4088,30 +4092,14 @@ export class TradingEngine {
   }
 
   private applyFundingFromTick(tick: MarketTick, observedAt: string): void {
-    const fundingRateHourly =
-      finiteNumber(tick.fundingRateHourly) ?? finiteNumber(tick.raw?.fundingRateHourly);
-
-    if (fundingRateHourly === null) {
+    const fundingRates = nextFundingRatesAfterTick(this.engineState.fundingRates, tick, observedAt);
+    if (fundingRates === this.engineState.fundingRates) {
       return;
     }
 
-    const marketKey = buildMarketKey(tick.source_exchange, tick.instrumentCode);
     this.engineState = {
       ...this.engineState,
-      fundingRates: {
-        ...this.engineState.fundingRates,
-        [marketKey]: {
-          instrumentCode: tick.instrumentCode,
-          source_exchange: tick.source_exchange,
-          marketKey,
-          hourlyRate: fundingRateHourly,
-          markPrice: finiteNumber(tick.markPrice) ?? finiteNumber(tick.raw?.markPrice),
-          oraclePrice: finiteNumber(tick.oraclePrice) ?? finiteNumber(tick.raw?.oraclePrice),
-          openInterest: finiteNumber(tick.openInterest) ?? finiteNumber(tick.raw?.openInterest),
-          receivedAt: tick.receivedAt,
-          updatedAt: observedAt
-        }
-      }
+      fundingRates
     };
   }
 
@@ -4126,16 +4114,7 @@ export class TradingEngine {
   }
 
   private currentFundingRate(book: InternalOrderBook): number {
-    const direct = this.engineState.fundingRates[book.marketKey]?.hourlyRate;
-    if (typeof direct === "number" && Number.isFinite(direct)) {
-      return direct;
-    }
-
-    const fallback = Object.values(this.engineState.fundingRates).find(
-      (entry) => entry.instrumentCode === book.instrumentCode
-    )?.hourlyRate;
-
-    return typeof fallback === "number" && Number.isFinite(fallback) ? fallback : 0;
+    return resolveCurrentFundingRate(this.engineState.fundingRates, book);
   }
 
   private processShadowQueueTick(
