@@ -646,6 +646,33 @@ type TickBookResolution =
       result: TickIngestResult;
     };
 
+interface AcceptedTickStateCommitInput {
+  readonly tick: MarketTick;
+  readonly metrics: LatencyMetrics;
+  readonly book: InternalOrderBook;
+  readonly oracle: EngineState["oracle"];
+  readonly sentiment: SentimentState;
+  readonly ensemble: EngineState["ensemble"];
+  readonly leadLag: EngineState["leadLag"];
+  readonly inventory: InventoryState;
+  readonly riskMetrics: EngineState["riskMetrics"];
+  readonly assetQuoteState: EngineState["quoteState"];
+  readonly shadowQueueState: ShadowQueueState;
+  readonly executionPlan: ApprovedExecutionPlan | null;
+  readonly croupierDecision: CroupierDecision;
+  readonly executionPlans: readonly ApprovedExecutionPlan[];
+  readonly inventoryGuard: EngineState["inventoryGuard"];
+  readonly domSnapshot: DomAnalysisSnapshot;
+  readonly anomalyResult: AnomalyDetectionResult;
+  readonly profilerStates: EngineState["profilerStates"];
+  readonly profilerResult: ProfilerEvaluation;
+  readonly oracleLatencyMs: number;
+  readonly profilerLatencyMs: number;
+  readonly croupierLatencyMs: number;
+  readonly shadowReplay: boolean;
+  readonly observedAt: string;
+}
+
 export class TradingEngine {
   private readonly startedAt = Date.now();
   private readonly initialized: Promise<void>;
@@ -3584,6 +3611,73 @@ export class TradingEngine {
     return { croupierDecision, croupierLatencyMs };
   }
 
+  private commitAcceptedTickState(input: AcceptedTickStateCommitInput): void {
+    const assetQuoteStates = {
+      ...this.engineState.assetQuoteStates,
+      [input.tick.instrumentCode]: input.assetQuoteState
+    };
+    const quoteState = aggregateQuoteState(
+      assetQuoteStates,
+      this.engineState.quoteState,
+      input.observedAt
+    );
+    const finalAssetMatrix = this.calculateAssetMatrix(
+      input.observedAt,
+      input.tick.instrumentCode,
+      input.oracle,
+      input.profilerStates,
+      assetQuoteStates
+    );
+    const agentHealth = nextTickAgentHealth({
+      previous: this.engineState.agentHealth,
+      config: this.cachedConfig,
+      observedAt: input.observedAt,
+      oracleLatencyMs: input.oracleLatencyMs,
+      sentimentLatencyMs: this.engineState.agentHealth.SENTIMENT.latencyMs,
+      profilerToxicityScore: input.profilerResult.toxicityScore,
+      profilerAlertThreshold: input.profilerResult.state.alertThreshold,
+      profilerLatencyMs: input.profilerLatencyMs,
+      profilerSignalId: input.profilerResult.signal?.signalId ?? undefined,
+      croupierLatencyMs: input.croupierLatencyMs,
+      croupierHasOutput: Boolean(input.croupierDecision.intent || input.croupierDecision.quote),
+      croupierSignalId:
+        input.croupierDecision.quote?.signalId ?? input.croupierDecision.intent?.intentId,
+      pitBossIntentId: input.executionPlan?.intent.intentId
+    });
+
+    this.engineState = stateAfterAcceptedTick({
+      currentState: this.engineState,
+      tradingEnabled: this.cachedConfig.TRADING_ENABLED,
+      shadowReplay: input.shadowReplay,
+      latencyStatus: input.metrics.status,
+      internalOrderBookDepth: countBookLevels(this.bids, this.asks),
+      book: input.book,
+      oracle: input.oracle,
+      sentiment: input.sentiment,
+      ensemble: input.ensemble,
+      leadLag: input.leadLag,
+      inventory: input.inventory,
+      riskMetrics: input.riskMetrics,
+      quoteState,
+      assetQuoteStates,
+      shadowQueue: input.shadowQueueState,
+      lastTradeIntent: input.executionPlan?.intent ?? input.croupierDecision.intent,
+      inventoryGuard: input.inventoryGuard,
+      ordersToTrack: input.executionPlans.flatMap((plan) => plan.orders),
+      shouldTrackOrders:
+        input.executionPlans.length > 0 &&
+        (this.cachedConfig.TRADING_ENABLED || input.shadowReplay),
+      dom: input.domSnapshot,
+      anomaly: input.anomalyResult.status,
+      assetMatrix: finalAssetMatrix,
+      profilerStates: input.profilerStates,
+      toxicityScore: input.profilerResult.toxicityScore,
+      agentHealth,
+      maxLatencyMs: this.maxLatencyMs,
+      observedAt: input.observedAt
+    });
+  }
+
   private async handleTick(
     tick: MarketTick,
     wakeUpTimeMs: number | null,
@@ -3766,44 +3860,9 @@ export class TradingEngine {
     const isCascadeShield = quotePolicy.isCascadeShield;
     const isProfilerQuoteHalt = quotePolicy.isProfilerQuoteHalt;
 
-    const assetQuoteStates = {
-      ...this.engineState.assetQuoteStates,
-      [tick.instrumentCode]: assetQuoteState
-    };
-    const quoteState = aggregateQuoteState(
-      assetQuoteStates,
-      this.engineState.quoteState,
-      metrics.brainTimestamp
-    );
-    const finalAssetMatrix = this.calculateAssetMatrix(
-      metrics.brainTimestamp,
-      tick.instrumentCode,
-      oracleResult.state,
-      profilerStates,
-      assetQuoteStates
-    );
-    const agentHealth = nextTickAgentHealth({
-      previous: this.engineState.agentHealth,
-      config: this.cachedConfig,
-      observedAt: metrics.brainTimestamp,
-      oracleLatencyMs,
-      sentimentLatencyMs: this.engineState.agentHealth.SENTIMENT.latencyMs,
-      profilerToxicityScore: profilerResult.toxicityScore,
-      profilerAlertThreshold: profilerResult.state.alertThreshold,
-      profilerLatencyMs,
-      profilerSignalId: profilerResult.signal?.signalId ?? undefined,
-      croupierLatencyMs,
-      croupierHasOutput: Boolean(croupierDecision.intent || croupierDecision.quote),
-      croupierSignalId: croupierDecision.quote?.signalId ?? croupierDecision.intent?.intentId,
-      pitBossIntentId: executionPlan?.intent.intentId
-    });
-
-    this.engineState = stateAfterAcceptedTick({
-      currentState: this.engineState,
-      tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-      shadowReplay: options.shadowReplay === true,
-      latencyStatus: metrics.status,
-      internalOrderBookDepth: countBookLevels(this.bids, this.asks),
+    this.commitAcceptedTickState({
+      tick,
+      metrics,
       book,
       oracle: oracleResult.state,
       sentiment: sentimentForDecision,
@@ -3811,22 +3870,20 @@ export class TradingEngine {
       leadLag,
       inventory,
       riskMetrics,
-      quoteState,
-      assetQuoteStates,
-      shadowQueue: shadowQueueState,
-      lastTradeIntent: executionPlan?.intent ?? croupierDecision.intent,
+      assetQuoteState,
+      shadowQueueState,
+      executionPlan,
+      croupierDecision,
+      executionPlans,
       inventoryGuard,
-      ordersToTrack: executionPlans.flatMap((plan) => plan.orders),
-      shouldTrackOrders:
-        executionPlans.length > 0 &&
-        (this.cachedConfig.TRADING_ENABLED || options.shadowReplay === true),
-      dom: domSnapshot,
-      anomaly: anomalyResult.status,
-      assetMatrix: finalAssetMatrix,
+      domSnapshot,
+      anomalyResult,
       profilerStates,
-      toxicityScore: profilerResult.toxicityScore,
-      agentHealth,
-      maxLatencyMs: this.maxLatencyMs,
+      profilerResult,
+      oracleLatencyMs,
+      profilerLatencyMs,
+      croupierLatencyMs,
+      shadowReplay: options.shadowReplay === true,
       observedAt: metrics.brainTimestamp
     });
 
