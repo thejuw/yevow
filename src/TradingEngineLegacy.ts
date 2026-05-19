@@ -3063,6 +3063,34 @@ export class TradingEngine {
     this.state.waitUntil(this.dispatchExecution(hedgeIntent));
   }
 
+  private async handleProfilerSignal(
+    instrumentCode: string,
+    profilerResult: ProfilerEvaluation,
+    profilerLatencyMs: number,
+    isProfilerQuoteHalt: boolean,
+    shadowReplay: boolean,
+    croupierHasQuote: boolean
+  ): Promise<void> {
+    if (!profilerResult.signal) {
+      return;
+    }
+
+    this.publishProfilerAlert(profilerResult.signal, profilerResult.state);
+    await this.acceptAgentSignal(profilerResult.signal, profilerLatencyMs);
+
+    if (
+      shouldCancelQuotesForProfilerSignal({
+        signal: profilerResult.signal,
+        profilerQuoteHalt: isProfilerQuoteHalt,
+        shadowReplay,
+        tradingEnabled: this.cachedConfig.TRADING_ENABLED,
+        croupierHasQuote
+      })
+    ) {
+      this.state.waitUntil(this.cancelAllQuotes(instrumentCode, "PROFILER_ALERT"));
+    }
+  }
+
   private async handleTick(
     tick: MarketTick,
     wakeUpTimeMs: number | null,
@@ -3617,21 +3645,14 @@ export class TradingEngine {
       options.shadowReplay === true
     );
 
-    if (profilerResult.signal) {
-      this.publishProfilerAlert(profilerResult.signal, profilerResult.state);
-      await this.acceptAgentSignal(profilerResult.signal, profilerLatencyMs);
-      if (
-        shouldCancelQuotesForProfilerSignal({
-          signal: profilerResult.signal,
-          profilerQuoteHalt: isProfilerQuoteHalt,
-          shadowReplay: options.shadowReplay === true,
-          tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-          croupierHasQuote: Boolean(croupierDecision.quote)
-        })
-      ) {
-        this.state.waitUntil(this.cancelAllQuotes(tick.instrumentCode, "PROFILER_ALERT"));
-      }
-    }
+    await this.handleProfilerSignal(
+      tick.instrumentCode,
+      profilerResult,
+      profilerLatencyMs,
+      isProfilerQuoteHalt,
+      options.shadowReplay === true,
+      Boolean(croupierDecision.quote)
+    );
 
     if (shouldLogMarketTickAccepted(this.engineState.processedTicks)) {
       this.logger.info(
