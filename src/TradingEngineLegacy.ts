@@ -259,7 +259,13 @@ import {
 import { buildAgentStateSnapshot } from "./engine/trading/telemetry/AgentSnapshotRuntime";
 import {
   buildCascadeOperationalAlertTelemetry,
-  buildCascadeSignalTelemetry
+  buildCascadeSignalTelemetry,
+  cascadeEntryAgentSignal,
+  cascadeEntryDecisionTrace,
+  cascadeHeatCapAlertMetadata,
+  cascadePositionOpenedAlertMetadata,
+  cascadeSignalEmittedAlertMetadata,
+  cascadeSizeRejectedLogMetadata
 } from "./engine/trading/telemetry/CascadeSignalTelemetryRuntime";
 import {
   buildAmVpinTelemetry,
@@ -2205,15 +2211,7 @@ export class TradingEngine {
       "SIGNAL_EMITTED",
       "Cascade signal emitted",
       `${signal.instrumentCode} ${signal.direction} cascade recovery signal emitted.`,
-      {
-        signalId: signal.signalId,
-        cascadeId: signal.cascadeId,
-        instrumentCode: signal.instrumentCode,
-        direction: signal.direction,
-        triggerType: signal.triggerType,
-        confidence: signal.confidence,
-        emittedAt: signal.emittedAt
-      },
+      cascadeSignalEmittedAlertMetadata(signal),
       signal.signalId
     );
     const sizeDecision = calculatePositionSize({
@@ -2228,26 +2226,22 @@ export class TradingEngine {
     });
 
     if (!sizeDecision.approved) {
-      this.logger.warn("CASCADE_SIZE_REJECTED", "Cascade recovery position sizing rejected entry", {
-        signalId: signal.signalId,
-        instrumentCode: signal.instrumentCode,
-        limitingFactor: sizeDecision.limitingFactor,
-        reason: sizeDecision.reason
-      });
+      this.logger.warn(
+        "CASCADE_SIZE_REJECTED",
+        "Cascade recovery position sizing rejected entry",
+        cascadeSizeRejectedLogMetadata(signal, sizeDecision)
+      );
       if (sizeDecision.limitingFactor === "HEAT") {
         this.emitCascadeOperationalAlert(
           "HEAT_CAP_EXCEEDED",
           "Cascade heat cap blocked entry",
           `${signal.instrumentCode} cascade entry was rejected by the heat cap.`,
-          {
-            signalId: signal.signalId,
-            cascadeId: signal.cascadeId,
-            instrumentCode: signal.instrumentCode,
+          cascadeHeatCapAlertMetadata(
+            signal,
+            sizeDecision,
             currentHeat,
-            heatAfterPct: sizeDecision.heatAfterPct,
-            heatCapPct: this.cachedConfig.HEAT_CAP_PCT,
-            reason: sizeDecision.reason
-          },
+            this.cachedConfig.HEAT_CAP_PCT
+          ),
           signal.signalId
         );
       }
@@ -2260,53 +2254,20 @@ export class TradingEngine {
       observedAt
     );
     const intent = this.tradeIntentFromCascadeSignal(signal, sizeDecision.units, observedAt);
+    const cascadeEntryContext = {
+      signal,
+      intent,
+      engineId: this.engineState.engineId,
+      position,
+      assetProfile,
+      sizeDecision,
+      observedAt
+    };
     this.recordCascadeUiSignal(
-      {
-        signalId: signal.signalId,
-        traceId: `${this.engineState.engineId}:cascade:${signal.signalId}`,
-        sourceAgent: "PIT_BOSS",
-        targetAgent: "EXECUTIONER",
-        instrumentCode: signal.instrumentCode,
-        action: intent.action,
-        confidence: signal.confidence,
-        horizonMs: Math.max(0, Date.parse(signal.timeStopAt) - Date.parse(observedAt)),
-        expectedValue: intent.expectedValue,
-        maxSlippageBps: intent.maxSlippageBps,
-        rationale: `Cascade recovery entry approved via ${signal.triggerType}`,
-        featureVector: signal.context,
-        riskContext: {
-          outcome: "TAKEN",
-          cascadeId: signal.cascadeId,
-          positionId: position.positionId,
-          assetProfile: assetProfile as unknown as JsonRecord,
-          sizeDecision: sizeDecision as unknown as JsonRecord
-        },
-        createdAt: observedAt
-      },
+      cascadeEntryAgentSignal(cascadeEntryContext),
       "TAKEN"
     );
-    this.logger.traceDecision({
-      decisionId: `cascade-entry-${signal.signalId}`,
-      signalId: signal.signalId,
-      traceId: `${this.engineState.engineId}:cascade:${signal.signalId}`,
-      agentName: "PIT_BOSS",
-      targetAgent: "EXECUTIONER",
-      instrumentCode: signal.instrumentCode,
-      action: intent.action,
-      confidence: signal.confidence,
-      expectedValue: intent.expectedValue,
-      maxSlippageBps: intent.maxSlippageBps,
-      reasoning: `Cascade recovery entry approved. Heat ${currentHeat} -> ${sizeDecision.heatAfterPct}.`,
-      featureVector: signal.context,
-      riskSnapshot: {
-        positionId: position.positionId,
-        assetProfile: assetProfile as unknown as JsonRecord,
-        sizeDecision: sizeDecision as unknown as JsonRecord
-      },
-      rawSignal: signal as unknown as JsonRecord,
-      latencyMs: 0,
-      createdAt: observedAt
-    });
+    this.logger.traceDecision(cascadeEntryDecisionTrace({ ...cascadeEntryContext, currentHeat }));
     this.state.waitUntil(this.dispatchExecution(intent));
     this.state.waitUntil(
       this.safeStoragePut(
@@ -2319,19 +2280,7 @@ export class TradingEngine {
       "POSITION_OPENED",
       "Cascade position opened",
       `${position.instrumentCode} ${position.direction} cascade position opened.`,
-      {
-        signalId: signal.signalId,
-        cascadeId: signal.cascadeId,
-        positionId: position.positionId,
-        instrumentCode: position.instrumentCode,
-        direction: position.direction,
-        entryPrice: position.entryPrice,
-        stopPrice: position.currentStopPrice,
-        notionalUsd: sizeDecision.notionalUsd,
-        riskPct: sizeDecision.riskPct,
-        heatAfterPct: sizeDecision.heatAfterPct,
-        observedAt
-      },
+      cascadePositionOpenedAlertMetadata(cascadeEntryContext),
       position.positionId
     );
   }
