@@ -37,7 +37,6 @@ import {
 import {
   buildMicrostructureSnapshot,
   countBookLevels,
-  getInstrumentBook,
   isCrossedBook,
   microstructureFromBook
 } from "./engine/trading/book/BookReconstruction";
@@ -54,6 +53,10 @@ import {
   stateAfterOrderBookReset,
   stateAfterRebuiltBookSnapshot
 } from "./engine/trading/book/BookRuntimeState";
+import {
+  buildDomAnalysisSnapshot,
+  currentDomHeatmapSnapshot
+} from "./engine/trading/book/DomAnalyzer";
 import {
   OrderBookReconstructor,
   type OrderBookStores
@@ -148,7 +151,6 @@ import type {
   AdminConfigUpdate,
   AnomalyDetectorState,
   DomAnalysisSnapshot,
-  DomHeatmapCell,
   EdgeTopology,
   EngineLocation,
   EngineStabilityStatus,
@@ -391,19 +393,7 @@ import {
   normalizeMarketKey,
   normalizeSourceExchange,
   normalizeSourceWeight,
-  aggregateDomBins,
-  volumeStats,
-  isLiquidityWall,
-  toLiquidityWall,
-  wallIdForBin,
-  latestActiveWalls,
-  classifyMissingWalls,
-  wasWallFilled,
-  domHeatmapCell,
-  emptyDomSnapshot,
-  distanceBps,
   sanitizeWallHistory,
-  isLiquidityWallRecord,
   toJsonValue,
   deepClone,
   hydrateOrderBooks,
@@ -500,15 +490,6 @@ interface QueuedExecutionIntent {
   priority: "CANCEL" | "NEW";
   runAfterMs: number;
   enqueuedAt: string;
-}
-
-interface DomBinAccumulator {
-  side: OrderBookSide;
-  priceStart: number;
-  priceEnd: number;
-  centerPrice: number;
-  volume: number;
-  levelCount: number;
 }
 
 type RuntimeWithMemory = typeof globalThis & {
@@ -3421,18 +3402,12 @@ export class TradingEngine {
   }
 
   private currentDomHeatmap(instrumentCode: string | undefined): DomAnalysisSnapshot {
-    const selected = this.selectMarketKey(instrumentCode);
-    const normalizedInstrument =
-      selected?.instrumentCode ??
-      instrumentCode?.toLowerCase() ??
-      this.engineState.microstructure.instrumentCode ??
-      "unknown";
-
-    if (this.engineState.dom?.instrumentCode === normalizedInstrument) {
-      return this.engineState.dom;
-    }
-
-    return this.buildDomAnalysis(normalizedInstrument, new Date().toISOString(), undefined, false);
+    return currentDomHeatmapSnapshot(
+      this.domAnalyzerContext(),
+      this.engineState.dom,
+      instrumentCode,
+      new Date().toISOString()
+    );
   }
 
   private buildDomAnalysis(
@@ -3441,114 +3416,28 @@ export class TradingEngine {
     tick: MarketTick | undefined,
     persistHistory: boolean
   ): DomAnalysisSnapshot {
-    const selected = tick ? this.selectMarketKey(tick) : this.selectMarketKey(instrumentCode);
-    const normalizedInstrument =
-      selected?.instrumentCode ??
-      instrumentCode?.toLowerCase() ??
-      this.engineState.microstructure.instrumentCode ??
-      "unknown";
-    const marketKey = selected?.marketKey ?? normalizeMarketKey(normalizedInstrument);
-    const book = this.orderBook.get(marketKey);
-    const binSize = resolveDomBinSize(this.env, normalizedInstrument, this.domPriceBinSize);
-
-    if (!book || book.midPrice === null || book.midPrice <= 0) {
-      return emptyDomSnapshot(
-        normalizedInstrument,
-        book?.exchangeCode ?? null,
-        book?.sequence ?? null,
-        book?.midPrice ?? null,
-        this.domScanRangePct,
-        binSize,
-        this.domWallHistory.slice(-this.domWallHistoryLimit),
-        observedAt
-      );
-    }
-
-    const midPrice = book.midPrice;
-    const lowerBound = roundCrypto(midPrice * (1 - this.domScanRangePct));
-    const upperBound = roundCrypto(midPrice * (1 + this.domScanRangePct));
-    const bidLevels = getInstrumentBook(this.bids, marketKey, "bid").range(
-      lowerBound,
-      upperBound,
-      DOM_MAX_LEVELS_PER_SIDE
-    );
-    const askLevels = getInstrumentBook(this.asks, marketKey, "ask").range(
-      lowerBound,
-      upperBound,
-      DOM_MAX_LEVELS_PER_SIDE
-    );
-    const bins = aggregateDomBins(bidLevels, askLevels, binSize);
-    const stats = volumeStats(bins.map((bin) => bin.volume));
-    const previousActiveWalls = latestActiveWalls(this.domWallHistory, normalizedInstrument);
-    const walls = bins
-      .filter((bin) => isLiquidityWall(bin.volume, stats.mean, stats.sigma))
-      .map((bin) =>
-        toLiquidityWall(
-          bin,
-          normalizedInstrument,
-          book.exchangeCode,
-          book.sequence,
-          midPrice,
-          stats.mean,
-          stats.sigma,
-          previousActiveWalls.get(wallIdForBin(normalizedInstrument, bin)),
-          observedAt
-        )
-      );
-    const currentWallIds = new Set(walls.map((wall) => wall.wallId));
-    const transitions = classifyMissingWalls(
-      previousActiveWalls,
-      currentWallIds,
-      tick,
+    return buildDomAnalysisSnapshot(
+      this.domAnalyzerContext(),
+      instrumentCode,
       observedAt,
-      binSize,
-      this.domSpoofProximityBps,
-      midPrice
+      tick,
+      persistHistory
     );
-    const pulledWalls = transitions.filter(
-      (wall) => wall.status === "PULLED" && wall.spoofingSuspected
-    );
-    const filledWalls = transitions.filter((wall) => wall.status === "FILLED");
-    const history = persistHistory
-      ? this.appendDomHistory([...walls, ...transitions])
-      : this.domWallHistory.slice(-this.domWallHistoryLimit);
-
-    return {
-      schemaVersion: "dom.analysis.v1",
-      instrumentCode: normalizedInstrument,
-      exchangeCode: book.exchangeCode,
-      sequence: book.sequence,
-      midPrice,
-      scanRangePct: this.domScanRangePct,
-      lowerBound,
-      upperBound,
-      binSize,
-      meanVolume: stats.mean,
-      sigmaVolume: stats.sigma,
-      walls,
-      pulledWalls,
-      filledWalls,
-      heatmap: {
-        schemaVersion: "dom.heatmap.v1",
-        columns: ["side", "priceStart", "priceEnd", "volume", "levelCount", "zScore"],
-        sideEncoding: { bid: 0, ask: 1 },
-        cells: bins.map((bin) => domHeatmapCell(bin, stats.mean, stats.sigma))
-      },
-      history,
-      updatedAt: observedAt
-    };
   }
 
-  private appendDomHistory(events: LiquidityWall[]): LiquidityWall[] {
-    if (events.length > 0) {
-      this.domWallHistory.push(...events);
-    }
-
-    if (this.domWallHistory.length > this.domWallHistoryLimit) {
-      this.domWallHistory.splice(0, this.domWallHistory.length - this.domWallHistoryLimit);
-    }
-
-    return this.domWallHistory.slice(-this.domWallHistoryLimit);
+  private domAnalyzerContext() {
+    return {
+      orderBook: this.orderBook,
+      bids: this.bids,
+      asks: this.asks,
+      microstructure: this.engineState.microstructure,
+      domWallHistory: this.domWallHistory,
+      domWallHistoryLimit: this.domWallHistoryLimit,
+      domScanRangePct: this.domScanRangePct,
+      domSpoofProximityBps: this.domSpoofProximityBps,
+      domMaxLevelsPerSide: DOM_MAX_LEVELS_PER_SIDE,
+      resolveBinSize: (code: string) => resolveDomBinSize(this.env, code, this.domPriceBinSize)
+    };
   }
 
   private getBookSync(
