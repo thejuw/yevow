@@ -25,13 +25,12 @@ import type {
   OrderBookSnapshot,
   ReplayResult
 } from "../../../types";
-import type { LogPruneReport } from "../../LogRetention";
+import { logPruneReportToJson, type LogPruneReport } from "../../LogRetention";
 import {
   aggregateQuoteState,
   assertAgentSignal,
   assertMarketTick,
   json,
-  logPruneReportToJson,
   readHyperliquidRawIngestPayload,
   readJsonOrNull,
   resumeExpiredAssetQuoteStates,

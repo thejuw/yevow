@@ -1,4 +1,4 @@
-import type { Env } from "../types";
+import type { Env, JsonRecord } from "../types";
 
 const DAY_MS = 86_400_000;
 
@@ -200,6 +200,32 @@ export async function pruneOperationalLogsFromD1(
     cappedOperationalInfoRows,
     marketTickRows,
     totalRows: telemetryRows + lowValueOperationalRows + cappedOperationalInfoRows + marketTickRows
+  };
+}
+
+export function logPruneReportToJson(report: LogPruneReport): JsonRecord {
+  return {
+    policy: logRetentionPolicyToJson(report.policy),
+    telemetryRows: report.telemetryRows,
+    lowValueOperationalRows: report.lowValueOperationalRows,
+    cappedOperationalInfoRows: report.cappedOperationalInfoRows,
+    marketTickRows: report.marketTickRows,
+    totalRows: report.totalRows
+  };
+}
+
+export function logRetentionPolicyToJson(policy: LogRetentionPolicy): JsonRecord {
+  return {
+    generatedAt: policy.generatedAt,
+    telemetryRetentionDays: policy.telemetryRetentionDays,
+    lowValueRetentionDays: policy.lowValueRetentionDays,
+    marketTickRetentionDays: policy.marketTickRetentionDays,
+    maxTelemetryRows: policy.maxTelemetryRows,
+    maxOperationalInfoRows: policy.maxOperationalInfoRows,
+    maxMarketTickRows: policy.maxMarketTickRows,
+    telemetryCutoff: policy.telemetryCutoff,
+    lowValueCutoff: policy.lowValueCutoff,
+    marketTickCutoff: policy.marketTickCutoff
   };
 }
 

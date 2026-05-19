@@ -362,6 +362,7 @@ import {
 } from "./engine/trading/state/StorageWriteGuard";
 import {
   emptyLogPruneReport,
+  logRetentionPolicyToJson,
   pruneOperationalLogsFromD1,
   resolveLogRetentionPolicy,
   type LogPruneReport
@@ -571,7 +572,6 @@ import {
   defaultInventoryGuardState,
   passiveInventoryGuardStateFromInventory,
   defaultJanitorState,
-  logRetentionPolicyToJson,
   defaultSlippageAnalytics,
   defaultRiskLimits,
   mergeRiskLimits,

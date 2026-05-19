@@ -1,4 +1,4 @@
-import type { LogPruneReport } from "../../LogRetention";
+import { logPruneReportToJson, type LogPruneReport } from "../../LogRetention";
 import type { EngineState, ExchangeOpenOrder, JanitorState, JsonRecord } from "../../../types";
 
 export type JanitorCancelReason = "JANITOR_ORPHAN_EXCHANGE_ORDER" | "JANITOR_ZOMBIE_LOCAL_ORDER";
@@ -275,32 +275,10 @@ export function janitorCleanupRequiredLogMetadata(input: JanitorCleanupWarningIn
     dustPositions: input.report.dustPositions,
     dustCloseIntents: input.report.dustCloseIntents,
     prunedTelemetryCount: input.report.prunedTelemetryCount,
-    pruneReport: pruneReportToJson(input.pruneReport)
+    pruneReport: logPruneReportToJson(input.pruneReport)
   };
 }
 
 function hasClientId(order: ExchangeOpenOrder): order is ExchangeOpenOrder & { clientId: string } {
   return typeof order.clientId === "string" && order.clientId.length > 0;
-}
-
-function pruneReportToJson(report: LogPruneReport): JsonRecord {
-  return {
-    policy: {
-      generatedAt: report.policy.generatedAt,
-      telemetryRetentionDays: report.policy.telemetryRetentionDays,
-      lowValueRetentionDays: report.policy.lowValueRetentionDays,
-      marketTickRetentionDays: report.policy.marketTickRetentionDays,
-      maxTelemetryRows: report.policy.maxTelemetryRows,
-      maxOperationalInfoRows: report.policy.maxOperationalInfoRows,
-      maxMarketTickRows: report.policy.maxMarketTickRows,
-      telemetryCutoff: report.policy.telemetryCutoff,
-      lowValueCutoff: report.policy.lowValueCutoff,
-      marketTickCutoff: report.policy.marketTickCutoff
-    },
-    telemetryRows: report.telemetryRows,
-    lowValueOperationalRows: report.lowValueOperationalRows,
-    cappedOperationalInfoRows: report.cappedOperationalInfoRows,
-    marketTickRows: report.marketTickRows,
-    totalRows: report.totalRows
-  };
 }

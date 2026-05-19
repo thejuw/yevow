@@ -20,7 +20,6 @@ import {
   SortedBookSide
 } from "./engine/trading/book/SortedBookSide";
 import type { BookDeltaWithTicker, BookSyncState } from "./engine/trading/book/BookTypes";
-import type { LogPruneReport } from "./engine/LogRetention";
 import type { ReplayOptions, ReplayScenario } from "./engine/trading/routes/ReplayAdminRoutes";
 import type {
   AdminConfigUpdate,
@@ -1265,32 +1264,6 @@ export function defaultJanitorState(): EngineState["janitor"] {
     dustCloseIntents: [],
     prunedTelemetryCount: 0,
     updatedAt: null
-  };
-}
-
-export function logPruneReportToJson(report: LogPruneReport): JsonRecord {
-  return {
-    policy: logRetentionPolicyToJson(report.policy),
-    telemetryRows: report.telemetryRows,
-    lowValueOperationalRows: report.lowValueOperationalRows,
-    cappedOperationalInfoRows: report.cappedOperationalInfoRows,
-    marketTickRows: report.marketTickRows,
-    totalRows: report.totalRows
-  };
-}
-
-export function logRetentionPolicyToJson(policy: LogPruneReport["policy"]): JsonRecord {
-  return {
-    generatedAt: policy.generatedAt,
-    telemetryRetentionDays: policy.telemetryRetentionDays,
-    lowValueRetentionDays: policy.lowValueRetentionDays,
-    marketTickRetentionDays: policy.marketTickRetentionDays,
-    maxTelemetryRows: policy.maxTelemetryRows,
-    maxOperationalInfoRows: policy.maxOperationalInfoRows,
-    maxMarketTickRows: policy.maxMarketTickRows,
-    telemetryCutoff: policy.telemetryCutoff,
-    lowValueCutoff: policy.lowValueCutoff,
-    marketTickCutoff: policy.marketTickCutoff
   };
 }
 

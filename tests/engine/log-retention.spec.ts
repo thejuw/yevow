@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   LOW_VALUE_OPERATIONAL_EVENT_TYPES,
   emptyLogPruneReport,
+  logPruneReportToJson,
+  logRetentionPolicyToJson,
   type LogRetentionD1,
   operationalEventPlaceholders,
   pruneOperationalLogsFromD1,
@@ -70,6 +72,41 @@ describe("log retention policy", () => {
     expect(calls[2].values).toHaveLength(1 + LOW_VALUE_OPERATIONAL_EVENT_TYPES.length);
     expect(calls[4].values).toEqual([policy.marketTickCutoff]);
     expect(emptyLogPruneReport(policy).totalRows).toBe(0);
+  });
+
+  it("serializes policies and prune reports for structured logs", () => {
+    const policy = resolveLogRetentionPolicy({}, Date.parse("2026-05-18T12:00:00.000Z"));
+    const report = {
+      policy,
+      telemetryRows: 1,
+      lowValueOperationalRows: 2,
+      cappedOperationalInfoRows: 3,
+      marketTickRows: 4,
+      totalRows: 10
+    };
+
+    expect(logRetentionPolicyToJson(policy)).toEqual({
+      generatedAt: "2026-05-18T12:00:00.000Z",
+      telemetryRetentionDays: 3,
+      lowValueRetentionDays: 2,
+      marketTickRetentionDays: 3,
+      maxTelemetryRows: 15_000,
+      maxOperationalInfoRows: 50_000,
+      maxMarketTickRows: 25_000,
+      telemetryCutoff: "2026-05-15T12:00:00.000Z",
+      lowValueCutoff: "2026-05-16T12:00:00.000Z",
+      marketTickCutoff: "2026-05-15T12:00:00.000Z"
+    });
+    expect(logPruneReportToJson(report)).toMatchObject({
+      telemetryRows: 1,
+      lowValueOperationalRows: 2,
+      cappedOperationalInfoRows: 3,
+      marketTickRows: 4,
+      totalRows: 10,
+      policy: {
+        generatedAt: "2026-05-18T12:00:00.000Z"
+      }
+    });
   });
 });
 
