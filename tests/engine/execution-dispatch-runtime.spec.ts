@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildExecutionDispatchBlockLog,
+  buildExecutionPlanDispatchAction,
   dispatchTradeIntentToExecutioner,
   type ExecutionDispatchLogger,
   evaluateExecutionDispatchGate,
@@ -195,6 +196,69 @@ describe("ExecutionDispatchRuntime", () => {
     });
   });
 
+  it("builds executable dispatch actions for live, blocked, shadow, and inert plans", () => {
+    const plan = executionPlan();
+
+    expect(
+      buildExecutionPlanDispatchAction({
+        plan,
+        dispatchGate: { allowed: true, reason: "DISPATCH_ALLOWED" },
+        shadowReplay: false,
+        tradingEnabled: true
+      })
+    ).toMatchObject({
+      kind: "AUTHORIZED",
+      metadata: {
+        intentId: "intent-1",
+        sorSavings: 0.12,
+        icebergChildCount: 2,
+        timingJitterMs: 25
+      },
+      childIntents: [{ intentId: "intent-child-1" }, { intentId: "intent-child-2" }],
+      timingJitterMs: 25
+    });
+    expect(
+      buildExecutionPlanDispatchAction({
+        plan,
+        dispatchGate: { allowed: false, reason: "RISK_LIMIT" },
+        shadowReplay: false,
+        tradingEnabled: true
+      })
+    ).toEqual({
+      kind: "BLOCKED",
+      metadata: {
+        intentId: "intent-1",
+        instrumentCode: "btc-usd",
+        reason: "RISK_LIMIT"
+      }
+    });
+    expect(
+      buildExecutionPlanDispatchAction({
+        plan,
+        dispatchGate: { allowed: false, reason: "TRADING_DISABLED" },
+        shadowReplay: true,
+        tradingEnabled: false
+      })
+    ).toEqual({
+      kind: "SHADOW",
+      metadata: {
+        intentId: "intent-1",
+        instrumentCode: "btc-usd",
+        expectedValue: 0,
+        approvedSize: 1,
+        icebergChildCount: 2
+      }
+    });
+    expect(
+      buildExecutionPlanDispatchAction({
+        plan,
+        dispatchGate: { allowed: false, reason: "TRADING_DISABLED" },
+        shadowReplay: false,
+        tradingEnabled: false
+      })
+    ).toEqual({ kind: "NONE" });
+  });
+
   it("dispatches trade intents to the executioner binding", async () => {
     const requests: Request[] = [];
     const { logger } = loggerSpy();
@@ -248,6 +312,24 @@ function loggerSpy(): {
       }
     },
     errors
+  };
+}
+
+function executionPlan() {
+  return {
+    intent: tradeIntent(),
+    sorPlan: {
+      sorSavings: 0.12
+    },
+    camouflage: {
+      intendedSize: 1,
+      camouflagedSize: 0.75,
+      timingJitterMs: 25,
+      icebergChunks: [
+        tradeIntent({ intentId: "intent-child-1" }),
+        tradeIntent({ intentId: "intent-child-2" })
+      ]
+    }
   };
 }
 

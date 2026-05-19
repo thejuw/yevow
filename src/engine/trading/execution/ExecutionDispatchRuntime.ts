@@ -61,6 +61,48 @@ export interface ExecutionPlanDispatchBlockedLogInput {
   readonly reason: string | null;
 }
 
+export interface ExecutionPlanDispatchRuntimePlan {
+  readonly intent: TradeIntent;
+  readonly sorPlan: {
+    readonly sorSavings: number;
+  };
+  readonly camouflage: {
+    readonly intendedSize: number;
+    readonly camouflagedSize: number;
+    readonly icebergChunks: readonly TradeIntent[];
+    readonly timingJitterMs: number;
+  };
+}
+
+export interface ExecutionPlanDispatchActionInput {
+  readonly plan: ExecutionPlanDispatchRuntimePlan;
+  readonly dispatchGate: {
+    readonly allowed: boolean;
+    readonly reason: string | null;
+  };
+  readonly shadowReplay: boolean;
+  readonly tradingEnabled: boolean;
+}
+
+export type ExecutionPlanDispatchAction =
+  | {
+      readonly kind: "AUTHORIZED";
+      readonly metadata: JsonRecord;
+      readonly childIntents: readonly TradeIntent[];
+      readonly timingJitterMs: number;
+    }
+  | {
+      readonly kind: "BLOCKED";
+      readonly metadata: JsonRecord;
+    }
+  | {
+      readonly kind: "SHADOW";
+      readonly metadata: JsonRecord;
+    }
+  | {
+      readonly kind: "NONE";
+    };
+
 export function evaluateExecutionDispatchGate(
   input: ExecutionDispatchGateInput
 ): ExecutionDispatchGateDecision {
@@ -154,6 +196,48 @@ export function shadowTradeIntentAuthorizedLogMetadata(
     approvedSize: input.intent.approvedSize,
     icebergChildCount: input.icebergChildCount
   };
+}
+
+export function buildExecutionPlanDispatchAction(
+  input: ExecutionPlanDispatchActionInput
+): ExecutionPlanDispatchAction {
+  if (!input.shadowReplay && input.dispatchGate.allowed) {
+    return {
+      kind: "AUTHORIZED",
+      metadata: tradeIntentAuthorizedLogMetadata({
+        intent: input.plan.intent,
+        sorSavings: input.plan.sorPlan.sorSavings,
+        intendedSize: input.plan.camouflage.intendedSize,
+        camouflagedSize: input.plan.camouflage.camouflagedSize,
+        icebergChildCount: input.plan.camouflage.icebergChunks.length,
+        timingJitterMs: input.plan.camouflage.timingJitterMs
+      }),
+      childIntents: input.plan.camouflage.icebergChunks,
+      timingJitterMs: input.plan.camouflage.timingJitterMs
+    };
+  }
+
+  if (!input.shadowReplay && input.tradingEnabled) {
+    return {
+      kind: "BLOCKED",
+      metadata: tradeIntentDispatchBlockedLogMetadata({
+        intent: input.plan.intent,
+        reason: input.dispatchGate.reason
+      })
+    };
+  }
+
+  if (input.shadowReplay) {
+    return {
+      kind: "SHADOW",
+      metadata: shadowTradeIntentAuthorizedLogMetadata({
+        intent: input.plan.intent,
+        icebergChildCount: input.plan.camouflage.icebergChunks.length
+      })
+    };
+  }
+
+  return { kind: "NONE" };
 }
 
 export async function dispatchTradeIntentToExecutioner(

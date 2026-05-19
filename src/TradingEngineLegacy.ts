@@ -132,11 +132,9 @@ import {
 import { buildExecutionPlanArtifacts } from "./engine/trading/execution/ExecutionPlanRuntime";
 import {
   buildExecutionDispatchBlockLog,
+  buildExecutionPlanDispatchAction,
   dispatchTradeIntentToExecutioner,
   evaluateExecutionDispatchGate,
-  shadowTradeIntentAuthorizedLogMetadata,
-  tradeIntentAuthorizedLogMetadata,
-  tradeIntentDispatchBlockedLogMetadata
 } from "./engine/trading/execution/ExecutionDispatchRuntime";
 import {
   buildCroupierEvaluationInput,
@@ -3473,39 +3471,33 @@ export class TradingEngine {
 
     for (const plan of executionPlans) {
       const dispatchGate = evaluateIntentDispatchGate(this.engineState, plan.intent);
-      if (!options.shadowReplay && dispatchGate.allowed) {
+      const dispatchAction = buildExecutionPlanDispatchAction({
+        plan,
+        dispatchGate,
+        shadowReplay: options.shadowReplay === true,
+        tradingEnabled: this.cachedConfig.TRADING_ENABLED
+      });
+
+      if (dispatchAction.kind === "AUTHORIZED") {
         this.logger.info(
           "TRADE_INTENT_AUTHORIZED",
           "PitBoss authorized executable intent",
-          tradeIntentAuthorizedLogMetadata({
-            intent: plan.intent,
-            sorSavings: plan.sorPlan.sorSavings,
-            intendedSize: plan.camouflage.intendedSize,
-            camouflagedSize: plan.camouflage.camouflagedSize,
-            icebergChildCount: plan.camouflage.icebergChunks.length,
-            timingJitterMs: plan.camouflage.timingJitterMs
-          })
+          dispatchAction.metadata
         );
-        for (const childIntent of plan.camouflage.icebergChunks) {
-          this.state.waitUntil(this.dispatchExecution(childIntent, plan.camouflage.timingJitterMs));
+        for (const childIntent of dispatchAction.childIntents) {
+          this.state.waitUntil(this.dispatchExecution(childIntent, dispatchAction.timingJitterMs));
         }
-      } else if (!options.shadowReplay && this.cachedConfig.TRADING_ENABLED) {
+      } else if (dispatchAction.kind === "BLOCKED") {
         this.logger.warn(
           "TRADE_INTENT_DISPATCH_BLOCKED",
           "Intent dispatch gate blocked execution",
-          tradeIntentDispatchBlockedLogMetadata({
-            intent: plan.intent,
-            reason: dispatchGate.reason
-          })
+          dispatchAction.metadata
         );
-      } else if (options.shadowReplay) {
+      } else if (dispatchAction.kind === "SHADOW") {
         this.logger.info(
           "SHADOW_TRADE_INTENT_AUTHORIZED",
           "Replay generated shadow trade intent",
-          shadowTradeIntentAuthorizedLogMetadata({
-            intent: plan.intent,
-            icebergChildCount: plan.camouflage.icebergChunks.length
-          })
+          dispatchAction.metadata
         );
       }
     }
