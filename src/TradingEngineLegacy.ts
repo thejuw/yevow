@@ -155,6 +155,14 @@ import {
   currentCascadeSignalSnapshot as buildCurrentCascadeSignalSnapshot
 } from "./engine/trading/cascade/CascadeSnapshots";
 import {
+  cascadeDetectedAlertMetadata,
+  cascadeDetectedLogMetadata,
+  cascadeDetectedTelemetryPayload,
+  liquidationEventProcessedCount,
+  liquidationEventTelemetry,
+  stateAfterLiquidationHeatmap
+} from "./engine/trading/cascade/CascadeLiquidationRuntime";
+import {
   buildCascadeEntryTradeIntent,
   buildCascadeExitTradeIntent
 } from "./engine/trading/cascade/CascadeTradeIntents";
@@ -1740,12 +1748,11 @@ export class TradingEngine {
     }
     const cascadeEvents = this.recordCascadeLiquidations(cascadeLiquidations, observedAt);
 
-    this.engineState = {
-      ...this.engineState,
-      liquidationHeatmap: heatmap,
-      heartbeatAt: observedAt,
-      updatedAt: observedAt
-    };
+    this.engineState = stateAfterLiquidationHeatmap({
+      currentState: this.engineState,
+      heatmap,
+      observedAt
+    });
 
     this.state.waitUntil(
       this.safeStoragePut(
@@ -1758,24 +1765,26 @@ export class TradingEngine {
     );
 
     if (nextEventCount > previousEventCount) {
-      this.publish("LIQUIDATION_EVENT", {
-        instrumentCode,
-        clusterCount: heatmap.clusters.length,
-        nearestCascade: heatmap.nearestCascade,
-        totalEstimatedNotionalUsd: heatmap.totalEstimatedNotionalUsd,
-        cascadeEventCount: cascadeEvents.length,
-        observedAt
-      });
+      this.publish(
+        "LIQUIDATION_EVENT",
+        liquidationEventTelemetry({
+          instrumentCode,
+          heatmap,
+          cascadeEventCount: cascadeEvents.length,
+          observedAt
+        })
+      );
     }
 
     return {
       accepted: true,
       status: "FRESH",
-      processedCount: Math.max(
-        nextEventCount > previousEventCount ? 1 : 0,
-        cascadeLiquidations.length,
-        cascadeEvents.length
-      )
+      processedCount: liquidationEventProcessedCount({
+        previousEventCount,
+        nextEventCount,
+        cascadeLiquidationCount: cascadeLiquidations.length,
+        cascadeEventCount: cascadeEvents.length
+      })
     };
   }
 
@@ -1804,43 +1813,20 @@ export class TradingEngine {
       cascades.push(cascade);
       this.cascadeEventsById.set(cascade.cascadeId, cascade);
       this.absorptionAnalyzer.trackCascade(cascade);
-      this.logger.warn("CASCADE_DETECTED", "Liquidation cascade detected", {
-        eventType: "CASCADE_DETECTED",
-        cascadeId: cascade.cascadeId,
-        instrumentCode: cascade.instrumentCode,
-        direction: cascade.direction,
-        liquidationNotional: cascade.liquidationNotional,
-        liquidationCount: cascade.liquidationCount,
-        zScore: cascade.zScore,
-        directionalPct: cascade.directionalPct,
-        priceMoveAtr: cascade.priceMoveAtr
-      });
-      this.publish("CASCADE_DETECTED", {
-        cascadeId: cascade.cascadeId,
-        instrumentCode: cascade.instrumentCode,
-        direction: cascade.direction,
-        liquidationNotional: cascade.liquidationNotional,
-        liquidationCount: cascade.liquidationCount,
-        zScore: cascade.zScore,
-        directionalPct: cascade.directionalPct,
-        priceMoveAtr: cascade.priceMoveAtr,
-        assetProfile: this.cascadeAssetProfile(cascade.instrumentCode) as unknown as JsonRecord,
-        detectedAt: cascade.detectedAt
-      });
+      this.logger.warn(
+        "CASCADE_DETECTED",
+        "Liquidation cascade detected",
+        cascadeDetectedLogMetadata(cascade)
+      );
+      this.publish(
+        "CASCADE_DETECTED",
+        cascadeDetectedTelemetryPayload(cascade, this.cascadeAssetProfile(cascade.instrumentCode))
+      );
       this.emitCascadeOperationalAlert(
         "CASCADE_DETECTED",
         "Cascade detected",
         `${cascade.instrumentCode} ${cascade.direction} liquidation cascade detected.`,
-        {
-          cascadeId: cascade.cascadeId,
-          instrumentCode: cascade.instrumentCode,
-          direction: cascade.direction,
-          liquidationNotional: cascade.liquidationNotional,
-          liquidationCount: cascade.liquidationCount,
-          zScore: cascade.zScore,
-          priceMoveAtr: cascade.priceMoveAtr,
-          detectedAt: cascade.detectedAt
-        },
+        cascadeDetectedAlertMetadata(cascade),
         cascade.cascadeId
       );
     }
