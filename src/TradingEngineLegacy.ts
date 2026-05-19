@@ -123,7 +123,7 @@ import {
   stateAfterHardStaleTickDrop,
   type ExecutionTraceInput
 } from "./engine/trading/performance/LatencyRuntime";
-import { reconcileJanitorOrders } from "./engine/trading/janitor/JanitorRuntime";
+import { buildJanitorReport, reconcileJanitorOrders } from "./engine/trading/janitor/JanitorRuntime";
 import {
   currentCascadeActiveSnapshot as buildCurrentCascadeActiveSnapshot,
   currentCascadeHeatSnapshot as buildCurrentCascadeHeatSnapshot,
@@ -5150,29 +5150,22 @@ export class TradingEngine {
     }
 
     const pruneReport = await this.pruneOperationalLogs();
-    const report = {
-      ...baseReport,
-      orphanExchangeOrders: reconciliation.orphanExchangeOrders,
-      reconciledOrders: reconciliation.reconciledOrders,
-      cancelledOrders: [...new Set(reconciliation.cancelledOrders)],
+    const janitorResult = buildJanitorReport({
+      baseReport,
+      reconciliation,
       dustCloseIntents,
-      prunedTelemetryCount: pruneReport.totalRows
-    };
+      pruneReport
+    });
 
-    if (
-      report.zombieOrders.length > 0 ||
-      report.orphanExchangeOrders.length > 0 ||
-      report.dustPositions.length > 0 ||
-      report.prunedTelemetryCount > 0
-    ) {
+    if (janitorResult.shouldWarn) {
       this.logger.warn("JANITOR_CLEANUP_REQUIRED", "Janitor found state hygiene work", {
         source,
-        zombieOrders: report.zombieOrders,
-        orphanExchangeOrders: report.orphanExchangeOrders,
-        cancelledOrders: report.cancelledOrders,
-        dustPositions: report.dustPositions,
-        dustCloseIntents: report.dustCloseIntents,
-        prunedTelemetryCount: report.prunedTelemetryCount,
+        zombieOrders: janitorResult.report.zombieOrders,
+        orphanExchangeOrders: janitorResult.report.orphanExchangeOrders,
+        cancelledOrders: janitorResult.report.cancelledOrders,
+        dustPositions: janitorResult.report.dustPositions,
+        dustCloseIntents: janitorResult.report.dustCloseIntents,
+        prunedTelemetryCount: janitorResult.report.prunedTelemetryCount,
         pruneReport: logPruneReportToJson(pruneReport)
       });
     }
@@ -5180,7 +5173,7 @@ export class TradingEngine {
     this.engineState = {
       ...this.engineState,
       orderMap: nextOrderMap,
-      janitor: report,
+      janitor: janitorResult.report,
       updatedAt: observedAt,
       heartbeatAt: observedAt
     };

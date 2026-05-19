@@ -1,4 +1,5 @@
-import type { EngineState, ExchangeOpenOrder } from "../../../types";
+import type { LogPruneReport } from "../../LogRetention";
+import type { EngineState, ExchangeOpenOrder, JanitorState } from "../../../types";
 
 export type JanitorCancelReason = "JANITOR_ORPHAN_EXCHANGE_ORDER" | "JANITOR_ZOMBIE_LOCAL_ORDER";
 
@@ -21,6 +22,18 @@ export interface JanitorOrderReconciliation {
   readonly orphanExchangeOrders: string[];
   readonly cancelledOrders: string[];
   readonly cancellationRequests: JanitorCancellationRequest[];
+}
+
+export interface JanitorReportInput {
+  readonly baseReport: JanitorState;
+  readonly reconciliation: JanitorOrderReconciliation;
+  readonly dustCloseIntents: readonly string[];
+  readonly pruneReport: LogPruneReport;
+}
+
+export interface JanitorReportResult {
+  readonly report: JanitorState;
+  readonly shouldWarn: boolean;
 }
 
 export function reconcileJanitorOrders(
@@ -102,6 +115,26 @@ export function reconcileJanitorOrders(
     orphanExchangeOrders,
     cancelledOrders,
     cancellationRequests
+  };
+}
+
+export function buildJanitorReport(input: JanitorReportInput): JanitorReportResult {
+  const report: JanitorState = {
+    ...input.baseReport,
+    orphanExchangeOrders: input.reconciliation.orphanExchangeOrders,
+    reconciledOrders: input.reconciliation.reconciledOrders,
+    cancelledOrders: [...new Set(input.reconciliation.cancelledOrders)],
+    dustCloseIntents: [...input.dustCloseIntents],
+    prunedTelemetryCount: input.pruneReport.totalRows
+  };
+
+  return {
+    report,
+    shouldWarn:
+      report.zombieOrders.length > 0 ||
+      report.orphanExchangeOrders.length > 0 ||
+      report.dustPositions.length > 0 ||
+      report.prunedTelemetryCount > 0
   };
 }
 

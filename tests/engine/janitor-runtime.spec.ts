@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { reconcileJanitorOrders } from "../../src/engine/trading/janitor/JanitorRuntime";
-import type { ExchangeOpenOrder, ManagedOrder } from "../../src/types";
+import {
+  buildJanitorReport,
+  reconcileJanitorOrders
+} from "../../src/engine/trading/janitor/JanitorRuntime";
+import type { LogPruneReport } from "../../src/engine/LogRetention";
+import type { ExchangeOpenOrder, JanitorState, ManagedOrder } from "../../src/types";
 
 const OBSERVED_AT = "2026-05-18T16:00:00.000Z";
 
@@ -93,6 +97,53 @@ describe("JanitorRuntime", () => {
     ]);
     expect(result.orderMap["client-1"].status).toBe("CANCELLED");
   });
+
+  it("builds the persisted janitor report and deduplicates cancellations", () => {
+    const result = buildJanitorReport({
+      baseReport: janitorState({
+        zombieOrders: ["client-1"],
+        dustPositions: ["hype-usd"]
+      }),
+      reconciliation: {
+        orderMap: {},
+        reconciledOrders: ["client-2"],
+        orphanExchangeOrders: ["orphan-1"],
+        cancelledOrders: ["client-1", "client-1", "orphan-1"],
+        cancellationRequests: []
+      },
+      dustCloseIntents: ["dust-intent-1"],
+      pruneReport: logPruneReport({ totalRows: 2 })
+    });
+
+    expect(result.shouldWarn).toBe(true);
+    expect(result.report).toMatchObject({
+      zombieOrders: ["client-1"],
+      orphanExchangeOrders: ["orphan-1"],
+      reconciledOrders: ["client-2"],
+      cancelledOrders: ["client-1", "orphan-1"],
+      dustPositions: ["hype-usd"],
+      dustCloseIntents: ["dust-intent-1"],
+      prunedTelemetryCount: 2
+    });
+  });
+
+  it("suppresses cleanup warnings when only healthy reconciliation occurred", () => {
+    const result = buildJanitorReport({
+      baseReport: janitorState(),
+      reconciliation: {
+        orderMap: {},
+        reconciledOrders: ["client-2"],
+        orphanExchangeOrders: [],
+        cancelledOrders: [],
+        cancellationRequests: []
+      },
+      dustCloseIntents: [],
+      pruneReport: logPruneReport({ totalRows: 0 })
+    });
+
+    expect(result.shouldWarn).toBe(false);
+    expect(result.report.reconciledOrders).toEqual(["client-2"]);
+  });
 });
 
 function order(overrides: Partial<ManagedOrder> = {}): ManagedOrder {
@@ -124,6 +175,44 @@ function exchangeOrder(overrides: Partial<ExchangeOpenOrder> = {}): ExchangeOpen
     filledSize: 0,
     status: "OPEN",
     observedAt: OBSERVED_AT,
+    ...overrides
+  };
+}
+
+function janitorState(overrides: Partial<JanitorState> = {}): JanitorState {
+  return {
+    lastRunAt: OBSERVED_AT,
+    zombieOrders: [],
+    orphanExchangeOrders: [],
+    reconciledOrders: [],
+    cancelledOrders: [],
+    dustPositions: [],
+    dustCloseIntents: [],
+    prunedTelemetryCount: 0,
+    updatedAt: OBSERVED_AT,
+    ...overrides
+  };
+}
+
+function logPruneReport(overrides: Partial<LogPruneReport> = {}): LogPruneReport {
+  return {
+    policy: {
+      generatedAt: OBSERVED_AT,
+      telemetryRetentionDays: 3,
+      lowValueRetentionDays: 2,
+      marketTickRetentionDays: 3,
+      maxTelemetryRows: 15_000,
+      maxOperationalInfoRows: 50_000,
+      maxMarketTickRows: 25_000,
+      telemetryCutoff: OBSERVED_AT,
+      lowValueCutoff: OBSERVED_AT,
+      marketTickCutoff: OBSERVED_AT
+    },
+    telemetryRows: 0,
+    lowValueOperationalRows: 0,
+    cappedOperationalInfoRows: 0,
+    marketTickRows: 0,
+    totalRows: 0,
     ...overrides
   };
 }
