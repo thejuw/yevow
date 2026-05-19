@@ -74,6 +74,15 @@ import {
 import { buildExecutionPlanArtifacts } from "./engine/trading/execution/ExecutionPlanRuntime";
 import { calculateAssetMatrix as calculateRuntimeAssetMatrix } from "./engine/trading/state/AssetMatrixRuntime";
 import {
+  buildPerformanceMetricsText,
+  buildPerformanceSnapshot,
+  calculateTickLatency,
+  nextExecutionProfile,
+  nextLatencyAverage,
+  recordProcessingLatencySample,
+  type ExecutionTraceInput
+} from "./engine/trading/performance/LatencyRuntime";
+import {
   OrderBookReconstructor,
   type OrderBookStores
 } from "./engine/trading/book/OrderBookReconstructor";
@@ -354,7 +363,6 @@ import {
   touchAgentHealth,
   disabledProfilerEvaluation,
   disabledCroupierDecision,
-  defaultExecutionProfile,
   defaultAnomalyStatus,
   normalizeExecutionProfile,
   defaultMicrostructure,
@@ -377,8 +385,6 @@ import {
   defaultRiskLimits,
   mergeRiskLimits,
   resolveMaxLatencyMs,
-  processingLatencyStats,
-  prometheusMetric,
   prometheusLabels,
   escapePrometheusLabel,
   finiteMetric,
@@ -464,14 +470,6 @@ interface PerformanceMemory {
   usedJSHeapSize?: number;
   totalJSHeapSize?: number;
   jsHeapSizeLimit?: number;
-}
-
-interface ExecutionTraceInput {
-  wakeUpTimeMs: number | null;
-  orderBookUpdateMs: number | null;
-  agentLogicMs: number | null;
-  hotPathStartedAt: number;
-  observedAt: string;
 }
 
 interface TickHandlingOptions {
@@ -6692,53 +6690,30 @@ export class TradingEngine {
 
   private calculateLatency(tick: MarketTick): LatencyMetrics {
     const brainTimestamp = new Date().toISOString();
-    const sourceTimestamp =
-      tick.synchronizedExchangeTimestamp ?? tick.providerTimestamp ?? tick.exchangeTimestamp;
-    const providerTimestamp = tick.providerTimestamp ?? sourceTimestamp;
-    const sourceTime = parseTimestampMs(sourceTimestamp, "source_timestamp");
-    const rawIngestTime = parseTimestampMs(tick.receivedAt, "ingest_timestamp");
-    const brainTime = parseTimestampMs(brainTimestamp, "brain_timestamp");
-    const ingestClockSkewMs = Math.max(0, rawIngestTime - brainTime);
-    const ingestTime = ingestClockSkewMs > 0 ? brainTime : rawIngestTime;
-    const ingestTimestamp = ingestClockSkewMs > 0 ? brainTimestamp : tick.receivedAt;
-    const networkLatencyMs = Math.max(0, ingestTime - sourceTime);
-    const processingLatencyMs = Math.max(0, brainTime - ingestTime);
 
-    return {
-      instrumentCode: tick.instrumentCode,
-      exchangeCode: tick.exchangeCode,
-      source: tick.source,
-      sourceExchange: tick.source_exchange,
-      sourceWeight: tick.sourceWeight,
-      sequence: tick.sequence,
-      providerTimestamp,
-      sourceTimestamp,
-      ingestTimestamp,
+    return calculateTickLatency({
+      tick,
       brainTimestamp,
-      clockOffsetMs: tick.clockOffsetMs + ingestClockSkewMs,
-      networkLatencyMs,
-      processingLatencyMs,
-      totalLatencyMs: networkLatencyMs + processingLatencyMs,
       maxLatencyMs: this.maxLatencyMs,
       averageLatencyMs: this.engineState.averageLatency,
       sampleCount: this.engineState.latencySampleCount,
-      status: "FRESH",
-      colo: this.engineState.location.colo,
-      placement: this.engineState.location.placement,
-      latencyRiskMultiplier: this.engineState.location.latencyRiskMultiplier,
-      positionSizeMultiplier: this.engineState.location.positionSizeMultiplier
-    };
+      location: this.engineState.location
+    });
   }
 
   private updateLatencyAverage(totalLatencyMs: number): void {
-    const sampleCount = this.engineState.latencySampleCount + 1;
-    const previousMean = this.engineState.averageLatency;
-    const nextMean = previousMean + (totalLatencyMs - previousMean) / sampleCount;
+    const next = nextLatencyAverage(
+      {
+        averageLatency: this.engineState.averageLatency,
+        latencySampleCount: this.engineState.latencySampleCount
+      },
+      totalLatencyMs
+    );
 
     this.engineState = {
       ...this.engineState,
-      averageLatency: roundLatency(nextMean),
-      latencySampleCount: sampleCount
+      averageLatency: next.averageLatency,
+      latencySampleCount: next.latencySampleCount
     };
   }
 
@@ -6787,60 +6762,25 @@ export class TradingEngine {
   }
 
   private observeExecutionProfile(metrics: LatencyMetrics, trace: ExecutionTraceInput): void {
-    const processingLatencyMs = roundLatency(metrics.processingLatencyMs);
-
-    this.processingLatencySamples.push(processingLatencyMs);
-
-    if (this.processingLatencySamples.length > this.jitterSampleWindow) {
-      this.processingLatencySamples.splice(
-        0,
-        this.processingLatencySamples.length - this.jitterSampleWindow
-      );
-    }
-
-    const previousProfile =
-      this.engineState.executionProfile ??
-      defaultExecutionProfile(
-        this.jitterThresholdMs,
-        this.jitterSampleWindow,
-        this.jitterComputeIntervalTicks,
-        this.processingLatencySamples.length
-      );
+    const processingLatencyMs = recordProcessingLatencySample(
+      this.processingLatencySamples,
+      metrics.processingLatencyMs,
+      this.jitterSampleWindow
+    );
     const nextProcessedTicks = this.engineState.processedTicks + 1;
-    const shouldCompute =
-      previousProfile.lastComputedAt === null ||
-      nextProcessedTicks % this.jitterComputeIntervalTicks === 0;
     const totalHotPathMs = roundLatency(Math.max(0, highResolutionNow() - trace.hotPathStartedAt));
-    let nextProfile: ExecutionProfile = {
-      ...previousProfile,
+    const { profile: nextProfile, shouldCompute } = nextExecutionProfile({
+      previousProfile: this.engineState.executionProfile,
+      processingLatencySamples: this.processingLatencySamples,
+      processingLatencyMs,
+      nextProcessedTicks,
       jitterThresholdMs: this.jitterThresholdMs,
-      sampleWindow: this.jitterSampleWindow,
-      computeIntervalTicks: this.jitterComputeIntervalTicks,
-      sampleCount: this.processingLatencySamples.length,
-      lastProcessingLatencyMs: processingLatencyMs,
-      wakeUpTimeMs: trace.wakeUpTimeMs,
-      coldStartSuspected:
-        trace.wakeUpTimeMs !== null && trace.wakeUpTimeMs > COLD_START_WAKEUP_THRESHOLD_MS,
-      orderBookUpdateMs: trace.orderBookUpdateMs,
-      agentLogicMs: trace.agentLogicMs,
+      jitterSampleWindow: this.jitterSampleWindow,
+      jitterComputeIntervalTicks: this.jitterComputeIntervalTicks,
+      coldStartWakeupThresholdMs: COLD_START_WAKEUP_THRESHOLD_MS,
       totalHotPathMs,
-      updatedAt: trace.observedAt
-    };
-
-    if (shouldCompute) {
-      const stats = processingLatencyStats(this.processingLatencySamples);
-      const status: EngineStabilityStatus =
-        stats.jitterMs > this.jitterThresholdMs ? "UNSTABLE" : "STABLE";
-
-      nextProfile = {
-        ...nextProfile,
-        status,
-        jitterMs: stats.jitterMs,
-        averageProcessingLatencyMs: stats.averageMs,
-        maxProcessingLatencyMs: stats.maxMs,
-        lastComputedAt: trace.observedAt
-      };
-    }
+      trace
+    });
 
     this.engineState = {
       ...this.engineState,
@@ -6903,128 +6843,18 @@ export class TradingEngine {
     processedTicks: number,
     observedAt: string
   ): PerformanceSnapshot {
-    return {
-      engineId: this.engineState.engineId,
-      status: profile.status,
-      jitterMs: profile.jitterMs,
-      jitterThresholdMs: profile.jitterThresholdMs,
-      sampleCount: profile.sampleCount,
-      sampleWindow: profile.sampleWindow,
-      computeIntervalTicks: profile.computeIntervalTicks,
-      averageProcessingLatencyMs: profile.averageProcessingLatencyMs,
-      maxProcessingLatencyMs: profile.maxProcessingLatencyMs,
-      lastProcessingLatencyMs: profile.lastProcessingLatencyMs,
-      wakeUpTimeMs: profile.wakeUpTimeMs,
-      coldStartSuspected: profile.coldStartSuspected,
-      orderBookUpdateMs: profile.orderBookUpdateMs,
-      agentLogicMs: profile.agentLogicMs,
-      totalHotPathMs: profile.totalHotPathMs,
-      processedTicks,
-      observedAt
-    };
+    return buildPerformanceSnapshot(this.engineState.engineId, profile, processedTicks, observedAt);
   }
 
   private performanceMetricsResponse(): Response {
-    const profile = this.engineState.executionProfile;
-    const labels = {
-      engine_id: this.engineState.engineId,
-      status: profile.status
-    };
-    const lines = [
-      prometheusMetric(
-        "sovereign_sigma_processing_latency_jitter_ms",
-        "Standard deviation of processing latency over the configured rolling sample window.",
-        "gauge",
-        profile.jitterMs,
-        labels
-      ),
-      prometheusMetric(
-        "sovereign_sigma_processing_latency_average_ms",
-        "Average processing latency over the configured rolling sample window.",
-        "gauge",
-        profile.averageProcessingLatencyMs,
-        labels
-      ),
-      prometheusMetric(
-        "sovereign_sigma_processing_latency_last_ms",
-        "Most recent tick processing latency.",
-        "gauge",
-        profile.lastProcessingLatencyMs,
-        labels
-      ),
-      prometheusMetric(
-        "sovereign_sigma_processing_latency_max_ms",
-        "Maximum processing latency in the configured rolling sample window.",
-        "gauge",
-        profile.maxProcessingLatencyMs,
-        labels
-      ),
-      prometheusMetric(
-        "sovereign_sigma_wakeup_time_ms",
-        "Time spent awaiting Durable Object initialization before request logic.",
-        "gauge",
-        profile.wakeUpTimeMs,
-        labels
-      ),
-      prometheusMetric(
-        "sovereign_sigma_order_book_update_ms",
-        "High-resolution duration of the latest order book update block.",
-        "gauge",
-        profile.orderBookUpdateMs,
-        labels
-      ),
-      prometheusMetric(
-        "sovereign_sigma_agent_logic_ms",
-        "High-resolution duration of the latest agent logic block.",
-        "gauge",
-        profile.agentLogicMs,
-        labels
-      ),
-      prometheusMetric(
-        "sovereign_sigma_hot_path_ms",
-        "High-resolution duration of the latest tick hot path.",
-        "gauge",
-        profile.totalHotPathMs,
-        labels
-      ),
-      prometheusMetric(
-        "sovereign_sigma_execution_unstable",
-        "Execution stability flag; 1 when jitter exceeds threshold.",
-        "gauge",
-        profile.status === "UNSTABLE" ? 1 : 0,
-        labels
-      ),
-      prometheusMetric(
-        "sovereign_sigma_cold_start_suspected",
-        "Cold-start or eviction suspicion flag based on Durable Object wake-up time.",
-        "gauge",
-        profile.coldStartSuspected ? 1 : 0,
-        labels
-      ),
-      prometheusMetric(
-        "sovereign_sigma_execution_profile_samples",
-        "Number of processing latency samples currently retained.",
-        "gauge",
-        profile.sampleCount,
-        labels
-      ),
-      prometheusMetric(
-        "sovereign_sigma_processed_ticks_total",
-        "Total market ticks processed by the engine.",
-        "counter",
-        this.engineState.processedTicks,
-        labels
-      ),
-      prometheusMetric(
-        "sovereign_sigma_toxicity_score",
-        "Current VPIN toxicity score from the Profiler agent.",
-        "gauge",
-        this.engineState.toxicityScore,
-        labels
-      )
-    ];
+    const body = buildPerformanceMetricsText({
+      engineId: this.engineState.engineId,
+      profile: this.engineState.executionProfile,
+      processedTicks: this.engineState.processedTicks,
+      toxicityScore: this.engineState.toxicityScore
+    });
 
-    return new Response(`${lines.join("\n")}\n`, {
+    return new Response(body, {
       headers: {
         "content-type": "text/plain; version=0.0.4;charset=UTF-8",
         "cache-control": "no-store"
