@@ -689,6 +689,24 @@ interface TickDecisionContext {
   readonly sentimentForDecision: SentimentState;
 }
 
+interface AcceptedTickSideEffectsInput {
+  readonly tick: MarketTick;
+  readonly metrics: LatencyMetrics;
+  readonly book: InternalOrderBook;
+  readonly anomalyResult: AnomalyDetectionResult;
+  readonly profilerResult: ProfilerEvaluation;
+  readonly profilerLatencyMs: number;
+  readonly croupierDecision: CroupierDecision;
+  readonly executionPlans: readonly ApprovedExecutionPlan[];
+  readonly inventory: InventoryState;
+  readonly strategyQuoteDisableReason: string | null;
+  readonly isCascadeShield: boolean;
+  readonly isProfilerQuoteHalt: boolean;
+  readonly oracleBayesianTrace: BayesianUpdateTrace | null;
+  readonly hotPathStartedAt: number;
+  readonly shadowReplay: boolean;
+}
+
 export class TradingEngine {
   private readonly startedAt = Date.now();
   private readonly initialized: Promise<void>;
@@ -3757,6 +3775,62 @@ export class TradingEngine {
     });
   }
 
+  private async finalizeAcceptedTick(input: AcceptedTickSideEffectsInput): Promise<void> {
+    this.scheduleAcceptedTickSnapshot(
+      input.tick,
+      input.book,
+      input.anomalyResult,
+      input.profilerResult
+    );
+    this.journalAcceptedTick(input.tick, input.metrics, input.oracleBayesianTrace);
+
+    const croupierQuoteAction = buildCroupierQuoteAction({
+      instrumentCode: input.tick.instrumentCode,
+      pullAllQuotes: input.croupierDecision.pullAllQuotes,
+      quote: input.croupierDecision.quote,
+      strategyQuoteDisableReason: input.strategyQuoteDisableReason,
+      adverseSelectionCost: input.croupierDecision.adverseSelectionCost,
+      minEvThreshold: input.croupierDecision.minEvThreshold,
+      shadowReplay: input.shadowReplay,
+      tradingEnabled: this.cachedConfig.TRADING_ENABLED,
+      profilerQuoteHalt: input.isProfilerQuoteHalt,
+      cascadeShield: input.isCascadeShield
+    });
+
+    this.handleCroupierQuoteAction(input.tick.instrumentCode, croupierQuoteAction);
+    this.dispatchExecutionPlans(input.executionPlans, input.shadowReplay);
+    this.dispatchInventoryHedgeIfNeeded(
+      input.book,
+      input.inventory,
+      input.metrics.brainTimestamp,
+      input.shadowReplay
+    );
+
+    await this.handleProfilerSignal(
+      input.tick.instrumentCode,
+      input.profilerResult,
+      input.profilerLatencyMs,
+      input.isProfilerQuoteHalt,
+      input.shadowReplay,
+      Boolean(input.croupierDecision.quote)
+    );
+
+    this.publishTickTelemetry(
+      input.tick,
+      input.metrics,
+      input.metrics.status,
+      input.hotPathStartedAt
+    );
+    if (input.profilerResult.closedBuckets > 0) {
+      this.publishAmVpinTelemetry(
+        input.profilerResult.state,
+        input.tick.instrumentCode,
+        input.metrics.brainTimestamp
+      );
+    }
+    this.maybeRecordAgentSnapshot(input.metrics.brainTimestamp);
+  }
+
   private async handleTick(
     tick: MarketTick,
     wakeUpTimeMs: number | null,
@@ -3939,49 +4013,23 @@ export class TradingEngine {
       observedAt: metrics.brainTimestamp
     });
 
-    this.scheduleAcceptedTickSnapshot(tick, book, anomalyResult, profilerResult);
-    this.journalAcceptedTick(tick, metrics, oracleResult.bayesianTrace);
-
-    const croupierQuoteAction = buildCroupierQuoteAction({
-      instrumentCode: tick.instrumentCode,
-      pullAllQuotes: croupierDecision.pullAllQuotes,
-      quote: croupierDecision.quote,
-      strategyQuoteDisableReason,
-      adverseSelectionCost: croupierDecision.adverseSelectionCost,
-      minEvThreshold: croupierDecision.minEvThreshold,
-      shadowReplay: options.shadowReplay === true,
-      tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-      profilerQuoteHalt: isProfilerQuoteHalt,
-      cascadeShield: isCascadeShield
-    });
-
-    this.handleCroupierQuoteAction(tick.instrumentCode, croupierQuoteAction);
-    this.dispatchExecutionPlans(executionPlans, options.shadowReplay === true);
-    this.dispatchInventoryHedgeIfNeeded(
+    await this.finalizeAcceptedTick({
+      tick,
+      metrics,
       book,
-      decisionContext.inventory,
-      metrics.brainTimestamp,
-      options.shadowReplay === true
-    );
-
-    await this.handleProfilerSignal(
-      tick.instrumentCode,
+      anomalyResult,
       profilerResult,
       profilerLatencyMs,
+      croupierDecision,
+      executionPlans,
+      inventory: decisionContext.inventory,
+      strategyQuoteDisableReason,
+      isCascadeShield,
       isProfilerQuoteHalt,
-      options.shadowReplay === true,
-      Boolean(croupierDecision.quote)
-    );
-
-    this.publishTickTelemetry(tick, metrics, metrics.status, hotPathStartedAt);
-    if (profilerResult.closedBuckets > 0) {
-      this.publishAmVpinTelemetry(
-        profilerResult.state,
-        tick.instrumentCode,
-        metrics.brainTimestamp
-      );
-    }
-    this.maybeRecordAgentSnapshot(metrics.brainTimestamp);
+      oracleBayesianTrace: oracleResult.bayesianTrace,
+      hotPathStartedAt,
+      shadowReplay: options.shadowReplay === true
+    });
 
     return {
       accepted: true,
