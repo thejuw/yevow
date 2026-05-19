@@ -169,6 +169,7 @@ import {
 } from "./engine/trading/routes/EngineWebSocketStreams";
 import { TradingTelemetryBus } from "./engine/trading/telemetry/TelemetryBus";
 import { buildAgentStateSnapshot } from "./engine/trading/telemetry/AgentSnapshotRuntime";
+import { buildCascadeSignalTelemetry } from "./engine/trading/telemetry/CascadeSignalTelemetryRuntime";
 import {
   buildAmVpinTelemetry,
   buildProfilerAlertTelemetry
@@ -6429,26 +6430,8 @@ export class TradingEngine {
     this.state.waitUntil(
       this.safeStoragePut(`signal:${signal.signalId}`, signal, "CASCADE_SIGNAL")
     );
-    this.publish(
-      "CASCADE_SIGNAL",
-      {
-        signalId: signal.signalId,
-        traceId: signal.traceId,
-        sourceAgent: signal.sourceAgent,
-        targetAgent: signal.targetAgent,
-        instrumentCode: signal.instrumentCode,
-        action: signal.action,
-        confidence: signal.confidence,
-        expectedValue: signal.expectedValue,
-        outcome,
-        cascadeId:
-          (signal.featureVector as JsonRecord).cascadeId ??
-          (signal.riskContext as JsonRecord).cascadeId ??
-          null,
-        createdAt: signal.createdAt
-      },
-      signal.signalId
-    );
+    const event = buildCascadeSignalTelemetry(signal, outcome);
+    this.publish(event.telemetryType, event.payload, event.correlationId);
   }
 
   private async applyConfigUpdate(update: AdminConfigUpdate): Promise<void> {
