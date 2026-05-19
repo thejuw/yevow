@@ -283,7 +283,8 @@ import {
 } from "./engine/trading/telemetry/CascadeSignalTelemetryRuntime";
 import {
   buildAmVpinTelemetry,
-  buildProfilerAlertTelemetry
+  buildProfilerAlertTelemetry,
+  shouldCancelQuotesForProfilerSignal
 } from "./engine/trading/telemetry/ProfilerTelemetryRuntime";
 import {
   bayesianPosteriorUpdatedLogMetadata,
@@ -3548,11 +3549,13 @@ export class TradingEngine {
       this.publishProfilerAlert(profilerResult.signal, profilerResult.state);
       await this.acceptAgentSignal(profilerResult.signal, profilerLatencyMs);
       if (
-        (isProfilerQuoteHalt ||
-          profilerResult.signal.featureVector.signalType === "CASCADE_SHIELD") &&
-        !options.shadowReplay &&
-        this.cachedConfig.TRADING_ENABLED &&
-        (!croupierDecision.quote || isProfilerQuoteHalt)
+        shouldCancelQuotesForProfilerSignal({
+          signal: profilerResult.signal,
+          profilerQuoteHalt: isProfilerQuoteHalt,
+          shadowReplay: options.shadowReplay === true,
+          tradingEnabled: this.cachedConfig.TRADING_ENABLED,
+          croupierHasQuote: Boolean(croupierDecision.quote)
+        })
       ) {
         this.state.waitUntil(this.cancelAllQuotes(tick.instrumentCode, "PROFILER_ALERT"));
       }

@@ -6,6 +6,24 @@ export interface ProfilerTelemetryEvent {
   readonly correlationId: string;
 }
 
+export interface ProfilerQuoteCancelInput {
+  readonly signal: AgentSignal;
+  readonly profilerQuoteHalt: boolean;
+  readonly shadowReplay: boolean;
+  readonly tradingEnabled: boolean;
+  readonly croupierHasQuote: boolean;
+}
+
+export function shouldCancelQuotesForProfilerSignal(input: ProfilerQuoteCancelInput): boolean {
+  const cascadeShield = input.signal.featureVector.signalType === "CASCADE_SHIELD";
+  return (
+    (input.profilerQuoteHalt || cascadeShield) &&
+    !input.shadowReplay &&
+    input.tradingEnabled &&
+    (!input.croupierHasQuote || input.profilerQuoteHalt)
+  );
+}
+
 export function buildProfilerAlertTelemetry(
   signal: AgentSignal,
   profilerState: ProfilerState

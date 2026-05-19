@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   buildAmVpinTelemetry,
-  buildProfilerAlertTelemetry
+  buildProfilerAlertTelemetry,
+  shouldCancelQuotesForProfilerSignal
 } from "../../src/engine/trading/telemetry/ProfilerTelemetryRuntime";
 import type { AgentSignal, ProfilerState } from "../../src/types";
 
@@ -50,6 +51,45 @@ describe("ProfilerTelemetryRuntime", () => {
         toxicity_state: "TOXIC"
       }
     });
+  });
+
+  it("decides when profiler signals should cancel resting quotes", () => {
+    expect(
+      shouldCancelQuotesForProfilerSignal({
+        signal: signal(),
+        profilerQuoteHalt: true,
+        shadowReplay: false,
+        tradingEnabled: true,
+        croupierHasQuote: true
+      })
+    ).toBe(true);
+    expect(
+      shouldCancelQuotesForProfilerSignal({
+        signal: signal({ featureVector: { signalType: "CASCADE_SHIELD" } }),
+        profilerQuoteHalt: false,
+        shadowReplay: false,
+        tradingEnabled: true,
+        croupierHasQuote: false
+      })
+    ).toBe(true);
+    expect(
+      shouldCancelQuotesForProfilerSignal({
+        signal: signal({ featureVector: { signalType: "CASCADE_SHIELD" } }),
+        profilerQuoteHalt: false,
+        shadowReplay: false,
+        tradingEnabled: true,
+        croupierHasQuote: true
+      })
+    ).toBe(false);
+    expect(
+      shouldCancelQuotesForProfilerSignal({
+        signal: signal(),
+        profilerQuoteHalt: true,
+        shadowReplay: true,
+        tradingEnabled: true,
+        croupierHasQuote: true
+      })
+    ).toBe(false);
   });
 });
 
