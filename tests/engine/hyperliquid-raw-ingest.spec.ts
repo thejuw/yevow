@@ -5,6 +5,7 @@ import {
   buildHyperliquidL2BookTick,
   buildHyperliquidL2BookTickFromBook,
   calculateHyperliquidBookTotalLatencyMs,
+  evaluateHyperliquidL2BookHotPath,
   evaluateHyperliquidBookSequence,
   handleHyperliquidRawBatch,
   hyperliquidBookDesyncLogMetadata,
@@ -265,6 +266,81 @@ describe("hyperliquid raw ingest helpers", () => {
         maxGapMs: 5
       });
     }
+  });
+
+  it("classifies native L2 hot-path duplicate, desync, stale, and accepted decisions", () => {
+    const raw = {
+      data: {
+        coin: "BTC",
+        time: Date.parse("2026-01-01T00:00:00.000Z"),
+        sequence: 20,
+        levels: [[{ px: "100", sz: "1" }], [{ px: "101", sz: "2" }]]
+      }
+    };
+    const payload = {
+      source_exchange: "hyperliquid",
+      exchangeCode: "HL",
+      receivedAt: "2026-01-01T00:00:00.050Z"
+    };
+    const baseInput = {
+      raw,
+      payload,
+      maxTimestampDriftMs: 5_000,
+      sequenceGapMs: 5,
+      nativeMaxLatencyMs: 150,
+      averageLatencyMs: 40,
+      sampleCount: 10,
+      location: defaultEngineState("test").location,
+      fallbackReceivedAt: "2026-01-01T00:00:00.050Z",
+      brainTimestamp: "2026-01-01T00:00:00.100Z"
+    };
+
+    expect(
+      evaluateHyperliquidL2BookHotPath({
+        ...baseInput,
+        resolveExistingSync: () => bookSync(20)
+      })
+    ).toMatchObject({
+      kind: "DUPLICATE_OR_OUT_OF_ORDER",
+      result: { accepted: false, status: "DUPLICATE_OR_OUT_OF_ORDER" }
+    });
+    expect(
+      evaluateHyperliquidL2BookHotPath({
+        ...baseInput,
+        resolveExistingSync: () => bookSync(10)
+      })
+    ).toMatchObject({
+      kind: "DESYNC",
+      sequenceDecision: {
+        previousSequence: 10,
+        sequence: 20,
+        gapMs: 10
+      },
+      result: { accepted: false, status: "DESYNC" }
+    });
+    expect(
+      evaluateHyperliquidL2BookHotPath({
+        ...baseInput,
+        sequenceGapMs: 15,
+        nativeMaxLatencyMs: 50,
+        resolveExistingSync: () => bookSync(10)
+      })
+    ).toMatchObject({
+      kind: "STALE",
+      totalLatencyMs: 100,
+      metrics: { status: "STALE", totalLatencyMs: 100, maxLatencyMs: 50 }
+    });
+    expect(
+      evaluateHyperliquidL2BookHotPath({
+        ...baseInput,
+        sequenceGapMs: 15,
+        resolveExistingSync: () => bookSync(10)
+      })
+    ).toMatchObject({
+      kind: "ACCEPTED",
+      totalLatencyMs: 100,
+      nativeMaxLatencyMs: 150
+    });
   });
 
   it("processes bounded native trade batches without allocating sliced trade arrays", async () => {

@@ -411,6 +411,48 @@ export interface HyperliquidL2BookTickInput {
   readonly rawEventType?: string;
 }
 
+export interface HyperliquidL2BookHotPathInput {
+  readonly raw: Record<string, unknown>;
+  readonly payload: HyperliquidRawIngestPayload;
+  resolveExistingSync(marketKey: string): BookSyncState | undefined;
+  readonly maxTimestampDriftMs: number;
+  readonly sequenceGapMs: number;
+  readonly nativeMaxLatencyMs: number;
+  readonly averageLatencyMs: number;
+  readonly sampleCount: number;
+  readonly location: EngineLocation;
+  readonly fallbackReceivedAt?: string;
+  readonly brainTimestamp?: string;
+}
+
+export type HyperliquidL2BookHotPathDecision =
+  | {
+      readonly kind: "DUPLICATE_OR_OUT_OF_ORDER";
+      readonly bundle: HyperliquidL2BookSnapshotBundle;
+      readonly result: TickIngestResult;
+    }
+  | {
+      readonly kind: "DESYNC";
+      readonly bundle: HyperliquidL2BookSnapshotBundle;
+      readonly sequenceDecision: Extract<HyperliquidBookSequenceDecision, { status: "DESYNC" }>;
+      readonly result: TickIngestResult;
+    }
+  | {
+      readonly kind: "STALE";
+      readonly bundle: HyperliquidL2BookSnapshotBundle;
+      readonly brainTimestamp: string;
+      readonly totalLatencyMs: number;
+      readonly nativeMaxLatencyMs: number;
+      readonly metrics: LatencyMetrics;
+    }
+  | {
+      readonly kind: "ACCEPTED";
+      readonly bundle: HyperliquidL2BookSnapshotBundle;
+      readonly brainTimestamp: string;
+      readonly totalLatencyMs: number;
+      readonly nativeMaxLatencyMs: number;
+    };
+
 export function calculateHyperliquidBookTotalLatencyMs(
   exchangeTimestamp: string,
   brainTimestamp: string
@@ -518,6 +560,84 @@ export function evaluateHyperliquidBookSequence(
   }
 
   return { status: "ACCEPTED" };
+}
+
+export function evaluateHyperliquidL2BookHotPath(
+  input: HyperliquidL2BookHotPathInput
+): HyperliquidL2BookHotPathDecision {
+  const bundle = buildHyperliquidL2BookSnapshotBundle(
+    input.raw,
+    input.payload,
+    input.maxTimestampDriftMs,
+    input.fallbackReceivedAt
+  );
+  const sequenceDecision = evaluateHyperliquidBookSequence(
+    input.resolveExistingSync(bundle.marketKey),
+    bundle.sequence,
+    bundle.hasExplicitSequence,
+    input.sequenceGapMs,
+    bundle.receivedAt
+  );
+
+  if (sequenceDecision.status === "DUPLICATE_OR_OUT_OF_ORDER") {
+    return {
+      kind: "DUPLICATE_OR_OUT_OF_ORDER",
+      bundle,
+      result: {
+        accepted: false,
+        status: "DUPLICATE_OR_OUT_OF_ORDER",
+        reason: "DUPLICATE_OR_OUT_OF_ORDER",
+        processedCount: 0
+      }
+    };
+  }
+
+  if (sequenceDecision.status === "DESYNC") {
+    return {
+      kind: "DESYNC",
+      bundle,
+      sequenceDecision,
+      result: {
+        accepted: false,
+        status: "DESYNC",
+        reason: sequenceDecision.reason,
+        processedCount: 0
+      }
+    };
+  }
+
+  const brainTimestamp = input.brainTimestamp ?? new Date().toISOString();
+  const totalLatencyMs = calculateHyperliquidBookTotalLatencyMs(
+    bundle.exchangeTimestamp,
+    brainTimestamp
+  );
+
+  if (totalLatencyMs > input.nativeMaxLatencyMs) {
+    return {
+      kind: "STALE",
+      bundle,
+      brainTimestamp,
+      totalLatencyMs,
+      nativeMaxLatencyMs: input.nativeMaxLatencyMs,
+      metrics: buildHyperliquidL2BookLatencyMetrics({
+        bundle,
+        brainTimestamp,
+        totalLatencyMs,
+        maxLatencyMs: input.nativeMaxLatencyMs,
+        averageLatencyMs: input.averageLatencyMs,
+        sampleCount: input.sampleCount,
+        location: input.location
+      })
+    };
+  }
+
+  return {
+    kind: "ACCEPTED",
+    bundle,
+    brainTimestamp,
+    totalLatencyMs,
+    nativeMaxLatencyMs: input.nativeMaxLatencyMs
+  };
 }
 
 export function hyperliquidBookDesyncLogMetadata(

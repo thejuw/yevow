@@ -246,12 +246,9 @@ import type {
   BookSyncState
 } from "./engine/trading/book/BookTypes";
 import {
-  buildHyperliquidL2BookSnapshotBundle,
-  buildHyperliquidL2BookLatencyMetrics,
   buildHyperliquidL2BookTick,
   buildHyperliquidL2BookTickFromBook,
-  calculateHyperliquidBookTotalLatencyMs,
-  evaluateHyperliquidBookSequence,
+  evaluateHyperliquidL2BookHotPath,
   handleHyperliquidRawBatch,
   hyperliquidBookDesyncLogMetadata,
   processHyperliquidAssetContext,
@@ -1527,65 +1524,6 @@ export class TradingEngine {
     wakeUpTimeMs: number | null
   ): Promise<TickIngestResult> {
     const hotPathStartedAt = highResolutionNow();
-    const snapshotBundle = buildHyperliquidL2BookSnapshotBundle(
-      raw,
-      payload,
-      readPositiveNumber(
-        this.env.HL_BOOK_TIMESTAMP_MAX_DRIFT_MS,
-        DEFAULT_HL_BOOK_TIMESTAMP_MAX_DRIFT_MS
-      )
-    );
-    const {
-      instrumentCode,
-      exchangeTimestamp,
-      receivedAt,
-      hasExplicitSequence,
-      sequence,
-      marketKey,
-      snapshot
-    } = snapshotBundle;
-    const existingSync = this.bookSync.get(marketKey);
-    const sequenceDecision = evaluateHyperliquidBookSequence(
-      existingSync,
-      sequence,
-      hasExplicitSequence,
-      readPositiveNumber(this.env.HL_SEQUENCE_GAP_MS, DEFAULT_HL_SEQUENCE_GAP_MS),
-      receivedAt
-    );
-
-    if (sequenceDecision.status === "DUPLICATE_OR_OUT_OF_ORDER") {
-      return {
-        accepted: false,
-        status: "DUPLICATE_OR_OUT_OF_ORDER",
-        reason: "DUPLICATE_OR_OUT_OF_ORDER",
-        processedCount: 0
-      };
-    }
-
-    if (sequenceDecision.status === "DESYNC") {
-      markBookSyncDesynced({
-        syncState: existingSync,
-        reason: sequenceDecision.reason,
-        observedAt: sequenceDecision.lastDesyncAt
-      });
-      this.logger.warn(
-        "ORDER_BOOK_DESYNC",
-        "Hyperliquid native book sequence gap detected",
-        hyperliquidBookDesyncLogMetadata(snapshotBundle, sequenceDecision)
-      );
-      return {
-        accepted: false,
-        status: "DESYNC",
-        reason: sequenceDecision.reason,
-        processedCount: 0
-      };
-    }
-
-    const brainTimestamp = new Date().toISOString();
-    const totalLatencyMs = calculateHyperliquidBookTotalLatencyMs(
-      exchangeTimestamp,
-      brainTimestamp
-    );
     const nativeMaxLatencyMs = resolveNativeHyperliquidMaxLatencyMs({
       transport: payload.transport,
       streamId: payload.streamId,
@@ -1593,8 +1531,43 @@ export class TradingEngine {
       hlStaleAfterMs: this.env.HL_STALE_AFTER_MS,
       currentMaxLatencyMs: this.maxLatencyMs
     });
+    const l2Decision = evaluateHyperliquidL2BookHotPath({
+      raw,
+      payload,
+      resolveExistingSync: (marketKey) => this.bookSync.get(marketKey),
+      maxTimestampDriftMs: readPositiveNumber(
+        this.env.HL_BOOK_TIMESTAMP_MAX_DRIFT_MS,
+        DEFAULT_HL_BOOK_TIMESTAMP_MAX_DRIFT_MS
+      ),
+      sequenceGapMs: readPositiveNumber(this.env.HL_SEQUENCE_GAP_MS, DEFAULT_HL_SEQUENCE_GAP_MS),
+      nativeMaxLatencyMs,
+      averageLatencyMs: this.engineState.averageLatency,
+      sampleCount: this.engineState.latencySampleCount,
+      location: this.engineState.location
+    });
+    const { instrumentCode, sequence, marketKey, snapshot } = l2Decision.bundle;
 
-    if (totalLatencyMs > nativeMaxLatencyMs) {
+    if (l2Decision.kind === "DUPLICATE_OR_OUT_OF_ORDER") {
+      return l2Decision.result;
+    }
+
+    if (l2Decision.kind === "DESYNC") {
+      markBookSyncDesynced({
+        syncState: this.bookSync.get(marketKey),
+        reason: l2Decision.sequenceDecision.reason,
+        observedAt: l2Decision.sequenceDecision.lastDesyncAt
+      });
+      this.logger.warn(
+        "ORDER_BOOK_DESYNC",
+        "Hyperliquid native book sequence gap detected",
+        hyperliquidBookDesyncLogMetadata(l2Decision.bundle, l2Decision.sequenceDecision)
+      );
+      return l2Decision.result;
+    }
+
+    const { brainTimestamp, totalLatencyMs } = l2Decision;
+
+    if (l2Decision.kind === "STALE") {
       const book =
         snapshot.bids.length > 0 || snapshot.asks.length > 0
           ? await this.applySnapshot(snapshot, { telemetry: false, persist: false })
@@ -1623,15 +1596,7 @@ export class TradingEngine {
           this.engineState = staleBook.state;
         }
       }
-      const metrics = buildHyperliquidL2BookLatencyMetrics({
-        bundle: snapshotBundle,
-        brainTimestamp,
-        totalLatencyMs,
-        maxLatencyMs: nativeMaxLatencyMs,
-        averageLatencyMs: this.engineState.averageLatency,
-        sampleCount: this.engineState.latencySampleCount,
-        location: this.engineState.location
-      });
+      const metrics = l2Decision.metrics;
       this.quoteStateStalePull(instrumentCode, sequence, metrics, brainTimestamp);
       this.observeExecutionProfile(metrics, {
         wakeUpTimeMs,
@@ -1646,7 +1611,7 @@ export class TradingEngine {
       this.publishTickTelemetry(
         buildHyperliquidL2BookTick({
           payload,
-          bundle: snapshotBundle,
+          bundle: l2Decision.bundle,
           price: 0,
           bestBid: undefined,
           bestAsk: undefined,
@@ -1687,7 +1652,7 @@ export class TradingEngine {
 
     const representativeTick = buildHyperliquidL2BookTickFromBook({
       payload,
-      bundle: snapshotBundle,
+      bundle: l2Decision.bundle,
       book,
       rawEventType: "native-l2Book"
     });
