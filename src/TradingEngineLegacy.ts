@@ -1300,10 +1300,6 @@ export class TradingEngine {
     });
   }
 
-  private profilerFor(instrumentCode: string): ProfilerAgent {
-    return this.profilerRegistry.forInstrument(instrumentCode);
-  }
-
   private hydrateProfilerAgents(
     legacyState: ProfilerState | undefined,
     persistedStates: Map<string, ProfilerState>
@@ -1362,7 +1358,8 @@ export class TradingEngine {
       equity: this.engineState.bankroll.equity,
       maxPositionPct,
       findBestAssetBook: (instrumentCode) => this.findBestAssetBook(instrumentCode),
-      profilerStateForInstrument: (instrumentCode) => this.profilerFor(instrumentCode).snapshot()
+      profilerStateForInstrument: (instrumentCode) =>
+        this.profilerRegistry.forInstrument(instrumentCode).snapshot()
     });
   }
 
@@ -3565,7 +3562,7 @@ export class TradingEngine {
       };
     }
 
-    const profilerAgent = this.profilerFor(tick.instrumentCode);
+    const profilerAgent = this.profilerRegistry.forInstrument(tick.instrumentCode);
     const profilerStartedAt = highResolutionNow();
     const profilerResult: ProfilerEvaluation = this.cachedConfig.PROFILER_ENABLED
       ? profilerAgent.processTick(tick, {
