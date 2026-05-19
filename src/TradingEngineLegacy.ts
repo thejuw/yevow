@@ -90,6 +90,10 @@ import {
   currentCascadeSignalSnapshot as buildCurrentCascadeSignalSnapshot
 } from "./engine/trading/cascade/CascadeSnapshots";
 import {
+  buildCascadeEntryTradeIntent,
+  buildCascadeExitTradeIntent
+} from "./engine/trading/cascade/CascadeTradeIntents";
+import {
   OrderBookReconstructor,
   type OrderBookStores
 } from "./engine/trading/book/OrderBookReconstructor";
@@ -2513,79 +2517,28 @@ export class TradingEngine {
     size: number,
     observedAt: string
   ): TradeIntent {
-    const action = signal.direction === "LONG" ? "BUY" : "SELL";
-    const notional = size * signal.entryPrice;
-    const executionStyle =
-      notional > this.cachedConfig.SLICE_NOTIONAL_THRESHOLD_USD ? "SLICED_TWAP" : "TAKER_IOC";
-
-    return {
-      schemaVersion: "trade-intent.v1",
-      intentId: `cascade-entry-${signal.signalId}`,
-      traceId: `${this.engineState.engineId}:cascade-entry:${signal.signalId}`,
-      instrumentCode: signal.instrumentCode,
-      marketKey: `hyperliquid:${signal.instrumentCode}`,
-      source_exchange: "hyperliquid",
-      direction: signal.direction,
-      executionStyle,
-      action,
-      orderType: "IOC",
-      postOnly: false,
-      timeInForce: "IOC",
-      intendedPrice: signal.entryPrice,
-      expectedPrice: signal.entryPrice,
-      requestedSize: size,
-      approvedSize: size,
-      probabilityWin: signal.confidence,
-      probabilityLoss: Math.max(0, 1 - signal.confidence),
-      profit: signal.rDistance * 2,
-      loss: signal.rDistance,
-      executionCosts: this.cachedConfig.EXCHANGE_FEE_BPS / 10_000,
-      adverseSelectionCost: 0,
-      expectedValue:
-        signal.confidence * signal.rDistance * 2 - (1 - signal.confidence) * signal.rDistance,
-      minEvThreshold: 0,
-      maxSlippageBps: this.cascadeAssetProfile(signal.instrumentCode).maxSlippageBps,
-      confidence: signal.confidence,
-      rationale: `cascade recovery ${signal.triggerType} ${signal.cascadeId}`,
-      createdAt: observedAt
-    };
+    return buildCascadeEntryTradeIntent({
+      signal,
+      size,
+      observedAt,
+      engineId: this.engineState.engineId,
+      exchangeFeeBps: this.cachedConfig.EXCHANGE_FEE_BPS,
+      sliceNotionalThresholdUsd: this.cachedConfig.SLICE_NOTIONAL_THRESHOLD_USD,
+      maxSlippageBps: this.cascadeAssetProfile(signal.instrumentCode).maxSlippageBps
+    });
   }
 
   private tradeIntentFromCascadePositionIntent(
     intent: CascadePositionIntent,
     observedAt: string
   ): TradeIntent {
-    const isStop = intent.executionStyle === "TAKER_MARKET";
-    return {
-      schemaVersion: "trade-intent.v1",
-      intentId: `cascade-exit-${intent.intentId}`,
-      traceId: `${this.engineState.engineId}:cascade-exit:${intent.positionId}`,
-      instrumentCode: intent.instrumentCode,
-      marketKey: `hyperliquid:${intent.instrumentCode}`,
-      source_exchange: "hyperliquid",
-      direction: intent.action === "BUY" ? "LONG" : "SHORT",
-      executionStyle: intent.executionStyle,
-      action: intent.action,
-      orderType: isStop ? "MARKET" : "IOC",
-      postOnly: false,
-      timeInForce: "IOC",
-      intendedPrice: intent.referencePrice,
-      expectedPrice: intent.referencePrice,
-      requestedSize: intent.size,
-      approvedSize: intent.size,
-      probabilityWin: 1,
-      probabilityLoss: 0,
-      profit: 0,
-      loss: 0,
-      executionCosts: this.cachedConfig.EXCHANGE_FEE_BPS / 10_000,
-      adverseSelectionCost: 0,
-      expectedValue: 0,
-      minEvThreshold: 0,
-      maxSlippageBps: this.cascadeAssetProfile(intent.instrumentCode).maxSlippageBps,
-      confidence: 1,
-      rationale: `cascade ${intent.closeReason ?? "close"} ${isStop ? "stop_loss" : "partial"} reduce-only`,
-      createdAt: observedAt
-    };
+    return buildCascadeExitTradeIntent({
+      intent,
+      observedAt,
+      engineId: this.engineState.engineId,
+      exchangeFeeBps: this.cachedConfig.EXCHANGE_FEE_BPS,
+      maxSlippageBps: this.cascadeAssetProfile(intent.instrumentCode).maxSlippageBps
+    });
   }
 
   private async handleGrpcFatalDrop(
