@@ -220,6 +220,11 @@ import {
   calculateReplayShadowBankroll,
   resolveInitialShadowBankroll
 } from "./engine/trading/replay/ReplayResultRuntime";
+import {
+  buildReplayRestoreWrites,
+  hydrateReplayOrderBooks,
+  type EngineReplaySnapshot
+} from "./engine/trading/replay/ReplaySnapshotRuntime";
 import type {
   GrpcFatalDropPayload,
   TickIngestResult
@@ -486,7 +491,6 @@ import {
   resolveBookSide,
   resolveCurrentInstrument,
   buildMarketKey,
-  profilerStorageKey,
   selectedMoltworkerInstruments,
   isTargetInstrument,
   isInstrumentSelectedByMoltworker,
@@ -545,26 +549,6 @@ interface PerformanceMemory {
 
 interface TickHandlingOptions {
   shadowReplay?: boolean;
-}
-
-interface EngineReplaySnapshot {
-  engineState: EngineState;
-  orderBooks: InternalOrderBook[];
-  latencyHistory: LatencyMetrics[];
-  processingLatencySamples: number[];
-  domWallHistory: LiquidityWall[];
-  leadLagSamples: Array<[string, Array<{ price: number; observedAt: string }>]>;
-  cachedConfig: GlobalRiskConfig;
-  maxLatencyMs: number;
-  lastTickTimestamp: string | null;
-  profilerState: ProfilerState;
-  profilerStates: Array<[string, ProfilerState]>;
-  anomalyState: AnomalyDetectorState;
-  oracleState: EngineState["oracle"];
-  sentimentState: EngineState["sentiment"];
-  rateLimits: Record<string, RateLimitBucketSnapshot>;
-  signals: AgentSignal[];
-  latestAgentSignals: Array<[AgentName, AgentSignal]>;
 }
 
 type RuntimeWithMemory = typeof globalThis & {
@@ -5301,9 +5285,7 @@ export class TradingEngine {
   }
 
   private async restoreReplaySnapshot(snapshot: EngineReplaySnapshot): Promise<void> {
-    const hydratedBooks = hydrateOrderBooks(
-      new Map(snapshot.orderBooks.map((book) => [`${ORDER_BOOK_PREFIX}${book.marketKey}`, book]))
-    );
+    const hydratedBooks = hydrateReplayOrderBooks(snapshot);
     let persistedBookKeys = new Map<string, InternalOrderBook>();
     try {
       persistedBookKeys = await this.state.storage.list<InternalOrderBook>({
@@ -5334,28 +5316,9 @@ export class TradingEngine {
     this.sentimentAgent.hydrate(snapshot.sentimentState);
     this.rateLimiter.hydrate(snapshot.rateLimits);
 
-    const writes: Record<string, unknown> = {
-      [ENGINE_STATE_KEY]: this.engineState,
-      [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
-      [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples,
-      [DOM_WALL_HISTORY_KEY]: this.domWallHistory,
-      [PROFILER_STATE_STORAGE_KEY]: snapshot.profilerState,
-      ...Object.fromEntries(
-        snapshot.profilerStates.map(([instrumentCode, state]) => [
-          profilerStorageKey(instrumentCode),
-          state
-        ])
-      ),
-      [ANOMALY_DETECTOR_STORAGE_KEY]: snapshot.anomalyState,
-      [RATE_LIMIT_STATE_KEY]: snapshot.rateLimits,
-      ...Object.fromEntries(
-        snapshot.orderBooks.map((book) => [`${ORDER_BOOK_PREFIX}${book.marketKey}`, book])
-      )
-    };
-
     await this.safeStorageDelete([...persistedBookKeys.keys()], "REPLAY_RESTORE_DELETE_BOOKS");
 
-    await this.safeStoragePut(writes, "REPLAY_RESTORE");
+    await this.safeStoragePut(buildReplayRestoreWrites(snapshot), "REPLAY_RESTORE");
   }
 
   private updateLatencyAverage(totalLatencyMs: number): void {
