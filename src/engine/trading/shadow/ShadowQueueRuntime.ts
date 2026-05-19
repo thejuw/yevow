@@ -62,6 +62,13 @@ export interface ShadowQueueGhostFillRecord {
   readonly trade: TradeExecution | null;
 }
 
+export interface ShadowQueueNoEdgeThrottleInput {
+  readonly lastLoggedAtByInstrument: Map<string, number>;
+  readonly instrumentCode: string;
+  readonly nowMs: number;
+  readonly intervalMs: number;
+}
+
 export function shouldProcessShadowQueueTick(input: ShadowQueueTickGateInput): boolean {
   return (
     !input.shadowReplay &&
@@ -143,6 +150,17 @@ export function buildShadowQueueGhostFillRecord(
     trade,
     eventPayload: trade as unknown as Record<string, unknown>
   };
+}
+
+export function shouldLogShadowQueueNoEdge(input: ShadowQueueNoEdgeThrottleInput): boolean {
+  const previous = input.lastLoggedAtByInstrument.get(input.instrumentCode) ?? 0;
+
+  if (input.nowMs - previous < input.intervalMs) {
+    return false;
+  }
+
+  input.lastLoggedAtByInstrument.set(input.instrumentCode, input.nowMs);
+  return true;
 }
 
 export function shadowQueuePostOnlyPrice(

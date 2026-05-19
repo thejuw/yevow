@@ -3,6 +3,7 @@ import {
   buildShadowQueueGhostFillRecord,
   buildShadowQueueTradeIntent,
   resolveShadowQueueSizingConfig,
+  shouldLogShadowQueueNoEdge,
   shouldProcessShadowQueueTick,
   shadowQueueKellySize,
   shadowQueuePostOnlyPrice
@@ -104,6 +105,43 @@ describe("ShadowQueueRuntime", () => {
       }
     });
     expect(record.eventPayload).toBe(record.trade);
+  });
+
+  it("throttles no-edge shadow queue logs per instrument", () => {
+    const lastLoggedAtByInstrument = new Map<string, number>();
+
+    expect(
+      shouldLogShadowQueueNoEdge({
+        lastLoggedAtByInstrument,
+        instrumentCode: "btc-usd",
+        nowMs: 1_000,
+        intervalMs: 500
+      })
+    ).toBe(true);
+    expect(
+      shouldLogShadowQueueNoEdge({
+        lastLoggedAtByInstrument,
+        instrumentCode: "btc-usd",
+        nowMs: 1_250,
+        intervalMs: 500
+      })
+    ).toBe(false);
+    expect(
+      shouldLogShadowQueueNoEdge({
+        lastLoggedAtByInstrument,
+        instrumentCode: "eth-usd",
+        nowMs: 1_250,
+        intervalMs: 500
+      })
+    ).toBe(true);
+    expect(
+      shouldLogShadowQueueNoEdge({
+        lastLoggedAtByInstrument,
+        instrumentCode: "btc-usd",
+        nowMs: 1_500,
+        intervalMs: 500
+      })
+    ).toBe(true);
   });
 
   it("snaps post-only prices away from the touch", () => {

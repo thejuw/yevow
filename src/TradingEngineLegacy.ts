@@ -69,6 +69,7 @@ import {
   buildShadowQueueGhostFillRecord,
   buildShadowQueueTradeIntent,
   resolveShadowQueueSizingConfig,
+  shouldLogShadowQueueNoEdge as shouldLogShadowQueueNoEdgeEvent,
   shouldProcessShadowQueueTick,
   shadowQueueKellySize as calculateShadowQueueKellySize,
   shadowQueuePostOnlyPrice as calculateShadowQueuePostOnlyPrice
@@ -4258,8 +4259,6 @@ export class TradingEngine {
   }
 
   private shouldLogShadowQueueNoEdge(instrumentCode: string): boolean {
-    const now = Date.now();
-    const previous = this.shadowQueueNoEdgeLogAt.get(instrumentCode) ?? 0;
     const intervalMs = readPositiveInteger(
       this.env.SHADOW_QUEUE_NO_EDGE_LOG_INTERVAL_MS,
       DEFAULT_SHADOW_QUEUE_NO_EDGE_LOG_INTERVAL_MS,
@@ -4267,12 +4266,12 @@ export class TradingEngine {
       300_000
     );
 
-    if (now - previous < intervalMs) {
-      return false;
-    }
-
-    this.shadowQueueNoEdgeLogAt.set(instrumentCode, now);
-    return true;
+    return shouldLogShadowQueueNoEdgeEvent({
+      lastLoggedAtByInstrument: this.shadowQueueNoEdgeLogAt,
+      instrumentCode,
+      nowMs: Date.now(),
+      intervalMs
+    });
   }
 
   private createShadowQueueTradeIntent(
