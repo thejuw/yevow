@@ -1,3 +1,5 @@
+import type { JsonRecord } from "../../../types";
+
 export interface QuoteCancelDispatchPayload {
   readonly instrumentCode: string;
   readonly reason: string;
@@ -25,6 +27,21 @@ export type QuoteCancelDispatchDecision =
       readonly payload: QuoteCancelDispatchPayload;
       readonly blockReason: QuoteCancelDispatchBlockReason;
     };
+
+export interface QuoteCancelExecutionerFetcher {
+  fetch(request: Request): Promise<Response>;
+}
+
+export interface QuoteCancelLogger {
+  error(eventType: string, message: string, telemetry?: JsonRecord): void;
+  warn(eventType: string, message: string, telemetry?: JsonRecord): void;
+}
+
+export interface DispatchQuoteCancelAllInput {
+  readonly executioner: QuoteCancelExecutionerFetcher;
+  readonly logger: QuoteCancelLogger;
+  readonly payload: QuoteCancelDispatchPayload;
+}
 
 export function evaluateQuoteCancelDispatch(
   input: QuoteCancelDispatchInput
@@ -60,4 +77,26 @@ export function evaluateQuoteCancelDispatch(
     payload,
     blockReason: null
   };
+}
+
+export async function dispatchQuoteCancelAll(input: DispatchQuoteCancelAllInput): Promise<void> {
+  try {
+    await input.executioner.fetch(
+      new Request("https://executioner.internal/cancel-all", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input.payload)
+      })
+    );
+    input.logger.warn("QUOTE_CANCEL_ALL_DISPATCHED", "Executioner cancel-all requested", {
+      instrumentCode: input.payload.instrumentCode,
+      reason: input.payload.reason
+    });
+  } catch (error) {
+    input.logger.error("QUOTE_CANCEL_ALL_FAILED", "Failed to dispatch cancel-all", {
+      instrumentCode: input.payload.instrumentCode,
+      reason: input.payload.reason,
+      error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
+    });
+  }
 }
