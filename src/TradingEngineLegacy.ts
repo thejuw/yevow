@@ -3254,6 +3254,86 @@ export class TradingEngine {
     }
   }
 
+  private applyQuoteSuppression(
+    instrumentCode: string,
+    croupierDecision: CroupierDecision,
+    profilerResult: ProfilerEvaluation,
+    executionPlans: ApprovedExecutionPlan[],
+    observedAt: string,
+    shadowReplay: boolean,
+    ensembleAnomalyCircuitBreaker: boolean,
+    ensembleRationale: string
+  ): {
+    executionPlans: ApprovedExecutionPlan[];
+    assetQuoteState: EngineState["quoteState"];
+    strategyQuoteDisableReason: string | null;
+    isCascadeShield: boolean;
+    isProfilerQuoteHalt: boolean;
+  } {
+    const previousQuoteState = quoteStateForInstrumentState(
+      this.engineState.assetQuoteStates,
+      instrumentCode,
+      this.engineState.quoteState
+    );
+    let assetQuoteState = this.nextQuoteStateForInstrument(
+      instrumentCode,
+      croupierDecision.quote,
+      croupierDecision.pullAllQuotes,
+      observedAt
+    );
+    const strategyQuoteDisableReason = runtimeStrategyQuoteDisabledReason(this.cachedConfig);
+
+    if (
+      strategyQuoteDisableReason &&
+      previousQuoteState.reason !== strategyQuoteDisableReason &&
+      !shadowReplay &&
+      this.cachedConfig.TRADING_ENABLED
+    ) {
+      this.state.waitUntil(this.cancelAllQuotes(instrumentCode, strategyQuoteDisableReason));
+    }
+
+    const profilerSignalType = profilerResult.signal?.featureVector.signalType;
+    const quoteSuppression = quoteSuppressionDecision({
+      previous: assetQuoteState,
+      profilerSignalType,
+      profilerSuspendedUntil:
+        typeof profilerResult.signal?.featureVector.suspendedUntil === "string"
+          ? profilerResult.signal.featureVector.suspendedUntil
+          : undefined,
+      profilerQuoteHaltUntil: profilerResult.state.quoteHaltUntil,
+      amVpinQuoteHaltMs: this.cachedConfig.AM_VPIN_QUOTE_HALT_MS,
+      quoteHibernateMs: resolveQuoteHibernateMs(this.cachedConfig, this.env.QUOTE_HIBERNATE_MS),
+      ensembleAnomalyCircuitBreaker,
+      ensembleRationale,
+      observedAt
+    });
+
+    let allowedExecutionPlans = executionPlans;
+    if (!quoteSuppression.executionPlansAllowed) {
+      allowedExecutionPlans = [];
+      assetQuoteState = quoteSuppression.quoteState;
+    }
+
+    if (quoteSuppression.suspendTelemetry) {
+      this.publish("SUSPEND_QUOTES", {
+        instrumentCode,
+        ...quoteSuppression.suspendTelemetry
+      });
+    }
+
+    if (quoteSuppression.cancelReason && !shadowReplay && this.cachedConfig.TRADING_ENABLED) {
+      this.state.waitUntil(this.cancelAllQuotes(instrumentCode, quoteSuppression.cancelReason));
+    }
+
+    return {
+      executionPlans: allowedExecutionPlans,
+      assetQuoteState,
+      strategyQuoteDisableReason,
+      isCascadeShield: quoteSuppression.isCascadeShield,
+      isProfilerQuoteHalt: quoteSuppression.isProfilerQuoteHalt
+    };
+  }
+
   private async handleTick(
     tick: MarketTick,
     wakeUpTimeMs: number | null,
@@ -3547,63 +3627,21 @@ export class TradingEngine {
     let executionPlans = [executionPlan].filter(
       (plan): plan is NonNullable<typeof executionPlan> => plan !== null
     );
-    const previousQuoteState = quoteStateForInstrumentState(
-      this.engineState.assetQuoteStates,
+    const quotePolicy = this.applyQuoteSuppression(
       tick.instrumentCode,
-      this.engineState.quoteState
+      croupierDecision,
+      profilerResult,
+      executionPlans,
+      metrics.brainTimestamp,
+      options.shadowReplay === true,
+      ensemble.anomalyCircuitBreaker,
+      ensemble.rationale
     );
-    let assetQuoteState = this.nextQuoteStateForInstrument(
-      tick.instrumentCode,
-      croupierDecision.quote,
-      croupierDecision.pullAllQuotes,
-      metrics.brainTimestamp
-    );
-    const strategyQuoteDisableReason = runtimeStrategyQuoteDisabledReason(this.cachedConfig);
-    if (
-      strategyQuoteDisableReason &&
-      previousQuoteState.reason !== strategyQuoteDisableReason &&
-      !options.shadowReplay &&
-      this.cachedConfig.TRADING_ENABLED
-    ) {
-      this.state.waitUntil(this.cancelAllQuotes(tick.instrumentCode, strategyQuoteDisableReason));
-    }
-    const profilerSignalType = profilerResult.signal?.featureVector.signalType;
-    const quoteSuppression = quoteSuppressionDecision({
-      previous: assetQuoteState,
-      profilerSignalType,
-      profilerSuspendedUntil:
-        typeof profilerResult.signal?.featureVector.suspendedUntil === "string"
-          ? profilerResult.signal.featureVector.suspendedUntil
-          : undefined,
-      profilerQuoteHaltUntil: profilerResult.state.quoteHaltUntil,
-      amVpinQuoteHaltMs: this.cachedConfig.AM_VPIN_QUOTE_HALT_MS,
-      quoteHibernateMs: resolveQuoteHibernateMs(this.cachedConfig, this.env.QUOTE_HIBERNATE_MS),
-      ensembleAnomalyCircuitBreaker: ensemble.anomalyCircuitBreaker,
-      ensembleRationale: ensemble.rationale,
-      observedAt: metrics.brainTimestamp
-    });
-    const isCascadeShield = quoteSuppression.isCascadeShield;
-    const isProfilerQuoteHalt = quoteSuppression.isProfilerQuoteHalt;
-
-    if (!quoteSuppression.executionPlansAllowed) {
-      executionPlans = [];
-      assetQuoteState = quoteSuppression.quoteState;
-    }
-    if (quoteSuppression.suspendTelemetry) {
-      this.publish("SUSPEND_QUOTES", {
-        instrumentCode: tick.instrumentCode,
-        ...quoteSuppression.suspendTelemetry
-      });
-    }
-    if (
-      quoteSuppression.cancelReason &&
-      !options.shadowReplay &&
-      this.cachedConfig.TRADING_ENABLED
-    ) {
-      this.state.waitUntil(
-        this.cancelAllQuotes(tick.instrumentCode, quoteSuppression.cancelReason)
-      );
-    }
+    executionPlans = quotePolicy.executionPlans;
+    const assetQuoteState = quotePolicy.assetQuoteState;
+    const strategyQuoteDisableReason = quotePolicy.strategyQuoteDisableReason;
+    const isCascadeShield = quotePolicy.isCascadeShield;
+    const isProfilerQuoteHalt = quotePolicy.isProfilerQuoteHalt;
 
     const assetQuoteStates = {
       ...this.engineState.assetQuoteStates,
