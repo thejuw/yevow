@@ -112,7 +112,7 @@ import {
 import { evaluateQuoteCancelDispatch } from "./engine/trading/quotes/QuoteCancelRuntime";
 import { buildExecutionPlanArtifacts } from "./engine/trading/execution/ExecutionPlanRuntime";
 import { evaluateExecutionDispatchGate } from "./engine/trading/execution/ExecutionDispatchRuntime";
-import { applyPaperExecutionBudget } from "./engine/trading/execution/PaperExecutionBudgetRuntime";
+import { applyIntentPaperExecutionBudget } from "./engine/trading/execution/PaperExecutionBudgetRuntime";
 import {
   buildExecutionQueueEnqueuePlan,
   shouldLogExecutionQueueDeferral,
@@ -384,7 +384,6 @@ import {
   DEFAULT_CASCADE_DISTANCE_PCT,
   DEFAULT_PREDATORY_ORDER_OFFSET_BPS,
   DEFAULT_PAPER_BANKROLL_USD,
-  DEFAULT_PAPER_MAX_GHOST_FILLS_PER_MINUTE,
   DEFAULT_PAPER_FILL_PARTICIPATION_RATE,
   DEFAULT_PAPER_FILL_ADVERSE_BPS,
   DEFAULT_PAPER_MAKER_FEE_BPS,
@@ -4755,16 +4754,11 @@ export class TradingEngine {
   }
 
   private reservePaperExecutionBudget(intent: TradeIntent): boolean {
-    const maxPerMinute = readPositiveInteger(
-      this.env.PAPER_MAX_GHOST_FILLS_PER_MINUTE,
-      DEFAULT_PAPER_MAX_GHOST_FILLS_PER_MINUTE,
-      1,
-      10_000
-    );
-    const budget = applyPaperExecutionBudget({
+    const budget = applyIntentPaperExecutionBudget({
+      intent,
       shadowMode: isShadowMode(this.env),
       nowMs: Date.now(),
-      maxPerMinute,
+      maxPerMinuteValue: this.env.PAPER_MAX_GHOST_FILLS_PER_MINUTE,
       windowStartedAtMs: this.paperExecutionWindowStartedAtMs,
       windowCount: this.paperExecutionWindowCount,
       windowDropped: this.paperExecutionWindowDropped,
@@ -4777,20 +4771,12 @@ export class TradingEngine {
     this.paperExecutionThrottleLoggedAtMs = budget.state.throttleLoggedAtMs;
 
     if (budget.shouldLogThrottle) {
-      this.logger.warn("SHADOW_PAPER_CADENCE_THROTTLED", "Paper execution cadence capped", {
-        intentId: intent.intentId,
-        instrumentCode: intent.instrumentCode,
-        maxGhostFillsPerMinute: maxPerMinute,
-        windowDispatched: this.paperExecutionWindowCount,
-        windowDropped: this.paperExecutionWindowDropped,
-        windowStartedAt: new Date(this.paperExecutionWindowStartedAtMs).toISOString()
-      });
-      this.publish("SHADOW_PAPER_CADENCE_THROTTLED", {
-        instrumentCode: intent.instrumentCode,
-        maxGhostFillsPerMinute: maxPerMinute,
-        windowDispatched: this.paperExecutionWindowCount,
-        windowDropped: this.paperExecutionWindowDropped
-      });
+      this.logger.warn(
+        "SHADOW_PAPER_CADENCE_THROTTLED",
+        "Paper execution cadence capped",
+        budget.logMetadata ?? {}
+      );
+      this.publish("SHADOW_PAPER_CADENCE_THROTTLED", budget.publishPayload ?? {});
     }
 
     return budget.allowed;
