@@ -49,14 +49,16 @@ import type {
   BookDeltaWithTicker,
   BookSyncState
 } from "./engine/trading/book/BookTypes";
-import { handleBookAdminRoute } from "./engine/trading/routes/BookAdminRoutes";
-import { handleCascadeAdminRoute } from "./engine/trading/routes/CascadeAdminRoutes";
+import { handleTradingEngineHttpRoute } from "./engine/trading/routes/EngineHttpRoutes";
 import {
-  handleReplayAdminRoute,
   type ReplayOptions,
   type ReplayScenario,
   type ReplayStatus
 } from "./engine/trading/routes/ReplayAdminRoutes";
+import type {
+  GrpcFatalDropPayload,
+  TickIngestResult
+} from "./engine/trading/TradingEngineRouteTypes";
 import {
   LOW_VALUE_OPERATIONAL_EVENT_TYPES,
   operationalEventPlaceholders,
@@ -438,23 +440,6 @@ import {
   readJsonOrNull,
   json
 } from "./TradingEngineRuntimeHelpers";
-interface TickIngestResult {
-  accepted: boolean;
-  status:
-    | LatencyMetrics["status"]
-    | "DISABLED"
-    | "ANOMALY_PAUSE"
-    | "DESYNC"
-    | "DUPLICATE_OR_OUT_OF_ORDER"
-    | "IGNORED"
-    | "STALE_DROPPED"
-    | "BOOK_NOT_READY";
-  reason?: string;
-  processedCount?: number;
-  metrics?: LatencyMetrics;
-  book?: InternalOrderBook;
-}
-
 interface PerformanceMemory {
   usedJSHeapSize?: number;
   totalJSHeapSize?: number;
@@ -542,17 +527,6 @@ interface HyperliquidRawIngestPayload {
   receivedAt?: string;
   raw?: unknown;
   messages?: unknown[];
-}
-
-interface GrpcFatalDropPayload {
-  streamId?: string;
-  source?: string;
-  source_exchange?: string;
-  connectionId?: string | null;
-  reason?: string;
-  disconnectedForMs?: number;
-  thresholdMs?: number;
-  observedAt?: string;
 }
 
 interface EngineReplaySnapshot {
@@ -1199,135 +1173,39 @@ export class TradingEngine {
     }
 
     try {
-      if (request.method === "GET" && url.pathname === "/health") {
-        this.state.waitUntil(
-          this.refreshConfigIfDue("ALARM").catch((error) => {
-            this.logger.error("CONFIG_REFRESH_FAILED", "Health-triggered config refresh failed", {
-              source: "HEALTH",
-              message: error instanceof Error ? error.message : "UNKNOWN_ERROR"
-            });
-          })
-        );
-        return json(this.healthCheck());
-      }
-
-      if (request.method === "GET" && url.pathname === "/diagnostics") {
-        return json(this.engineDiagnostics());
-      }
-
-      if (request.method === "GET" && url.pathname === "/state") {
-        this.syncStateMicrostructureFromBook();
-        return json({
-          state: this.engineState,
-          orderBook: Object.fromEntries(this.orderBook)
-        });
-      }
-
-      if (request.method === "GET" && url.pathname === "/performance") {
-        return json(this.latencyHistory.slice(-PERFORMANCE_HISTORY_LIMIT));
-      }
-
-      if (request.method === "GET" && url.pathname === "/slippage") {
-        return json(this.engineState.slippage);
-      }
-
-      if (request.method === "GET" && url.pathname === "/metrics/performance") {
-        return this.performanceMetricsResponse();
-      }
-
-      if (request.method === "POST" && url.pathname === "/maintenance/reset-latency") {
-        const observedAt = new Date().toISOString();
-        const shouldClearQuoteSuspension =
-          this.engineState.quoteState.status === "SUSPENDED" &&
-          (this.engineState.quoteState.reason === "HARD_STALE_DROP" ||
-            this.engineState.quoteState.reason === "NATIVE_HL_LATENCY" ||
-            this.engineState.quoteState.reason === "GRPC_FATAL_DROP" ||
-            this.engineState.quoteState.reason === "STALE_DATA_KILL_SWITCH");
-        this.resetLatencyBaseline(observedAt, "ADMIN_MAINTENANCE");
-        const recoveredAssetQuoteStates = shouldClearQuoteSuspension
-          ? resumeExpiredAssetQuoteStates(
-              suspendAssetQuoteStates(
-                this.engineState.assetQuoteStates,
-                "ADMIN_RESET_LATENCY",
-                observedAt,
-                { suspendedUntil: observedAt }
-              ),
-              observedAt
-            )
-          : this.engineState.assetQuoteStates;
-        const recoveredQuoteState = shouldClearQuoteSuspension
-          ? aggregateQuoteState(recoveredAssetQuoteStates, this.engineState.quoteState, observedAt)
-          : this.engineState.quoteState;
-        this.engineState = {
-          ...this.engineState,
-          staleTickCount: 0,
-          quoteState: recoveredQuoteState,
-          assetQuoteStates: recoveredAssetQuoteStates,
-          updatedAt: observedAt
-        };
-        if (shouldClearQuoteSuspension) {
-          this.publish("RESUME_QUOTES", {
-            reason: "ADMIN_RESET_LATENCY",
-            observedAt
-          });
-        }
-        await this.safeStoragePut(
-          {
-            [ENGINE_STATE_KEY]: this.engineState,
-            [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
-            [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples
-          },
-          "ADMIN_RESET_LATENCY"
-        );
-        return json({ ok: true, state: this.engineState });
-      }
-
-      if (request.method === "POST" && url.pathname === "/maintenance/recover") {
-        const payload =
-          (await readJsonOrNull<{
-            reason?: string;
-            resetInstruments?: string[] | string;
-            instrumentCode?: string;
-            source_exchange?: string;
-            clearCitadel?: boolean;
-            clearQuoteState?: boolean;
-            clearLatency?: boolean;
-            resetPaperPortfolio?: boolean;
-            clearShadowQueue?: boolean;
-          }>(request)) ?? {};
-        const recovery = await this.recoverEngineState(payload);
-
-        return json(recovery);
-      }
-
-      if (request.method === "POST" && url.pathname === "/maintenance/prune-logs") {
-        const report = await this.pruneOperationalLogs();
-        this.logger.warn("ADMIN_LOG_PRUNE_APPLIED", "Admin-triggered stale log cleanup completed", {
-          report: logPruneReportToJson(report)
-        });
-
-        return json({ ok: true, report });
-      }
-
-      const bookRoute = await handleBookAdminRoute(request, url, {
-        maxSnapshotDepth: BOOK_SNAPSHOT_TOP_LEVELS,
+      return await handleTradingEngineHttpRoute(request, url, {
+        env: this.env,
+        state: this.state,
+        logger: this.logger,
+        wakeUpTimeMs,
         getEngineState: () => this.engineState,
+        setEngineState: (state) => {
+          this.engineState = state;
+        },
+        getOrderBook: () => this.orderBook,
+        getLatencyHistory: () => this.latencyHistory,
+        getProcessingLatencySamples: () => this.processingLatencySamples,
+        getCachedConfig: () => this.cachedConfig,
+        getCascadeBacktester: () => this.cascadeBacktester,
+        getCascadeNewsCalendar: () => this.cascadeNewsCalendar,
+        refreshConfigIfDue: (source) => this.refreshConfigIfDue(source),
+        healthCheck: () => this.healthCheck(),
+        engineDiagnostics: () => this.engineDiagnostics(),
+        syncStateMicrostructureFromBook: () => this.syncStateMicrostructureFromBook(),
+        performanceMetricsResponse: () => this.performanceMetricsResponse(),
+        resetLatencyBaseline: (observedAt, reason) => this.resetLatencyBaseline(observedAt, reason),
+        publish: (type, payload, correlationId) => this.publish(type, payload, correlationId),
+        safeStoragePutEntries: (entries, reason) => this.safeStoragePut(entries, reason),
+        safeStoragePutKey: (key, value, reason) => this.safeStoragePut(key, value, reason),
+        recoverEngineState: (payload) => this.recoverEngineState(payload),
+        pruneOperationalLogs: () => this.pruneOperationalLogs(),
         currentBookSnapshot: (instrumentCode, depth) =>
           this.currentBookSnapshot(instrumentCode, depth),
         currentDomHeatmap: (instrumentCode) => this.currentDomHeatmap(instrumentCode),
-        currentLiquidationHeatmap: () => this.engineState.liquidationHeatmap,
         applySnapshot: (snapshot) => this.applySnapshot(snapshot),
         applyDelta: (delta, observedAt) => this.applyDelta(delta, observedAt),
         enqueueOrderBookReset: (payload) => this.enqueueOrderBookReset(payload),
-        registerIngestConnection: (payload) => this.registerIngestConnection(payload)
-      });
-      if (bookRoute) {
-        return bookRoute;
-      }
-
-      const replayRoute = await handleReplayAdminRoute(request, url, {
-        exchangeFeeBps: this.cachedConfig.EXCHANGE_FEE_BPS,
-        getEngineState: () => this.engineState,
+        registerIngestConnection: (payload) => this.registerIngestConnection(payload),
         runHistoricalReplay: (limit, shadowBankroll, speedMultiplier, dateFrom, dateTo, options) =>
           this.runHistoricalReplay(
             limit,
@@ -1337,233 +1215,23 @@ export class TradingEngine {
             dateTo,
             options
           ),
-        currentReplayStatus: () => this.currentReplayStatus()
-      });
-      if (replayRoute) {
-        return replayRoute;
-      }
-
-      const cascadeRoute = await handleCascadeAdminRoute(request, url, {
-        signalBufferLimit: SIGNAL_BUFFER_LIMIT,
-        cachedConfig: this.cachedConfig,
-        env: this.env,
-        cascadeBacktester: this.cascadeBacktester,
-        persistBacktestSummary: (summary) => {
-          this.state.waitUntil(
-            this.env.CONFIG_STORE.put(CASCADE_LAST_BACKTEST_REPORT_KEY, JSON.stringify(summary))
-          );
-        },
+        currentReplayStatus: () => this.currentReplayStatus(),
         currentCascadeActiveSnapshot: () => this.currentCascadeActiveSnapshot(),
         currentCascadeSignalSnapshot: (limit) => this.currentCascadeSignalSnapshot(limit),
         currentCascadePositionSnapshot: () => this.currentCascadePositionSnapshot(),
         closeCascadePosition: (positionId, actor, reason) =>
           this.closeCascadePosition(positionId, actor, reason),
         currentCascadeHeatSnapshot: () => this.currentCascadeHeatSnapshot(),
-        addNewsBlackout: (payload) => this.cascadeNewsCalendar.addAdHocBlackout(payload)
+        analyzeSentimentHeadline: (headline) =>
+          this.sentimentAgent.analyzeHeadline(headline, this.env),
+        applyExecutionReport: (report) => this.applyExecutionReport(report),
+        enqueueTick: (tick, wakeUp) => this.enqueueTick(tick, wakeUp),
+        handleHyperliquidRaw: (payload, wakeUp) =>
+          this.handleHyperliquidRaw(payload as HyperliquidRawIngestPayload, wakeUp),
+        handleGrpcFatalDrop: (payload) => this.handleGrpcFatalDrop(payload),
+        acceptAgentSignal: (signal, latencyMs) => this.acceptAgentSignal(signal, latencyMs),
+        applyConfigUpdate: (update) => this.applyConfigUpdate(update)
       });
-      if (cascadeRoute) {
-        return cascadeRoute;
-      }
-
-      if (request.method === "POST" && url.pathname === "/news/sentiment") {
-        const payload = await request.json<{
-          headline?: string;
-          source?: string;
-          url?: string | null;
-          publishedAt?: string | null;
-          id?: string;
-        }>();
-        if (!this.cachedConfig.SENTIMENT_ENABLED) {
-          const observedAt = new Date().toISOString();
-          const sentiment = {
-            ...defaultSentimentState(),
-            updatedAt: observedAt
-          };
-          this.engineState = {
-            ...this.engineState,
-            sentiment,
-            agentHealth: touchAgentHealth(
-              this.engineState.agentHealth,
-              "SENTIMENT",
-              "DISABLED",
-              observedAt,
-              0
-            ),
-            heartbeatAt: observedAt,
-            updatedAt: observedAt
-          };
-          await this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "SENTIMENT_DISABLED");
-          return json({ ok: true, skipped: true, reason: "SENTIMENT_AGENT_DISABLED", sentiment });
-        }
-        const sentiment = await this.sentimentAgent.analyzeHeadline(
-          payload.headline ?? "",
-          this.env
-        );
-        this.engineState = {
-          ...this.engineState,
-          sentiment,
-          agentHealth: touchAgentHealth(
-            this.engineState.agentHealth,
-            "SENTIMENT",
-            "GREEN",
-            sentiment.updatedAt ?? new Date().toISOString(),
-            sentiment.latencyMs ?? 0
-          ),
-          heartbeatAt: sentiment.updatedAt ?? new Date().toISOString(),
-          updatedAt: sentiment.updatedAt ?? new Date().toISOString()
-        };
-        await this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "SENTIMENT_UPDATED");
-        this.logger.info("SENTIMENT_ANALYZED", "Sentiment agent updated headline bias", {
-          score: sentiment.score,
-          bias: sentiment.bias,
-          model: sentiment.model,
-          provider: sentiment.provider ?? null,
-          fallbackUsed: sentiment.fallbackUsed ?? null,
-          latencyMs: sentiment.latencyMs ?? null,
-          estimatedCostUsd: sentiment.estimatedCostUsd ?? 0,
-          ablation: sentiment.ablation ?? null,
-          source: payload.source ?? "manual",
-          url: payload.url ?? null,
-          publishedAt: payload.publishedAt ?? null,
-          newsId: payload.id ?? null
-        });
-        return json({ ok: true, sentiment });
-      }
-
-      if (request.method === "POST" && url.pathname === "/execution/report") {
-        const report = await request.json<ExecutionReport>();
-        await this.applyExecutionReport(report);
-        return json({ ok: true, state: this.engineState });
-      }
-
-      if (
-        request.method === "POST" &&
-        (url.pathname === "/tick" ||
-          url.pathname === "/market/tick" ||
-          url.pathname === "/hyperliquid/tick")
-      ) {
-        const payload = await request.json<MarketTick>();
-        const tick = assertMarketTick(payload);
-        const result = await this.enqueueTick(tick, wakeUpTimeMs);
-        return json(
-          {
-            ok: result.accepted,
-            accepted: result.accepted,
-            status: result.status,
-            reason: result.reason,
-            metrics: result.metrics ?? null,
-            book: result.book,
-            state: this.engineState
-          },
-          result.accepted ? 200 : 202
-        );
-      }
-
-      if (request.method === "POST" && url.pathname === "/hyperliquid/raw") {
-        const payload = await readHyperliquidRawIngestPayload(request);
-        const result = await this.handleHyperliquidRaw(payload, wakeUpTimeMs);
-        return json(
-          {
-            ok: result.accepted,
-            accepted: result.accepted,
-            processedCount: result.processedCount,
-            status: result.status,
-            reason: result.reason,
-            metrics: result.metrics ?? null,
-            book: result.book,
-            state: this.engineState
-          },
-          result.status === "DESYNC" ? 409 : result.accepted ? 200 : 202
-        );
-      }
-
-      if (request.method === "POST" && url.pathname === "/liquidation") {
-        const payload = await readHyperliquidRawIngestPayload(request);
-        const result = await this.handleHyperliquidRaw(payload, wakeUpTimeMs);
-        return json(
-          {
-            ok: result.accepted,
-            accepted: result.accepted,
-            processedCount: result.processedCount,
-            status: result.status,
-            reason: result.reason,
-            state: this.engineState
-          },
-          result.accepted ? 200 : 202
-        );
-      }
-
-      if (request.method === "POST" && url.pathname === "/ingest/grpc-fatal-drop") {
-        const payload = await request.json<GrpcFatalDropPayload>();
-        const result = await this.handleGrpcFatalDrop(payload);
-        return json({
-          ok: true,
-          accepted: true,
-          status: result.status,
-          state: this.engineState
-        });
-      }
-
-      if (request.method === "POST" && url.pathname === "/ticks") {
-        const payload = await request.json<MarketTick[] | { ticks?: MarketTick[] }>();
-        const ticks = Array.isArray(payload)
-          ? payload
-          : Array.isArray(payload.ticks)
-            ? payload.ticks
-            : null;
-
-        if (!ticks) {
-          throw new Error("INVALID_MARKET_TICK_BATCH");
-        }
-
-        const results: TickIngestResult[] = [];
-        const cappedTicks = ticks.slice(0, 250);
-
-        for (const tickPayload of cappedTicks) {
-          const result = await this.enqueueTick(assertMarketTick(tickPayload), wakeUpTimeMs);
-          results.push(result);
-
-          if (result.status === "DESYNC") {
-            break;
-          }
-        }
-
-        const acceptedCount = results.filter((result) => result.accepted).length;
-        const terminalResult =
-          results.find((result) => result.status === "DESYNC") ?? results.at(-1);
-
-        return json(
-          {
-            ok: terminalResult?.status !== "DESYNC",
-            accepted: acceptedCount > 0,
-            acceptedCount,
-            receivedCount: ticks.length,
-            processedCount: results.length,
-            droppedCount: Math.max(0, ticks.length - results.length),
-            status: terminalResult?.status ?? "EMPTY_BATCH",
-            reason: terminalResult?.reason,
-            metrics: terminalResult?.metrics ?? null,
-            book: terminalResult?.book,
-            state: this.engineState
-          },
-          terminalResult?.status === "DESYNC" ? 409 : 200
-        );
-      }
-
-      if (request.method === "POST" && url.pathname === "/agent/signal") {
-        const started = Date.now();
-        const signal = assertAgentSignal(await request.json<AgentSignal>());
-        await this.acceptAgentSignal(signal, Date.now() - started);
-        return json({ ok: true, signalId: signal.signalId, state: this.engineState });
-      }
-
-      if (request.method === "POST" && url.pathname === "/admin/config") {
-        const update = await request.json<AdminConfigUpdate>();
-        await this.applyConfigUpdate(update);
-        return json({ ok: true, state: this.engineState });
-      }
-
-      return json({ ok: false, error: "Not found" }, 404);
     } catch (error) {
       const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
       const status = message.startsWith("INVALID_") ? 400 : 500;
