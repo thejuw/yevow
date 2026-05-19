@@ -68,6 +68,7 @@ import {
 import {
   buildShadowQueueGhostFillRecord,
   buildShadowQueueTradeIntent,
+  enforceShadowQueueDecisionLatency,
   resolveShadowQueueSizingConfig,
   shouldLogShadowQueueNoEdge as shouldLogShadowQueueNoEdgeEvent,
   shouldProcessShadowQueueTick,
@@ -4160,17 +4161,16 @@ export class TradingEngine {
       return decision;
     }
 
-    if (decision.decisionLatencyMs > this.engineState.shadowQueue.latencyBudgetMs) {
-      const suppressed = {
-        ...decision,
-        tradeIntentId: null,
-        reason: `${decision.reason} Suppressed because drift decision latency exceeded ${this.engineState.shadowQueue.latencyBudgetMs}ms.`
-      };
+    const latencyBudget = this.engineState.shadowQueue.latencyBudgetMs;
+    const latencyDecision = enforceShadowQueueDecisionLatency(decision, latencyBudget);
+
+    if (latencyDecision.breached) {
+      const suppressed = latencyDecision.decision;
       this.logger.warn("SHADOW_QUEUE_LATENCY_BREACH", "VLO matrix decision exceeded 5ms envelope", {
         decisionId: decision.decisionId,
         instrumentCode: decision.instrumentCode,
         decisionLatencyMs: decision.decisionLatencyMs,
-        latencyBudgetMs: this.engineState.shadowQueue.latencyBudgetMs
+        latencyBudgetMs: latencyBudget
       });
       this.publish(
         "SHADOW_QUEUE_LATENCY_BREACH",

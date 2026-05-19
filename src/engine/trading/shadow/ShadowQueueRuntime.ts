@@ -69,6 +69,11 @@ export interface ShadowQueueNoEdgeThrottleInput {
   readonly intervalMs: number;
 }
 
+export interface ShadowQueueLatencyBudgetResult {
+  readonly breached: boolean;
+  readonly decision: ShadowQueueDecision;
+}
+
 export function shouldProcessShadowQueueTick(input: ShadowQueueTickGateInput): boolean {
   return (
     !input.shadowReplay &&
@@ -161,6 +166,24 @@ export function shouldLogShadowQueueNoEdge(input: ShadowQueueNoEdgeThrottleInput
 
   input.lastLoggedAtByInstrument.set(input.instrumentCode, input.nowMs);
   return true;
+}
+
+export function enforceShadowQueueDecisionLatency(
+  decision: ShadowQueueDecision,
+  latencyBudgetMs: number
+): ShadowQueueLatencyBudgetResult {
+  if (decision.decisionLatencyMs <= latencyBudgetMs) {
+    return { breached: false, decision };
+  }
+
+  return {
+    breached: true,
+    decision: {
+      ...decision,
+      tradeIntentId: null,
+      reason: `${decision.reason} Suppressed because drift decision latency exceeded ${latencyBudgetMs}ms.`
+    }
+  };
 }
 
 export function shadowQueuePostOnlyPrice(

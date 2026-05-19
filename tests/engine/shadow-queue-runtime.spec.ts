@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildShadowQueueGhostFillRecord,
   buildShadowQueueTradeIntent,
+  enforceShadowQueueDecisionLatency,
   resolveShadowQueueSizingConfig,
   shouldLogShadowQueueNoEdge,
   shouldProcessShadowQueueTick,
@@ -142,6 +143,25 @@ describe("ShadowQueueRuntime", () => {
         intervalMs: 500
       })
     ).toBe(true);
+  });
+
+  it("suppresses shadow queue decisions that breach the latency budget", () => {
+    const withinBudget = decision({ decisionLatencyMs: 5, reason: "ok" });
+    expect(enforceShadowQueueDecisionLatency(withinBudget, 5)).toEqual({
+      breached: false,
+      decision: withinBudget
+    });
+
+    const breached = enforceShadowQueueDecisionLatency(
+      decision({ decisionLatencyMs: 6, tradeIntentId: "intent-1", reason: "late" }),
+      5
+    );
+
+    expect(breached.breached).toBe(true);
+    expect(breached.decision).toMatchObject({
+      tradeIntentId: null,
+      reason: "late Suppressed because drift decision latency exceeded 5ms."
+    });
   });
 
   it("snaps post-only prices away from the touch", () => {
