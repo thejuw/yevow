@@ -1,6 +1,30 @@
 import { buildMarketKey, finiteNumber } from "../../../TradingEngineRuntimeHelpers";
 import type { EngineState, InternalOrderBook, MarketTick } from "../../../types";
 
+export interface FundingTickStateResult {
+  readonly state: EngineState;
+  readonly changed: boolean;
+}
+
+export function stateAfterFundingTick(
+  currentState: EngineState,
+  tick: MarketTick,
+  observedAt: string
+): FundingTickStateResult {
+  const fundingRates = nextFundingRatesAfterTick(currentState.fundingRates, tick, observedAt);
+
+  return {
+    changed: fundingRates !== currentState.fundingRates,
+    state:
+      fundingRates === currentState.fundingRates
+        ? currentState
+        : {
+            ...currentState,
+            fundingRates
+          }
+  };
+}
+
 export function nextFundingRatesAfterTick(
   currentFundingRates: EngineState["fundingRates"],
   tick: MarketTick,

@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   currentFundingRate,
-  nextFundingRatesAfterTick
+  nextFundingRatesAfterTick,
+  stateAfterFundingTick
 } from "../../src/engine/trading/funding/FundingRuntime";
+import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
 import type { EngineState, InternalOrderBook, MarketTick } from "../../src/types";
+
+const OBSERVED_AT = "2026-05-18T16:00:00.000Z";
 
 describe("FundingRuntime", () => {
   it("updates funding snapshots from native funding ticks", () => {
@@ -35,6 +39,24 @@ describe("FundingRuntime", () => {
   it("keeps existing funding rates when tick has no funding data", () => {
     const current: EngineState["fundingRates"] = {};
     expect(nextFundingRatesAfterTick(current, marketTick({}), "now")).toBe(current);
+  });
+
+  it("updates engine state only when funding data is present", () => {
+    const state = defaultEngineState("funding-runtime");
+    const unchanged = stateAfterFundingTick(state, marketTick({}), OBSERVED_AT);
+
+    expect(unchanged.changed).toBe(false);
+    expect(unchanged.state).toBe(state);
+
+    const changed = stateAfterFundingTick(
+      state,
+      marketTick({ fundingRateHourly: 0.0003 }),
+      OBSERVED_AT
+    );
+
+    expect(changed.changed).toBe(true);
+    expect(changed.state).not.toBe(state);
+    expect(changed.state.fundingRates["hyperliquid:btc-usd"]?.hourlyRate).toBe(0.0003);
   });
 
   it("resolves direct, instrument fallback, and absent funding rates", () => {

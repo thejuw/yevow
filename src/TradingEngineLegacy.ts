@@ -95,7 +95,7 @@ import { calculatePortfolioRisk as calculatePortfolioRuntimeRisk } from "./engin
 import { calculateEnsembleState as calculateRuntimeEnsembleState } from "./engine/trading/ensemble/EnsembleRuntime";
 import {
   currentFundingRate as resolveCurrentFundingRate,
-  nextFundingRatesAfterTick
+  stateAfterFundingTick
 } from "./engine/trading/funding/FundingRuntime";
 import {
   nextQuoteStateForInstrument as nextRuntimeQuoteStateForInstrument,
@@ -3382,7 +3382,10 @@ export class TradingEngine {
       };
     }
 
-    this.applyFundingFromTick(tick, metrics.brainTimestamp);
+    const fundingState = stateAfterFundingTick(this.engineState, tick, metrics.brainTimestamp);
+    if (fundingState.changed) {
+      this.engineState = fundingState.state;
+    }
 
     let orderBookUpdateMs = 0;
     let book: InternalOrderBook | undefined;
@@ -3680,7 +3683,7 @@ export class TradingEngine {
             askAdversePenalty.penaltyBps
           ),
           multiScaleVolatility: volatilitySnapshot,
-          fundingRateHourly: this.currentFundingRate(book),
+          fundingRateHourly: resolveCurrentFundingRate(this.engineState.fundingRates, book),
           fundingHorizonHours: readPositiveNumber(this.env.FUNDING_HORIZON_HOURS, 1),
           riskAversionFactor: this.cachedConfig.RISK_AVERSION_FACTOR,
           fundingBiasThreshold:
@@ -4019,24 +4022,8 @@ export class TradingEngine {
     };
   }
 
-  private applyFundingFromTick(tick: MarketTick, observedAt: string): void {
-    const fundingRates = nextFundingRatesAfterTick(this.engineState.fundingRates, tick, observedAt);
-    if (fundingRates === this.engineState.fundingRates) {
-      return;
-    }
-
-    this.engineState = {
-      ...this.engineState,
-      fundingRates
-    };
-  }
-
   private currentBookForTick(tick: MarketTick): InternalOrderBook | undefined {
     return currentBookForMarketTick(this.orderBook, tick);
-  }
-
-  private currentFundingRate(book: InternalOrderBook): number {
-    return resolveCurrentFundingRate(this.engineState.fundingRates, book);
   }
 
   private processShadowQueueTick(
