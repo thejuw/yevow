@@ -26,7 +26,23 @@ describe("replay journal", () => {
       onStorageReadFailure: () => undefined
     });
 
-    expect(await journal.currentStatus()).toMatchObject(defaultReplayStatus());
+    const initialStatus = await journal.currentStatus();
+    expect(initialStatus).toMatchObject({
+      replayId: null,
+      status: "IDLE",
+      ticksTotal: 0,
+      ticksProcessed: 0,
+      progressPct: 0,
+      speedMultiplier: 1,
+      shadowBankroll: 0,
+      dateFrom: null,
+      dateTo: null,
+      scenario: "BASELINE",
+      error: null,
+      startedAt: null,
+      completedAt: null
+    });
+    expect(Number.isFinite(Date.parse(initialStatus.updatedAt))).toBe(true);
 
     const status: ReplayStatus = {
       replayId: "replay-1",

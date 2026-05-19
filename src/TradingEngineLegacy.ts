@@ -48,6 +48,13 @@ import {
   selectOrderBookMarketKey
 } from "./engine/trading/book/BookViews";
 import {
+  shouldEmitBookSnapshotTelemetry,
+  stateAfterAcceptedBookDelta,
+  stateAfterBookSnapshot,
+  stateAfterOrderBookReset,
+  stateAfterRebuiltBookSnapshot
+} from "./engine/trading/book/BookRuntimeState";
+import {
   OrderBookReconstructor,
   type OrderBookStores
 } from "./engine/trading/book/OrderBookReconstructor";
@@ -3011,23 +3018,15 @@ export class TradingEngine {
       this.bookSync.clear();
     }
 
-    const nextMicrostructure =
-      resetMarketKey &&
-      this.engineState.microstructure.marketKey !== resetMarketKey &&
-      this.orderBook.size > 0
-        ? this.engineState.microstructure
-        : defaultMicrostructure();
-    this.engineState = {
-      ...this.engineState,
+    this.engineState = stateAfterOrderBookReset({
+      currentState: this.engineState,
+      resetMarketKey,
+      resetInstrument,
+      orderBookSize: this.orderBook.size,
       internalOrderBookDepth: countBookLevels(this.bids, this.asks),
-      microstructure: nextMicrostructure,
-      priceDiscovery: resetInstrument
-        ? this.calculatePriceDiscovery(resetInstrument, now)
-        : defaultPriceDiscovery(),
-      dom: null,
-      heartbeatAt: now,
-      updatedAt: now
-    };
+      now,
+      priceDiscovery: resetInstrument ? this.calculatePriceDiscovery(resetInstrument, now) : null
+    });
 
     if (source === "INGEST_WORKER") {
       this.resetLatencyBaseline(now, `ORDER_BOOK_RESET:${reason}`);
@@ -3261,15 +3260,14 @@ export class TradingEngine {
     const book = applied.book;
     const domSnapshot = this.getLiquidityWalls(applied.instrumentCode, updatedAt);
 
-    this.engineState = {
-      ...this.engineState,
+    this.engineState = stateAfterBookSnapshot({
+      currentState: this.engineState,
+      book,
       internalOrderBookDepth: countBookLevels(this.bids, this.asks),
-      microstructure: microstructureFromBook(book),
       priceDiscovery: this.calculatePriceDiscovery(applied.instrumentCode, updatedAt),
       dom: domSnapshot,
-      heartbeatAt: updatedAt,
       updatedAt
-    };
+    });
 
     if (options.persist !== false) {
       await this.safeStoragePut(
@@ -3282,11 +3280,13 @@ export class TradingEngine {
       );
     }
 
-    const shouldEmitTelemetry =
-      options.telemetry !== false &&
-      (snapshot.source === "ADMIN" ||
-        this.engineState.processedTicks <= 5 ||
-        this.engineState.processedTicks % AGENT_SNAPSHOT_TICK_INTERVAL === 0);
+    const shouldEmitTelemetry = shouldEmitBookSnapshotTelemetry({
+      telemetryEnabled: options.telemetry !== false,
+      snapshotSource: snapshot.source,
+      processedTicks: this.engineState.processedTicks,
+      earlyTickLimit: 5,
+      interval: AGENT_SNAPSHOT_TICK_INTERVAL
+    });
 
     if (shouldEmitTelemetry) {
       this.logger.info("ORDER_BOOK_SNAPSHOT_APPLIED", "Full order book snapshot applied", {
@@ -3319,11 +3319,11 @@ export class TradingEngine {
     const applied = await this.orderBookReconstructor.applyDelta(delta, updatedAt);
 
     if (applied.accepted && applied.book) {
-      this.engineState = {
-        ...this.engineState,
-        microstructure: microstructureFromBook(applied.book),
+      this.engineState = stateAfterAcceptedBookDelta({
+        currentState: this.engineState,
+        book: applied.book,
         priceDiscovery: this.calculatePriceDiscovery(applied.book.instrumentCode, updatedAt)
-      };
+      });
     }
 
     return applied;
@@ -3365,11 +3365,11 @@ export class TradingEngine {
       updatedAt,
       timeToBookMs
     );
-    this.engineState = {
-      ...this.engineState,
+    this.engineState = stateAfterRebuiltBookSnapshot({
+      currentState: this.engineState,
       microstructure,
       priceDiscovery: this.calculatePriceDiscovery(instrumentCode, updatedAt)
-    };
+    });
 
     return book;
   }
