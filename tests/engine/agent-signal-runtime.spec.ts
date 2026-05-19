@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildHawkesEvacuationDispatch,
   recordAgentSignalInBuffers,
   stateAfterAcceptedAgentSignal
 } from "../../src/engine/trading/telemetry/AgentSignalRuntime";
@@ -64,6 +65,34 @@ describe("AgentSignalRuntime", () => {
       reason: "HAWKES_FLOW_CLUSTER",
       suspendedUntil: "2026-05-19T12:01:00.000Z"
     });
+  });
+
+  it("builds Hawkes evacuation dispatch artifacts for quote suspension and cancellation", () => {
+    const state = defaultEngineState("agent-signal");
+    state.quoteState = {
+      status: "SUSPENDED",
+      reason: "HAWKES_FLOW_CLUSTER",
+      suspendedUntil: "2026-05-19T12:01:00.000Z",
+      lastQuote: null,
+      updatedAt: "2026-05-19T12:00:00.000Z"
+    };
+
+    expect(buildHawkesEvacuationDispatch(signal(), state.quoteState)).toEqual({
+      telemetryType: "SUSPEND_QUOTES",
+      payload: {
+        status: "SUSPENDED",
+        reason: "HAWKES_FLOW_CLUSTER",
+        suspendedUntil: "2026-05-19T12:01:00.000Z",
+        updatedAt: "2026-05-19T12:00:00.000Z"
+      },
+      correlationId: "signal-1",
+      cancelInstrumentCode: "btc-usd",
+      cancelReason: "HAWKES_FLOW_CLUSTER"
+    });
+    expect(
+      buildHawkesEvacuationDispatch(signal({ instrumentCode: "" }), state.quoteState)
+        .cancelInstrumentCode
+    ).toBe("ALL");
   });
 
   it("records signals in capped buffers and latest-agent indexes", () => {

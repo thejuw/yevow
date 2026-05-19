@@ -214,6 +214,7 @@ import {
 } from "./engine/trading/routes/EngineWebSocketStreams";
 import { TradingTelemetryBus } from "./engine/trading/telemetry/TelemetryBus";
 import {
+  buildHawkesEvacuationDispatch,
   recordAgentSignalInBuffers,
   stateAfterAcceptedAgentSignal
 } from "./engine/trading/telemetry/AgentSignalRuntime";
@@ -536,7 +537,6 @@ import {
   parseTickSizeMap,
   parsePositiveNumberMap,
   quoteToTelemetry,
-  quoteStateTelemetry,
   wait,
   readNumber,
   readPositiveNumber,
@@ -5544,14 +5544,11 @@ export class TradingEngine {
     );
 
     if (acceptedSignal.hawkesEvacuation) {
-      this.publish(
-        "SUSPEND_QUOTES",
-        quoteStateTelemetry(this.engineState.quoteState),
-        signal.signalId
-      );
+      const evacuation = buildHawkesEvacuationDispatch(signal, this.engineState.quoteState);
+      this.publish(evacuation.telemetryType, evacuation.payload, evacuation.correlationId);
       if (this.cachedConfig.TRADING_ENABLED) {
         this.state.waitUntil(
-          this.cancelAllQuotes(signal.instrumentCode || "ALL", "HAWKES_FLOW_CLUSTER")
+          this.cancelAllQuotes(evacuation.cancelInstrumentCode, evacuation.cancelReason)
         );
       }
     }

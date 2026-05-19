@@ -24,6 +24,14 @@ export interface AcceptedAgentSignalResult {
   readonly telemetry: AgentSignalTelemetry;
 }
 
+export interface HawkesEvacuationDispatch {
+  readonly telemetryType: "SUSPEND_QUOTES";
+  readonly payload: Record<string, unknown>;
+  readonly correlationId: string;
+  readonly cancelInstrumentCode: string;
+  readonly cancelReason: "HAWKES_FLOW_CLUSTER";
+}
+
 export interface AgentSignalBufferInput {
   readonly signals: AgentSignal[];
   readonly latestAgentSignals: Map<AgentName, AgentSignal>;
@@ -102,5 +110,23 @@ export function stateAfterAcceptedAgentSignal(
       },
       correlationId: signal.signalId
     }
+  };
+}
+
+export function buildHawkesEvacuationDispatch(
+  signal: AgentSignal,
+  quoteState: EngineState["quoteState"]
+): HawkesEvacuationDispatch {
+  return {
+    telemetryType: "SUSPEND_QUOTES",
+    payload: {
+      status: quoteState.status,
+      reason: quoteState.reason,
+      suspendedUntil: quoteState.suspendedUntil,
+      updatedAt: quoteState.updatedAt
+    },
+    correlationId: signal.signalId,
+    cancelInstrumentCode: signal.instrumentCode || "ALL",
+    cancelReason: "HAWKES_FLOW_CLUSTER"
   };
 }
