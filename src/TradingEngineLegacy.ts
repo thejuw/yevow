@@ -115,6 +115,10 @@ import {
   hyperliquidIngestConnectionKey,
   type HyperliquidRawIngestPayload
 } from "./engine/trading/ingest/HyperliquidRawIngest";
+import {
+  resolveGrpcFatalDropPayload,
+  stateAfterGrpcFatalDrop
+} from "./engine/trading/ingest/GrpcDropRuntime";
 import { handleTradingEngineHttpRoute } from "./engine/trading/routes/EngineHttpRoutes";
 import {
   acceptMarketStream as acceptTradingMarketStream,
@@ -163,7 +167,7 @@ import { camouflageIntent } from "./utils/Camouflage";
 import { RateLimiter, type RateLimitBucketSnapshot } from "./utils/RateLimiter";
 import { planSmartOrderRoute } from "./utils/SOR";
 import { Notifier } from "./utils/Notifier";
-import { evaluateGrpcDrop, isShadowMode } from "./utils/CitadelProtocol";
+import { isShadowMode } from "./utils/CitadelProtocol";
 import { GhostBook, type GhostBookConfig, type GhostBookObservation } from "./utils/GhostBook";
 import { AbsorptionAnalyzer } from "./strategy/cascade/AbsorptionAnalyzer";
 import type { CascadeAssetProfile } from "./strategy/cascade/AssetProfiles";
@@ -2486,52 +2490,18 @@ export class TradingEngine {
   private async handleGrpcFatalDrop(
     payload: GrpcFatalDropPayload
   ): Promise<{ status: "GRPC_FATAL_DROP" }> {
-    const observedAt = nativeIso(payload.observedAt) ?? new Date().toISOString();
-    const disconnectedForMs = nativeNumber(payload.disconnectedForMs) ?? 0;
-    const thresholdMs = nativeNumber(payload.thresholdMs) ?? 200;
-    const reason = nativeString(payload.reason) ?? "GRPC_FATAL_DROP";
-    const citadel = evaluateGrpcDrop({
+    const { observedAt, disconnectedForMs, thresholdMs, reason } =
+      resolveGrpcFatalDropPayload(payload);
+    const grpcDrop = stateAfterGrpcFatalDrop({
+      currentState: this.engineState,
       disconnectedForMs,
       thresholdMs,
       reason,
-      observedAt
-    });
-    const assetQuoteStates = suspendAssetQuoteStates(
-      this.engineState.assetQuoteStates,
-      "GRPC_FATAL_DROP",
       observedAt,
-      { lastQuote: this.engineState.quoteState.lastQuote }
-    );
-
-    this.engineState = {
-      ...this.engineState,
-      agentHealth: touchAgentHealth(
-        this.engineState.agentHealth,
-        "EXECUTIONER",
-        citadel.status === "CRITICAL" ? "RED" : "YELLOW",
-        observedAt,
-        0,
-        reason
-      ),
-      quoteState: aggregateQuoteState(assetQuoteStates, this.engineState.quoteState, observedAt),
-      assetQuoteStates,
-      executionProfile: {
-        ...this.engineState.executionProfile,
-        status: "UNSTABLE",
-        updatedAt: observedAt
-      },
-      citadel: {
-        status: citadel.status,
-        reason,
-        shadowMode: isShadowMode(this.env),
-        lastEvacuationAt: citadel.shouldEvacuate
-          ? observedAt
-          : this.engineState.citadel.lastEvacuationAt,
-        updatedAt: observedAt
-      },
-      heartbeatAt: observedAt,
-      updatedAt: observedAt
-    };
+      shadowMode: isShadowMode(this.env)
+    });
+    const { citadel } = grpcDrop;
+    this.engineState = grpcDrop.state;
     this.state.waitUntil(
       this.persistHotStorageSnapshot(
         {
