@@ -2,7 +2,10 @@ import type {
   GlobalRiskConfig,
   InternalOrderBook,
   InventoryState,
+  MarketTick,
+  ShadowQueueFill,
   ShadowQueueDecision,
+  TradeExecution,
   TradeIntent
 } from "../../../types";
 import {
@@ -40,6 +43,25 @@ export interface ShadowQueueTickGateInput {
   readonly shadowReplay?: boolean;
 }
 
+export interface ShadowQueueGhostFillRecordInput {
+  readonly fill: ShadowQueueFill;
+  readonly tick: MarketTick;
+  readonly book: InternalOrderBook;
+  readonly observedAt: string;
+  readonly participationRate: number;
+  readonly adverseBps: number;
+  readonly makerFeeBps: number;
+  readonly fillModelSource: string;
+  readonly paperFillPrice: number;
+  readonly paperSizeCap: number;
+  readonly executablePaperSize: number;
+}
+
+export interface ShadowQueueGhostFillRecord {
+  readonly eventPayload: Record<string, unknown>;
+  readonly trade: TradeExecution | null;
+}
+
 export function shouldProcessShadowQueueTick(input: ShadowQueueTickGateInput): boolean {
   return (
     !input.shadowReplay &&
@@ -47,6 +69,80 @@ export function shouldProcessShadowQueueTick(input: ShadowQueueTickGateInput): b
     input.book.midPrice !== null &&
     input.book.midPrice > 0
   );
+}
+
+export function buildShadowQueueGhostFillRecord(
+  input: ShadowQueueGhostFillRecordInput
+): ShadowQueueGhostFillRecord {
+  if (input.executablePaperSize <= 0) {
+    return {
+      trade: null,
+      eventPayload: {
+        fillId: input.fill.fillId,
+        instrumentCode: input.fill.instrumentCode,
+        side: input.fill.side,
+        price: input.paperFillPrice,
+        virtualQueueSize: input.fill.size,
+        paperExecutionSize: 0,
+        reason: "PAPER_RISK_CAP_ZERO",
+        participationRate: input.participationRate,
+        adverseBps: input.adverseBps,
+        observedAt: input.observedAt
+      }
+    };
+  }
+
+  const fees = roundCrypto(
+    (input.paperFillPrice * input.executablePaperSize * input.makerFeeBps) / 10_000
+  );
+  const trade: TradeExecution = {
+    tradeId: `shadow-queue:${input.fill.fillId}:${Date.parse(input.observedAt) || input.observedAt}`,
+    orderId: input.fill.fillId,
+    signalId: input.fill.fillId,
+    venue: input.book.source_exchange,
+    asset: input.fill.instrumentCode,
+    side: input.fill.side,
+    orderType: "LIMIT",
+    price: input.paperFillPrice,
+    size: input.executablePaperSize,
+    evAtExecution: 0,
+    slippageBps: input.adverseBps,
+    resultingPnl: 0,
+    primaryDriver: "PROFILER",
+    fees,
+    status: "GHOST_FILL",
+    exchangeTradeId: input.fill.fillId,
+    metadata: {
+      schemaVersion: "shadow-queue.fill.v1",
+      paperSizer: "shadowQueueKellySize",
+      fillModel: "risk_capped_participation_with_bootstrapped_adverse_selection",
+      fillModelSource: input.fillModelSource,
+      virtualQueueSize: input.fill.size,
+      paperExecutionSize: input.executablePaperSize,
+      paperSizeCap: input.paperSizeCap,
+      participationRate: input.participationRate,
+      adverseBps: input.adverseBps,
+      makerFeeBps: input.makerFeeBps,
+      originalVirtualPrice: input.fill.price,
+      paperFillPrice: input.paperFillPrice,
+      sizeCapped: input.executablePaperSize < input.fill.size,
+      queueAhead: input.fill.queueAhead,
+      p0MidPrice: input.fill.p0MidPrice,
+      tapePrice: input.tick.price,
+      tapeSize: input.tick.size,
+      tapeSide: input.tick.side,
+      fillTradeSequence: input.fill.fillTradeSequence,
+      marketKey: input.book.marketKey,
+      source_exchange: input.book.source_exchange,
+      virtualOnly: true
+    },
+    executedAt: input.observedAt
+  };
+
+  return {
+    trade,
+    eventPayload: trade as unknown as Record<string, unknown>
+  };
 }
 
 export function shadowQueuePostOnlyPrice(

@@ -66,6 +66,7 @@ import {
   currentDomHeatmapSnapshot
 } from "./engine/trading/book/DomAnalyzer";
 import {
+  buildShadowQueueGhostFillRecord,
   buildShadowQueueTradeIntent,
   resolveShadowQueueSizingConfig,
   shouldProcessShadowQueueTick,
@@ -261,7 +262,6 @@ import type {
   ShadowQueueFill,
   ShadowQueueState,
   TemporaryGovernanceOverride,
-  TradeExecution,
   TradeIntent
 } from "./types";
 import type {
@@ -4111,78 +4111,27 @@ export class TradingEngine {
     );
     const paperSizeCap = this.shadowQueueKellySize(fill.side, paperFillPrice, book);
     const executablePaperSize = roundCrypto(Math.min(fill.size * participationRate, paperSizeCap));
+    const ghostFillRecord = buildShadowQueueGhostFillRecord({
+      fill,
+      tick,
+      book,
+      observedAt,
+      participationRate,
+      adverseBps,
+      makerFeeBps,
+      fillModelSource: paperFillModel.source,
+      paperFillPrice,
+      paperSizeCap,
+      executablePaperSize
+    });
 
-    if (executablePaperSize <= 0) {
-      this.publish(
-        "SHADOW_QUEUE_GHOST_FILL",
-        {
-          fillId: fill.fillId,
-          instrumentCode: fill.instrumentCode,
-          side: fill.side,
-          price: paperFillPrice,
-          virtualQueueSize: fill.size,
-          paperExecutionSize: 0,
-          reason: "PAPER_RISK_CAP_ZERO",
-          participationRate,
-          adverseBps,
-          observedAt
-        },
-        fill.fillId
-      );
+    if (!ghostFillRecord.trade) {
+      this.publish("SHADOW_QUEUE_GHOST_FILL", ghostFillRecord.eventPayload, fill.fillId);
       return;
     }
-    const fees = roundCrypto((paperFillPrice * executablePaperSize * makerFeeBps) / 10_000);
 
-    const trade: TradeExecution = {
-      tradeId: `shadow-queue:${fill.fillId}:${Date.parse(observedAt) || observedAt}`,
-      orderId: fill.fillId,
-      signalId: fill.fillId,
-      venue: book.source_exchange,
-      asset: fill.instrumentCode,
-      side: fill.side,
-      orderType: "LIMIT",
-      price: paperFillPrice,
-      size: executablePaperSize,
-      evAtExecution: 0,
-      slippageBps: adverseBps,
-      resultingPnl: 0,
-      primaryDriver: "PROFILER",
-      fees,
-      status: "GHOST_FILL",
-      exchangeTradeId: fill.fillId,
-      metadata: toJsonValue({
-        schemaVersion: "shadow-queue.fill.v1",
-        paperSizer: "shadowQueueKellySize",
-        fillModel: "risk_capped_participation_with_bootstrapped_adverse_selection",
-        fillModelSource: paperFillModel.source,
-        virtualQueueSize: fill.size,
-        paperExecutionSize: executablePaperSize,
-        paperSizeCap,
-        participationRate,
-        adverseBps,
-        makerFeeBps,
-        originalVirtualPrice: fill.price,
-        paperFillPrice,
-        sizeCapped: executablePaperSize < fill.size,
-        queueAhead: fill.queueAhead,
-        p0MidPrice: fill.p0MidPrice,
-        tapePrice: tick.price,
-        tapeSize: tick.size,
-        tapeSide: tick.side,
-        fillTradeSequence: fill.fillTradeSequence,
-        marketKey: book.marketKey,
-        source_exchange: book.source_exchange,
-        virtualOnly: true
-      }) as JsonRecord,
-      executedAt: observedAt
-    };
-
-    this.logger.recordExecution(trade);
-    this.publish(
-      "SHADOW_QUEUE_GHOST_FILL",
-      trade as unknown as Record<string, unknown>,
-      fill.fillId
-    );
+    this.logger.recordExecution(ghostFillRecord.trade);
+    this.publish("SHADOW_QUEUE_GHOST_FILL", ghostFillRecord.eventPayload, fill.fillId);
   }
 
   private handleShadowQueueDecision(

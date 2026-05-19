@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildShadowQueueGhostFillRecord,
   buildShadowQueueTradeIntent,
   resolveShadowQueueSizingConfig,
   shouldProcessShadowQueueTick,
@@ -11,6 +12,8 @@ import type {
   GlobalRiskConfig,
   InternalOrderBook,
   InventoryState,
+  MarketTick,
+  ShadowQueueFill,
   ShadowQueueDecision
 } from "../../src/types";
 
@@ -23,6 +26,84 @@ describe("ShadowQueueRuntime", () => {
     expect(shouldProcessShadowQueueTick({ book: book({ isSynced: false }) })).toBe(false);
     expect(shouldProcessShadowQueueTick({ book: book({ midPrice: null }) })).toBe(false);
     expect(shouldProcessShadowQueueTick({ book: book({ midPrice: 0 }) })).toBe(false);
+  });
+
+  it("builds zero-size ghost fill telemetry when paper risk caps prevent execution", () => {
+    const record = buildShadowQueueGhostFillRecord({
+      fill: shadowFill(),
+      tick: marketTick(),
+      book: book(),
+      observedAt: OBSERVED_AT,
+      participationRate: 0.35,
+      adverseBps: 1.5,
+      makerFeeBps: 0,
+      fillModelSource: "fallback",
+      paperFillPrice: 99.5,
+      paperSizeCap: 0,
+      executablePaperSize: 0
+    });
+
+    expect(record.trade).toBeNull();
+    expect(record.eventPayload).toMatchObject({
+      fillId: "fill-1",
+      instrumentCode: "btc-usd",
+      side: "BUY",
+      price: 99.5,
+      virtualQueueSize: 2,
+      paperExecutionSize: 0,
+      reason: "PAPER_RISK_CAP_ZERO",
+      participationRate: 0.35,
+      adverseBps: 1.5,
+      observedAt: OBSERVED_AT
+    });
+  });
+
+  it("builds D1 ghost fill execution records with modeled fees and metadata", () => {
+    const record = buildShadowQueueGhostFillRecord({
+      fill: shadowFill(),
+      tick: marketTick(),
+      book: book(),
+      observedAt: OBSERVED_AT,
+      participationRate: 0.35,
+      adverseBps: 1.5,
+      makerFeeBps: 1,
+      fillModelSource: "bootstrap",
+      paperFillPrice: 99.5,
+      paperSizeCap: 0.5,
+      executablePaperSize: 0.5
+    });
+
+    expect(record.trade).toMatchObject({
+      tradeId: "shadow-queue:fill-1:1779094800000",
+      orderId: "fill-1",
+      venue: "hyperliquid",
+      asset: "btc-usd",
+      side: "BUY",
+      orderType: "LIMIT",
+      price: 99.5,
+      size: 0.5,
+      slippageBps: 1.5,
+      primaryDriver: "PROFILER",
+      fees: 0.004975,
+      status: "GHOST_FILL",
+      exchangeTradeId: "fill-1",
+      metadata: {
+        schemaVersion: "shadow-queue.fill.v1",
+        fillModelSource: "bootstrap",
+        virtualQueueSize: 2,
+        paperExecutionSize: 0.5,
+        paperSizeCap: 0.5,
+        participationRate: 0.35,
+        adverseBps: 1.5,
+        makerFeeBps: 1,
+        sizeCapped: true,
+        tapePrice: 100,
+        tapeSize: 1,
+        tapeSide: "buy",
+        virtualOnly: true
+      }
+    });
+    expect(record.eventPayload).toBe(record.trade);
   });
 
   it("snaps post-only prices away from the touch", () => {
@@ -203,6 +284,44 @@ function inventory(overrides: Partial<InventoryState> = {}): InventoryState {
     stopBid: false,
     stopAsk: false,
     updatedAt: OBSERVED_AT,
+    ...overrides
+  };
+}
+
+function shadowFill(overrides: Partial<ShadowQueueFill> = {}): ShadowQueueFill {
+  return {
+    fillId: "fill-1",
+    instrumentCode: "btc-usd",
+    side: "BUY",
+    price: 99.5,
+    size: 2,
+    queueAhead: 0.5,
+    p0MidPrice: 100,
+    fillTradeSequence: 12,
+    filledAt: OBSERVED_AT,
+    ...overrides
+  };
+}
+
+function marketTick(overrides: Partial<MarketTick> = {}): MarketTick {
+  return {
+    schemaVersion: "universal-tick.v1",
+    source: "HYPERLIQUID",
+    source_exchange: "hyperliquid",
+    transport: "grpc",
+    exchangeCode: "hyperliquid",
+    instrumentCode: "btc-usd",
+    baseAsset: "BTC",
+    quoteAsset: "USD",
+    price: 100,
+    size: 1,
+    side: "buy",
+    sequence: 12,
+    exchangeTimestamp: OBSERVED_AT,
+    synchronizedExchangeTimestamp: OBSERVED_AT,
+    clockOffsetMs: 0,
+    receivedAt: OBSERVED_AT,
+    sourceWeight: 1,
     ...overrides
   };
 }
