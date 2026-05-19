@@ -455,6 +455,7 @@ import type {
   CascadeOpenPosition,
   CascadePositionIntent,
   CascadeRecoverySignal,
+  CascadeRecoverySignalRejection,
   LiquidationEvent
 } from "./strategy/cascade/types";
 
@@ -2139,6 +2140,26 @@ export class TradingEngine {
     );
   }
 
+  private recordRejectedCascadeSignal(
+    rejection: CascadeRecoverySignalRejection,
+    observedAt: string
+  ): void {
+    this.logger.info(
+      "CASCADE_SIGNAL_REJECTED",
+      "Cascade recovery signal gates rejected entry",
+      cascadeSignalRejectionLogMetadata(rejection)
+    );
+    this.recordCascadeUiSignal(
+      cascadeSignalRejectionAgentSignal({
+        rejection,
+        engineId: this.engineState.engineId,
+        observedAt,
+        entryWindowMs: this.cachedConfig.ENTRY_WINDOW_SECONDS * 1_000
+      }),
+      "SKIPPED"
+    );
+  }
+
   private async evaluateCascadeStrategy(tick: MarketTick, observedAt: string): Promise<void> {
     if (
       this.cachedConfig.STRATEGY_MODE === "OFF" ||
@@ -2210,20 +2231,7 @@ export class TradingEngine {
       });
 
       if (!signalResult.accepted) {
-        this.logger.info(
-          "CASCADE_SIGNAL_REJECTED",
-          "Cascade recovery signal gates rejected entry",
-          cascadeSignalRejectionLogMetadata(signalResult.rejection)
-        );
-        this.recordCascadeUiSignal(
-          cascadeSignalRejectionAgentSignal({
-            rejection: signalResult.rejection,
-            engineId: this.engineState.engineId,
-            observedAt,
-            entryWindowMs: this.cachedConfig.ENTRY_WINDOW_SECONDS * 1_000
-          }),
-          "SKIPPED"
-        );
+        this.recordRejectedCascadeSignal(signalResult.rejection, observedAt);
         continue;
       }
 
