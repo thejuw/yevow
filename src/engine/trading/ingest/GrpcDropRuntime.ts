@@ -8,7 +8,7 @@ import {
 } from "../../../TradingEngineRuntimeHelpers";
 import type { CitadelDropDecision } from "../../../utils/CitadelProtocol";
 import { evaluateGrpcDrop } from "../../../utils/CitadelProtocol";
-import type { EngineState } from "../../../types";
+import type { EngineState, JsonRecord } from "../../../types";
 import type { GrpcFatalDropPayload } from "../TradingEngineRouteTypes";
 
 export interface ResolvedGrpcFatalDrop {
@@ -28,6 +28,19 @@ export interface GrpcFatalDropStateResult {
   readonly citadel: CitadelDropDecision;
 }
 
+export interface GrpcFatalDropEventInput {
+  readonly payload: GrpcFatalDropPayload;
+  readonly resolved: ResolvedGrpcFatalDrop;
+  readonly citadel: CitadelDropDecision;
+}
+
+export interface GrpcFatalDropEventArtifacts {
+  readonly telemetryType: "GRPC_FATAL_DROP";
+  readonly logMetadata: JsonRecord;
+  readonly telemetryPayload: JsonRecord;
+  readonly shouldCancelAllQuotes: boolean;
+}
+
 export function resolveGrpcFatalDropPayload(
   payload: GrpcFatalDropPayload,
   fallbackObservedAt = new Date().toISOString()
@@ -37,6 +50,40 @@ export function resolveGrpcFatalDropPayload(
     disconnectedForMs: nativeNumber(payload.disconnectedForMs) ?? 0,
     thresholdMs: nativeNumber(payload.thresholdMs) ?? 200,
     reason: nativeString(payload.reason) ?? "GRPC_FATAL_DROP"
+  };
+}
+
+export function buildGrpcFatalDropEventArtifacts(
+  input: GrpcFatalDropEventInput
+): GrpcFatalDropEventArtifacts {
+  const sourceExchange = input.payload.source_exchange ?? "hyperliquid";
+  const source = input.payload.source ?? "DWELLIR_GRPC";
+
+  return {
+    telemetryType: "GRPC_FATAL_DROP",
+    shouldCancelAllQuotes: input.citadel.shouldEvacuate,
+    logMetadata: {
+      streamId: input.payload.streamId ?? null,
+      source,
+      source_exchange: sourceExchange,
+      connectionId: input.payload.connectionId ?? null,
+      reason: input.resolved.reason,
+      disconnectedForMs: input.resolved.disconnectedForMs,
+      thresholdMs: input.resolved.thresholdMs,
+      observedAt: input.resolved.observedAt,
+      citadelStatus: input.citadel.status,
+      evacuationAction: input.citadel.evacuationSignal.action
+    },
+    telemetryPayload: {
+      streamId: input.payload.streamId ?? null,
+      source_exchange: sourceExchange,
+      reason: input.resolved.reason,
+      disconnectedForMs: input.resolved.disconnectedForMs,
+      thresholdMs: input.resolved.thresholdMs,
+      action: input.citadel.evacuationSignal.action,
+      citadelStatus: input.citadel.status,
+      observedAt: input.resolved.observedAt
+    }
   };
 }
 

@@ -169,6 +169,7 @@ import {
   type HyperliquidRawIngestPayload
 } from "./engine/trading/ingest/HyperliquidRawIngest";
 import {
+  buildGrpcFatalDropEventArtifacts,
   resolveGrpcFatalDropPayload,
   stateAfterGrpcFatalDrop
 } from "./engine/trading/ingest/GrpcDropRuntime";
@@ -2553,6 +2554,16 @@ export class TradingEngine {
       shadowMode: isShadowMode(this.env)
     });
     const { citadel } = grpcDrop;
+    const events = buildGrpcFatalDropEventArtifacts({
+      payload,
+      resolved: {
+        observedAt,
+        disconnectedForMs,
+        thresholdMs,
+        reason
+      },
+      citadel
+    });
     this.engineState = grpcDrop.state;
     this.state.waitUntil(
       this.persistHotStorageSnapshot(
@@ -2562,29 +2573,13 @@ export class TradingEngine {
         "GRPC_FATAL_DROP"
       )
     );
-    this.logger.error("GRPC_FATAL_DROP", "Dwellir gRPC blackout forced quote evacuation", {
-      streamId: payload.streamId ?? null,
-      source: payload.source ?? "DWELLIR_GRPC",
-      source_exchange: payload.source_exchange ?? "hyperliquid",
-      connectionId: payload.connectionId ?? null,
-      reason,
-      disconnectedForMs,
-      thresholdMs,
-      observedAt,
-      citadelStatus: citadel.status,
-      evacuationAction: citadel.evacuationSignal.action
-    });
-    this.publish("GRPC_FATAL_DROP", {
-      streamId: payload.streamId ?? null,
-      source_exchange: payload.source_exchange ?? "hyperliquid",
-      reason,
-      disconnectedForMs,
-      thresholdMs,
-      action: citadel.evacuationSignal.action,
-      citadelStatus: citadel.status,
-      observedAt
-    });
-    if (citadel.shouldEvacuate) {
+    this.logger.error(
+      events.telemetryType,
+      "Dwellir gRPC blackout forced quote evacuation",
+      events.logMetadata
+    );
+    this.publish(events.telemetryType, events.telemetryPayload);
+    if (events.shouldCancelAllQuotes) {
       this.state.waitUntil(this.cancelAllQuotes("ALL", "GRPC_FATAL_DROP"));
     }
 
