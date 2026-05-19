@@ -8,7 +8,10 @@ import {
   PERFORMANCE_HISTORY_KEY,
   PROCESSING_LATENCY_SAMPLES_KEY
 } from "../../src/TradingEngineConstants";
-import { buildHotPathTickSnapshotWrites } from "../../src/engine/trading/state/TickPersistenceRuntime";
+import {
+  buildHotPathTickSnapshotWrites,
+  shouldJournalMarketTick
+} from "../../src/engine/trading/state/TickPersistenceRuntime";
 import { defaultEngineState, profilerStorageKey } from "../../src/TradingEngineRuntimeHelpers";
 import type {
   AnomalyDetectorState,
@@ -62,6 +65,17 @@ describe("TickPersistenceRuntime", () => {
 
     expect(writes[profilerStorageKey("eth-usd")]).toBeUndefined();
     expect(writes[PROFILER_STATE_STORAGE_KEY]).toBeUndefined();
+  });
+
+  it("resolves market tick journal cadence from config with safe defaults", () => {
+    expect(shouldJournalMarketTick(1, undefined)).toBe(true);
+    expect(shouldJournalMarketTick(5, "100")).toBe(true);
+    expect(shouldJournalMarketTick(6, "100")).toBe(false);
+    expect(shouldJournalMarketTick(100, "100")).toBe(true);
+    expect(shouldJournalMarketTick(101, "100")).toBe(false);
+    expect(shouldJournalMarketTick(101, "0")).toBe(false);
+    expect(shouldJournalMarketTick(10, "3.8")).toBe(false);
+    expect(shouldJournalMarketTick(9, "3.8")).toBe(true);
   });
 });
 

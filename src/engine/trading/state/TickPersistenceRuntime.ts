@@ -3,6 +3,7 @@ import { PROFILER_STATE_STORAGE_KEY } from "../../../agents/ProfilerAgent";
 import {
   DOM_WALL_HISTORY_KEY,
   ENGINE_STATE_KEY,
+  DEFAULT_MARKET_TICK_JOURNAL_INTERVAL,
   ORDER_BOOK_PREFIX,
   PERFORMANCE_HISTORY_KEY,
   PROCESSING_LATENCY_SAMPLES_KEY
@@ -51,4 +52,20 @@ export function buildHotPathTickSnapshotWrites(
   }
 
   return writes;
+}
+
+export function shouldJournalMarketTick(
+  processedTicks: number,
+  configuredInterval: string | number | undefined
+): boolean {
+  const parsedInterval = Number(configuredInterval);
+  const interval = Number.isFinite(parsedInterval)
+    ? Math.max(0, Math.floor(parsedInterval))
+    : DEFAULT_MARKET_TICK_JOURNAL_INTERVAL;
+
+  if (interval === 0) {
+    return false;
+  }
+
+  return processedTicks <= 5 || processedTicks % interval === 0;
 }

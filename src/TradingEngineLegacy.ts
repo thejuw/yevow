@@ -158,7 +158,10 @@ import {
 } from "./engine/trading/state/EngineDiagnostics";
 import { nextTickAgentHealth } from "./engine/trading/state/AgentHealthRuntime";
 import { stateAfterAcceptedTick } from "./engine/trading/state/TickStateRuntime";
-import { buildHotPathTickSnapshotWrites } from "./engine/trading/state/TickPersistenceRuntime";
+import {
+  buildHotPathTickSnapshotWrites,
+  shouldJournalMarketTick as shouldPersistMarketTick
+} from "./engine/trading/state/TickPersistenceRuntime";
 import { StorageWriteGuard } from "./engine/trading/state/StorageWriteGuard";
 import {
   LOW_VALUE_OPERATIONAL_EVENT_TYPES,
@@ -343,7 +346,6 @@ import {
   DEFAULT_QUOTE_REFRESH_MIN_PRICE_TICKS,
   DEFAULT_CROSS_ASSET_CANCEL_LEAD_BPS,
   DEFAULT_CROSS_ASSET_CANCEL_COOLDOWN_MS,
-  DEFAULT_MARKET_TICK_JOURNAL_INTERVAL,
   DEFAULT_MARKET_TICK_MAX_ROWS,
   DEFAULT_SHADOW_VLO_CAPACITY,
   DEFAULT_SHADOW_VLO_DRIFT_TRADES,
@@ -4064,16 +4066,10 @@ export class TradingEngine {
   }
 
   private shouldJournalMarketTick(): boolean {
-    const parsedInterval = Number(this.env.MARKET_TICK_JOURNAL_INTERVAL);
-    const interval = Number.isFinite(parsedInterval)
-      ? Math.max(0, Math.floor(parsedInterval))
-      : DEFAULT_MARKET_TICK_JOURNAL_INTERVAL;
-
-    if (interval === 0) {
-      return false;
-    }
-
-    return this.engineState.processedTicks <= 5 || this.engineState.processedTicks % interval === 0;
+    return shouldPersistMarketTick(
+      this.engineState.processedTicks,
+      this.env.MARKET_TICK_JOURNAL_INTERVAL
+    );
   }
 
   private recordShadowQueueGhostFill(
