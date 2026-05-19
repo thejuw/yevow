@@ -143,6 +143,7 @@ import {
   buildCascadeEntryTradeIntent,
   buildCascadeExitTradeIntent
 } from "./engine/trading/cascade/CascadeTradeIntents";
+import { stateAfterRuntimeConfigUpdate } from "./engine/trading/config/ConfigRuntime";
 import {
   absorptionAnalyzerConfig as buildAbsorptionAnalyzerConfig,
   cascadeAssetProfileFromConfig,
@@ -6372,27 +6373,18 @@ export class TradingEngine {
     }
 
     const now = new Date().toISOString();
-    const nextRisk = update.risk
-      ? mergeRiskLimits(this.engineState.risk, { ...update.risk, updatedAt: now })
-      : this.engineState.risk;
-    this.maxLatencyMs = resolveMaxLatencyMs(update, this.maxLatencyMs);
-
-    this.engineState = {
-      ...this.engineState,
-      mode: update.mode ?? this.engineState.mode,
-      bankroll: {
-        ...this.engineState.bankroll,
-        ...update.bankroll,
-        updatedAt: now
-      },
-      risk: applyLocationRisk(nextRisk, this.cachedConfig, this.engineState.location, now),
-      maxLatencyMs: this.maxLatencyMs,
+    const runtimeUpdate = stateAfterRuntimeConfigUpdate({
+      currentState: this.engineState,
+      update,
       cachedConfig: this.cachedConfig,
       macroBias: this.macroBias,
       temporaryOverride: this.activeTemporaryOverride,
-      heartbeatAt: now,
-      updatedAt: now
-    };
+      currentMaxLatencyMs: this.maxLatencyMs,
+      observedAt: now
+    });
+
+    this.maxLatencyMs = runtimeUpdate.maxLatencyMs;
+    this.engineState = runtimeUpdate.state;
 
     await this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "ADMIN_CONFIG_APPLIED");
 
