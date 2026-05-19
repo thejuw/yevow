@@ -1135,11 +1135,11 @@ export class TradingEngine {
       request.headers.get("Upgrade")?.toLowerCase() === "websocket" &&
       url.pathname === "/stream"
     ) {
-      return this.acceptTelemetryStream();
+      return acceptTradingTelemetryStream(this.streamContext());
     }
 
     if (request.headers.get("Upgrade")?.toLowerCase() === "websocket") {
-      return this.acceptMarketStream();
+      return acceptTradingMarketStream(this.streamContext());
     }
 
     try {
@@ -1392,14 +1392,6 @@ export class TradingEngine {
 
   private handleStorageWriteFailure(reason: string, error: unknown): void {
     this.storageGuard.recordFailure(reason, error);
-  }
-
-  private acceptMarketStream(): Response {
-    return acceptTradingMarketStream(this.streamContext());
-  }
-
-  private acceptTelemetryStream(): Response {
-    return acceptTradingTelemetryStream(this.streamContext());
   }
 
   private streamContext() {
