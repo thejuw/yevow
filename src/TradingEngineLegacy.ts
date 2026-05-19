@@ -928,7 +928,7 @@ export class TradingEngine {
       this.rebindOrderBookReconstructor();
       this.ghostBook.hydrate(baseState.shadowQueue);
       this.cascadePositionManager.hydrate(persistedCascadePositions ?? []);
-      this.hydrateProfilerAgents(persistedProfilerState, persistedProfilerStates);
+      this.profilerRegistry.hydrate(persistedProfilerState, persistedProfilerStates);
       this.heatmapAgent.hydrate(persistedHeatmapState ?? baseState.liquidationHeatmap);
       this.anomalyDetector.hydrate(persistedAnomalyState);
       this.rateLimiter.hydrate(persistedRateLimits);
@@ -953,7 +953,7 @@ export class TradingEngine {
       if (this.cachedConfig.STRATEGY_MODE === "CASCADE_RECOVERY") {
         this.state.waitUntil(this.ensureCascadePaperModeArmed(now));
       }
-      this.configureProfilerAgents(this.cachedConfig);
+      this.profilerRegistry.configure(this.cachedConfig);
       this.maxLatencyMs = this.cachedConfig.LATENCY_THRESHOLD_MS;
       const location = baseState.location ?? defaultEngineLocation();
       const risk = applyLocationRisk(
@@ -985,7 +985,7 @@ export class TradingEngine {
         averageLatency: baseState.averageLatency ?? 0,
         latencySampleCount: baseState.latencySampleCount ?? 0,
         staleTickCount: baseState.staleTickCount ?? 0,
-        toxicityScore: baseState.toxicityScore ?? this.maxProfilerToxicity(),
+        toxicityScore: baseState.toxicityScore ?? this.profilerRegistry.maxToxicity(),
         current_inventory_delta:
           baseState.current_inventory_delta ??
           baseState.inventory?.current_inventory_delta ??
@@ -1008,7 +1008,7 @@ export class TradingEngine {
           this.macroBias,
           now
         ),
-        profilerStates: this.profilerStateSnapshot(),
+        profilerStates: this.profilerRegistry.snapshot(),
         location,
         fundingRates: baseState.fundingRates ?? {},
         microstructure: baseState.microstructure ?? defaultMicrostructure(),
@@ -1284,7 +1284,7 @@ export class TradingEngine {
           profilerStates,
           assetQuoteStates
         ),
-      profilerStateSnapshot: () => this.profilerStateSnapshot()
+      profilerStateSnapshot: () => this.profilerRegistry.snapshot()
     });
 
     if (nextState) {
@@ -1300,40 +1300,10 @@ export class TradingEngine {
     });
   }
 
-  private hydrateProfilerAgents(
-    legacyState: ProfilerState | undefined,
-    persistedStates: Map<string, ProfilerState>
-  ): void {
-    this.profilerRegistry.hydrate(legacyState, persistedStates);
-  }
-
-  private resetProfilerAgents(): void {
-    this.profilerRegistry.reset();
-  }
-
   private async deleteRetiredProfilerStorage(): Promise<string[]> {
     return this.profilerRegistry.deleteRetiredStorage(this.state.storage, (reason, error) =>
       this.handleStorageWriteFailure(reason, error)
     );
-  }
-
-  private configureProfilerAgents(config: GlobalRiskConfig): void {
-    this.profilerRegistry.configure(config);
-  }
-
-  private profilerStateSnapshot(
-    overrideInstrument?: string,
-    overrideState?: ProfilerState
-  ): Record<string, ProfilerState> {
-    return this.profilerRegistry.snapshot(overrideInstrument, overrideState);
-  }
-
-  private maxProfilerToxicity(): number {
-    return this.profilerRegistry.maxToxicity();
-  }
-
-  private findBestAssetBook(instrumentCode: string): InternalOrderBook | undefined {
-    return findBestOrderBookForAsset(this.orderBook, instrumentCode);
   }
 
   private calculateAssetMatrix(
@@ -1357,7 +1327,7 @@ export class TradingEngine {
       macroBias: this.macroBias,
       equity: this.engineState.bankroll.equity,
       maxPositionPct,
-      findBestAssetBook: (instrumentCode) => this.findBestAssetBook(instrumentCode),
+      findBestAssetBook: (instrumentCode) => findBestOrderBookForAsset(this.orderBook, instrumentCode),
       profilerStateForInstrument: (instrumentCode) =>
         this.profilerRegistry.forInstrument(instrumentCode).snapshot()
     });
@@ -3617,7 +3587,7 @@ export class TradingEngine {
     const leadLag = this.engineState.leadLag;
     const inventory = this.calculateInventoryState(metrics.brainTimestamp);
     const riskMetrics = this.updatePortfolioRisk(oracleResult.state, metrics.brainTimestamp);
-    const profilerStates = this.profilerStateSnapshot(tick.instrumentCode, profilerResult.state);
+    const profilerStates = this.profilerRegistry.snapshot(tick.instrumentCode, profilerResult.state);
     const assetMatrix = this.calculateAssetMatrix(
       metrics.brainTimestamp,
       tick.instrumentCode,
@@ -4671,7 +4641,7 @@ export class TradingEngine {
       0,
       100
     );
-    const book = this.findBestAssetBook(quote.instrumentCode);
+    const book = findBestOrderBookForAsset(this.orderBook, quote.instrumentCode);
     const tickSize = book?.tickSize ?? DEFAULT_ORDER_BOOK_TICK_SIZE;
     const advice = this.queuePositionModel.adviseRefresh({
       previousQuote: last,
@@ -5427,7 +5397,7 @@ export class TradingEngine {
       heartbeatAt: startedAt,
       updatedAt: startedAt
     };
-    this.resetProfilerAgents();
+    this.profilerRegistry.reset();
     this.anomalyDetector.hydrate(null);
     this.oracleAgent.hydrate(null);
     this.sentimentAgent.hydrate(null);
@@ -5671,7 +5641,7 @@ export class TradingEngine {
     this.lastTickTimestamp = snapshot.lastTickTimestamp;
     this.signals = snapshot.signals;
     this.latestAgentSignals = new Map(snapshot.latestAgentSignals);
-    this.hydrateProfilerAgents(snapshot.profilerState, new Map(snapshot.profilerStates));
+    this.profilerRegistry.hydrate(snapshot.profilerState, new Map(snapshot.profilerStates));
     this.anomalyDetector.hydrate(snapshot.anomalyState);
     this.oracleAgent.hydrate(snapshot.oracleState);
     this.sentimentAgent.hydrate(snapshot.sentimentState);
@@ -6070,7 +6040,7 @@ export class TradingEngine {
     this.cachedConfig = nextConfig;
     this.macroBias = effectiveGovernance.macroBias;
     this.activeTemporaryOverride = effectiveGovernance.temporaryOverride;
-    this.configureProfilerAgents(nextConfig);
+    this.profilerRegistry.configure(nextConfig);
     this.maxLatencyMs = nextConfig.LATENCY_THRESHOLD_MS;
     if (nextConfig.TRADING_ENABLED) {
       this.killSwitchLogged = false;
@@ -6117,10 +6087,10 @@ export class TradingEngine {
         now,
         this.engineState.microstructure.instrumentCode ?? undefined,
         this.engineState.oracle,
-        this.profilerStateSnapshot(),
+        this.profilerRegistry.snapshot(),
         nextAssetQuoteStates
       ),
-      profilerStates: this.profilerStateSnapshot(),
+      profilerStates: this.profilerRegistry.snapshot(),
       maxLatencyMs: nextConfig.LATENCY_THRESHOLD_MS,
       location: refreshedLocation,
       risk: applyLocationRisk(
