@@ -1,4 +1,4 @@
-import type { InventoryState, Position } from "../../../types";
+import type { InternalOrderBook, InventoryState, Position } from "../../../types";
 import { roundCrypto, roundMetric } from "../book/SortedBookSide";
 
 export interface InventoryStateInput {
@@ -11,6 +11,13 @@ export interface InventoryStateInput {
   readonly baseReferencePrice: number;
   readonly configuredWeights: Record<string, number>;
   readonly markPrice: (instrumentCode: string, fallback: number) => number;
+}
+
+export interface BaseAssetReferencePriceInput {
+  readonly baseAsset: string;
+  readonly orderBooks: Iterable<InternalOrderBook>;
+  readonly positions: Record<string, Position>;
+  readonly microstructureMidPrice: number | null;
 }
 
 export function calculateInventoryState(input: InventoryStateInput): InventoryState {
@@ -39,6 +46,24 @@ export function calculateInventoryState(input: InventoryStateInput): InventorySt
     stopAsk,
     updatedAt: input.observedAt
   };
+}
+
+export function referencePriceForBaseAsset(input: BaseAssetReferencePriceInput): number {
+  const normalizedBase = input.baseAsset.toLowerCase();
+
+  for (const book of input.orderBooks) {
+    if (book.instrumentCode.split("-")[0] === normalizedBase && book.midPrice !== null) {
+      return book.midPrice;
+    }
+  }
+
+  const directPosition = input.positions[`${normalizedBase}-usd`];
+  if (directPosition?.markPrice) {
+    return directPosition.markPrice;
+  }
+
+  const microMid = input.microstructureMidPrice;
+  return typeof microMid === "number" && Number.isFinite(microMid) && microMid > 0 ? microMid : 1;
 }
 
 export function normalizeInventoryDelta(

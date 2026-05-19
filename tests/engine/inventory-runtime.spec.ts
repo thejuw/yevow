@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   calculateInventoryState,
-  normalizeInventoryDelta
+  normalizeInventoryDelta,
+  referencePriceForBaseAsset
 } from "../../src/engine/trading/inventory/InventoryRuntime";
-import type { Position } from "../../src/types";
+import type { InternalOrderBook, Position } from "../../src/types";
 
 const OBSERVED_AT = "2026-05-18T11:00:00.000Z";
 
@@ -76,6 +77,45 @@ describe("InventoryRuntime", () => {
       normalization: { "sol-usd": 1 }
     });
   });
+
+  it("resolves base reference prices from books, positions, microstructure, then neutral fallback", () => {
+    expect(
+      referencePriceForBaseAsset({
+        baseAsset: "BTC",
+        orderBooks: [book({ midPrice: 100_100 })],
+        positions: {
+          "btc-usd": position("btc-usd", "LONG", 1, 99_000)
+        },
+        microstructureMidPrice: 98_000
+      })
+    ).toBe(100_100);
+    expect(
+      referencePriceForBaseAsset({
+        baseAsset: "BTC",
+        orderBooks: [book({ instrumentCode: "eth-usd", midPrice: 5_000 })],
+        positions: {
+          "btc-usd": position("btc-usd", "LONG", 1, 99_000)
+        },
+        microstructureMidPrice: 98_000
+      })
+    ).toBe(99_000);
+    expect(
+      referencePriceForBaseAsset({
+        baseAsset: "BTC",
+        orderBooks: [],
+        positions: {},
+        microstructureMidPrice: 98_000
+      })
+    ).toBe(98_000);
+    expect(
+      referencePriceForBaseAsset({
+        baseAsset: "BTC",
+        orderBooks: [],
+        positions: {},
+        microstructureMidPrice: null
+      })
+    ).toBe(1);
+  });
 });
 
 function position(
@@ -93,5 +133,32 @@ function position(
     unrealizedPnl: 0,
     realizedPnl: 0,
     updatedAt: OBSERVED_AT
+  };
+}
+
+function book(overrides: Partial<InternalOrderBook> = {}): InternalOrderBook {
+  return {
+    marketKey: "hyperliquid:btc-usd",
+    source: "HYPERLIQUID",
+    source_exchange: "hyperliquid",
+    sourceWeight: 1,
+    instrumentCode: "btc-usd",
+    exchangeCode: "hyperliquid",
+    bids: [],
+    asks: [],
+    bestBid: null,
+    bestAsk: null,
+    midPrice: 100_000,
+    spread: null,
+    spreadBps: null,
+    weightedImbalance: null,
+    lastSequence: 1,
+    tickSize: 1,
+    ttbLatencyMs: null,
+    isSynced: true,
+    desyncReason: null,
+    sequence: 1,
+    updatedAt: OBSERVED_AT,
+    ...overrides
   };
 }

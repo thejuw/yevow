@@ -78,7 +78,10 @@ import {
 } from "./engine/trading/shadow/ShadowQueueRuntime";
 import { stateAfterAnomalyEmergencyPause } from "./engine/trading/anomaly/AnomalyRuntime";
 import { updateLeadLagMetrics as updateLeadLagRuntimeMetrics } from "./engine/trading/leadlag/LeadLagRuntime";
-import { calculateInventoryState as calculateInventoryRuntimeState } from "./engine/trading/inventory/InventoryRuntime";
+import {
+  calculateInventoryState as calculateInventoryRuntimeState,
+  referencePriceForBaseAsset as resolveBaseAssetReferencePrice
+} from "./engine/trading/inventory/InventoryRuntime";
 import { calculatePortfolioRisk as calculatePortfolioRuntimeRisk } from "./engine/trading/risk/PortfolioRiskRuntime";
 import { calculateEnsembleState as calculateRuntimeEnsembleState } from "./engine/trading/ensemble/EnsembleRuntime";
 import {
@@ -4362,22 +4365,12 @@ export class TradingEngine {
   }
 
   private referencePriceForBaseAsset(baseAsset: string): number {
-    const normalizedBase = baseAsset.toLowerCase();
-    const directBook = [...this.orderBook.values()].find(
-      (book) => book.instrumentCode.split("-")[0] === normalizedBase && book.midPrice !== null
-    );
-
-    if (directBook?.midPrice) {
-      return directBook.midPrice;
-    }
-
-    const directPosition = this.engineState.openPositions[`${normalizedBase}-usd`];
-    if (directPosition?.markPrice) {
-      return directPosition.markPrice;
-    }
-
-    const microMid = this.engineState.microstructure.midPrice;
-    return typeof microMid === "number" && Number.isFinite(microMid) && microMid > 0 ? microMid : 1;
+    return resolveBaseAssetReferencePrice({
+      baseAsset,
+      orderBooks: this.orderBook.values(),
+      positions: this.engineState.openPositions,
+      microstructureMidPrice: this.engineState.microstructure.midPrice
+    });
   }
 
   private updatePortfolioRisk(
