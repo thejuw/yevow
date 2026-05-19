@@ -54,6 +54,11 @@ import {
   stateAfterRebuiltBookSnapshot
 } from "./engine/trading/book/BookRuntimeState";
 import {
+  applyOrderBookResetStores,
+  orderBookResetDeleteKeys,
+  resolveOrderBookReset
+} from "./engine/trading/book/OrderBookResetRuntime";
+import {
   buildDomAnalysisSnapshot,
   currentDomHeatmapSnapshot
 } from "./engine/trading/book/DomAnalyzer";
@@ -2620,26 +2625,7 @@ export class TradingEngine {
   }
 
   private async resetOrderBook(payload: Partial<OrderBookResetRequest>): Promise<void> {
-    const now = new Date().toISOString();
-    const reason =
-      typeof payload.reason === "string" && payload.reason.length > 0
-        ? payload.reason
-        : "UNSPECIFIED_RESET";
-    const source = payload.source ?? "SYSTEM";
-    const blackoutDurationMs =
-      typeof payload.blackoutDurationMs === "number" && Number.isFinite(payload.blackoutDurationMs)
-        ? Math.max(0, Math.round(payload.blackoutDurationMs))
-        : null;
-    const resetInstrument = payload.instrumentCode?.toLowerCase() ?? null;
-    const resetSourceExchange = payload.source_exchange
-      ? normalizeSourceExchange(payload.source_exchange)
-      : null;
-    const resetStreamId =
-      typeof payload.streamId === "string" && payload.streamId.length > 0 ? payload.streamId : null;
-    const resetMarketKey =
-      resetInstrument && resetSourceExchange
-        ? buildMarketKey(resetSourceExchange, resetInstrument)
-        : null;
+    const reset = resolveOrderBookReset(payload);
     let persistedBooks = new Map<string, InternalOrderBook>();
     try {
       persistedBooks = await this.state.storage.list<InternalOrderBook>({
@@ -2648,43 +2634,36 @@ export class TradingEngine {
     } catch (error) {
       this.handleStorageWriteFailure("ORDER_BOOK_RESET_LIST", error);
     }
-    const deleteKeys = resetMarketKey
-      ? [`${ORDER_BOOK_PREFIX}${resetMarketKey}`].filter((key) => persistedBooks.has(key))
-      : [...persistedBooks.keys()];
-
-    if (resetMarketKey) {
-      this.orderBook.delete(resetMarketKey);
-      this.bids.delete(resetMarketKey);
-      this.asks.delete(resetMarketKey);
-      this.bookSync.delete(resetMarketKey);
-    } else {
-      this.orderBook.clear();
-      this.bids.clear();
-      this.asks.clear();
-      this.bookSync.clear();
-    }
+    const deleteKeys = orderBookResetDeleteKeys(
+      persistedBooks,
+      ORDER_BOOK_PREFIX,
+      reset.resetMarketKey
+    );
+    applyOrderBookResetStores(this.orderBookStores(), reset.resetMarketKey);
 
     this.engineState = stateAfterOrderBookReset({
       currentState: this.engineState,
-      resetMarketKey,
-      resetInstrument,
+      resetMarketKey: reset.resetMarketKey,
+      resetInstrument: reset.resetInstrument,
       orderBookSize: this.orderBook.size,
       internalOrderBookDepth: countBookLevels(this.bids, this.asks),
-      now,
-      priceDiscovery: resetInstrument ? this.calculatePriceDiscovery(resetInstrument, now) : null
+      now: reset.now,
+      priceDiscovery: reset.resetInstrument
+        ? this.calculatePriceDiscovery(reset.resetInstrument, reset.now)
+        : null
     });
 
-    if (source === "INGEST_WORKER") {
-      this.resetLatencyBaseline(now, `ORDER_BOOK_RESET:${reason}`);
-      if (payload.connectionId) {
+    if (reset.source === "INGEST_WORKER") {
+      this.resetLatencyBaseline(reset.now, `ORDER_BOOK_RESET:${reset.reason}`);
+      if (reset.connectionId) {
         this.activeIngestConnections.set(
-          hyperliquidIngestConnectionKey(resetSourceExchange, resetStreamId),
-          payload.connectionId
+          hyperliquidIngestConnectionKey(reset.resetSourceExchange, reset.resetStreamId),
+          reset.connectionId
         );
-        if (!resetStreamId) {
+        if (!reset.resetStreamId) {
           this.activeIngestConnections.set(
-            hyperliquidIngestConnectionKey(resetSourceExchange, null),
-            payload.connectionId
+            hyperliquidIngestConnectionKey(reset.resetSourceExchange, null),
+            reset.connectionId
           );
         }
       }
@@ -2700,28 +2679,28 @@ export class TradingEngine {
     ]);
 
     this.logger.warn("ORDER_BOOK_RESET", "Internal order book purged after stream recovery", {
-      reason,
-      source,
-      streamId: resetStreamId,
-      instrumentCode: resetInstrument,
-      source_exchange: resetSourceExchange,
-      marketKey: resetMarketKey,
-      connectionId: payload.connectionId ?? null,
-      blackoutDurationMs,
-      recoveredAt: payload.recoveredAt ?? now,
+      reason: reset.reason,
+      source: reset.source,
+      streamId: reset.resetStreamId,
+      instrumentCode: reset.resetInstrument,
+      source_exchange: reset.resetSourceExchange,
+      marketKey: reset.resetMarketKey,
+      connectionId: reset.connectionId,
+      blackoutDurationMs: reset.blackoutDurationMs,
+      recoveredAt: reset.recoveredAt,
       deletedBookSnapshots: deleteKeys.length
     });
 
     this.publish("ORDER_BOOK_RESET", {
-      reason,
-      source,
-      streamId: resetStreamId,
-      instrumentCode: resetInstrument,
-      source_exchange: resetSourceExchange,
-      marketKey: resetMarketKey,
-      connectionId: payload.connectionId ?? null,
-      blackoutDurationMs,
-      recoveredAt: payload.recoveredAt ?? now,
+      reason: reset.reason,
+      source: reset.source,
+      streamId: reset.resetStreamId,
+      instrumentCode: reset.resetInstrument,
+      source_exchange: reset.resetSourceExchange,
+      marketKey: reset.resetMarketKey,
+      connectionId: reset.connectionId,
+      blackoutDurationMs: reset.blackoutDurationMs,
+      recoveredAt: reset.recoveredAt,
       deletedBookSnapshots: deleteKeys.length
     });
   }
