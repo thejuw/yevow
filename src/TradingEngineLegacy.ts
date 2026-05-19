@@ -323,6 +323,9 @@ import {
 } from "./engine/trading/state/EngineDiagnostics";
 import { nextTickAgentHealth } from "./engine/trading/state/AgentHealthRuntime";
 import {
+  killSwitchActiveLogMetadata,
+  shadowModeAutoResumeLogMetadata,
+  shadowModeAutoResumeTelemetry,
   shouldAutoResumeShadowMode,
   shouldBlockHaltedTrading,
   shouldLogDisabledTrading,
@@ -2778,17 +2781,12 @@ export class TradingEngine {
       this.logger.warn(
         "SHADOW_MODE_AUTO_RESUME",
         "Shadow mode resumed paper trading after a stale halt",
-        {
-          instrumentCode: tick.instrumentCode,
-          previousMode: "HALTED",
-          nextMode: "PAPER",
+        shadowModeAutoResumeLogMetadata({
+          tick,
           configVersion: this.cachedConfig.version
-        }
+        })
       );
-      this.publish("RESUME_QUOTES", {
-        reason: "SHADOW_MODE_AUTO_RESUME",
-        observedAt: resumedAt
-      });
+      this.publish("RESUME_QUOTES", shadowModeAutoResumeTelemetry(resumedAt));
     }
 
     if (
@@ -2800,12 +2798,16 @@ export class TradingEngine {
       })
     ) {
       if (!this.killSwitchLogged) {
-        this.logger.warn("KILL_SWITCH_ACTIVE", "Trading halted by cached config", {
-          instrumentCode: tick.instrumentCode,
-          configVersion: this.cachedConfig.version,
-          tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-          mode: this.engineState.mode
-        });
+        this.logger.warn(
+          "KILL_SWITCH_ACTIVE",
+          "Trading halted by cached config",
+          killSwitchActiveLogMetadata({
+            tick,
+            configVersion: this.cachedConfig.version,
+            tradingEnabled: this.cachedConfig.TRADING_ENABLED,
+            mode: this.engineState.mode
+          })
+        );
         this.killSwitchLogged = true;
       }
 
@@ -2823,12 +2825,16 @@ export class TradingEngine {
         killSwitchLogged: this.killSwitchLogged
       })
     ) {
-      this.logger.warn("KILL_SWITCH_ACTIVE", "Trading disabled; market data remains enabled", {
-        instrumentCode: tick.instrumentCode,
-        configVersion: this.cachedConfig.version,
-        tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-        mode: this.engineState.mode
-      });
+      this.logger.warn(
+        "KILL_SWITCH_ACTIVE",
+        "Trading disabled; market data remains enabled",
+        killSwitchActiveLogMetadata({
+          tick,
+          configVersion: this.cachedConfig.version,
+          tradingEnabled: this.cachedConfig.TRADING_ENABLED,
+          mode: this.engineState.mode
+        })
+      );
       this.killSwitchLogged = true;
     }
 

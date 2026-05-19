@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  killSwitchActiveLogMetadata,
+  shadowModeAutoResumeLogMetadata,
+  shadowModeAutoResumeTelemetry,
   shouldAutoResumeShadowMode,
   shouldBlockHaltedTrading,
   shouldLogDisabledTrading,
@@ -44,6 +47,34 @@ describe("TickStateRuntime", () => {
         killSwitchLogged: false
       })
     ).toBe(true);
+    expect(
+      shadowModeAutoResumeLogMetadata({
+        tick: { instrumentCode: "btc-usd" },
+        configVersion: "config-1"
+      })
+    ).toEqual({
+      instrumentCode: "btc-usd",
+      previousMode: "HALTED",
+      nextMode: "PAPER",
+      configVersion: "config-1"
+    });
+    expect(shadowModeAutoResumeTelemetry(OBSERVED_AT)).toEqual({
+      reason: "SHADOW_MODE_AUTO_RESUME",
+      observedAt: OBSERVED_AT
+    });
+    expect(
+      killSwitchActiveLogMetadata({
+        tick: { instrumentCode: "btc-usd" },
+        configVersion: "config-1",
+        tradingEnabled: false,
+        mode: "HALTED"
+      })
+    ).toEqual({
+      instrumentCode: "btc-usd",
+      configVersion: "config-1",
+      tradingEnabled: false,
+      mode: "HALTED"
+    });
   });
 
   it("resumes shadow-mode paper trading from a halted state", () => {

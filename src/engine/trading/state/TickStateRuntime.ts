@@ -4,8 +4,10 @@ import type {
   EngineState,
   InternalOrderBook,
   GlobalRiskConfig,
+  JsonRecord,
   LatencyStatus,
-  ManagedOrder
+  ManagedOrder,
+  MarketTick
 } from "../../../types";
 import { microstructureFromBook } from "../book/BookReconstruction";
 
@@ -54,6 +56,13 @@ export interface AcceptedTickStateInput {
   readonly observedAt: string;
 }
 
+export interface TickGuardLogInput {
+  readonly tick: Pick<MarketTick, "instrumentCode">;
+  readonly configVersion: string;
+  readonly tradingEnabled: boolean;
+  readonly mode: EngineMode;
+}
+
 export function shouldAutoResumeShadowMode(input: TickPreflightModeInput): boolean {
   return !input.shadowReplay && input.shadowMode && input.tradingEnabled && input.mode === "HALTED";
 }
@@ -68,6 +77,33 @@ export function shouldLogDisabledTrading(input: {
   readonly killSwitchLogged: boolean;
 }): boolean {
   return !input.shadowReplay && !input.tradingEnabled && !input.killSwitchLogged;
+}
+
+export function shadowModeAutoResumeLogMetadata(
+  input: Pick<TickGuardLogInput, "tick" | "configVersion">
+): JsonRecord {
+  return {
+    instrumentCode: input.tick.instrumentCode,
+    previousMode: "HALTED",
+    nextMode: "PAPER",
+    configVersion: input.configVersion
+  };
+}
+
+export function shadowModeAutoResumeTelemetry(observedAt: string): JsonRecord {
+  return {
+    reason: "SHADOW_MODE_AUTO_RESUME",
+    observedAt
+  };
+}
+
+export function killSwitchActiveLogMetadata(input: TickGuardLogInput): JsonRecord {
+  return {
+    instrumentCode: input.tick.instrumentCode,
+    configVersion: input.configVersion,
+    tradingEnabled: input.tradingEnabled,
+    mode: input.mode
+  };
 }
 
 export function stateAfterShadowModeAutoResume(input: ShadowModeAutoResumeInput): EngineState {
