@@ -4242,41 +4242,77 @@ export class TradingEngine {
     this.publish("SHADOW_QUEUE_GHOST_FILL", ghostFillRecord.eventPayload, fill.fillId);
   }
 
+  private handleShadowQueueNoEdgeDecision(decision: ShadowQueueDecision): ShadowQueueDecision {
+    const telemetry = buildShadowQueueNoEdgeTelemetry(decision);
+    if (
+      shouldLogShadowQueueNoEdgeEvent({
+        lastLoggedAtByInstrument: this.shadowQueueNoEdgeLogAt,
+        instrumentCode: decision.instrumentCode,
+        nowMs: Date.now(),
+        intervalMs: resolveShadowQueueNoEdgeLogInterval(
+          this.env.SHADOW_QUEUE_NO_EDGE_LOG_INTERVAL_MS
+        )
+      })
+    ) {
+      this.logger.info(telemetry.eventType, telemetry.message, telemetry.metadata);
+    }
+    this.publish(telemetry.eventType, telemetry.payload, telemetry.correlationId);
+    return decision;
+  }
+
+  private handleShadowQueueLatencyBreach(
+    decision: ShadowQueueDecision,
+    latencyBudgetMs: number
+  ): ShadowQueueDecision | null {
+    const latencyDecision = enforceShadowQueueDecisionLatency(decision, latencyBudgetMs);
+
+    if (!latencyDecision.breached) {
+      return null;
+    }
+
+    const suppressed = latencyDecision.decision;
+    const telemetry = buildShadowQueueLatencyBreachTelemetry({
+      originalDecision: decision,
+      suppressedDecision: suppressed,
+      latencyBudgetMs
+    });
+    this.logger.warn(telemetry.eventType, telemetry.message, telemetry.metadata);
+    this.publish(telemetry.eventType, telemetry.payload, telemetry.correlationId);
+    return suppressed;
+  }
+
+  private dispatchShadowQueueDecisionAction(
+    decision: ShadowQueueDecision,
+    intent: TradeIntent | null,
+    book: InternalOrderBook
+  ): void {
+    const action = buildShadowQueueDecisionAction({
+      decision,
+      intent,
+      tradingEnabled: this.cachedConfig.TRADING_ENABLED
+    });
+    this.publish(action.publish.type, action.publish.payload, action.publish.correlationId);
+
+    if (action.cancelReason) {
+      this.state.waitUntil(this.cancelAllQuotes(book.instrumentCode, action.cancelReason));
+    }
+    if (action.dispatchIntent) {
+      this.state.waitUntil(this.dispatchExecution(action.dispatchIntent));
+    }
+  }
+
   private handleShadowQueueDecision(
     decision: ShadowQueueDecision,
     book: InternalOrderBook,
     observedAt: string
   ): ShadowQueueDecision {
     if (decision.action === "NO_EDGE" || decision.dispatchSide === null) {
-      const telemetry = buildShadowQueueNoEdgeTelemetry(decision);
-      if (
-        shouldLogShadowQueueNoEdgeEvent({
-          lastLoggedAtByInstrument: this.shadowQueueNoEdgeLogAt,
-          instrumentCode: decision.instrumentCode,
-          nowMs: Date.now(),
-          intervalMs: resolveShadowQueueNoEdgeLogInterval(
-            this.env.SHADOW_QUEUE_NO_EDGE_LOG_INTERVAL_MS
-          )
-        })
-      ) {
-        this.logger.info(telemetry.eventType, telemetry.message, telemetry.metadata);
-      }
-      this.publish(telemetry.eventType, telemetry.payload, telemetry.correlationId);
-      return decision;
+      return this.handleShadowQueueNoEdgeDecision(decision);
     }
 
     const latencyBudget = this.engineState.shadowQueue.latencyBudgetMs;
-    const latencyDecision = enforceShadowQueueDecisionLatency(decision, latencyBudget);
-
-    if (latencyDecision.breached) {
-      const suppressed = latencyDecision.decision;
-      const telemetry = buildShadowQueueLatencyBreachTelemetry({
-        originalDecision: decision,
-        suppressedDecision: suppressed,
-        latencyBudgetMs: latencyBudget
-      });
-      this.logger.warn(telemetry.eventType, telemetry.message, telemetry.metadata);
-      this.publish(telemetry.eventType, telemetry.payload, telemetry.correlationId);
+    const suppressed = this.handleShadowQueueLatencyBreach(decision, latencyBudget);
+    if (suppressed) {
       return suppressed;
     }
 
@@ -4316,19 +4352,7 @@ export class TradingEngine {
       })
     );
 
-    const action = buildShadowQueueDecisionAction({
-      decision: updatedDecision,
-      intent,
-      tradingEnabled: this.cachedConfig.TRADING_ENABLED
-    });
-    this.publish(action.publish.type, action.publish.payload, action.publish.correlationId);
-
-    if (action.cancelReason) {
-      this.state.waitUntil(this.cancelAllQuotes(book.instrumentCode, action.cancelReason));
-    }
-    if (action.dispatchIntent) {
-      this.state.waitUntil(this.dispatchExecution(action.dispatchIntent));
-    }
+    this.dispatchShadowQueueDecisionAction(updatedDecision, intent, book);
 
     return updatedDecision;
   }
