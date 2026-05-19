@@ -3,8 +3,11 @@ import { CascadeRecoveryPipeline } from "../../src/engine/trading/pipelines/Casc
 import { MarketMakingPipeline } from "../../src/engine/trading/pipelines/MarketMakingPipeline";
 import { evaluateSharedTickGate } from "../../src/engine/trading/pipelines/SharedTickGate";
 import {
+  configuredPlacementColoFromValue,
   configuredPlacementColo,
   isGoldenColo,
+  parseColoSet,
+  placementCode,
   placementColo
 } from "../../src/engine/trading/helpers/PlacementResolver";
 
@@ -91,9 +94,12 @@ describe("trading pipeline separation", () => {
     expect(placementColo({ placement: "remote-nrt", colo: "DFW" })).toBe("NRT");
     expect(placementColo({ colo: "dfw" })).toBe("DFW");
     expect(placementColo(null)).toBe("UNKNOWN");
+    expect(placementCode("local-hnd")).toBe("HND");
+    expect(configuredPlacementColoFromValue("nrt")).toBe("NRT");
     expect(
       configuredPlacementColo({ PLACEMENT_TARGET_COLO: undefined, GOLDEN_COLOS: "nrt,hnd" })
     ).toBe("NRT");
     expect(isGoldenColo({ placement: "remote-nrt" }, { GOLDEN_COLOS: "NRT,HND" })).toBe(true);
+    expect([...parseColoSet("nrt,,unknown")]).toEqual(["NRT"]);
   });
 });
