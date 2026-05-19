@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   buildHistoricalReplayResult,
+  buildReplayStatus,
   buildShadowReplayConfig,
   buildShadowReplayEngineState,
+  calculateReplayShadowBankroll,
   resolveInitialShadowBankroll
 } from "../../src/engine/trading/replay/ReplayResultRuntime";
 import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
@@ -146,6 +148,37 @@ describe("ReplayResultRuntime", () => {
         realizedPnl: 0,
         updatedAt: STARTED_AT
       }
+    });
+  });
+
+  it("builds replay progress statuses and shadow bankroll marks", () => {
+    const modeledTrades: ReplayResult["shadowTrades"] = [
+      trade({ theoreticalPnl: 4 }),
+      trade({ theoreticalPnl: -1.5 })
+    ];
+
+    expect(calculateReplayShadowBankroll(300, modeledTrades)).toBe(302.5);
+    expect(
+      buildReplayStatus({
+        replayId: "replay-2",
+        status: "RUNNING",
+        ticksTotal: 80,
+        ticksProcessed: 20,
+        speedMultiplier: 4,
+        shadowBankroll: 302.5,
+        dateFrom: null,
+        dateTo: null,
+        scenario: "BASELINE",
+        startedAt: STARTED_AT,
+        updatedAt: COMPLETED_AT
+      })
+    ).toMatchObject({
+      replayId: "replay-2",
+      status: "RUNNING",
+      progressPct: 25,
+      shadowBankroll: 302.5,
+      error: null,
+      completedAt: null
     });
   });
 });

@@ -1,4 +1,5 @@
 import type { ReplayOptions } from "../routes/ReplayAdminRoutes";
+import type { ReplayStatus } from "../routes/ReplayAdminRoutes";
 import type {
   EngineState,
   GlobalRiskConfig,
@@ -40,6 +41,23 @@ export interface BuildShadowReplayEngineStateInput {
   readonly initialShadowBankroll: number;
   readonly startedAt: string;
   readonly replayId: string;
+}
+
+export interface BuildReplayStatusInput {
+  readonly replayId: string;
+  readonly status: ReplayStatus["status"];
+  readonly ticksTotal: number;
+  readonly ticksProcessed: number;
+  readonly speedMultiplier: number;
+  readonly shadowBankroll: number;
+  readonly dateFrom: string | null;
+  readonly dateTo: string | null;
+  readonly scenario: ReplayOptions["scenario"];
+  readonly error?: string | null;
+  readonly startedAt: string;
+  readonly updatedAt: string;
+  readonly completedAt?: string | null;
+  readonly progressPct?: number;
 }
 
 export interface BuildReplayResultInput {
@@ -99,6 +117,38 @@ export function buildShadowReplayEngineState(
     cachedConfig: input.cachedConfig,
     heartbeatAt: input.startedAt,
     updatedAt: input.startedAt
+  };
+}
+
+export function calculateReplayShadowBankroll(
+  initialShadowBankroll: number,
+  modeledTrades: ReplayResult["shadowTrades"]
+): number {
+  return (
+    initialShadowBankroll + modeledTrades.reduce((sum, trade) => sum + trade.theoreticalPnl, 0)
+  );
+}
+
+export function buildReplayStatus(input: BuildReplayStatusInput): ReplayStatus {
+  return {
+    replayId: input.replayId,
+    status: input.status,
+    ticksTotal: input.ticksTotal,
+    ticksProcessed: input.ticksProcessed,
+    progressPct:
+      input.progressPct ??
+      (input.ticksTotal > 0
+        ? roundReplayMetric((input.ticksProcessed / input.ticksTotal) * 100, 2)
+        : 0),
+    speedMultiplier: input.speedMultiplier,
+    shadowBankroll: input.shadowBankroll,
+    dateFrom: input.dateFrom,
+    dateTo: input.dateTo,
+    scenario: input.scenario,
+    error: input.error ?? null,
+    startedAt: input.startedAt,
+    updatedAt: input.updatedAt,
+    completedAt: input.completedAt ?? null
   };
 }
 

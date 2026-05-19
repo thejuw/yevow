@@ -207,8 +207,10 @@ import { type ReplayOptions, type ReplayScenario } from "./engine/trading/routes
 import { markHistoricalReplayTrades, ReplayJournal } from "./engine/trading/replay/ReplayJournal";
 import {
   buildHistoricalReplayResult,
+  buildReplayStatus,
   buildShadowReplayConfig,
   buildShadowReplayEngineState,
+  calculateReplayShadowBankroll,
   resolveInitialShadowBankroll
 } from "./engine/trading/replay/ReplayResultRuntime";
 import type {
@@ -5076,22 +5078,21 @@ export class TradingEngine {
   ): Promise<ReplayResult> {
     const startedAt = new Date().toISOString();
     const replayId = crypto.randomUUID();
-    await this.replayJournal.writeStatus({
-      replayId,
-      status: "RUNNING",
-      ticksTotal: 0,
-      ticksProcessed: 0,
-      progressPct: 0,
-      speedMultiplier,
-      shadowBankroll,
-      dateFrom,
-      dateTo,
-      scenario: replayOptions.scenario,
-      error: null,
-      startedAt,
-      updatedAt: startedAt,
-      completedAt: null
-    });
+    await this.replayJournal.writeStatus(
+      buildReplayStatus({
+        replayId,
+        status: "RUNNING",
+        ticksTotal: 0,
+        ticksProcessed: 0,
+        speedMultiplier,
+        shadowBankroll,
+        dateFrom,
+        dateTo,
+        scenario: replayOptions.scenario,
+        startedAt,
+        updatedAt: startedAt
+      })
+    );
     const liveSnapshot = this.captureReplaySnapshot();
     const sourceTicks = await this.replayJournal.loadTicks(limit, dateFrom, dateTo);
     const ticks = sourceTicks.map((tick, index) =>
@@ -5103,22 +5104,21 @@ export class TradingEngine {
       liveCash: this.engineState.bankroll.cash,
       fallbackBankroll: DEFAULT_PAPER_BANKROLL_USD
     });
-    await this.replayJournal.writeStatus({
-      replayId,
-      status: "RUNNING",
-      ticksTotal: ticks.length,
-      ticksProcessed: 0,
-      progressPct: 0,
-      speedMultiplier,
-      shadowBankroll: initialShadowBankroll,
-      dateFrom,
-      dateTo,
-      scenario: replayOptions.scenario,
-      error: null,
-      startedAt,
-      updatedAt: new Date().toISOString(),
-      completedAt: null
-    });
+    await this.replayJournal.writeStatus(
+      buildReplayStatus({
+        replayId,
+        status: "RUNNING",
+        ticksTotal: ticks.length,
+        ticksProcessed: 0,
+        speedMultiplier,
+        shadowBankroll: initialShadowBankroll,
+        dateFrom,
+        dateTo,
+        scenario: replayOptions.scenario,
+        startedAt,
+        updatedAt: new Date().toISOString()
+      })
+    );
     const historicalTrades =
       ticks.length > 0
         ? await this.replayJournal.loadTrades(ticks[0].receivedAt, ticks.at(-1)!.receivedAt)
@@ -5192,46 +5192,45 @@ export class TradingEngine {
         }
 
         if (index === ticks.length - 1 || index % 25 === 0) {
-          await this.replayJournal.writeStatus({
-            replayId,
-            status: "RUNNING",
-            ticksTotal: ticks.length,
-            ticksProcessed: index + 1,
-            progressPct:
-              ticks.length > 0 ? roundMetric(((index + 1) / ticks.length) * 100, 2) : 100,
-            speedMultiplier,
-            shadowBankroll:
-              initialShadowBankroll +
-              modeledTrades.reduce((sum, trade) => sum + trade.theoreticalPnl, 0),
-            dateFrom,
-            dateTo,
-            scenario: replayOptions.scenario,
-            error: null,
-            startedAt,
-            updatedAt: new Date().toISOString(),
-            completedAt: null
-          });
+          await this.replayJournal.writeStatus(
+            buildReplayStatus({
+              replayId,
+              status: "RUNNING",
+              ticksTotal: ticks.length,
+              ticksProcessed: index + 1,
+              progressPct: ticks.length > 0 ? undefined : 100,
+              speedMultiplier,
+              shadowBankroll: calculateReplayShadowBankroll(initialShadowBankroll, modeledTrades),
+              dateFrom,
+              dateTo,
+              scenario: replayOptions.scenario,
+              startedAt,
+              updatedAt: new Date().toISOString()
+            })
+          );
         }
 
         previousTick = tick;
       }
     } catch (error) {
-      await this.replayJournal.writeStatus({
-        replayId,
-        status: "FAILED",
-        ticksTotal: ticks.length,
-        ticksProcessed: ticksReplayed,
-        progressPct: ticks.length > 0 ? roundMetric((ticksReplayed / ticks.length) * 100, 2) : 0,
-        speedMultiplier,
-        shadowBankroll: initialShadowBankroll,
-        dateFrom,
-        dateTo,
-        scenario: replayOptions.scenario,
-        error: error instanceof Error ? error.message : "UNKNOWN_REPLAY_ERROR",
-        startedAt,
-        updatedAt: new Date().toISOString(),
-        completedAt: new Date().toISOString()
-      });
+      const failedAt = new Date().toISOString();
+      await this.replayJournal.writeStatus(
+        buildReplayStatus({
+          replayId,
+          status: "FAILED",
+          ticksTotal: ticks.length,
+          ticksProcessed: ticksReplayed,
+          speedMultiplier,
+          shadowBankroll: initialShadowBankroll,
+          dateFrom,
+          dateTo,
+          scenario: replayOptions.scenario,
+          error: error instanceof Error ? error.message : "UNKNOWN_REPLAY_ERROR",
+          startedAt,
+          updatedAt: failedAt,
+          completedAt: failedAt
+        })
+      );
       throw error;
     } finally {
       await this.restoreReplaySnapshot(liveSnapshot);
@@ -5260,22 +5259,23 @@ export class TradingEngine {
       replayBuild.logMetadata
     );
     await this.replayJournal.recordBacktestRun(result, replayOptions, dateFrom, dateTo);
-    await this.replayJournal.writeStatus({
-      replayId,
-      status: "COMPLETED",
-      ticksTotal: ticks.length,
-      ticksProcessed: ticks.length,
-      progressPct: 100,
-      speedMultiplier,
-      shadowBankroll: result.shadowBankroll,
-      dateFrom,
-      dateTo,
-      scenario: replayOptions.scenario,
-      error: null,
-      startedAt,
-      updatedAt: completedAt,
-      completedAt
-    });
+    await this.replayJournal.writeStatus(
+      buildReplayStatus({
+        replayId,
+        status: "COMPLETED",
+        ticksTotal: ticks.length,
+        ticksProcessed: ticks.length,
+        progressPct: 100,
+        speedMultiplier,
+        shadowBankroll: result.shadowBankroll,
+        dateFrom,
+        dateTo,
+        scenario: replayOptions.scenario,
+        startedAt,
+        updatedAt: completedAt,
+        completedAt
+      })
+    );
 
     return result;
   }
