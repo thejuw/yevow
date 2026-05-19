@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   LOW_VALUE_OPERATIONAL_EVENT_TYPES,
+  emptyLogPruneReport,
+  type LogRetentionD1,
   operationalEventPlaceholders,
+  pruneOperationalLogsFromD1,
   resolveLogRetentionPolicy
 } from "../../src/engine/LogRetention";
 
@@ -45,4 +48,50 @@ describe("log retention policy", () => {
       LOW_VALUE_OPERATIONAL_EVENT_TYPES.length
     );
   });
+
+  it("prunes D1 operational logs and aggregates changed row counts", async () => {
+    const policy = resolveLogRetentionPolicy({}, Date.parse("2026-05-18T12:00:00.000Z"));
+    const calls: { query: string; values: unknown[] }[] = [];
+    const db = mockD1([1, 2, 3, 4, 5, 6], calls);
+
+    const report = await pruneOperationalLogsFromD1(db, policy);
+
+    expect(report).toEqual({
+      policy,
+      telemetryRows: 3,
+      lowValueOperationalRows: 3,
+      cappedOperationalInfoRows: 4,
+      marketTickRows: 11,
+      totalRows: 21
+    });
+    expect(calls).toHaveLength(6);
+    expect(calls[0].query).toContain("DELETE FROM logs");
+    expect(calls[0].values).toEqual([policy.telemetryCutoff]);
+    expect(calls[2].values).toHaveLength(1 + LOW_VALUE_OPERATIONAL_EVENT_TYPES.length);
+    expect(calls[4].values).toEqual([policy.marketTickCutoff]);
+    expect(emptyLogPruneReport(policy).totalRows).toBe(0);
+  });
 });
+
+function mockD1(changes: number[], calls: { query: string; values: unknown[] }[]): LogRetentionD1 {
+  let runIndex = 0;
+
+  return {
+    prepare(query: string) {
+      return {
+        bind(...values: unknown[]) {
+          calls.push({ query, values });
+
+          return {
+            async run() {
+              const changedRows = changes[runIndex] ?? 0;
+              runIndex += 1;
+
+              return { meta: { changes: changedRows } };
+            }
+          };
+        }
+      };
+    }
+  };
+}

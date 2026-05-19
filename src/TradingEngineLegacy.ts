@@ -224,8 +224,8 @@ import {
   StorageWriteGuard
 } from "./engine/trading/state/StorageWriteGuard";
 import {
-  LOW_VALUE_OPERATIONAL_EVENT_TYPES,
-  operationalEventPlaceholders,
+  emptyLogPruneReport,
+  pruneOperationalLogsFromD1,
   resolveLogRetentionPolicy,
   type LogPruneReport
 } from "./engine/LogRetention";
@@ -5081,96 +5081,10 @@ export class TradingEngine {
 
   private async pruneOperationalLogs(): Promise<LogPruneReport> {
     const policy = resolveLogRetentionPolicy(this.env);
-    const placeholders = operationalEventPlaceholders();
-    const emptyReport: LogPruneReport = {
-      policy,
-      telemetryRows: 0,
-      lowValueOperationalRows: 0,
-      cappedOperationalInfoRows: 0,
-      marketTickRows: 0,
-      totalRows: 0
-    };
+    const emptyReport = emptyLogPruneReport(policy);
 
     try {
-      const retentionResult = await this.env.TRADING_DB.prepare(
-        `DELETE FROM logs
-         WHERE event_type = 'TELEMETRY'
-           AND created_at < ?`
-      )
-        .bind(policy.telemetryCutoff)
-        .run();
-      const capResult = await this.env.TRADING_DB.prepare(
-        `DELETE FROM logs
-         WHERE event_type = 'TELEMETRY'
-           AND id NOT IN (
-             SELECT id
-             FROM logs
-             WHERE event_type = 'TELEMETRY'
-             ORDER BY created_at DESC, id DESC
-             LIMIT ?
-           )`
-      )
-        .bind(policy.maxTelemetryRows)
-        .run();
-      const lowValueResult = await this.env.TRADING_DB.prepare(
-        `DELETE FROM logs
-         WHERE created_at < ?
-           AND level IN ('DEBUG', 'INFO')
-           AND (
-             event_type IN (${placeholders})
-             OR event_type LIKE '%HEARTBEAT%'
-             OR event_type LIKE '%TELEMETRY%'
-             OR event_type LIKE 'STREAM_%'
-             OR event_type LIKE 'INGEST_%'
-           )`
-      )
-        .bind(policy.lowValueCutoff, ...LOW_VALUE_OPERATIONAL_EVENT_TYPES)
-        .run();
-      const infoCapResult = await this.env.TRADING_DB.prepare(
-        `DELETE FROM logs
-         WHERE level IN ('DEBUG', 'INFO')
-           AND id NOT IN (
-             SELECT id
-             FROM logs
-             WHERE level IN ('DEBUG', 'INFO')
-             ORDER BY created_at DESC, id DESC
-             LIMIT ?
-           )`
-      )
-        .bind(policy.maxOperationalInfoRows)
-        .run();
-      const tickRetentionResult = await this.env.TRADING_DB.prepare(
-        `DELETE FROM market_ticks
-         WHERE received_at < ?`
-      )
-        .bind(policy.marketTickCutoff)
-        .run();
-      const tickCapResult = await this.env.TRADING_DB.prepare(
-        `DELETE FROM market_ticks
-         WHERE tick_id NOT IN (
-           SELECT tick_id
-           FROM market_ticks
-           ORDER BY received_at DESC, tick_id DESC
-           LIMIT ?
-         )`
-      )
-        .bind(policy.maxMarketTickRows)
-        .run();
-      const telemetryRows =
-        Number(retentionResult.meta?.changes ?? 0) + Number(capResult.meta?.changes ?? 0);
-      const lowValueOperationalRows = Number(lowValueResult.meta?.changes ?? 0);
-      const cappedOperationalInfoRows = Number(infoCapResult.meta?.changes ?? 0);
-      const marketTickRows =
-        Number(tickRetentionResult.meta?.changes ?? 0) + Number(tickCapResult.meta?.changes ?? 0);
-      return {
-        policy,
-        telemetryRows,
-        lowValueOperationalRows,
-        cappedOperationalInfoRows,
-        marketTickRows,
-        totalRows:
-          telemetryRows + lowValueOperationalRows + cappedOperationalInfoRows + marketTickRows
-      };
+      return await pruneOperationalLogsFromD1(this.env.TRADING_DB, policy);
     } catch (error) {
       this.logger.error("JANITOR_LOG_PRUNE_FAILED", "Failed to prune stale operational logs", {
         policy: logRetentionPolicyToJson(policy),
