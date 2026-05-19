@@ -3,6 +3,7 @@ import { defaultConfig } from "../../src/ConfigManager";
 import {
   nextQuoteStateForInstrument,
   resumeExpiredQuoteStates,
+  resolveQuoteHibernateMs,
   strategyQuoteDisabledReason
 } from "../../src/engine/trading/quotes/QuoteStateRuntime";
 import type { EngineState, QuoteSignal } from "../../src/types";
@@ -125,6 +126,16 @@ describe("QuoteStateRuntime", () => {
       "PIT_BOSS_DISABLED"
     );
     expect(strategyQuoteDisabledReason(defaultConfig)).toBeNull();
+  });
+
+  it("resolves quote hibernation from config first and bounded env fallback", () => {
+    expect(resolveQuoteHibernateMs({ ...defaultConfig, QUOTE_HIBERNATE_MS: 9_000 }, "100")).toBe(
+      9_000
+    );
+    expect(resolveQuoteHibernateMs({ ...defaultConfig, QUOTE_HIBERNATE_MS: 0 }, "5000")).toBe(
+      5_000
+    );
+    expect(resolveQuoteHibernateMs({ ...defaultConfig, QUOTE_HIBERNATE_MS: 0 }, "10")).toBe(100);
   });
 
   it("resumes expired asset quote suspensions and reports whether state changed", () => {

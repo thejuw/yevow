@@ -100,6 +100,7 @@ import {
 } from "./engine/trading/funding/FundingRuntime";
 import {
   nextQuoteStateForInstrument as nextRuntimeQuoteStateForInstrument,
+  resolveQuoteHibernateMs,
   resumeExpiredQuoteStates,
   strategyQuoteDisabledReason as runtimeStrategyQuoteDisabledReason
 } from "./engine/trading/quotes/QuoteStateRuntime";
@@ -383,7 +384,6 @@ import {
   DEFAULT_HEATMAP_CLUSTER_NOTIONAL_USD,
   DEFAULT_CASCADE_DISTANCE_PCT,
   DEFAULT_PREDATORY_ORDER_OFFSET_BPS,
-  DEFAULT_QUOTE_HIBERNATE_MS,
   DEFAULT_PAPER_BANKROLL_USD,
   DEFAULT_PAPER_MAX_GHOST_FILLS_PER_MINUTE,
   DEFAULT_PAPER_FILL_PARTICIPATION_RATE,
@@ -3344,7 +3344,7 @@ export class TradingEngine {
         metrics,
         instrumentCode: tick.instrumentCode,
         maxLatencyMs: this.maxLatencyMs,
-        quoteHibernateMs: this.resolveQuoteHibernateMs()
+        quoteHibernateMs: resolveQuoteHibernateMs(this.cachedConfig, this.env.QUOTE_HIBERNATE_MS)
       });
       this.engineState = staleState.state;
 
@@ -3801,7 +3801,7 @@ export class TradingEngine {
               Date.parse(metrics.brainTimestamp) +
                 (profilerSignalType === "AM_VPIN_CRITICAL"
                   ? this.cachedConfig.AM_VPIN_QUOTE_HALT_MS
-                  : this.resolveQuoteHibernateMs())
+                  : resolveQuoteHibernateMs(this.cachedConfig, this.env.QUOTE_HIBERNATE_MS))
             ).toISOString());
       assetQuoteState = {
         status: "SUSPENDED",
@@ -4537,7 +4537,7 @@ export class TradingEngine {
       strategyDisabledReason: this.strategyQuoteDisabledReason(),
       instrumentSelected: isInstrumentSelectedByMoltworker(instrumentCode, this.macroBias),
       pullAllQuotes,
-      quoteHibernateMs: this.resolveQuoteHibernateMs(),
+      quoteHibernateMs: resolveQuoteHibernateMs(this.cachedConfig, this.env.QUOTE_HIBERNATE_MS),
       observedAt
     });
   }
@@ -4548,12 +4548,6 @@ export class TradingEngine {
 
   private canDispatchStrategyOrders(): boolean {
     return this.strategyQuoteDisabledReason() === null;
-  }
-
-  private resolveQuoteHibernateMs(): number {
-    return this.cachedConfig.QUOTE_HIBERNATE_MS > 0
-      ? this.cachedConfig.QUOTE_HIBERNATE_MS
-      : readPositiveInteger(this.env.QUOTE_HIBERNATE_MS, DEFAULT_QUOTE_HIBERNATE_MS, 100, 60_000);
   }
 
   private maybeResumeQuotes(observedAt: string): void {

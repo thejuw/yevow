@@ -1,6 +1,8 @@
 import type { EngineState, GlobalRiskConfig, QuoteSignal } from "../../../types";
+import { DEFAULT_QUOTE_HIBERNATE_MS } from "../../../TradingEngineConstants";
 import {
   aggregateQuoteState,
+  readPositiveInteger,
   resumeExpiredAssetQuoteStates
 } from "../../../TradingEngineRuntimeHelpers";
 
@@ -114,6 +116,15 @@ export function strategyQuoteDisabledReason(config: GlobalRiskConfig): string | 
   }
 
   return null;
+}
+
+export function resolveQuoteHibernateMs(
+  config: Pick<GlobalRiskConfig, "QUOTE_HIBERNATE_MS">,
+  envQuoteHibernateMs?: string
+): number {
+  return config.QUOTE_HIBERNATE_MS > 0
+    ? config.QUOTE_HIBERNATE_MS
+    : readPositiveInteger(envQuoteHibernateMs, DEFAULT_QUOTE_HIBERNATE_MS, 100, 60_000);
 }
 
 function quoteAssetStatesChanged(
