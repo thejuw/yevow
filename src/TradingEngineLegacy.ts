@@ -130,7 +130,8 @@ import {
   dispatchedQuoteSnapshot,
   evaluateQuoteRefreshThrottle,
   quoteDispatchBlockedLogMetadata,
-  quoteRefreshThrottleLogMetadata
+  quoteRefreshThrottleLogMetadata,
+  type CroupierQuoteAction
 } from "./engine/trading/quotes/QuoteDispatchRuntime";
 import {
   dispatchQuoteCancelAll,
@@ -2949,6 +2950,44 @@ export class TradingEngine {
     };
   }
 
+  private handleCroupierQuoteAction(
+    instrumentCode: string,
+    croupierQuoteAction: CroupierQuoteAction
+  ): void {
+    if (croupierQuoteAction.kind === "PULL_ALL_QUOTES") {
+      this.publish(croupierQuoteAction.publish.type, croupierQuoteAction.publish.payload);
+      if (croupierQuoteAction.cancelReason) {
+        this.state.waitUntil(
+          this.cancelAllQuotes(instrumentCode, croupierQuoteAction.cancelReason)
+        );
+      }
+      return;
+    }
+
+    if (croupierQuoteAction.kind !== "POST_QUOTE") {
+      return;
+    }
+
+    this.publish(
+      croupierQuoteAction.publish.type,
+      croupierQuoteAction.publish.payload,
+      croupierQuoteAction.publish.correlationId
+    );
+
+    if (!croupierQuoteAction.shouldDispatch) {
+      return;
+    }
+
+    const quote = croupierQuoteAction.quote;
+    this.state.waitUntil(
+      croupierQuoteAction.cascadeShieldCancelReason
+        ? this.cancelAllQuotes(instrumentCode, croupierQuoteAction.cascadeShieldCancelReason).then(
+            () => this.dispatchQuote(quote)
+          )
+        : this.dispatchQuote(quote)
+    );
+  }
+
   private async handleTick(
     tick: MarketTick,
     wakeUpTimeMs: number | null,
@@ -3494,31 +3533,7 @@ export class TradingEngine {
       cascadeShield: isCascadeShield
     });
 
-    if (croupierQuoteAction.kind === "PULL_ALL_QUOTES") {
-      this.publish(croupierQuoteAction.publish.type, croupierQuoteAction.publish.payload);
-      if (croupierQuoteAction.cancelReason) {
-        this.state.waitUntil(
-          this.cancelAllQuotes(tick.instrumentCode, croupierQuoteAction.cancelReason)
-        );
-      }
-    } else if (croupierQuoteAction.kind === "POST_QUOTE") {
-      this.publish(
-        croupierQuoteAction.publish.type,
-        croupierQuoteAction.publish.payload,
-        croupierQuoteAction.publish.correlationId
-      );
-      if (croupierQuoteAction.shouldDispatch) {
-        const quote = croupierQuoteAction.quote;
-        this.state.waitUntil(
-          croupierQuoteAction.cascadeShieldCancelReason
-            ? this.cancelAllQuotes(
-                tick.instrumentCode,
-                croupierQuoteAction.cascadeShieldCancelReason
-              ).then(() => this.dispatchQuote(quote))
-            : this.dispatchQuote(quote)
-        );
-      }
-    }
+    this.handleCroupierQuoteAction(tick.instrumentCode, croupierQuoteAction);
 
     for (const plan of executionPlans) {
       const dispatchGate = evaluateIntentDispatchGate(this.engineState, plan.intent);
