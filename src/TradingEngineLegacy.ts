@@ -634,6 +634,17 @@ interface TickHandlingOptions {
   shadowReplay?: boolean;
 }
 
+type TickBookResolution =
+  | {
+      kind: "BOOK";
+      book: InternalOrderBook;
+      orderBookUpdateMs: number;
+    }
+  | {
+      kind: "EARLY_RETURN";
+      result: TickIngestResult;
+    };
+
 export class TradingEngine {
   private readonly startedAt = Date.now();
   private readonly initialized: Promise<void>;
@@ -3393,6 +3404,61 @@ export class TradingEngine {
     return { metrics, streamId, hardStaleDropMs, isHardStale };
   }
 
+  private async resolveTickBook(
+    tick: MarketTick,
+    metrics: LatencyMetrics,
+    wakeUpTimeMs: number | null,
+    hotPathStartedAt: number
+  ): Promise<TickBookResolution> {
+    let orderBookUpdateMs = 0;
+
+    if (isInformationalTick(tick)) {
+      metrics.timeToBookMs = null;
+      const book = currentBookForMarketTick(this.orderBook, tick);
+
+      if (!book) {
+        return {
+          kind: "EARLY_RETURN",
+          result: await this.handleInformationalBookNotReady(
+            tick,
+            metrics,
+            wakeUpTimeMs,
+            orderBookUpdateMs,
+            hotPathStartedAt
+          )
+        };
+      }
+
+      return { kind: "BOOK", book, orderBookUpdateMs };
+    }
+
+    const orderBookStartedAt = highResolutionNow();
+    const applied = await this.applyDelta(tickToDelta(tick), metrics.brainTimestamp);
+    orderBookUpdateMs = roundLatency(highResolutionNow() - orderBookStartedAt);
+    metrics.timeToBookMs = applied.timeToBookMs;
+
+    if (!applied.accepted) {
+      return {
+        kind: "EARLY_RETURN",
+        result: await this.handleRejectedBookDelta(
+          tick,
+          metrics,
+          applied,
+          wakeUpTimeMs,
+          orderBookUpdateMs,
+          hotPathStartedAt
+        )
+      };
+    }
+
+    const book = applied.book;
+    if (!book) {
+      throw new Error("ORDER_BOOK_APPLY_FAILED");
+    }
+
+    return { kind: "BOOK", book, orderBookUpdateMs };
+  }
+
   private async handleTick(
     tick: MarketTick,
     wakeUpTimeMs: number | null,
@@ -3438,45 +3504,16 @@ export class TradingEngine {
       this.engineState = fundingState.state;
     }
 
-    let orderBookUpdateMs = 0;
-    let book: InternalOrderBook | undefined;
-
-    if (isInformationalTick(tick)) {
-      metrics.timeToBookMs = null;
-      book = currentBookForMarketTick(this.orderBook, tick);
-
-      if (!book) {
-        return this.handleInformationalBookNotReady(
-          tick,
-          metrics,
-          wakeUpTimeMs,
-          orderBookUpdateMs,
-          hotPathStartedAt
-        );
-      }
-    } else {
-      const orderBookStartedAt = highResolutionNow();
-      const applied = await this.applyDelta(tickToDelta(tick), metrics.brainTimestamp);
-      orderBookUpdateMs = roundLatency(highResolutionNow() - orderBookStartedAt);
-      metrics.timeToBookMs = applied.timeToBookMs;
-
-      if (!applied.accepted) {
-        return this.handleRejectedBookDelta(
-          tick,
-          metrics,
-          applied,
-          wakeUpTimeMs,
-          orderBookUpdateMs,
-          hotPathStartedAt
-        );
-      }
-
-      book = applied.book;
-
-      if (!book) {
-        throw new Error("ORDER_BOOK_APPLY_FAILED");
-      }
+    const bookResolution = await this.resolveTickBook(
+      tick,
+      metrics,
+      wakeUpTimeMs,
+      hotPathStartedAt
+    );
+    if (bookResolution.kind === "EARLY_RETURN") {
+      return bookResolution.result;
     }
+    const { book, orderBookUpdateMs } = bookResolution;
 
     await this.evaluateCascadeStrategy(tick, metrics.brainTimestamp);
 
