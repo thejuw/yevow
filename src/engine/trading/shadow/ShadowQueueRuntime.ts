@@ -104,6 +104,22 @@ export interface ShadowQueueLatencyBudgetResult {
   readonly decision: ShadowQueueDecision;
 }
 
+export interface ShadowQueueNoEdgeTelemetry {
+  readonly eventType: "SHADOW_QUEUE_NO_EDGE";
+  readonly message: string;
+  readonly metadata: JsonRecord;
+  readonly payload: Record<string, unknown>;
+  readonly correlationId: string;
+}
+
+export interface ShadowQueueLatencyBreachTelemetry {
+  readonly eventType: "SHADOW_QUEUE_LATENCY_BREACH";
+  readonly message: string;
+  readonly metadata: JsonRecord;
+  readonly payload: Record<string, unknown>;
+  readonly correlationId: string;
+}
+
 export interface ShadowQueueDecisionTraceInput {
   readonly decision: ShadowQueueDecision;
   readonly intent: TradeIntent | null;
@@ -223,6 +239,45 @@ export function enforceShadowQueueDecisionLatency(
       tradeIntentId: null,
       reason: `${decision.reason} Suppressed because drift decision latency exceeded ${latencyBudgetMs}ms.`
     }
+  };
+}
+
+export function buildShadowQueueNoEdgeTelemetry(
+  decision: ShadowQueueDecision
+): ShadowQueueNoEdgeTelemetry {
+  return {
+    eventType: "SHADOW_QUEUE_NO_EDGE",
+    message: "Virtual fill drift stayed inside one tick",
+    metadata: {
+      decisionId: decision.decisionId,
+      fillId: decision.fillId,
+      instrumentCode: decision.instrumentCode,
+      microDrift: decision.microDrift,
+      tickThreshold: decision.tickThreshold,
+      driftTrades: decision.driftTrades,
+      sampled: true
+    },
+    payload: decision as unknown as Record<string, unknown>,
+    correlationId: decision.decisionId
+  };
+}
+
+export function buildShadowQueueLatencyBreachTelemetry(input: {
+  readonly originalDecision: ShadowQueueDecision;
+  readonly suppressedDecision: ShadowQueueDecision;
+  readonly latencyBudgetMs: number;
+}): ShadowQueueLatencyBreachTelemetry {
+  return {
+    eventType: "SHADOW_QUEUE_LATENCY_BREACH",
+    message: "VLO matrix decision exceeded 5ms envelope",
+    metadata: {
+      decisionId: input.originalDecision.decisionId,
+      instrumentCode: input.originalDecision.instrumentCode,
+      decisionLatencyMs: input.originalDecision.decisionLatencyMs,
+      latencyBudgetMs: input.latencyBudgetMs
+    },
+    payload: input.suppressedDecision as unknown as Record<string, unknown>,
+    correlationId: input.originalDecision.decisionId
   };
 }
 

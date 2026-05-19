@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   buildShadowQueueDecisionTrace,
   buildShadowQueueGhostFillRecord,
+  buildShadowQueueLatencyBreachTelemetry,
+  buildShadowQueueNoEdgeTelemetry,
   buildShadowQueueTradeIntent,
   buildShadowQueueTradeIntentFromDecision,
   enforceShadowQueueDecisionLatency,
@@ -168,6 +170,62 @@ describe("ShadowQueueRuntime", () => {
 
     expect(breached.breached).toBe(true);
     expect(breached.decision).toMatchObject({
+      tradeIntentId: null,
+      reason: "late Suppressed because drift decision latency exceeded 5ms."
+    });
+  });
+
+  it("builds no-edge telemetry from VLO drift decisions", () => {
+    const telemetry = buildShadowQueueNoEdgeTelemetry(
+      decision({ action: "NO_EDGE", dispatchSide: null, microDrift: 0.1, tickThreshold: 0.5 })
+    );
+
+    expect(telemetry).toMatchObject({
+      eventType: "SHADOW_QUEUE_NO_EDGE",
+      message: "Virtual fill drift stayed inside one tick",
+      metadata: {
+        decisionId: "decision-1",
+        fillId: "fill-1",
+        instrumentCode: "btc-usd",
+        microDrift: 0.1,
+        tickThreshold: 0.5,
+        driftTrades: 3,
+        sampled: true
+      },
+      correlationId: "decision-1"
+    });
+    expect(telemetry.payload).toMatchObject({
+      action: "NO_EDGE",
+      dispatchSide: null
+    });
+  });
+
+  it("builds latency-breach telemetry with suppressed decision payload", () => {
+    const originalDecision = decision({
+      decisionLatencyMs: 9,
+      tradeIntentId: "intent-1",
+      reason: "late"
+    });
+    const suppressedDecision = enforceShadowQueueDecisionLatency(originalDecision, 5).decision;
+
+    const telemetry = buildShadowQueueLatencyBreachTelemetry({
+      originalDecision,
+      suppressedDecision,
+      latencyBudgetMs: 5
+    });
+
+    expect(telemetry).toMatchObject({
+      eventType: "SHADOW_QUEUE_LATENCY_BREACH",
+      message: "VLO matrix decision exceeded 5ms envelope",
+      metadata: {
+        decisionId: "decision-1",
+        instrumentCode: "btc-usd",
+        decisionLatencyMs: 9,
+        latencyBudgetMs: 5
+      },
+      correlationId: "decision-1"
+    });
+    expect(telemetry.payload).toMatchObject({
       tradeIntentId: null,
       reason: "late Suppressed because drift decision latency exceeded 5ms."
     });

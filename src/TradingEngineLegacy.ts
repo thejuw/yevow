@@ -78,6 +78,8 @@ import {
 import {
   buildShadowQueueGhostFillRecord,
   buildShadowQueueDecisionTrace,
+  buildShadowQueueLatencyBreachTelemetry,
+  buildShadowQueueNoEdgeTelemetry,
   buildShadowQueueTradeIntentFromDecision,
   enforceShadowQueueDecisionLatency,
   resolveShadowQueueNoEdgeLogInterval,
@@ -3901,6 +3903,7 @@ export class TradingEngine {
     observedAt: string
   ): ShadowQueueDecision {
     if (decision.action === "NO_EDGE" || decision.dispatchSide === null) {
+      const telemetry = buildShadowQueueNoEdgeTelemetry(decision);
       if (
         shouldLogShadowQueueNoEdgeEvent({
           lastLoggedAtByInstrument: this.shadowQueueNoEdgeLogAt,
@@ -3911,21 +3914,9 @@ export class TradingEngine {
           )
         })
       ) {
-        this.logger.info("SHADOW_QUEUE_NO_EDGE", "Virtual fill drift stayed inside one tick", {
-          decisionId: decision.decisionId,
-          fillId: decision.fillId,
-          instrumentCode: decision.instrumentCode,
-          microDrift: decision.microDrift,
-          tickThreshold: decision.tickThreshold,
-          driftTrades: decision.driftTrades,
-          sampled: true
-        });
+        this.logger.info(telemetry.eventType, telemetry.message, telemetry.metadata);
       }
-      this.publish(
-        "SHADOW_QUEUE_NO_EDGE",
-        decision as unknown as Record<string, unknown>,
-        decision.decisionId
-      );
+      this.publish(telemetry.eventType, telemetry.payload, telemetry.correlationId);
       return decision;
     }
 
@@ -3934,17 +3925,13 @@ export class TradingEngine {
 
     if (latencyDecision.breached) {
       const suppressed = latencyDecision.decision;
-      this.logger.warn("SHADOW_QUEUE_LATENCY_BREACH", "VLO matrix decision exceeded 5ms envelope", {
-        decisionId: decision.decisionId,
-        instrumentCode: decision.instrumentCode,
-        decisionLatencyMs: decision.decisionLatencyMs,
+      const telemetry = buildShadowQueueLatencyBreachTelemetry({
+        originalDecision: decision,
+        suppressedDecision: suppressed,
         latencyBudgetMs: latencyBudget
       });
-      this.publish(
-        "SHADOW_QUEUE_LATENCY_BREACH",
-        suppressed as unknown as Record<string, unknown>,
-        decision.decisionId
-      );
+      this.logger.warn(telemetry.eventType, telemetry.message, telemetry.metadata);
+      this.publish(telemetry.eventType, telemetry.payload, telemetry.correlationId);
       return suppressed;
     }
 
