@@ -5,11 +5,17 @@ import {
   currentMarkPriceForInstrument,
   currentOrderBookSnapshot,
   findBestAssetBook,
+  nullableMarkPriceForInstrument,
   selectOrderBookMarketKey
 } from "../../src/engine/trading/book/BookViews";
 import { SortedBookSide } from "../../src/engine/trading/book/SortedBookSide";
 import type { BookSyncState } from "../../src/engine/trading/book/BookTypes";
-import type { InternalOrderBook, MarketTick, MicrostructureMetrics } from "../../src/types";
+import type {
+  AssetRuntimeState,
+  InternalOrderBook,
+  MarketTick,
+  MicrostructureMetrics
+} from "../../src/types";
 
 const OBSERVED_AT = "2026-05-18T06:00:00.000Z";
 
@@ -229,6 +235,28 @@ describe("BookViews", () => {
     expect(currentMarkPriceForInstrument(context, "SOL", 150)).toBe(150);
   });
 
+  it("resolves nullable mark prices from book, asset matrix, then microstructure", () => {
+    const orderBook = new Map<string, InternalOrderBook>([
+      ["hyperliquid:btc-usd", book({ marketKey: "hyperliquid:btc-usd", midPrice: 100 })],
+      [
+        "hyperliquid:eth-usd",
+        book({ marketKey: "hyperliquid:eth-usd", instrumentCode: "eth-usd", midPrice: null })
+      ]
+    ]);
+    const context = {
+      orderBook,
+      assetMatrix: {
+        "eth-usd": assetState({ instrumentCode: "eth-usd", coin: "ETH", midPrice: 2_000 })
+      },
+      microstructure: micro({ instrumentCode: "sol-usd", midPrice: 150 })
+    };
+
+    expect(nullableMarkPriceForInstrument(context, "BTC")).toBe(100);
+    expect(nullableMarkPriceForInstrument(context, "ETH")).toBe(2_000);
+    expect(nullableMarkPriceForInstrument(context, "SOL")).toBe(150);
+    expect(nullableMarkPriceForInstrument(context, "HYPE")).toBeNull();
+  });
+
   it("builds current snapshots from side stores and sync fallback state", () => {
     const orderBook = new Map<string, InternalOrderBook>();
     const bids = new Map<string, SortedBookSide>();
@@ -424,6 +452,31 @@ function syncState(overrides: Partial<BookSyncState> = {}): BookSyncState {
     tickSize: 0.5,
     ttbLatencyMs: 2,
     lastCrossCheckAt: 0,
+    ...overrides
+  };
+}
+
+function assetState(overrides: Partial<AssetRuntimeState> = {}): AssetRuntimeState {
+  return {
+    instrumentCode: "btc-usd",
+    coin: "BTC",
+    selectedByMoltworker: true,
+    active: true,
+    isSynced: true,
+    lastSequence: 1,
+    midPrice: 100,
+    volatility: 0.01,
+    capitalAllocationPct: 0.5,
+    maxNotional: 1_000,
+    toxicityState: "NORMAL",
+    amVpin: 0,
+    obi: 0,
+    quoteStatus: "ACTIVE",
+    quoteReason: null,
+    quoteSuspendedUntil: null,
+    quoteEligible: true,
+    lastQuoteAt: OBSERVED_AT,
+    updatedAt: OBSERVED_AT,
     ...overrides
   };
 }

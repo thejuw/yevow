@@ -1,5 +1,6 @@
 import type {
   BookSnapshotResponse,
+  EngineState,
   InternalOrderBook,
   MarketDataSource,
   MarketTick,
@@ -40,6 +41,10 @@ export interface BookSnapshotContext extends BookSelectionContext {
     sourceWeight: number
   ) => BookSyncState;
   readonly resolveTickSize: (instrumentCode: string) => number;
+}
+
+export interface NullableMarkPriceContext extends BookSelectionContext {
+  readonly assetMatrix: EngineState["assetMatrix"];
 }
 
 export function selectOrderBookMarketKey(
@@ -179,6 +184,21 @@ export function currentMarkPriceForInstrument(
   const mark = selected ? context.orderBook.get(selected.marketKey)?.midPrice : null;
 
   return typeof mark === "number" && Number.isFinite(mark) && mark > 0 ? mark : fallback;
+}
+
+export function nullableMarkPriceForInstrument(
+  context: NullableMarkPriceContext,
+  instrumentCode: string
+): number | null {
+  const selected = selectOrderBookMarketKey(context, instrumentCode);
+  const book = selected ? context.orderBook.get(selected.marketKey) : undefined;
+  const normalized = normalizeInstrumentSelector(instrumentCode);
+
+  return (
+    book?.midPrice ??
+    context.assetMatrix[normalized]?.midPrice ??
+    (context.microstructure.instrumentCode === normalized ? context.microstructure.midPrice : null)
+  );
 }
 
 export function currentOrderBookSnapshot(

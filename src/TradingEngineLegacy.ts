@@ -51,7 +51,7 @@ import {
   currentBookForMarketTick,
   currentOrderBookSnapshot,
   findBestAssetBook as findBestOrderBookForAsset,
-  selectOrderBookMarketKey
+  nullableMarkPriceForInstrument
 } from "./engine/trading/book/BookViews";
 import {
   shouldEmitBookSnapshotTelemetry,
@@ -416,7 +416,6 @@ import {
   nativeHashSequence,
   normalizeNativeCoin,
   normalizeNativeInstrumentCode,
-  normalizeInstrumentSelector,
   splitNativeInstrument,
   baseAssetFromInstrument,
   cascadeInstrumentSet,
@@ -1995,10 +1994,17 @@ export class TradingEngine {
   }
 
   private currentCascadePositionSnapshot(): JsonRecord[] {
+    const markPriceContext = {
+      orderBook: this.orderBook,
+      assetMatrix: this.engineState.assetMatrix,
+      microstructure: this.engineState.microstructure
+    };
+
     return buildCurrentCascadePositionSnapshot({
       positions: this.cascadePositionManager.snapshot(),
       nowMs: Date.now(),
-      markPriceForInstrument: (instrumentCode) => this.markPriceForInstrument(instrumentCode)
+      markPriceForInstrument: (instrumentCode) =>
+        nullableMarkPriceForInstrument(markPriceContext, instrumentCode)
     });
   }
 
@@ -2026,7 +2032,15 @@ export class TradingEngine {
     }
 
     const observedAt = new Date().toISOString();
-    const markPrice = this.markPriceForInstrument(position.instrumentCode) ?? position.entryPrice;
+    const markPrice =
+      nullableMarkPriceForInstrument(
+        {
+          orderBook: this.orderBook,
+          assetMatrix: this.engineState.assetMatrix,
+          microstructure: this.engineState.microstructure
+        },
+        position.instrumentCode
+      ) ?? position.entryPrice;
     const update = this.cascadePositionManager.requestManualClose(
       positionId,
       observedAt,
@@ -2079,20 +2093,6 @@ export class TradingEngine {
       position: update.position as unknown as JsonRecord,
       intents: update.intents as unknown as JsonRecord[]
     };
-  }
-
-  private markPriceForInstrument(instrumentCode: string): number | null {
-    const selected = this.selectMarketKey(instrumentCode);
-    const book = selected ? this.orderBook.get(selected.marketKey) : undefined;
-    const normalized = normalizeInstrumentSelector(instrumentCode);
-
-    return (
-      book?.midPrice ??
-      this.engineState.assetMatrix[normalized]?.midPrice ??
-      (this.engineState.microstructure.instrumentCode === normalized
-        ? this.engineState.microstructure.midPrice
-        : null)
-    );
   }
 
   private currentCascadeDetectorConfig(instrumentCode: string): CascadeDetectorConfig {
@@ -3031,18 +3031,6 @@ export class TradingEngine {
     });
 
     return book;
-  }
-
-  private selectMarketKey(
-    target?: string | MarketTick
-  ): { marketKey: string; instrumentCode: string } | null {
-    return selectOrderBookMarketKey(
-      {
-        orderBook: this.orderBook,
-        microstructure: this.engineState.microstructure
-      },
-      target
-    );
   }
 
   private calculatePriceDiscovery(
