@@ -1,14 +1,6 @@
-export type AdminScope =
-  | "READ"
-  | "WRITE"
-  | "TELEMETRY:READ"
-  | "CONFIG:WRITE"
-  | "TRADING:WRITE"
-  | "VAULT:WRITE"
-  | "SECURITY:WRITE"
-  | "REPLAY:WRITE"
-  | "ALERTS:WRITE"
-  | "STRATEGY:WRITE";
+import { hasScope, normalizeScope } from "./auth/ScopeMatcher";
+
+export type AdminScope = string;
 
 export interface AuthClaims {
   [key: string]: unknown;
@@ -121,21 +113,7 @@ export class AuthManager {
   }
 
   static hasScope(claims: AuthClaims, requiredScope: AdminScope): boolean {
-    const scopes = AuthManager.normalizeScopes(claims.scopes);
-
-    if (scopes.includes("WRITE")) {
-      return true;
-    }
-
-    if (requiredScope === "READ") {
-      return scopes.includes("READ") || scopes.includes("TELEMETRY:READ");
-    }
-
-    if (requiredScope === "TELEMETRY:READ") {
-      return scopes.includes("TELEMETRY:READ") || scopes.includes("READ");
-    }
-
-    return scopes.includes(requiredScope);
+    return hasScope({ subject: claims.sub, scopes: claims.scopes }, requiredScope);
   }
 
   static normalizeScopes(value: unknown): AdminScope[] {
@@ -147,9 +125,9 @@ export class AuthManager {
     const scopes = new Set<AdminScope>();
 
     for (const scope of rawScopes) {
-      const normalized = String(scope).trim().toUpperCase();
+      const normalized = normalizeScope(String(scope));
 
-      if (isAdminScope(normalized)) {
+      if (normalized.length > 0) {
         scopes.add(normalized);
       }
     }
@@ -174,21 +152,6 @@ export class AuthManager {
       keyUsages
     );
   }
-}
-
-function isAdminScope(value: string): value is AdminScope {
-  return (
-    value === "READ" ||
-    value === "WRITE" ||
-    value === "TELEMETRY:READ" ||
-    value === "CONFIG:WRITE" ||
-    value === "TRADING:WRITE" ||
-    value === "VAULT:WRITE" ||
-    value === "SECURITY:WRITE" ||
-    value === "REPLAY:WRITE" ||
-    value === "ALERTS:WRITE" ||
-    value === "STRATEGY:WRITE"
-  );
 }
 
 function isWithinTokenWindow(payload: Record<string, unknown>): boolean {

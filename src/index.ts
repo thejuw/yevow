@@ -1,5 +1,7 @@
 import { Hono, type Context } from "hono";
 import { AuthManager } from "./AuthManager";
+import { ActiveTokenStore, JwtRevocationStore } from "./auth/JwtRevocation";
+import { hasScope } from "./auth/ScopeMatcher";
 import { calibrateGoldenColos, type ColoCalibrationOptions } from "./ColoCalibrator";
 import { ConfigManager, configDefaultsFromEnv } from "./ConfigManager";
 import { Governor } from "./Governor";
@@ -15,6 +17,11 @@ import { TradingEngine } from "./TradingEngine";
 import { Notifier, type AlertPriority } from "./utils/Notifier";
 import { SignatureEngine } from "./utils/SignatureEngine";
 import { getTradingEngineStub, tradingEngineObjectName } from "./utils/TradingEngineStub";
+import {
+  evaluateRateLimit,
+  ipRateLimitKey,
+  subjectRateLimitKey
+} from "./gateway/middleware/RateLimitMiddleware";
 import type { AdminScope, AuthClaims } from "./AuthManager";
 import type {
   AdminConfigUpdate,
@@ -43,6 +50,7 @@ const CASCADE_TWO_PERSON_APPROVAL_WINDOW_MS = 5 * 60_000;
 const CASCADE_CONFIG_FREEZE_HOURS = 72;
 const COST_BUDGET_SETTINGS_KEY = "cost_budget_settings";
 const JWT_REVOCATION_PREFIX = "auth:jti:revoked:";
+const ACTIVE_TOKEN_PREFIX = "auth:active:";
 const LOG_LEVELS = ["DEBUG", "INFO", "WARN", "ERROR", "CRITICAL"] as const;
 const AGENT_NAMES = [
   "ORACLE",
@@ -280,6 +288,8 @@ const ROUTE_CATALOG = [
   "GET /admin/live-readiness",
   "POST /admin/live-readiness/approve",
   "POST /admin/auth/revoke",
+  "POST /admin/auth/revoke-all-for-subject",
+  "GET /admin/auth/revoked",
   "POST /admin/moltworker/heartbeat",
   "POST /admin/settings/notifications",
   "GET|POST /admin/topology/calibrate",
@@ -488,16 +498,82 @@ async function handleLogin(
     return json({ ok: false, error: "Authentication unavailable" }, 503);
   }
 
+  const loginAttemptLimit = await evaluateRateLimit(
+    authKv(env),
+    ipRateLimitKey("login:attempt:minute", request),
+    { windowMs: 60_000, maxRequests: 5 }
+  );
+
+  if (!loginAttemptLimit.allowed) {
+    logger.warn("LOGIN_RATE_LIMITED", "Admin login attempt rate-limited", {
+      sourceIp: sourceIp(request),
+      endpoint: url.pathname,
+      retryAfterSeconds: loginAttemptLimit.retryAfterSeconds,
+      colo: topology.colo,
+      placement: topology.placement
+    });
+    return rateLimitResponse(loginAttemptLimit);
+  }
+
+  const hourlyLoginLimit = await evaluateRateLimit(
+    authKv(env),
+    ipRateLimitKey("login:attempt:hour", request),
+    { windowMs: 3_600_000, maxRequests: 20 }
+  );
+
+  if (!hourlyLoginLimit.allowed) {
+    logger.warn("LOGIN_RATE_LIMITED", "Admin login hourly attempt rate-limited", {
+      sourceIp: sourceIp(request),
+      endpoint: url.pathname,
+      retryAfterSeconds: hourlyLoginLimit.retryAfterSeconds,
+      colo: topology.colo,
+      placement: topology.placement
+    });
+    return rateLimitResponse(hourlyLoginLimit);
+  }
+
+  const existingLockout = await currentLoginLockout(request, env);
+
+  if (existingLockout) {
+    logger.warn("LOGIN_LOCKOUT", "Admin login rejected because IP is locked out", {
+      sourceIp: sourceIp(request),
+      endpoint: url.pathname,
+      retryAfterSeconds: existingLockout.retryAfterSeconds,
+      colo: topology.colo,
+      placement: topology.placement
+    });
+    return rateLimitResponse(existingLockout);
+  }
+
   const body = await readJsonBody<LoginRequest>(request);
   const password = typeof body?.password === "string" ? body.password : "";
   const passwordOk = await authManager.verifyPassword(password);
 
   if (!passwordOk) {
+    const failedLimit = await evaluateRateLimit(
+      authKv(env),
+      ipRateLimitKey("login:failed", request),
+      { windowMs: 60_000, maxRequests: 4, lockoutMs: 900_000 }
+    );
+
+    if (!failedLimit.allowed) {
+      logger.warn("LOGIN_LOCKOUT", "Admin login IP locked out after failed attempts", {
+        sourceIp: sourceIp(request),
+        endpoint: url.pathname,
+        retryAfterSeconds: failedLimit.retryAfterSeconds,
+        colo: topology.colo,
+        placement: topology.placement
+      });
+      return rateLimitResponse(failedLimit);
+    }
+
     logSecurityEvent(logger, "LOGIN_FAILED", "Rejected login attempt", request, url, topology, {
       reason: "INVALID_PASSWORD"
     });
     return json({ ok: false, error: "Unauthorized" }, 401);
   }
+
+  await authKv(env).delete(ipRateLimitKey("login:failed", request));
 
   const scopes = AuthManager.normalizeScopes(body?.scopes ?? ["READ", "WRITE"]);
   const subject =
@@ -506,6 +582,17 @@ async function handleLogin(
     sub: subject,
     scopes
   });
+  const claims = await authManager.verifyClaims(token);
+
+  if (claims) {
+    await new ActiveTokenStore(authKv(env), ACTIVE_TOKEN_PREFIX).track({
+      jti: claims.jti,
+      subject: claims.sub,
+      issuedAt: new Date(claims.iat * 1_000).toISOString(),
+      expiresAt: new Date(claims.exp * 1_000).toISOString(),
+      scopes: claims.scopes
+    });
+  }
 
   logger.info("LOGIN_SUCCEEDED", "Admin JWT issued", {
     subject,
@@ -545,6 +632,12 @@ async function handleAdminRequest(
     return auth;
   }
 
+  const adminRateLimit = await enforceAdminRateLimit(request, env, auth, logger, topology);
+
+  if (adminRateLimit) {
+    return adminRateLimit;
+  }
+
   if (url.pathname === "/admin") {
     if (request.method !== "GET") {
       return json({ ok: false, error: "Method not allowed" }, 405);
@@ -564,6 +657,9 @@ async function handleAdminRequest(
         "GET /admin/diagnostics",
         "GET /admin/live-readiness",
         "POST /admin/live-readiness/approve",
+        "GET /admin/auth/revoked",
+        "POST /admin/auth/revoke",
+        "POST /admin/auth/revoke-all-for-subject",
         "POST /admin/moltworker/heartbeat",
         "POST /admin/settings/notifications",
         "GET|POST /admin/topology/calibrate",
@@ -689,6 +785,22 @@ async function handleAdminRequest(
     }
 
     return revokeAdminToken(request, env, logger, topology, auth);
+  }
+
+  if (url.pathname === "/admin/auth/revoke-all-for-subject") {
+    if (request.method !== "POST") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+
+    return revokeAllTokensForSubject(request, env, logger, topology, auth);
+  }
+
+  if (url.pathname === "/admin/auth/revoked") {
+    if (request.method !== "GET") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+
+    return listRevokedAdminTokens(env, url);
   }
 
   if (url.pathname === "/admin/moltworker/heartbeat") {
@@ -2140,7 +2252,7 @@ async function authenticateAdmin(
     return json({ ok: false, error: "Unauthorized" }, 401);
   }
 
-  if (claims.jti && (await isJwtRevoked(env, claims.jti))) {
+  if (claims.jti && (await new JwtRevocationStore(authKv(env), JWT_REVOCATION_PREFIX).isRevoked(claims.jti))) {
     logSecurityEvent(
       logger,
       "ADMIN_AUTH_REJECTED",
@@ -2153,7 +2265,13 @@ async function authenticateAdmin(
     return json({ ok: false, error: "Unauthorized" }, 401);
   }
 
-  if (!AuthManager.hasScope(claims, requiredScope)) {
+  if (
+    !hasScope(
+      { subject: claims.sub, scopes: claims.scopes },
+      requiredScope,
+      { migrateLegacyScopes: migrateLegacyScopesEnabled(env) }
+    )
+  ) {
     logSecurityEvent(
       logger,
       "ADMIN_SCOPE_REJECTED",
@@ -2183,12 +2301,126 @@ function createAuthManager(env: Env): AuthManager | null {
   return jwtSecret ? new AuthManager(jwtSecret, env.ADMIN_PASSWORD) : null;
 }
 
-async function isJwtRevoked(env: Env, jti: string): Promise<boolean> {
-  try {
-    return (await env.CONFIG_STORE.get(`${JWT_REVOCATION_PREFIX}${jti}`)) !== null;
-  } catch {
-    return true;
+function authKv(env: Env): KVNamespace {
+  return env.AUTH_STORE ?? env.CONFIG_STORE;
+}
+
+function migrateLegacyScopesEnabled(env: Env): boolean {
+  return env.MIGRATE_LEGACY_SCOPES !== "false";
+}
+
+async function currentLoginLockout(
+  request: Request,
+  env: Env
+): Promise<{
+  allowed: false;
+  key: string;
+  count: number;
+  remaining: number;
+  resetAt: string;
+  retryAfterSeconds: number;
+  locked: true;
+} | null> {
+  const key = ipRateLimitKey("login:failed", request);
+  const raw = await authKv(env).get(key);
+
+  if (!raw) {
+    return null;
   }
+
+  try {
+    const parsed = JSON.parse(raw) as { count?: number; lockedUntil?: number };
+    const lockedUntil = Number(parsed.lockedUntil);
+
+    if (!Number.isFinite(lockedUntil) || lockedUntil <= Date.now()) {
+      return null;
+    }
+
+    return {
+      allowed: false,
+      key,
+      count: Number(parsed.count) || 0,
+      remaining: 0,
+      resetAt: new Date(lockedUntil).toISOString(),
+      retryAfterSeconds: Math.max(1, Math.ceil((lockedUntil - Date.now()) / 1_000)),
+      locked: true
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function enforceAdminRateLimit(
+  request: Request,
+  env: Env,
+  auth: AuthenticatedAdmin,
+  logger: Logger,
+  topology: EdgeTopology
+): Promise<Response | null> {
+  const url = new URL(request.url);
+
+  if (request.method === "GET" || request.method === "HEAD") {
+    return null;
+  }
+
+  if (url.pathname === "/admin/system/kill-switch") {
+    return null;
+  }
+
+  const config = adminRateLimitConfig(url.pathname);
+  const decision = await evaluateRateLimit(
+    authKv(env),
+    subjectRateLimitKey(config.key, auth.subject),
+    { windowMs: config.windowMs, maxRequests: config.maxRequests }
+  );
+
+  if (decision.allowed) {
+    return null;
+  }
+
+  logger.warn("ADMIN_RATE_LIMITED", "Admin write endpoint rate-limited", {
+    subject: auth.subject,
+    endpoint: url.pathname,
+    retryAfterSeconds: decision.retryAfterSeconds,
+    colo: topology.colo,
+    placement: topology.placement,
+    sourceIp: sourceIp(request)
+  });
+
+  return rateLimitResponse(decision);
+}
+
+function adminRateLimitConfig(pathname: string): {
+  key: string;
+  windowMs: number;
+  maxRequests: number;
+} {
+  if (pathname.startsWith("/admin/auth/revoke")) {
+    return { key: "admin:auth-revoke:minute", windowMs: 60_000, maxRequests: 10 };
+  }
+
+  if (pathname === "/admin/strategy/mode") {
+    return { key: "admin:strategy-mode:minute", windowMs: 60_000, maxRequests: 3 };
+  }
+
+  if (pathname.startsWith("/admin/cascade/")) {
+    return { key: "admin:cascade:minute", windowMs: 60_000, maxRequests: 10 };
+  }
+
+  return { key: "admin:default:minute", windowMs: 60_000, maxRequests: 60 };
+}
+
+function rateLimitResponse(decision: { retryAfterSeconds: number; resetAt: string }): Response {
+  return json(
+    {
+      ok: false,
+      error: "RATE_LIMITED",
+      retryAfterSeconds: decision.retryAfterSeconds,
+      resetAt: decision.resetAt
+    },
+    429,
+    { "retry-after": String(decision.retryAfterSeconds) }
+  );
 }
 
 async function revokeAdminToken(
@@ -2209,27 +2441,76 @@ async function revokeAdminToken(
     return json({ ok: false, error: "JTI_REQUIRED" }, 400);
   }
 
-  const ttlSeconds = Math.max(60, admin.claims.exp - Math.floor(Date.now() / 1_000));
-  await env.CONFIG_STORE.put(
-    `${JWT_REVOCATION_PREFIX}${jti}`,
-    JSON.stringify({
-      revokedAt: new Date().toISOString(),
-      revokedBy: admin.subject,
-      reason: body.reason ?? "admin-request"
-    }),
-    { expirationTtl: ttlSeconds }
+  const reason = body.reason ?? "admin-request";
+  await new JwtRevocationStore(authKv(env), JWT_REVOCATION_PREFIX).revoke(
+    jti,
+    admin.claims.exp,
+    reason,
+    admin.subject
   );
 
   logger.warn("ADMIN_JWT_REVOKED", "Admin JWT JTI was revoked", {
     actor: admin.subject,
     revokedJti: maskTokenId(jti),
-    reason: body.reason ?? "admin-request",
+    reason,
     colo: topology.colo,
     placement: topology.placement,
     sourceIp: sourceIp(request)
   });
 
+  const ttlSeconds = Math.max(60, admin.claims.exp - Math.floor(Date.now() / 1_000));
   return json({ ok: true, revoked: true, jti: maskTokenId(jti), expiresIn: ttlSeconds });
+}
+
+async function revokeAllTokensForSubject(
+  request: Request,
+  env: Env,
+  logger: Logger,
+  topology: EdgeTopology,
+  admin: AuthenticatedAdmin
+): Promise<Response> {
+  const body =
+    (await readJsonBody<{
+      subject?: string;
+      reason?: string;
+    }>(request)) ?? {};
+  const subject = typeof body.subject === "string" && body.subject.length > 0 ? body.subject : "";
+
+  if (!subject) {
+    return json({ ok: false, error: "SUBJECT_REQUIRED" }, 400);
+  }
+
+  const activeStore = new ActiveTokenStore(authKv(env), ACTIVE_TOKEN_PREFIX);
+  const revocationStore = new JwtRevocationStore(authKv(env), JWT_REVOCATION_PREFIX);
+  const activeTokens = await activeStore.listForSubject(subject);
+  const reason = body.reason ?? "admin-revoke-all";
+  let revokedCount = 0;
+
+  for (const token of activeTokens) {
+    await revocationStore.revoke(token.jti, Date.parse(token.expiresAt), reason, admin.subject);
+    await activeStore.remove(subject, token.jti);
+    revokedCount += 1;
+  }
+
+  logger.warn("ADMIN_JWT_REVOKED_FOR_SUBJECT", "Admin revoked all active JWTs for subject", {
+    actor: admin.subject,
+    subject,
+    revokedCount,
+    reason,
+    colo: topology.colo,
+    placement: topology.placement,
+    sourceIp: sourceIp(request)
+  });
+
+  return json({ ok: true, subject, revokedCount });
+}
+
+async function listRevokedAdminTokens(env: Env, url: URL): Promise<Response> {
+  const limit = clampInteger(url.searchParams.get("limit"), 100, 1, 1_000);
+  const revoked = await new JwtRevocationStore(authKv(env), JWT_REVOCATION_PREFIX).listRevoked(
+    limit
+  );
+  return json({ ok: true, data: revoked, count: revoked.length });
 }
 
 async function authenticateIngest(
@@ -2280,8 +2561,27 @@ async function authenticateIngest(
 function requiredScopeForAdminRequest(request: Request): AdminScope {
   const { pathname } = new URL(request.url);
 
+  if (pathname === "/admin/auth/revoked") {
+    return "auth:read";
+  }
+
   if (request.method === "GET" || request.method === "HEAD") {
-    return "TELEMETRY:READ";
+    if (pathname.includes("/config") || pathname.includes("/settings")) {
+      return "config:read";
+    }
+    if (pathname.includes("/history") || pathname.includes("/positions")) {
+      return "position:read";
+    }
+    if (pathname.includes("/replay")) {
+      return "replay:read";
+    }
+    if (pathname.includes("/vault")) {
+      return "vault:read";
+    }
+    if (pathname.includes("/strategy")) {
+      return "strategy:read";
+    }
+    return "telemetry:read";
   }
 
   if (pathname === "/admin/live-readiness/approve") {
@@ -2289,30 +2589,35 @@ function requiredScopeForAdminRequest(request: Request): AdminScope {
   }
 
   if (pathname.includes("/vault")) {
-    return "VAULT:WRITE";
+    return "vault:write";
   }
   if (pathname.includes("/auth/")) {
-    return "SECURITY:WRITE";
+    return "auth:revoke";
   }
   if (pathname.includes("/replay") || pathname.includes("/backtest")) {
-    return "REPLAY:WRITE";
+    return "replay:run";
   }
   if (pathname.includes("/alerts") || pathname.includes("/settings/notifications")) {
-    return "ALERTS:WRITE";
+    return "alerts:write";
   }
   if (pathname.includes("/strategy")) {
-    return "STRATEGY:WRITE";
+    return "strategy:write";
+  }
+  if (pathname.includes("/cascade/positions")) {
+    return "position:close";
+  }
+  if (pathname.includes("/cascade/blackout")) {
+    return "cascade:blackout";
   }
   if (
     pathname.includes("/maintenance") ||
     pathname.includes("/moltworker") ||
-    pathname.includes("/cascade/positions") ||
-    pathname.includes("/cascade/blackout")
+    pathname.includes("/cascade/")
   ) {
-    return "TRADING:WRITE";
+    return "trading:write";
   }
 
-  return "CONFIG:WRITE";
+  return "config:write";
 }
 
 function bearerToken(request: Request): string | null {

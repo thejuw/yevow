@@ -3,6 +3,7 @@ export interface Env {
   INGEST_COORDINATOR?: DurableObjectNamespace;
   TRADING_DB: D1Database;
   CONFIG_STORE: KVNamespace;
+  AUTH_STORE?: KVNamespace;
   RISK_VAULT: KVNamespace;
   SECRET_VAULT?: KVNamespace;
   AI?: Ai;
@@ -179,6 +180,7 @@ export interface Env {
   JWT_SECRET?: string;
   ADMIN_JWT_SECRET?: string;
   ADMIN_PASSWORD?: string;
+  MIGRATE_LEGACY_SCOPES?: string;
   EXCHANGE_API_KEY?: string;
   EXCHANGE_API_SECRET?: string;
   EXECUTIONER_CONTROL_TOKEN?: string;
