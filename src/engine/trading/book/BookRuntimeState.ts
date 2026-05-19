@@ -12,6 +12,7 @@ import {
   defaultPriceDiscovery,
   suspendAssetQuoteStates
 } from "../../../TradingEngineRuntimeHelpers";
+import type { BookSyncState } from "./BookTypes";
 import { microstructureFromBook } from "./BookReconstruction";
 import type { AppliedBookSnapshot } from "./OrderBookReconstructor";
 
@@ -69,6 +70,23 @@ export interface RejectedBookDeltaStateInput {
   readonly internalOrderBookDepth: number;
   readonly maxLatencyMs: number;
   readonly observedAt: string;
+}
+
+export interface BookSyncDesyncInput {
+  readonly syncState: BookSyncState | undefined;
+  readonly reason: string;
+  readonly observedAt: string;
+}
+
+export interface DesyncedBookStateInput {
+  readonly currentState: EngineState;
+  readonly book: InternalOrderBook;
+  readonly reason: string;
+}
+
+export interface DesyncedBookStateResult {
+  readonly state: EngineState;
+  readonly book: InternalOrderBook;
 }
 
 export function stateAfterOrderBookReset(input: BookResetStateInput): EngineState {
@@ -167,6 +185,35 @@ export function stateAfterRejectedBookDelta(input: RejectedBookDeltaStateInput):
     maxLatencyMs: input.maxLatencyMs,
     heartbeatAt: input.observedAt,
     updatedAt: input.observedAt
+  };
+}
+
+export function markBookSyncDesynced(input: BookSyncDesyncInput): void {
+  if (!input.syncState) {
+    return;
+  }
+
+  input.syncState.isSynced = false;
+  input.syncState.desyncReason = input.reason;
+  input.syncState.lastDesyncAt = input.observedAt;
+}
+
+export function stateAfterDesyncedBook(input: DesyncedBookStateInput): DesyncedBookStateResult {
+  const book: InternalOrderBook = {
+    ...input.book,
+    isSynced: false,
+    desyncReason: input.reason
+  };
+
+  return {
+    book,
+    state: {
+      ...input.currentState,
+      microstructure: {
+        ...input.currentState.microstructure,
+        isSynced: false
+      }
+    }
   };
 }
 

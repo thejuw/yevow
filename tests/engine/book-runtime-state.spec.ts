@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   bookSnapshotTelemetry,
   bookSnapshotStorageWrites,
+  markBookSyncDesynced,
   shouldEmitBookSnapshotTelemetry,
   stateAfterAcceptedBookDelta,
   stateAfterBookSnapshot,
+  stateAfterDesyncedBook,
   stateAfterInformationalBookNotReady,
   stateAfterOrderBookReset,
   stateAfterRejectedBookDelta,
@@ -276,6 +278,55 @@ describe("BookRuntimeState", () => {
       updatedAt: OBSERVED_AT
     });
     expect(next.microstructure).toBe(currentState.microstructure);
+  });
+
+  it("marks book sync and visible microstructure desynced without changing unrelated state", () => {
+    const currentState = defaultEngineState("book-desync");
+    currentState.processedTicks = 12;
+    currentState.microstructure = micro({ isSynced: true, midPrice: 100 });
+    const syncState = {
+      marketKey: "hyperliquid:btc-usd",
+      source: "HYPERLIQUID" as const,
+      source_exchange: "hyperliquid",
+      sourceWeight: 1,
+      instrumentCode: "btc-usd",
+      exchangeCode: "hyperliquid",
+      lastSequence: 7,
+      lastSnapshotAt: null,
+      lastDeltaAt: null,
+      lastDesyncAt: null,
+      desyncReason: null,
+      isSynced: true,
+      tickSize: 0.5,
+      ttbLatencyMs: null,
+      lastCrossCheckAt: 0
+    };
+
+    markBookSyncDesynced({
+      syncState,
+      reason: "NATIVE_HL_LATENCY",
+      observedAt: OBSERVED_AT
+    });
+    const result = stateAfterDesyncedBook({
+      currentState,
+      book: book(),
+      reason: "NATIVE_HL_LATENCY"
+    });
+
+    expect(syncState).toMatchObject({
+      isSynced: false,
+      desyncReason: "NATIVE_HL_LATENCY",
+      lastDesyncAt: OBSERVED_AT
+    });
+    expect(result.book).toMatchObject({
+      isSynced: false,
+      desyncReason: "NATIVE_HL_LATENCY"
+    });
+    expect(result.state.microstructure).toMatchObject({
+      isSynced: false,
+      midPrice: 100
+    });
+    expect(result.state.processedTicks).toBe(12);
   });
 });
 

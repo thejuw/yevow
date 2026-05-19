@@ -56,9 +56,11 @@ import {
   nullableMarkPriceForInstrument
 } from "./engine/trading/book/BookViews";
 import {
+  markBookSyncDesynced,
   shouldEmitBookSnapshotTelemetry,
   stateAfterAcceptedBookDelta,
   stateAfterBookSnapshot,
+  stateAfterDesyncedBook,
   stateAfterInformationalBookNotReady,
   stateAfterOrderBookReset,
   stateAfterRejectedBookDelta,
@@ -1554,11 +1556,11 @@ export class TradingEngine {
     }
 
     if (sequenceDecision.status === "DESYNC") {
-      if (existingSync) {
-        existingSync.lastDesyncAt = sequenceDecision.lastDesyncAt;
-        existingSync.desyncReason = sequenceDecision.reason;
-        existingSync.isSynced = false;
-      }
+      markBookSyncDesynced({
+        syncState: existingSync,
+        reason: sequenceDecision.reason,
+        observedAt: sequenceDecision.lastDesyncAt
+      });
       this.logger.warn(
         "ORDER_BOOK_DESYNC",
         "Hyperliquid native book sequence gap detected",
@@ -1600,24 +1602,18 @@ export class TradingEngine {
           );
         } else {
           const syncState = this.bookSync.get(marketKey);
-          if (syncState) {
-            syncState.isSynced = false;
-            syncState.desyncReason = "NATIVE_HL_LATENCY";
-            syncState.lastDesyncAt = brainTimestamp;
-          }
-          const staleBook = {
-            ...book,
-            isSynced: false,
-            desyncReason: "NATIVE_HL_LATENCY"
-          };
-          this.orderBook.set(marketKey, staleBook);
-          this.engineState = {
-            ...this.engineState,
-            microstructure: {
-              ...this.engineState.microstructure,
-              isSynced: false
-            }
-          };
+          markBookSyncDesynced({
+            syncState,
+            reason: "NATIVE_HL_LATENCY",
+            observedAt: brainTimestamp
+          });
+          const staleBook = stateAfterDesyncedBook({
+            currentState: this.engineState,
+            book,
+            reason: "NATIVE_HL_LATENCY"
+          });
+          this.orderBook.set(marketKey, staleBook.book);
+          this.engineState = staleBook.state;
         }
       }
       const metrics = buildHyperliquidL2BookLatencyMetrics({
