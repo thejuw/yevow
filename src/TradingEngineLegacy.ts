@@ -2698,6 +2698,51 @@ export class TradingEngine {
     );
   }
 
+  private async handleHardStaleTickDrop(
+    tick: MarketTick,
+    metrics: LatencyMetrics,
+    streamId: string | null,
+    hardStaleDropMs: number
+  ): Promise<TickIngestResult> {
+    const hardStale = stateAfterHardStaleTickDrop({
+      currentState: this.engineState,
+      metrics,
+      hardStaleDropMs
+    });
+    this.engineState = hardStale.state;
+
+    if (hardStale.shouldResetLatencyBaseline) {
+      this.resetLatencyBaseline(hardStale.metrics.brainTimestamp, "HARD_STALE_DROP");
+    }
+
+    await this.persistHotStorageSnapshot(this.latencyStorageWrites(), "HARD_STALE_TICK_DROPPED");
+
+    const staleTelemetry = {
+      tick,
+      metrics: hardStale.metrics,
+      streamId,
+      hardStaleDropMs
+    };
+
+    if (shouldLogHardStaleTickDrop(hardStale.nextStaleTickCount)) {
+      this.logger.warn("HARD_STALE_TICK_DROPPED", "Dropped tick beyond hard stale threshold", {
+        ...hardStaleTickDropLogMetadata(staleTelemetry)
+      });
+    }
+    this.logPerformance(hardStale.metrics);
+    this.publish("STALE_DATA_KILL_SWITCH", hardStalePullTelemetryPayload(staleTelemetry));
+    if (this.cachedConfig.TRADING_ENABLED) {
+      this.state.waitUntil(this.cancelAllQuotes(tick.instrumentCode, "HARD_STALE_DROP"));
+    }
+
+    return {
+      accepted: false,
+      status: "STALE_DROPPED",
+      reason: "TICK_EXCEEDED_HARD_STALE_THRESHOLD",
+      metrics: hardStale.metrics
+    };
+  }
+
   private async handleSoftStaleTick(
     tick: MarketTick,
     metrics: LatencyMetrics,
@@ -2869,43 +2914,7 @@ export class TradingEngine {
     const isHardStale = !options.shadowReplay && metrics.totalLatencyMs > hardStaleDropMs;
 
     if (isHardStale) {
-      const hardStale = stateAfterHardStaleTickDrop({
-        currentState: this.engineState,
-        metrics,
-        hardStaleDropMs
-      });
-      this.engineState = hardStale.state;
-
-      if (hardStale.shouldResetLatencyBaseline) {
-        this.resetLatencyBaseline(hardStale.metrics.brainTimestamp, "HARD_STALE_DROP");
-      }
-
-      await this.persistHotStorageSnapshot(this.latencyStorageWrites(), "HARD_STALE_TICK_DROPPED");
-
-      const staleTelemetry = {
-        tick,
-        metrics: hardStale.metrics,
-        streamId,
-        hardStaleDropMs
-      };
-
-      if (shouldLogHardStaleTickDrop(hardStale.nextStaleTickCount)) {
-        this.logger.warn("HARD_STALE_TICK_DROPPED", "Dropped tick beyond hard stale threshold", {
-          ...hardStaleTickDropLogMetadata(staleTelemetry)
-        });
-      }
-      this.logPerformance(hardStale.metrics);
-      this.publish("STALE_DATA_KILL_SWITCH", hardStalePullTelemetryPayload(staleTelemetry));
-      if (this.cachedConfig.TRADING_ENABLED) {
-        this.state.waitUntil(this.cancelAllQuotes(tick.instrumentCode, "HARD_STALE_DROP"));
-      }
-
-      return {
-        accepted: false,
-        status: "STALE_DROPPED",
-        reason: "TICK_EXCEEDED_HARD_STALE_THRESHOLD",
-        metrics: hardStale.metrics
-      };
+      return this.handleHardStaleTickDrop(tick, metrics, streamId, hardStaleDropMs);
     }
 
     if (
