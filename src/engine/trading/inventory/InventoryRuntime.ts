@@ -1,5 +1,16 @@
-import type { InternalOrderBook, InventoryState, Position } from "../../../types";
-import { roundCrypto, roundMetric } from "../book/SortedBookSide";
+import type {
+  GlobalRiskConfig,
+  InternalOrderBook,
+  InventoryState,
+  Position,
+  TradeIntent
+} from "../../../types";
+import {
+  DEFAULT_ORDER_BOOK_TICK_SIZE,
+  normalizePriceToTick,
+  roundCrypto,
+  roundMetric
+} from "../book/SortedBookSide";
 
 export interface InventoryStateInput {
   readonly positions: Record<string, Position>;
@@ -18,6 +29,29 @@ export interface BaseAssetReferencePriceInput {
   readonly orderBooks: Iterable<InternalOrderBook>;
   readonly positions: Record<string, Position>;
   readonly microstructureMidPrice: number | null;
+}
+
+export interface InventoryHedgeIntentInput {
+  readonly book: InternalOrderBook;
+  readonly inventory: InventoryState;
+  readonly observedAt: string;
+  readonly engineId: string;
+  readonly config: Pick<
+    GlobalRiskConfig,
+    | "HEDGE_ENABLED"
+    | "MAX_INVENTORY_DELTA"
+    | "HEDGE_TRIGGER_INVENTORY_PCT"
+    | "HEDGE_COOLDOWN_MS"
+    | "HEDGE_MAX_SLIPPAGE_BPS"
+    | "EXCHANGE_FEE_BPS"
+  >;
+  readonly lastHedgeAtMs: number;
+  readonly fallbackNowMs: number;
+}
+
+export interface InventoryHedgeIntentResult {
+  readonly intent: TradeIntent;
+  readonly dispatchedAtMs: number;
 }
 
 export function calculateInventoryState(input: InventoryStateInput): InventoryState {
@@ -64,6 +98,92 @@ export function referencePriceForBaseAsset(input: BaseAssetReferencePriceInput):
 
   const microMid = input.microstructureMidPrice;
   return typeof microMid === "number" && Number.isFinite(microMid) && microMid > 0 ? microMid : 1;
+}
+
+export function buildInventoryHedgeIntent(
+  input: InventoryHedgeIntentInput
+): InventoryHedgeIntentResult | null {
+  const { book, config, inventory } = input;
+
+  if (!config.HEDGE_ENABLED || !book.midPrice || book.midPrice <= 0) {
+    return null;
+  }
+
+  const maxDelta = Math.max(inventory.maxInventoryDelta, config.MAX_INVENTORY_DELTA, 0);
+  if (maxDelta <= 0) {
+    return null;
+  }
+
+  const currentDelta = inventory.current_inventory_delta;
+  const triggerDelta = maxDelta * config.HEDGE_TRIGGER_INVENTORY_PCT;
+  if (Math.abs(currentDelta) < triggerDelta) {
+    return null;
+  }
+
+  const observedAtMs = Date.parse(input.observedAt);
+  const safeNowMs = Number.isFinite(observedAtMs) ? observedAtMs : input.fallbackNowMs;
+  if (safeNowMs - input.lastHedgeAtMs < config.HEDGE_COOLDOWN_MS) {
+    return null;
+  }
+
+  const action: TradeIntent["action"] = currentDelta > 0 ? "SELL" : "BUY";
+  const touch = action === "SELL" ? book.bestBid : book.bestAsk;
+  if (!touch || touch <= 0) {
+    return null;
+  }
+
+  const targetResidual = maxDelta * 0.4 * Math.sign(currentDelta);
+  const hedgeSize = roundCrypto(
+    Math.min(Math.abs(currentDelta - targetResidual), Math.abs(currentDelta))
+  );
+  if (hedgeSize <= 0) {
+    return null;
+  }
+
+  const hedgeMaxSlippageBps = Math.max(0, config.HEDGE_MAX_SLIPPAGE_BPS);
+  const slippage = hedgeMaxSlippageBps / 10_000;
+  const rawPrice = action === "BUY" ? touch * (1 + slippage) : touch * (1 - slippage);
+  const expectedPrice = normalizePriceToTick(
+    Math.max(book.tickSize, rawPrice),
+    Math.max(book.tickSize, DEFAULT_ORDER_BOOK_TICK_SIZE),
+    action === "BUY" ? "CEIL" : "FLOOR"
+  );
+
+  return {
+    dispatchedAtMs: safeNowMs,
+    intent: {
+      schemaVersion: "trade-intent.v1",
+      intentId: `inventory-hedge:${book.instrumentCode}:${safeNowMs}`,
+      traceId: `${input.engineId}:inventory-hedge:${book.instrumentCode}:${safeNowMs}`,
+      instrumentCode: book.instrumentCode,
+      marketKey: book.marketKey,
+      source_exchange: book.source_exchange,
+      direction: action === "BUY" ? "LONG" : "SHORT",
+      action,
+      orderType: "IOC",
+      postOnly: false,
+      timeInForce: "IOC",
+      intendedPrice: expectedPrice,
+      expectedPrice,
+      requestedSize: hedgeSize,
+      approvedSize: hedgeSize,
+      probabilityWin: 0.5,
+      probabilityLoss: 0.5,
+      profit: 0,
+      loss: (book.midPrice * hedgeSize * hedgeMaxSlippageBps) / 10_000,
+      executionCosts:
+        (book.midPrice * hedgeSize * (config.EXCHANGE_FEE_BPS + hedgeMaxSlippageBps)) / 10_000,
+      adverseSelectionCost: 0,
+      expectedValue: 0,
+      minEvThreshold: Number.NEGATIVE_INFINITY,
+      maxSlippageBps: config.HEDGE_MAX_SLIPPAGE_BPS,
+      confidence: Math.min(1, Math.abs(currentDelta) / maxDelta),
+      rationale:
+        `INVENTORY_HEDGE reduce-only IOC limit; currentDelta=${roundMetric(currentDelta, 8)} ` +
+        `maxDelta=${roundMetric(maxDelta, 8)} triggerPct=${roundMetric(config.HEDGE_TRIGGER_INVENTORY_PCT, 4)}`,
+      createdAt: input.observedAt
+    }
+  };
 }
 
 export function normalizeInventoryDelta(

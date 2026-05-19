@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { defaultConfig } from "../../src/ConfigManager";
 import {
+  buildInventoryHedgeIntent,
   calculateInventoryState,
   normalizeInventoryDelta,
   referencePriceForBaseAsset
@@ -116,6 +118,93 @@ describe("InventoryRuntime", () => {
       })
     ).toBe(1);
   });
+
+  it("builds reduce-only IOC inventory hedge intents after trigger and cooldown checks", () => {
+    const result = buildInventoryHedgeIntent({
+      book: book({ bestBid: 99.5, bestAsk: 100.5, midPrice: 100, tickSize: 0.5 }),
+      inventory: inventory({ current_inventory_delta: 1.5, maxInventoryDelta: 2 }),
+      observedAt: OBSERVED_AT,
+      engineId: "engine-1",
+      config: {
+        ...defaultConfig,
+        HEDGE_ENABLED: true,
+        MAX_INVENTORY_DELTA: 1,
+        HEDGE_TRIGGER_INVENTORY_PCT: 0.6,
+        HEDGE_COOLDOWN_MS: 30_000,
+        HEDGE_MAX_SLIPPAGE_BPS: 8,
+        EXCHANGE_FEE_BPS: 1
+      },
+      lastHedgeAtMs: 0,
+      fallbackNowMs: 1
+    });
+
+    expect(result).toMatchObject({
+      dispatchedAtMs: Date.parse(OBSERVED_AT),
+      intent: {
+        intentId: `inventory-hedge:btc-usd:${Date.parse(OBSERVED_AT)}`,
+        traceId: `engine-1:inventory-hedge:btc-usd:${Date.parse(OBSERVED_AT)}`,
+        direction: "SHORT",
+        action: "SELL",
+        orderType: "IOC",
+        postOnly: false,
+        timeInForce: "IOC",
+        intendedPrice: 99,
+        requestedSize: 0.7,
+        approvedSize: 0.7,
+        loss: 0.056,
+        executionCosts: 0.063,
+        maxSlippageBps: 8,
+        confidence: 0.75,
+        rationale:
+          "INVENTORY_HEDGE reduce-only IOC limit; currentDelta=1.5 maxDelta=2 triggerPct=0.6"
+      }
+    });
+  });
+
+  it("rejects inventory hedge intents when gates are not satisfied", () => {
+    const base = {
+      book: book({ bestBid: 99.5, bestAsk: 100.5, midPrice: 100, tickSize: 0.5 }),
+      inventory: inventory({ current_inventory_delta: -1.5, maxInventoryDelta: 2 }),
+      observedAt: OBSERVED_AT,
+      engineId: "engine-1",
+      config: {
+        ...defaultConfig,
+        HEDGE_ENABLED: true,
+        HEDGE_TRIGGER_INVENTORY_PCT: 0.6,
+        HEDGE_COOLDOWN_MS: 30_000
+      },
+      lastHedgeAtMs: 0,
+      fallbackNowMs: 1
+    };
+
+    expect(
+      buildInventoryHedgeIntent({ ...base, config: { ...base.config, HEDGE_ENABLED: false } })
+    ).toBeNull();
+    expect(
+      buildInventoryHedgeIntent({
+        ...base,
+        inventory: inventory({ current_inventory_delta: -0.5, maxInventoryDelta: 2 })
+      })
+    ).toBeNull();
+    expect(
+      buildInventoryHedgeIntent({
+        ...base,
+        lastHedgeAtMs: Date.parse(OBSERVED_AT) - 1_000
+      })
+    ).toBeNull();
+    expect(
+      buildInventoryHedgeIntent({
+        ...base,
+        book: book({ bestAsk: null, midPrice: 100 })
+      })
+    ).toBeNull();
+
+    expect(buildInventoryHedgeIntent(base)?.intent).toMatchObject({
+      direction: "LONG",
+      action: "BUY",
+      intendedPrice: 101
+    });
+  });
 });
 
 function position(
@@ -133,6 +222,22 @@ function position(
     unrealizedPnl: 0,
     realizedPnl: 0,
     updatedAt: OBSERVED_AT
+  };
+}
+
+function inventory(overrides: Partial<ReturnType<typeof calculateInventoryState>> = {}) {
+  return {
+    netDelta: 0,
+    current_inventory_delta: 0,
+    baseAsset: "BTC",
+    normalization: {},
+    maxInventoryUnits: 2,
+    maxInventoryDelta: 2,
+    inventoryPenalty: 0,
+    stopBid: false,
+    stopAsk: false,
+    updatedAt: OBSERVED_AT,
+    ...overrides
   };
 }
 

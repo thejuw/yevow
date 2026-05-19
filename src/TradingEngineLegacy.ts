@@ -28,7 +28,6 @@ import {
 } from "./engine/trading/helpers/PlacementResolver";
 import {
   DEFAULT_ORDER_BOOK_TICK_SIZE,
-  normalizePriceToTick,
   priceKey,
   roundCrypto,
   roundMetric,
@@ -82,6 +81,7 @@ import {
   updateLeadLagMetrics as updateLeadLagRuntimeMetrics
 } from "./engine/trading/leadlag/LeadLagRuntime";
 import {
+  buildInventoryHedgeIntent,
   calculateInventoryState as calculateInventoryRuntimeState,
   referencePriceForBaseAsset as resolveBaseAssetReferencePrice
 } from "./engine/trading/inventory/InventoryRuntime";
@@ -4775,90 +4775,22 @@ export class TradingEngine {
     inventory: InventoryState,
     observedAt: string
   ): TradeIntent | null {
-    if (!this.cachedConfig.HEDGE_ENABLED || !book.midPrice || book.midPrice <= 0) {
+    const result = buildInventoryHedgeIntent({
+      book,
+      inventory,
+      observedAt,
+      engineId: this.engineState.engineId,
+      config: this.cachedConfig,
+      lastHedgeAtMs: this.lastHedgeDispatchedAt.get(book.instrumentCode) ?? 0,
+      fallbackNowMs: Date.now()
+    });
+
+    if (!result) {
       return null;
     }
 
-    const maxDelta = Math.max(
-      inventory.maxInventoryDelta,
-      this.cachedConfig.MAX_INVENTORY_DELTA,
-      0
-    );
-    if (maxDelta <= 0) {
-      return null;
-    }
-
-    const currentDelta = inventory.current_inventory_delta;
-    const triggerDelta = maxDelta * this.cachedConfig.HEDGE_TRIGGER_INVENTORY_PCT;
-    if (Math.abs(currentDelta) < triggerDelta) {
-      return null;
-    }
-
-    const nowMs = Date.parse(observedAt);
-    const safeNowMs = Number.isFinite(nowMs) ? nowMs : Date.now();
-    const lastHedgeAt = this.lastHedgeDispatchedAt.get(book.instrumentCode) ?? 0;
-    if (safeNowMs - lastHedgeAt < this.cachedConfig.HEDGE_COOLDOWN_MS) {
-      return null;
-    }
-
-    const action: TradeIntent["action"] = currentDelta > 0 ? "SELL" : "BUY";
-    const touch = action === "SELL" ? book.bestBid : book.bestAsk;
-    if (!touch || touch <= 0) {
-      return null;
-    }
-
-    const targetResidual = maxDelta * 0.4 * Math.sign(currentDelta);
-    const hedgeSize = roundCrypto(
-      Math.min(Math.abs(currentDelta - targetResidual), Math.abs(currentDelta))
-    );
-    if (hedgeSize <= 0) {
-      return null;
-    }
-
-    const slippage = Math.max(0, this.cachedConfig.HEDGE_MAX_SLIPPAGE_BPS) / 10_000;
-    const rawPrice = action === "BUY" ? touch * (1 + slippage) : touch * (1 - slippage);
-    const expectedPrice = normalizePriceToTick(
-      Math.max(book.tickSize, rawPrice),
-      Math.max(book.tickSize, DEFAULT_ORDER_BOOK_TICK_SIZE),
-      action === "BUY" ? "CEIL" : "FLOOR"
-    );
-    this.lastHedgeDispatchedAt.set(book.instrumentCode, safeNowMs);
-
-    return {
-      schemaVersion: "trade-intent.v1",
-      intentId: `inventory-hedge:${book.instrumentCode}:${safeNowMs}`,
-      traceId: `${this.engineState.engineId}:inventory-hedge:${book.instrumentCode}:${safeNowMs}`,
-      instrumentCode: book.instrumentCode,
-      marketKey: book.marketKey,
-      source_exchange: book.source_exchange,
-      direction: action === "BUY" ? "LONG" : "SHORT",
-      action,
-      orderType: "IOC",
-      postOnly: false,
-      timeInForce: "IOC",
-      intendedPrice: expectedPrice,
-      expectedPrice,
-      requestedSize: hedgeSize,
-      approvedSize: hedgeSize,
-      probabilityWin: 0.5,
-      probabilityLoss: 0.5,
-      profit: 0,
-      loss: (book.midPrice * hedgeSize * this.cachedConfig.HEDGE_MAX_SLIPPAGE_BPS) / 10_000,
-      executionCosts:
-        (book.midPrice *
-          hedgeSize *
-          (this.cachedConfig.EXCHANGE_FEE_BPS + this.cachedConfig.HEDGE_MAX_SLIPPAGE_BPS)) /
-        10_000,
-      adverseSelectionCost: 0,
-      expectedValue: 0,
-      minEvThreshold: Number.NEGATIVE_INFINITY,
-      maxSlippageBps: this.cachedConfig.HEDGE_MAX_SLIPPAGE_BPS,
-      confidence: Math.min(1, Math.abs(currentDelta) / maxDelta),
-      rationale:
-        `INVENTORY_HEDGE reduce-only IOC limit; currentDelta=${roundMetric(currentDelta, 8)} ` +
-        `maxDelta=${roundMetric(maxDelta, 8)} triggerPct=${roundMetric(this.cachedConfig.HEDGE_TRIGGER_INVENTORY_PCT, 4)}`,
-      createdAt: observedAt
-    };
+    this.lastHedgeDispatchedAt.set(book.instrumentCode, result.dispatchedAtMs);
+    return result.intent;
   }
 
   private async dispatchExecution(
