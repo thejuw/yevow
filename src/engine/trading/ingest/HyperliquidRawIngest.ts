@@ -13,7 +13,9 @@ import {
   normalizeSourceExchange,
   normalizeSourceWeight,
   parseHyperliquidNativeLevels,
-  requireNativeString
+  requireNativeString,
+  createNativeHyperliquidFundingTick,
+  createNativeHyperliquidTradeTick
 } from "../../../TradingEngineRuntimeHelpers";
 import type { TickIngestResult } from "../TradingEngineRouteTypes";
 import type { BookSyncState } from "../book/BookTypes";
@@ -46,6 +48,10 @@ export interface HyperliquidRawBatchContext {
     payload: HyperliquidRawIngestPayload,
     wakeUpTimeMs: number | null
   ): Promise<TickIngestResult>;
+}
+
+export interface HyperliquidTickProcessorContext {
+  processTick(tick: MarketTick, wakeUpTimeMs: number | null): Promise<TickIngestResult>;
 }
 
 export type HyperliquidIngestConnectionRegistration =
@@ -146,6 +152,61 @@ export function routeHyperliquidRawMessage(raw: unknown): HyperliquidRawMessageR
     kind: "IGNORED",
     raw,
     reason: `IGNORED_HYPERLIQUID_CHANNEL_${channel ?? "UNKNOWN"}`
+  };
+}
+
+export async function processHyperliquidTradeBatch(
+  raw: Record<string, unknown>,
+  payload: HyperliquidRawIngestPayload,
+  wakeUpTimeMs: number | null,
+  context: HyperliquidTickProcessorContext
+): Promise<TickIngestResult> {
+  const rawData: unknown = raw.data;
+  const data: readonly unknown[] = Array.isArray(rawData) ? rawData : [];
+  const maxTrades = Math.min(data.length, 100);
+  let processedCount = 0;
+  let terminalResult: TickIngestResult = {
+    accepted: true,
+    status: "FRESH",
+    processedCount: 0
+  };
+
+  for (let index = 0; index < maxTrades; index += 1) {
+    const item = data[index];
+
+    if (!isNativeRecord(item)) {
+      continue;
+    }
+
+    terminalResult = await context.processTick(
+      createNativeHyperliquidTradeTick(item, payload),
+      wakeUpTimeMs
+    );
+    processedCount += 1;
+
+    if (terminalResult.status === "STALE" || terminalResult.status === "DESYNC") {
+      break;
+    }
+  }
+
+  return { ...terminalResult, processedCount };
+}
+
+export async function processHyperliquidAssetContext(
+  raw: Record<string, unknown>,
+  payload: HyperliquidRawIngestPayload,
+  wakeUpTimeMs: number | null,
+  context: HyperliquidTickProcessorContext
+): Promise<TickIngestResult> {
+  const data = nativeObject(raw.data) ?? raw;
+  const result = await context.processTick(
+    createNativeHyperliquidFundingTick(data, payload),
+    wakeUpTimeMs
+  );
+
+  return {
+    ...result,
+    processedCount: 1
   };
 }
 

@@ -217,6 +217,8 @@ import {
   calculateHyperliquidBookTotalLatencyMs,
   evaluateHyperliquidBookSequence,
   handleHyperliquidRawBatch,
+  processHyperliquidAssetContext,
+  processHyperliquidTradeBatch,
   registerHyperliquidIngestConnection,
   routeHyperliquidRawMessage,
   type HyperliquidRawIngestPayload
@@ -474,8 +476,6 @@ import {
   AGGREGATED_BUS_TELEMETRY_TYPES
 } from "./TradingEngineConstants";
 import {
-  isNativeRecord,
-  nativeObject,
   nativeIso,
   epochMillis,
   nativeHashSequence,
@@ -492,8 +492,6 @@ import {
   nativeBookSideLevels,
   nativeNumber,
   nativeSide,
-  createNativeHyperliquidTradeTick,
-  createNativeHyperliquidFundingTick,
   hasRuntimeConfigUpdate,
   defaultEngineState,
   defaultEnsembleState,
@@ -1668,29 +1666,9 @@ export class TradingEngine {
     payload: HyperliquidRawIngestPayload,
     wakeUpTimeMs: number | null
   ): Promise<TickIngestResult> {
-    const data = Array.isArray(raw.data) ? raw.data : [];
-    let processedCount = 0;
-    let terminalResult: TickIngestResult = {
-      accepted: true,
-      status: "FRESH",
-      processedCount: 0
-    };
-
-    for (const item of data.slice(0, 100)) {
-      if (!isNativeRecord(item)) {
-        continue;
-      }
-
-      const tick = createNativeHyperliquidTradeTick(item, payload);
-      terminalResult = await this.handleTick(tick, wakeUpTimeMs);
-      processedCount += 1;
-
-      if (terminalResult.status === "STALE" || terminalResult.status === "DESYNC") {
-        break;
-      }
-    }
-
-    return { ...terminalResult, processedCount };
+    return processHyperliquidTradeBatch(raw, payload, wakeUpTimeMs, {
+      processTick: (tick, wakeUp) => this.handleTick(tick, wakeUp)
+    });
   }
 
   private async handleHyperliquidAssetContext(
@@ -1698,14 +1676,9 @@ export class TradingEngine {
     payload: HyperliquidRawIngestPayload,
     wakeUpTimeMs: number | null
   ): Promise<TickIngestResult> {
-    const data = nativeObject(raw.data) ?? raw;
-    const tick = createNativeHyperliquidFundingTick(data, payload);
-    const result = await this.handleTick(tick, wakeUpTimeMs);
-
-    return {
-      ...result,
-      processedCount: 1
-    };
+    return processHyperliquidAssetContext(raw, payload, wakeUpTimeMs, {
+      processTick: (tick, wakeUp) => this.handleTick(tick, wakeUp)
+    });
   }
 
   private async handleHyperliquidLiquidationEvents(

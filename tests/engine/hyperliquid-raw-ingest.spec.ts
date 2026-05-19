@@ -10,10 +10,13 @@ import {
   hyperliquidIngestConnectionKey,
   hyperliquidRawMessages,
   isActiveHyperliquidIngestConnection,
+  processHyperliquidAssetContext,
+  processHyperliquidTradeBatch,
   registerHyperliquidIngestConnection,
   resolveHyperliquidBookTimestamp,
   routeHyperliquidRawMessage
 } from "../../src/engine/trading/ingest/HyperliquidRawIngest";
+import type { MarketTick } from "../../src/types";
 import type { BookSyncState } from "../../src/engine/trading/book/BookTypes";
 import type { TickIngestResult } from "../../src/engine/trading/TradingEngineRouteTypes";
 import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
@@ -229,6 +232,91 @@ describe("hyperliquid raw ingest helpers", () => {
     });
     expect(evaluateHyperliquidBookSequence(bookSync(10), 20, false, 5, "now")).toEqual({
       status: "ACCEPTED"
+    });
+  });
+
+  it("processes bounded native trade batches without allocating sliced trade arrays", async () => {
+    const seen: { tick: MarketTick; wakeUpTimeMs: number | null }[] = [];
+    const result = await processHyperliquidTradeBatch(
+      {
+        data: [
+          "not-a-trade",
+          { coin: "BTC", px: "100", sz: "0.25", time: 1_767_000_000_000, isBuy: true },
+          { coin: "BTC", px: "101", sz: "0.5", time: 1_767_000_000_001, isBuy: false },
+          { coin: "BTC", px: "102", sz: "1", time: 1_767_000_000_002, isBuy: true }
+        ]
+      },
+      {
+        transport: "grpc",
+        streamId: "dwellir-trades",
+        connectionId: "conn-1",
+        receivedAt: "2026-01-01T00:00:00.100Z"
+      },
+      7,
+      {
+        processTick: async (tick, wakeUpTimeMs) => {
+          seen.push({ tick, wakeUpTimeMs });
+          return seen.length === 2
+            ? { accepted: false, status: "STALE", processedCount: 1 }
+            : freshResult();
+        }
+      }
+    );
+
+    expect(result).toMatchObject({ accepted: false, status: "STALE", processedCount: 2 });
+    expect(seen).toHaveLength(2);
+    expect(seen[0]).toMatchObject({
+      wakeUpTimeMs: 7,
+      tick: {
+        source: "HYPERLIQUID",
+        sourceChannel: "trades",
+        transport: "grpc",
+        streamId: "dwellir-trades",
+        instrumentCode: "btc-usd",
+        price: 100,
+        size: 0.25,
+        side: "buy"
+      }
+    });
+    expect(seen[1].tick.side).toBe("sell");
+  });
+
+  it("processes active asset context payloads as funding ticks", async () => {
+    const seen: MarketTick[] = [];
+    const result = await processHyperliquidAssetContext(
+      {
+        data: {
+          coin: "BTC",
+          ctx: {
+            midPx: "100.5",
+            markPx: "100.4",
+            funding: "0.0000125"
+          },
+          time: 1_767_000_000_000
+        }
+      },
+      {
+        transport: "grpc",
+        streamId: "dwellir-context",
+        receivedAt: "2026-01-01T00:00:00.100Z"
+      },
+      null,
+      {
+        processTick: async (tick) => {
+          seen.push(tick);
+          return freshResult();
+        }
+      }
+    );
+
+    expect(result).toMatchObject({ accepted: true, status: "FRESH", processedCount: 1 });
+    expect(seen[0]).toMatchObject({
+      source: "HYPERLIQUID",
+      sourceChannel: "activeAssetCtx",
+      instrumentCode: "btc-usd",
+      price: 100.5,
+      fundingRateHourly: 0.0000125,
+      markPrice: 100.4
     });
   });
 
