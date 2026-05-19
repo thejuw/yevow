@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildCroupierQuoteAction,
   buildQuoteDispatchIntents,
   dispatchedQuoteSnapshot,
   evaluateQuoteRefreshThrottle
@@ -121,6 +122,94 @@ describe("QuoteDispatchRuntime", () => {
       confidence: 2
     });
     expect(result.intents[0].rationale).toContain("cluster cluster-7");
+  });
+
+  it("normalizes croupier pull and post quote actions", () => {
+    expect(
+      buildCroupierQuoteAction({
+        instrumentCode: "btc-usd",
+        pullAllQuotes: true,
+        quote: quoteSignal(),
+        strategyQuoteDisableReason: null,
+        adverseSelectionCost: 0.2,
+        minEvThreshold: 0.1,
+        shadowReplay: false,
+        tradingEnabled: true,
+        profilerQuoteHalt: false,
+        cascadeShield: false
+      })
+    ).toEqual({
+      kind: "PULL_ALL_QUOTES",
+      publish: {
+        type: "PULL_ALL_QUOTES",
+        payload: {
+          instrumentCode: "btc-usd",
+          adverseSelectionCost: 0.2,
+          minEvThreshold: 0.1
+        }
+      },
+      cancelReason: "ADVERSE_SELECTION_CRITICAL"
+    });
+
+    const post = buildCroupierQuoteAction({
+      instrumentCode: "btc-usd",
+      pullAllQuotes: false,
+      quote: quoteSignal(),
+      strategyQuoteDisableReason: null,
+      adverseSelectionCost: 0,
+      minEvThreshold: 0,
+      shadowReplay: false,
+      tradingEnabled: true,
+      profilerQuoteHalt: false,
+      cascadeShield: true
+    });
+
+    expect(post).toMatchObject({
+      kind: "POST_QUOTE",
+      shouldDispatch: true,
+      cascadeShieldCancelReason: "CASCADE_SHIELD",
+      publish: {
+        type: "POST_QUOTE",
+        correlationId: "quote-1",
+        payload: {
+          signalId: "quote-1",
+          instrumentCode: "btc-usd",
+          orderCount: 2
+        }
+      }
+    });
+  });
+
+  it("skips croupier quote actions when disabled, halted, or replaying", () => {
+    expect(
+      buildCroupierQuoteAction({
+        instrumentCode: "btc-usd",
+        pullAllQuotes: false,
+        quote: quoteSignal(),
+        strategyQuoteDisableReason: "STRATEGY_DISABLED",
+        adverseSelectionCost: 0,
+        minEvThreshold: 0,
+        shadowReplay: false,
+        tradingEnabled: true,
+        profilerQuoteHalt: false,
+        cascadeShield: false
+      })
+    ).toEqual({ kind: "NONE" });
+
+    expect(
+      buildCroupierQuoteAction({
+        instrumentCode: "btc-usd",
+        pullAllQuotes: false,
+        quote: quoteSignal(),
+        strategyQuoteDisableReason: null,
+        adverseSelectionCost: 0,
+        minEvThreshold: 0,
+        shadowReplay: true,
+        tradingEnabled: true,
+        profilerQuoteHalt: false,
+        cascadeShield: false
+      })
+    ).toMatchObject({ kind: "POST_QUOTE", shouldDispatch: false });
   });
 
   it("evaluates quote refresh throttles from queue advice and log cadence", () => {

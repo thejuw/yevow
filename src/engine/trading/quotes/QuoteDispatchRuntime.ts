@@ -1,6 +1,7 @@
 import type { QuoteOrder, QuoteSignal, TradeIntent } from "../../../types";
 import type { QueueRefreshAdvice } from "../../QueuePositionModel";
 import { roundCrypto, roundMetric } from "../book/SortedBookSide";
+import { quoteToTelemetry } from "../../../TradingEngineRuntimeHelpers";
 
 export interface QuoteDispatchIntentInput {
   readonly quote: QuoteSignal;
@@ -56,6 +57,43 @@ export interface QuoteRefreshThrottleDecision {
   readonly queuePressure: number;
   readonly queueReason: QueueRefreshAdvice["reason"];
 }
+
+export interface CroupierQuoteActionInput {
+  readonly instrumentCode: string;
+  readonly pullAllQuotes: boolean;
+  readonly quote: QuoteSignal | null;
+  readonly strategyQuoteDisableReason: string | null;
+  readonly adverseSelectionCost: number;
+  readonly minEvThreshold: number;
+  readonly shadowReplay: boolean;
+  readonly tradingEnabled: boolean;
+  readonly profilerQuoteHalt: boolean;
+  readonly cascadeShield: boolean;
+}
+
+export type CroupierQuoteAction =
+  | {
+      readonly kind: "PULL_ALL_QUOTES";
+      readonly publish: {
+        readonly type: "PULL_ALL_QUOTES";
+        readonly payload: Record<string, unknown>;
+      };
+      readonly cancelReason: "ADVERSE_SELECTION_CRITICAL" | null;
+    }
+  | {
+      readonly kind: "POST_QUOTE";
+      readonly quote: QuoteSignal;
+      readonly publish: {
+        readonly type: "POST_QUOTE";
+        readonly payload: Record<string, unknown>;
+        readonly correlationId: string;
+      };
+      readonly shouldDispatch: boolean;
+      readonly cascadeShieldCancelReason: "CASCADE_SHIELD" | null;
+    }
+  | {
+      readonly kind: "NONE";
+    };
 
 export function buildQuoteDispatchIntents(
   input: QuoteDispatchIntentInput
@@ -126,6 +164,40 @@ export function buildQuoteDispatchIntents(
   }
 
   return { intents, skippedOrders, maxOrderNotional };
+}
+
+export function buildCroupierQuoteAction(input: CroupierQuoteActionInput): CroupierQuoteAction {
+  if (input.pullAllQuotes) {
+    return {
+      kind: "PULL_ALL_QUOTES",
+      publish: {
+        type: "PULL_ALL_QUOTES",
+        payload: {
+          instrumentCode: input.instrumentCode,
+          adverseSelectionCost: input.adverseSelectionCost,
+          minEvThreshold: input.minEvThreshold
+        }
+      },
+      cancelReason:
+        !input.shadowReplay && input.tradingEnabled ? "ADVERSE_SELECTION_CRITICAL" : null
+    };
+  }
+
+  if (!input.quote || input.strategyQuoteDisableReason) {
+    return { kind: "NONE" };
+  }
+
+  return {
+    kind: "POST_QUOTE",
+    quote: input.quote,
+    publish: {
+      type: "POST_QUOTE",
+      payload: quoteToTelemetry(input.quote),
+      correlationId: input.quote.signalId
+    },
+    shouldDispatch: !input.shadowReplay && input.tradingEnabled && !input.profilerQuoteHalt,
+    cascadeShieldCancelReason: input.cascadeShield ? "CASCADE_SHIELD" : null
+  };
 }
 
 export function evaluateQuoteRefreshThrottle(

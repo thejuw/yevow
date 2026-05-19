@@ -119,6 +119,7 @@ import {
   strategyQuoteDisabledReason as runtimeStrategyQuoteDisabledReason
 } from "./engine/trading/quotes/QuoteStateRuntime";
 import {
+  buildCroupierQuoteAction,
   buildQuoteDispatchIntents,
   dispatchedQuoteSnapshot,
   evaluateQuoteRefreshThrottle
@@ -567,7 +568,6 @@ import {
   resolveDomBinSize,
   parseTickSizeMap,
   parsePositiveNumberMap,
-  quoteToTelemetry,
   wait,
   readNumber,
   readPositiveNumber,
@@ -3600,28 +3600,35 @@ export class TradingEngine {
       });
     }
 
-    if (croupierDecision.pullAllQuotes) {
-      this.publish("PULL_ALL_QUOTES", {
-        instrumentCode: tick.instrumentCode,
-        adverseSelectionCost: croupierDecision.adverseSelectionCost,
-        minEvThreshold: croupierDecision.minEvThreshold
-      });
-      if (!options.shadowReplay && this.cachedConfig.TRADING_ENABLED) {
-        this.state.waitUntil(
-          this.cancelAllQuotes(tick.instrumentCode, "ADVERSE_SELECTION_CRITICAL")
-        );
+    const croupierQuoteAction = buildCroupierQuoteAction({
+      instrumentCode: tick.instrumentCode,
+      pullAllQuotes: croupierDecision.pullAllQuotes,
+      quote: croupierDecision.quote,
+      strategyQuoteDisableReason,
+      adverseSelectionCost: croupierDecision.adverseSelectionCost,
+      minEvThreshold: croupierDecision.minEvThreshold,
+      shadowReplay: options.shadowReplay === true,
+      tradingEnabled: this.cachedConfig.TRADING_ENABLED,
+      profilerQuoteHalt: isProfilerQuoteHalt,
+      cascadeShield: isCascadeShield
+    });
+
+    if (croupierQuoteAction.kind === "PULL_ALL_QUOTES") {
+      this.publish(croupierQuoteAction.publish.type, croupierQuoteAction.publish.payload);
+      if (croupierQuoteAction.cancelReason) {
+        this.state.waitUntil(this.cancelAllQuotes(tick.instrumentCode, croupierQuoteAction.cancelReason));
       }
-    } else if (croupierDecision.quote && !strategyQuoteDisableReason) {
+    } else if (croupierQuoteAction.kind === "POST_QUOTE") {
       this.publish(
-        "POST_QUOTE",
-        quoteToTelemetry(croupierDecision.quote),
-        croupierDecision.quote.signalId
+        croupierQuoteAction.publish.type,
+        croupierQuoteAction.publish.payload,
+        croupierQuoteAction.publish.correlationId
       );
-      if (!options.shadowReplay && this.cachedConfig.TRADING_ENABLED && !isProfilerQuoteHalt) {
-        const quote = croupierDecision.quote;
+      if (croupierQuoteAction.shouldDispatch) {
+        const quote = croupierQuoteAction.quote;
         this.state.waitUntil(
-          isCascadeShield
-            ? this.cancelAllQuotes(tick.instrumentCode, "CASCADE_SHIELD").then(() =>
+          croupierQuoteAction.cascadeShieldCancelReason
+            ? this.cancelAllQuotes(tick.instrumentCode, croupierQuoteAction.cascadeShieldCancelReason).then(() =>
                 this.dispatchQuote(quote)
               )
             : this.dispatchQuote(quote)
