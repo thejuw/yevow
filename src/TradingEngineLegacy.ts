@@ -3893,7 +3893,12 @@ export class TradingEngine {
     });
 
     this.state.waitUntil(this.persistHotStorageSnapshot(writes, "HOT_PATH_TICK_SNAPSHOT"));
-    if (this.shouldJournalMarketTick()) {
+    if (
+      shouldPersistMarketTick(
+        this.engineState.processedTicks,
+        this.env.MARKET_TICK_JOURNAL_INTERVAL
+      )
+    ) {
       this.logger.recordMarketTick(tick);
     }
 
@@ -4073,13 +4078,6 @@ export class TradingEngine {
           lastDecision: this.ghostBook.snapshot(observedAt).lastDecision
         }
       : snapshot;
-  }
-
-  private shouldJournalMarketTick(): boolean {
-    return shouldPersistMarketTick(
-      this.engineState.processedTicks,
-      this.env.MARKET_TICK_JOURNAL_INTERVAL
-    );
   }
 
   private recordShadowQueueGhostFill(
