@@ -7,6 +7,7 @@ import {
   nextExecutionProfile,
   nextLatencyAverage,
   recordProcessingLatencySample,
+  resolveNativeHyperliquidMaxLatencyMs,
   shouldLogPerformanceSpikeEvent,
   stateAfterLatencyBaselineReset,
   stateAfterNativeHyperliquidLatencyPull,
@@ -46,6 +47,33 @@ describe("LatencyRuntime", () => {
       sampleCount: 12,
       colo: "NRT"
     });
+  });
+
+  it("resolves native Hyperliquid stale thresholds by transport and stream", () => {
+    expect(
+      resolveNativeHyperliquidMaxLatencyMs({
+        transport: "grpc",
+        streamId: "stream-1",
+        dwellirMaxLatencyMs: "75",
+        hlStaleAfterMs: "150",
+        currentMaxLatencyMs: 250
+      })
+    ).toBe(75);
+    expect(
+      resolveNativeHyperliquidMaxLatencyMs({
+        transport: "websocket",
+        streamId: "dwellir-public-fallback",
+        hlStaleAfterMs: "125",
+        currentMaxLatencyMs: 250
+      })
+    ).toBe(125);
+    expect(
+      resolveNativeHyperliquidMaxLatencyMs({
+        transport: "websocket",
+        streamId: "public-hl",
+        currentMaxLatencyMs: 500
+      })
+    ).toBe(150);
   });
 
   it("updates rolling latency averages and trims jitter samples in place", () => {

@@ -5,14 +5,20 @@ import {
   parseTimestampMs,
   processingLatencyStats,
   prometheusMetric,
+  readPositiveNumber,
   roundLatency,
   suspendAssetQuoteStates
 } from "../../../TradingEngineRuntimeHelpers";
+import {
+  DEFAULT_DWELLIR_NATIVE_HL_MAX_LATENCY_MS,
+  DEFAULT_NATIVE_HL_MAX_LATENCY_MS
+} from "../../../TradingEngineConstants";
 import type {
   EngineState,
   EngineStabilityStatus,
   ExecutionProfile,
   LatencyMetrics,
+  MarketTransport,
   MarketTick
 } from "../../../types";
 import type { NotifierEvent } from "../../../utils/Notifier";
@@ -39,6 +45,32 @@ export interface TickLatencyInput {
   readonly averageLatencyMs: number;
   readonly sampleCount: number;
   readonly location: EngineState["location"];
+}
+
+export interface NativeHyperliquidMaxLatencyInput {
+  readonly transport?: MarketTransport;
+  readonly streamId?: string | null;
+  readonly dwellirMaxLatencyMs?: string;
+  readonly hlStaleAfterMs?: string;
+  readonly currentMaxLatencyMs: number;
+}
+
+export function resolveNativeHyperliquidMaxLatencyMs(
+  input: NativeHyperliquidMaxLatencyInput
+): number {
+  const streamKey = input.streamId?.toLowerCase() ?? "";
+
+  if (input.transport === "grpc" || streamKey.startsWith("dwellir-")) {
+    return readPositiveNumber(
+      input.dwellirMaxLatencyMs ?? input.hlStaleAfterMs,
+      DEFAULT_DWELLIR_NATIVE_HL_MAX_LATENCY_MS
+    );
+  }
+
+  return readPositiveNumber(
+    input.hlStaleAfterMs,
+    Math.min(input.currentMaxLatencyMs, DEFAULT_NATIVE_HL_MAX_LATENCY_MS)
+  );
 }
 
 export function calculateTickLatency(input: TickLatencyInput): LatencyMetrics {

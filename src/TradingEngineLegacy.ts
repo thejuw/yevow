@@ -127,6 +127,7 @@ import {
   nextExecutionProfile,
   nextLatencyAverage,
   recordProcessingLatencySample,
+  resolveNativeHyperliquidMaxLatencyMs,
   shouldLogPerformanceSpikeEvent,
   stateAfterLatencyBaselineReset,
   stateAfterNativeHyperliquidLatencyPull,
@@ -290,7 +291,6 @@ import type {
   LiquidityWall,
   MacroBias,
   MarketDataSource,
-  MarketTransport,
   MarketTick,
   ManagedOrder,
   MicrostructureMetrics,
@@ -334,8 +334,6 @@ import {
   RISK_LIMITS_KEY,
   CONFIG_KEY,
   DEFAULT_MAX_LATENCY_MS,
-  DEFAULT_NATIVE_HL_MAX_LATENCY_MS,
-  DEFAULT_DWELLIR_NATIVE_HL_MAX_LATENCY_MS,
   DEFAULT_HARD_STALE_DROP_MS,
   DEFAULT_HL_BOOK_TIMESTAMP_MAX_DRIFT_MS,
   DEFAULT_HL_SEQUENCE_GAP_MS,
@@ -1627,10 +1625,13 @@ export class TradingEngine {
       parseTimestampMs(brainTimestamp, "brain_timestamp") -
         parseTimestampMs(exchangeTimestamp, "exchange_timestamp")
     );
-    const nativeMaxLatencyMs = this.resolveNativeHyperliquidMaxLatencyMs(
-      payload.transport,
-      payload.streamId
-    );
+    const nativeMaxLatencyMs = resolveNativeHyperliquidMaxLatencyMs({
+      transport: payload.transport,
+      streamId: payload.streamId,
+      dwellirMaxLatencyMs: this.env.DWELLIR_MAX_LATENCY_MS,
+      hlStaleAfterMs: this.env.HL_STALE_AFTER_MS,
+      currentMaxLatencyMs: this.maxLatencyMs
+    });
 
     if (totalLatencyMs > nativeMaxLatencyMs) {
       const book =
@@ -3235,7 +3236,13 @@ export class TradingEngine {
 
     const metrics = this.calculateLatency(tick);
     const streamId = extractTickStreamId(tick);
-    const hardStaleDropMs = this.resolveNativeHyperliquidMaxLatencyMs(tick.transport, streamId);
+    const hardStaleDropMs = resolveNativeHyperliquidMaxLatencyMs({
+      transport: tick.transport,
+      streamId,
+      dwellirMaxLatencyMs: this.env.DWELLIR_MAX_LATENCY_MS,
+      hlStaleAfterMs: this.env.HL_STALE_AFTER_MS,
+      currentMaxLatencyMs: this.maxLatencyMs
+    });
     const isHardStale = !options.shadowReplay && metrics.totalLatencyMs > hardStaleDropMs;
 
     if (isHardStale) {
@@ -5806,25 +5813,6 @@ export class TradingEngine {
       reason,
       observedAt
     });
-  }
-
-  private resolveNativeHyperliquidMaxLatencyMs(
-    transport?: MarketTransport,
-    streamId?: string | null
-  ): number {
-    const streamKey = streamId?.toLowerCase() ?? "";
-
-    if (transport === "grpc" || streamKey.startsWith("dwellir-")) {
-      return readPositiveNumber(
-        this.env.DWELLIR_MAX_LATENCY_MS ?? this.env.HL_STALE_AFTER_MS,
-        DEFAULT_DWELLIR_NATIVE_HL_MAX_LATENCY_MS
-      );
-    }
-
-    return readPositiveNumber(
-      this.env.HL_STALE_AFTER_MS,
-      Math.min(this.maxLatencyMs, DEFAULT_NATIVE_HL_MAX_LATENCY_MS)
-    );
   }
 
   private observeExecutionProfile(metrics: LatencyMetrics, trace: ExecutionTraceInput): void {
