@@ -72,6 +72,7 @@ import {
   strategyQuoteDisabledReason as runtimeStrategyQuoteDisabledReason
 } from "./engine/trading/quotes/QuoteStateRuntime";
 import { buildExecutionPlanArtifacts } from "./engine/trading/execution/ExecutionPlanRuntime";
+import { calculateAssetMatrix as calculateRuntimeAssetMatrix } from "./engine/trading/state/AssetMatrixRuntime";
 import {
   OrderBookReconstructor,
   type OrderBookStores
@@ -1288,95 +1289,23 @@ export class TradingEngine {
     profilerStates: Record<string, ProfilerState>,
     assetQuoteStates: EngineState["assetQuoteStates"] = this.engineState.assetQuoteStates
   ): Record<string, AssetRuntimeState> {
-    const selected = selectedMoltworkerInstruments(this.macroBias);
-    const activeWeights: Record<string, number> = {};
-    let totalWeight = 0;
-
-    for (const asset of TARGET_ASSET_MATRIX) {
-      const oracleState =
-        latestOracle.instrumentCode === asset.instrumentCode
-          ? latestOracle
-          : latestOracle.instrumentStates?.[asset.instrumentCode];
-      const volatility = Math.max(0.000001, finiteMetric(oracleState?.volatility ?? 0.01, 0.01));
-      const selectedByMoltworker =
-        selected.size === 0 ||
-        selected.has(asset.instrumentCode) ||
-        selected.has(asset.coin.toLowerCase()) ||
-        selected.has(`${asset.coin.toLowerCase()}-perp`);
-      const book = this.findBestAssetBook(asset.instrumentCode);
-      const quoteState = quoteStateForInstrumentState(
-        assetQuoteStates,
-        asset.instrumentCode,
-        this.engineState.quoteState
-      );
-      const active =
-        selectedByMoltworker &&
-        Boolean(book?.isSynced) &&
-        !isQuoteSuspendedAt(quoteState, observedAt);
-      const weight = active ? 1 / volatility : 0;
-      activeWeights[asset.instrumentCode] = weight;
-      totalWeight += weight;
-    }
-
-    const equity = Math.max(this.engineState.bankroll.equity, 0);
     const maxPositionPct =
       this.cachedConfig.MAX_POSITION_PCT > 0
         ? this.cachedConfig.MAX_POSITION_PCT
         : readPositiveNumber(this.env.MAX_POSITION_PCT, DEFAULT_MAX_POSITION_PCT);
 
-    return Object.fromEntries(
-      TARGET_ASSET_MATRIX.map((asset) => {
-        const book = this.findBestAssetBook(asset.instrumentCode);
-        const oracleState =
-          latestOracle.instrumentCode === asset.instrumentCode
-            ? latestOracle
-            : latestOracle.instrumentStates?.[asset.instrumentCode];
-        const profilerState =
-          profilerStates[asset.instrumentCode] ?? this.profilerFor(asset.instrumentCode).snapshot();
-        const allocation = totalWeight > 0 ? activeWeights[asset.instrumentCode] / totalWeight : 0;
-        const selectedByMoltworker =
-          selected.size === 0 ||
-          selected.has(asset.instrumentCode) ||
-          selected.has(asset.coin.toLowerCase()) ||
-          selected.has(`${asset.coin.toLowerCase()}-perp`);
-        const quoteState = quoteStateForInstrumentState(
-          assetQuoteStates,
-          asset.instrumentCode,
-          this.engineState.quoteState
-        );
-        const quoteSuspended = isQuoteSuspendedAt(quoteState, observedAt);
-        const quoteEligible =
-          selectedByMoltworker &&
-          Boolean(book?.isSynced) &&
-          !quoteSuspended &&
-          profilerState.toxicityState !== "CRITICAL";
-
-        return [
-          asset.instrumentCode,
-          {
-            instrumentCode: asset.instrumentCode,
-            coin: asset.coin,
-            selectedByMoltworker,
-            active: quoteEligible,
-            isSynced: Boolean(book?.isSynced),
-            lastSequence: book?.lastSequence ?? null,
-            midPrice: book?.midPrice ?? null,
-            volatility: finiteMetric(oracleState?.volatility ?? 0.01, 0.01),
-            capitalAllocationPct: roundMetric(allocation, 8),
-            maxNotional: roundMetric(equity * maxPositionPct * allocation, 8),
-            toxicityState: profilerState.toxicityState,
-            amVpin: profilerState.amVpinScore,
-            obi: profilerState.obi,
-            quoteStatus: quoteSuspended ? "SUSPENDED" : "ACTIVE",
-            quoteReason: quoteState.reason,
-            quoteSuspendedUntil: quoteState.suspendedUntil,
-            quoteEligible,
-            lastQuoteAt: quoteState.lastQuote?.createdAt ?? quoteState.updatedAt,
-            updatedAt: book?.updatedAt ?? observedAt
-          } satisfies AssetRuntimeState
-        ];
-      })
-    );
+    return calculateRuntimeAssetMatrix({
+      observedAt,
+      latestOracle,
+      profilerStates,
+      assetQuoteStates,
+      fallbackQuoteState: this.engineState.quoteState,
+      macroBias: this.macroBias,
+      equity: this.engineState.bankroll.equity,
+      maxPositionPct,
+      findBestAssetBook: (instrumentCode) => this.findBestAssetBook(instrumentCode),
+      profilerStateForInstrument: (instrumentCode) => this.profilerFor(instrumentCode).snapshot()
+    });
   }
 
   private async safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
