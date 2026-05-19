@@ -25,8 +25,8 @@ import { evaluateIntentDispatchGate } from "./engine/IntentGeneration";
 import { AdverseSelectionModel, adversePenaltyForQuoteSide } from "./engine/AdverseSelectionModel";
 import {
   applyLocationRisk,
+  buildTopologyObservationLogEvents,
   defaultEngineLocation,
-  locationTelemetry,
   readTopologyHeaders,
   resolveEngineLocation,
   stateAfterLocationLatency,
@@ -5782,24 +5782,12 @@ export class TradingEngine {
 
     this.waitUntilStoragePut(ENGINE_STATE_KEY, this.engineState, "COLO_TOPOLOGY_CHANGED");
 
-    if (observation.placementChanged) {
-      this.logger.warn(
-        "COLO_TOPOLOGY_CHANGED",
-        "Trading engine observed a Cloudflare placement change",
-        locationTelemetry(observation.nextLocation)
-      );
-    }
-
-    if (observation.riskAdjustedForNonGoldenRegion) {
-      this.logger.warn(
-        "PIT_BOSS_RISK_ADJUSTED",
-        "Pit Boss reduced max order notional for execution-location risk",
-        {
-          ...locationTelemetry(observation.nextLocation),
-          maxOrderNotional: this.engineState.risk.maxOrderNotional,
-          baseMaxPositionSize: this.cachedConfig.MAX_POSITION_SIZE
-        }
-      );
+    for (const event of buildTopologyObservationLogEvents({
+      observation,
+      maxOrderNotional: this.engineState.risk.maxOrderNotional,
+      baseMaxPositionSize: this.cachedConfig.MAX_POSITION_SIZE
+    })) {
+      this.logger.warn(event.eventType, event.message, event.metadata);
     }
   }
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyLocationRisk,
+  buildTopologyObservationLogEvents,
   defaultEngineLocation,
   locationChanged,
   locationTelemetry,
@@ -246,6 +247,33 @@ describe("PlacementResolver", () => {
         maxOrderNotional: 25,
         maxDrawdownPct: 0.05,
         updatedAt: "2026-05-18T04:00:00.000Z"
+      }
+    });
+
+    const logEvents = buildTopologyObservationLogEvents({
+      observation: result,
+      maxOrderNotional: result.state.risk.maxOrderNotional,
+      baseMaxPositionSize: 100
+    });
+
+    expect(logEvents).toHaveLength(2);
+    expect(logEvents[0]).toMatchObject({
+      eventType: "COLO_TOPOLOGY_CHANGED",
+      message: "Trading engine observed a Cloudflare placement change",
+      metadata: {
+        colo: "DFW",
+        placement: "remote-dfw",
+        isGoldenRegion: false,
+        positionSizeMultiplier: 0.25
+      }
+    });
+    expect(logEvents[1]).toMatchObject({
+      eventType: "PIT_BOSS_RISK_ADJUSTED",
+      message: "Pit Boss reduced max order notional for execution-location risk",
+      metadata: {
+        colo: "DFW",
+        maxOrderNotional: 25,
+        baseMaxPositionSize: 100
       }
     });
   });

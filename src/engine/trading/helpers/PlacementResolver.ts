@@ -4,6 +4,7 @@ import type {
   EngineState,
   Env,
   GlobalRiskConfig,
+  JsonRecord,
   RiskLimits
 } from "../../../types";
 
@@ -180,6 +181,18 @@ export interface TopologyObservationResult {
   readonly riskAdjustedForNonGoldenRegion: boolean;
 }
 
+export interface TopologyObservationLogInput {
+  readonly observation: TopologyObservationResult;
+  readonly maxOrderNotional: number;
+  readonly baseMaxPositionSize: number;
+}
+
+export interface TopologyObservationLogEvent {
+  readonly eventType: "COLO_TOPOLOGY_CHANGED" | "PIT_BOSS_RISK_ADJUSTED";
+  readonly message: string;
+  readonly metadata: JsonRecord;
+}
+
 export function stateAfterTopologyObservation(
   input: TopologyObservationInput
 ): TopologyObservationResult {
@@ -218,6 +231,38 @@ export function stateAfterTopologyObservation(
           location: nextLocation
         }
   };
+}
+
+export function buildTopologyObservationLogEvents(
+  input: TopologyObservationLogInput
+): TopologyObservationLogEvent[] {
+  if (!input.observation.changed) {
+    return [];
+  }
+
+  const events: TopologyObservationLogEvent[] = [];
+
+  if (input.observation.placementChanged) {
+    events.push({
+      eventType: "COLO_TOPOLOGY_CHANGED",
+      message: "Trading engine observed a Cloudflare placement change",
+      metadata: locationTelemetry(input.observation.nextLocation)
+    });
+  }
+
+  if (input.observation.riskAdjustedForNonGoldenRegion) {
+    events.push({
+      eventType: "PIT_BOSS_RISK_ADJUSTED",
+      message: "Pit Boss reduced max order notional for execution-location risk",
+      metadata: {
+        ...locationTelemetry(input.observation.nextLocation),
+        maxOrderNotional: input.maxOrderNotional,
+        baseMaxPositionSize: input.baseMaxPositionSize
+      }
+    });
+  }
+
+  return events;
 }
 
 export interface LocationLatencyInput {
