@@ -5084,6 +5084,40 @@ export class TradingEngine {
     }
   }
 
+  private prepareShadowReplayState(
+    initialShadowBankroll: number,
+    startedAt: string,
+    replayId: string
+  ): void {
+    this.cachedConfig = buildShadowReplayConfig({
+      currentConfig: this.cachedConfig,
+      initialShadowBankroll,
+      defaultMaxPositionPct: DEFAULT_MAX_POSITION_PCT,
+      defaultMaxInventoryUnits: DEFAULT_MAX_INVENTORY_UNITS,
+      startedAt,
+      replayId
+    });
+    this.orderBook.clear();
+    this.bids.clear();
+    this.asks.clear();
+    this.bookSync.clear();
+    this.latencyHistory = [];
+    this.processingLatencySamples = [];
+    this.domWallHistory = [];
+    this.leadLagSamples = new Map();
+    this.engineState = buildShadowReplayEngineState({
+      liveState: this.engineState,
+      cachedConfig: this.cachedConfig,
+      initialShadowBankroll,
+      startedAt,
+      replayId
+    });
+    this.profilerRegistry.reset();
+    this.anomalyDetector.hydrate(null);
+    this.oracleAgent.hydrate(null);
+    this.sentimentAgent.hydrate(null);
+  }
+
   private async runHistoricalReplay(
     limit: number,
     shadowBankroll: number,
@@ -5151,33 +5185,7 @@ export class TradingEngine {
         : [];
     const shadowTrades = markHistoricalReplayTrades(historicalTrades, ticks);
 
-    this.cachedConfig = buildShadowReplayConfig({
-      currentConfig: this.cachedConfig,
-      initialShadowBankroll,
-      defaultMaxPositionPct: DEFAULT_MAX_POSITION_PCT,
-      defaultMaxInventoryUnits: DEFAULT_MAX_INVENTORY_UNITS,
-      startedAt,
-      replayId
-    });
-    this.orderBook.clear();
-    this.bids.clear();
-    this.asks.clear();
-    this.bookSync.clear();
-    this.latencyHistory = [];
-    this.processingLatencySamples = [];
-    this.domWallHistory = [];
-    this.leadLagSamples = new Map();
-    this.engineState = buildShadowReplayEngineState({
-      liveState: this.engineState,
-      cachedConfig: this.cachedConfig,
-      initialShadowBankroll,
-      startedAt,
-      replayId
-    });
-    this.profilerRegistry.reset();
-    this.anomalyDetector.hydrate(null);
-    this.oracleAgent.hydrate(null);
-    this.sentimentAgent.hydrate(null);
+    this.prepareShadowReplayState(initialShadowBankroll, startedAt, replayId);
 
     let replayLoop: ShadowReplayLoopResult | null = null;
     try {
