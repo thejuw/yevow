@@ -726,6 +726,20 @@ interface AcceptedDecisionPipelineInput {
   readonly shadowReplay: boolean;
 }
 
+interface HistoricalReplayCompletionInput {
+  readonly replayId: string;
+  readonly replayLoop: ShadowReplayLoopResult;
+  readonly initialShadowBankroll: number;
+  readonly historicalTradeCount: number;
+  readonly shadowTrades: ReturnType<typeof markHistoricalReplayTrades>;
+  readonly speedMultiplier: number;
+  readonly replayOptions: ReplayOptions;
+  readonly dateFrom: string | null;
+  readonly dateTo: string | null;
+  readonly startedAt: string;
+  readonly ticksLength: number;
+}
+
 export class TradingEngine {
   private readonly startedAt = Date.now();
   private readonly initialized: Promise<void>;
@@ -5118,6 +5132,58 @@ export class TradingEngine {
     this.sentimentAgent.hydrate(null);
   }
 
+  private async recordCompletedHistoricalReplay(
+    input: HistoricalReplayCompletionInput
+  ): Promise<ReplayResult> {
+    const completedAt = new Date().toISOString();
+    const replayBuild = buildHistoricalReplayResult({
+      replayId: input.replayId,
+      ticksReplayed: input.replayLoop.ticksReplayed,
+      initialShadowBankroll: input.initialShadowBankroll,
+      historicalTradeCount: input.historicalTradeCount,
+      generatedIntentCount: input.replayLoop.generatedIntentCount,
+      speedMultiplier: input.speedMultiplier,
+      replayOptions: input.replayOptions,
+      modeledTrades: input.replayLoop.modeledTrades,
+      shadowTrades: input.shadowTrades,
+      sentiment: this.engineState.sentiment,
+      startedAt: input.startedAt,
+      completedAt
+    });
+    const result = replayBuild.result;
+
+    this.logger.warn(
+      "REPLAY_COMPLETED",
+      "Historical shadow replay completed",
+      replayBuild.logMetadata
+    );
+    await this.replayJournal.recordBacktestRun(
+      result,
+      input.replayOptions,
+      input.dateFrom,
+      input.dateTo
+    );
+    await this.replayJournal.writeStatus(
+      buildReplayStatus({
+        replayId: input.replayId,
+        status: "COMPLETED",
+        ticksTotal: input.ticksLength,
+        ticksProcessed: input.ticksLength,
+        progressPct: 100,
+        speedMultiplier: input.speedMultiplier,
+        shadowBankroll: result.shadowBankroll,
+        dateFrom: input.dateFrom,
+        dateTo: input.dateTo,
+        scenario: input.replayOptions.scenario,
+        startedAt: input.startedAt,
+        updatedAt: completedAt,
+        completedAt
+      })
+    );
+
+    return result;
+  }
+
   private async runHistoricalReplay(
     limit: number,
     shadowBankroll: number,
@@ -5211,48 +5277,19 @@ export class TradingEngine {
       throw new Error("REPLAY_LOOP_DID_NOT_COMPLETE");
     }
 
-    const completedAt = new Date().toISOString();
-    const replayBuild = buildHistoricalReplayResult({
+    return this.recordCompletedHistoricalReplay({
       replayId,
-      ticksReplayed: replayLoop.ticksReplayed,
+      replayLoop,
       initialShadowBankroll,
       historicalTradeCount: historicalTrades.length,
-      generatedIntentCount: replayLoop.generatedIntentCount,
+      shadowTrades,
       speedMultiplier,
       replayOptions,
-      modeledTrades: replayLoop.modeledTrades,
-      shadowTrades,
-      sentiment: this.engineState.sentiment,
+      dateFrom,
+      dateTo,
       startedAt,
-      completedAt
+      ticksLength: ticks.length
     });
-    const result = replayBuild.result;
-
-    this.logger.warn(
-      "REPLAY_COMPLETED",
-      "Historical shadow replay completed",
-      replayBuild.logMetadata
-    );
-    await this.replayJournal.recordBacktestRun(result, replayOptions, dateFrom, dateTo);
-    await this.replayJournal.writeStatus(
-      buildReplayStatus({
-        replayId,
-        status: "COMPLETED",
-        ticksTotal: ticks.length,
-        ticksProcessed: ticks.length,
-        progressPct: 100,
-        speedMultiplier,
-        shadowBankroll: result.shadowBankroll,
-        dateFrom,
-        dateTo,
-        scenario: replayOptions.scenario,
-        startedAt,
-        updatedAt: completedAt,
-        completedAt
-      })
-    );
-
-    return result;
   }
 
   private captureReplaySnapshot(): EngineReplaySnapshot {
