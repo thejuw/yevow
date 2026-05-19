@@ -679,6 +679,16 @@ interface PostBookTickContext {
   readonly domSnapshot: DomAnalysisSnapshot;
 }
 
+interface TickDecisionContext {
+  readonly leadLag: EngineState["leadLag"];
+  readonly inventory: InventoryState;
+  readonly riskMetrics: EngineState["riskMetrics"];
+  readonly profilerStates: EngineState["profilerStates"];
+  readonly assetMatrix: EngineState["assetMatrix"];
+  readonly inventoryGuard: EngineState["inventoryGuard"];
+  readonly sentimentForDecision: SentimentState;
+}
+
 export class TradingEngine {
   private readonly startedAt = Date.now();
   private readonly initialized: Promise<void>;
@@ -3582,6 +3592,44 @@ export class TradingEngine {
     return { oracleResult, oracleLatencyMs };
   }
 
+  private buildTickDecisionContext(
+    tick: MarketTick,
+    oracle: EngineState["oracle"],
+    profilerResult: ProfilerEvaluation,
+    observedAt: string
+  ): TickDecisionContext {
+    const leadLag = this.engineState.leadLag;
+    const inventory = this.calculateInventoryState(observedAt);
+    const riskMetrics = this.updatePortfolioRisk(oracle, observedAt);
+    const profilerStates = this.profilerRegistry.snapshot(
+      tick.instrumentCode,
+      profilerResult.state
+    );
+    const assetMatrix = this.calculateAssetMatrix(
+      observedAt,
+      tick.instrumentCode,
+      oracle,
+      profilerStates
+    );
+    const inventoryGuard = passiveInventoryGuardStateFromInventory(inventory, observedAt);
+    const sentimentForDecision = this.cachedConfig.SENTIMENT_ENABLED
+      ? this.engineState.sentiment
+      : {
+          ...defaultSentimentState(),
+          updatedAt: observedAt
+        };
+
+    return {
+      leadLag,
+      inventory,
+      riskMetrics,
+      profilerStates,
+      assetMatrix,
+      inventoryGuard,
+      sentimentForDecision
+    };
+  }
+
   private evaluateCroupierForTick(
     book: InternalOrderBook,
     oracle: EngineState["oracle"],
@@ -3811,36 +3859,19 @@ export class TradingEngine {
       book,
       metrics.brainTimestamp
     );
-    const leadLag = this.engineState.leadLag;
-    const inventory = this.calculateInventoryState(metrics.brainTimestamp);
-    const riskMetrics = this.updatePortfolioRisk(oracleResult.state, metrics.brainTimestamp);
-    const profilerStates = this.profilerRegistry.snapshot(
-      tick.instrumentCode,
-      profilerResult.state
-    );
-    const assetMatrix = this.calculateAssetMatrix(
-      metrics.brainTimestamp,
-      tick.instrumentCode,
+    const decisionContext = this.buildTickDecisionContext(
+      tick,
       oracleResult.state,
-      profilerStates
-    );
-    const inventoryGuard = passiveInventoryGuardStateFromInventory(
-      inventory,
+      profilerResult,
       metrics.brainTimestamp
     );
-    const sentimentForDecision = this.cachedConfig.SENTIMENT_ENABLED
-      ? this.engineState.sentiment
-      : {
-          ...defaultSentimentState(),
-          updatedAt: metrics.brainTimestamp
-        };
     const { croupierDecision, croupierLatencyMs } = this.evaluateCroupierForTick(
       book,
       oracleResult.state,
-      sentimentForDecision,
+      decisionContext.sentimentForDecision,
       profilerResult,
-      inventory,
-      leadLag,
+      decisionContext.inventory,
+      decisionContext.leadLag,
       volatilitySnapshot,
       metrics.brainTimestamp
     );
@@ -3848,13 +3879,17 @@ export class TradingEngine {
       croupierDecision.intent,
       profilerResult.state,
       oracleResult.state,
-      sentimentForDecision,
+      decisionContext.sentimentForDecision,
       anomalyResult.status,
       metrics.brainTimestamp
     );
     const executionPlan = this.cachedConfig.PIT_BOSS_ENABLED
       ? this.prepareExecutionPlan(croupierDecision.intent, metrics.brainTimestamp, {
-          stateOverride: { ...this.engineState, assetMatrix, ensemble },
+          stateOverride: {
+            ...this.engineState,
+            assetMatrix: decisionContext.assetMatrix,
+            ensemble
+          },
           kellyFractionOverride: this.cachedConfig.KELLY_FRACTION * ensemble.kellyMultiplier
         })
       : null;
@@ -3882,20 +3917,20 @@ export class TradingEngine {
       metrics,
       book,
       oracle: oracleResult.state,
-      sentiment: sentimentForDecision,
+      sentiment: decisionContext.sentimentForDecision,
       ensemble,
-      leadLag,
-      inventory,
-      riskMetrics,
+      leadLag: decisionContext.leadLag,
+      inventory: decisionContext.inventory,
+      riskMetrics: decisionContext.riskMetrics,
       assetQuoteState,
       shadowQueueState,
       executionPlan,
       croupierDecision,
       executionPlans,
-      inventoryGuard,
+      inventoryGuard: decisionContext.inventoryGuard,
       domSnapshot,
       anomalyResult,
-      profilerStates,
+      profilerStates: decisionContext.profilerStates,
       profilerResult,
       oracleLatencyMs,
       profilerLatencyMs,
@@ -3924,7 +3959,7 @@ export class TradingEngine {
     this.dispatchExecutionPlans(executionPlans, options.shadowReplay === true);
     this.dispatchInventoryHedgeIfNeeded(
       book,
-      inventory,
+      decisionContext.inventory,
       metrics.brainTimestamp,
       options.shadowReplay === true
     );
