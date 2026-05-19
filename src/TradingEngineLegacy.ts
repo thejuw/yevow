@@ -199,8 +199,7 @@ import {
 import { buildTickTelemetryPayload } from "./engine/trading/telemetry/TickTelemetryRuntime";
 import {
   type ReplayOptions,
-  type ReplayScenario,
-  type ReplayStatus
+  type ReplayScenario
 } from "./engine/trading/routes/ReplayAdminRoutes";
 import { markHistoricalReplayTrades, ReplayJournal } from "./engine/trading/replay/ReplayJournal";
 import { buildHistoricalReplayResult } from "./engine/trading/replay/ReplayResultRuntime";
@@ -268,7 +267,6 @@ import type { CascadeAlertEventType } from "./strategy/cascade/OperationalSafegu
 import { PositionManager } from "./strategy/cascade/PositionManager";
 import { calculatePositionSize } from "./strategy/cascade/PositionSizer";
 import { calculateVwap } from "./strategy/cascade/indicators/VWAP";
-import type { PerformanceSnapshot } from "./Logger";
 import type {
   AdminConfigUpdate,
   AnomalyDetectorState,
@@ -276,7 +274,6 @@ import type {
   EdgeTopology,
   EngineLocation,
   EngineStabilityStatus,
-  ExecutionProfile,
   AgentName,
   AgentSignal,
   AssetRuntimeState,
@@ -1175,7 +1172,7 @@ export class TradingEngine {
             dateTo,
             options
           ),
-        currentReplayStatus: () => this.currentReplayStatus(),
+        currentReplayStatus: () => this.replayJournal.currentStatus(),
         currentCascadeActiveSnapshot: () => this.currentCascadeActiveSnapshot(),
         currentCascadeSignalSnapshot: (limit) => this.currentCascadeSignalSnapshot(limit),
         currentCascadePositionSnapshot: () => this.currentCascadePositionSnapshot(),
@@ -1392,7 +1389,7 @@ export class TradingEngine {
       waitUntil: (promise: Promise<unknown>) => this.state.waitUntil(promise),
       publish: (type: string, payload: Record<string, unknown>, correlationId?: string) =>
         this.publish(type, payload, correlationId),
-      nextBusSequence: () => this.nextBusSequence()
+      nextBusSequence: () => this.telemetryBus.nextSequence()
     };
   }
 
@@ -3113,7 +3110,14 @@ export class TradingEngine {
     this.lastTickTimestamp = tick.receivedAt;
     this.observeCascadeAbsorption(tick);
 
-    const metrics = this.calculateLatency(tick);
+    const metrics = calculateTickLatency({
+      tick,
+      brainTimestamp: new Date().toISOString(),
+      maxLatencyMs: this.maxLatencyMs,
+      averageLatencyMs: this.engineState.averageLatency,
+      sampleCount: this.engineState.latencySampleCount,
+      location: this.engineState.location
+    });
     const streamId = extractTickStreamId(tick);
     const hardStaleDropMs = resolveNativeHyperliquidMaxLatencyMs({
       transport: tick.transport,
@@ -5196,7 +5200,7 @@ export class TradingEngine {
   ): Promise<ReplayResult> {
     const startedAt = new Date().toISOString();
     const replayId = crypto.randomUUID();
-    await this.writeReplayStatus({
+    await this.replayJournal.writeStatus({
       replayId,
       status: "RUNNING",
       ticksTotal: 0,
@@ -5225,7 +5229,7 @@ export class TradingEngine {
             this.engineState.bankroll.cash,
             DEFAULT_PAPER_BANKROLL_USD
           );
-    await this.writeReplayStatus({
+    await this.replayJournal.writeStatus({
       replayId,
       status: "RUNNING",
       ticksTotal: ticks.length,
@@ -5323,7 +5327,7 @@ export class TradingEngine {
         }
 
         if (index === ticks.length - 1 || index % 25 === 0) {
-          await this.writeReplayStatus({
+          await this.replayJournal.writeStatus({
             replayId,
             status: "RUNNING",
             ticksTotal: ticks.length,
@@ -5347,7 +5351,7 @@ export class TradingEngine {
         previousTick = tick;
       }
     } catch (error) {
-      await this.writeReplayStatus({
+      await this.replayJournal.writeStatus({
         replayId,
         status: "FAILED",
         ticksTotal: ticks.length,
@@ -5391,7 +5395,7 @@ export class TradingEngine {
       replayBuild.logMetadata
     );
     await this.replayJournal.recordBacktestRun(result, replayOptions, dateFrom, dateTo);
-    await this.writeReplayStatus({
+    await this.replayJournal.writeStatus({
       replayId,
       status: "COMPLETED",
       ticksTotal: ticks.length,
@@ -5435,14 +5439,6 @@ export class TradingEngine {
       signals: deepClone(this.signals),
       latestAgentSignals: deepClone([...this.latestAgentSignals.entries()])
     };
-  }
-
-  private async currentReplayStatus(): Promise<ReplayStatus> {
-    return this.replayJournal.currentStatus();
-  }
-
-  private async writeReplayStatus(status: ReplayStatus): Promise<void> {
-    await this.replayJournal.writeStatus(status);
   }
 
   private async restoreReplaySnapshot(snapshot: EngineReplaySnapshot): Promise<void> {
@@ -5503,19 +5499,6 @@ export class TradingEngine {
     await this.safeStoragePut(writes, "REPLAY_RESTORE");
   }
 
-  private calculateLatency(tick: MarketTick): LatencyMetrics {
-    const brainTimestamp = new Date().toISOString();
-
-    return calculateTickLatency({
-      tick,
-      brainTimestamp,
-      maxLatencyMs: this.maxLatencyMs,
-      averageLatencyMs: this.engineState.averageLatency,
-      sampleCount: this.engineState.latencySampleCount,
-      location: this.engineState.location
-    });
-  }
-
   private updateLatencyAverage(totalLatencyMs: number): void {
     const next = nextLatencyAverage(
       {
@@ -5570,21 +5553,18 @@ export class TradingEngine {
 
     if (shouldCompute && nextProfile.status !== this.lastPerformanceStatus) {
       this.lastPerformanceStatus = nextProfile.status;
-      const snapshot = this.performanceSnapshot(nextProfile, nextProcessedTicks, trace.observedAt);
+      const snapshot = buildPerformanceSnapshot(
+        this.engineState.engineId,
+        nextProfile,
+        nextProcessedTicks,
+        trace.observedAt
+      );
       const transition = buildExecutionPerformanceTransition(snapshot);
 
       this.logger.logPerformanceSnapshot(snapshot);
       this.publish(transition.telemetryType, transition.telemetryPayload, transition.correlationId);
       this.notifier.notify(transition.notification);
     }
-  }
-
-  private performanceSnapshot(
-    profile: ExecutionProfile,
-    processedTicks: number,
-    observedAt: string
-  ): PerformanceSnapshot {
-    return buildPerformanceSnapshot(this.engineState.engineId, profile, processedTicks, observedAt);
   }
 
   private performanceMetricsResponse(): Response {
@@ -5641,19 +5621,17 @@ export class TradingEngine {
   }
 
   private logPerformance(latencyMetrics: LatencyMetrics): void {
-    if (!this.shouldLogPerformanceSpike(latencyMetrics)) {
+    if (
+      !shouldLogPerformanceSpikeEvent({
+        logAt: this.performanceSpikeLogAt,
+        latencyMetrics,
+        throttleMs: HOT_PATH_LOG_THROTTLE_MS
+      })
+    ) {
       return;
     }
 
     this.logger.logPerformance(latencyMetrics);
-  }
-
-  private shouldLogPerformanceSpike(latencyMetrics: LatencyMetrics): boolean {
-    return shouldLogPerformanceSpikeEvent({
-      logAt: this.performanceSpikeLogAt,
-      latencyMetrics,
-      throttleMs: HOT_PATH_LOG_THROTTLE_MS
-    });
   }
 
   private triggerEmergencyPause(
@@ -5698,10 +5676,6 @@ export class TradingEngine {
 
   private publish(type: string, payload: Record<string, unknown>, correlationId?: string): void {
     this.telemetryBus.publish(type, payload, correlationId);
-  }
-
-  private nextBusSequence(): number {
-    return this.telemetryBus.nextSequence();
   }
 
   private observeTopology(topology: EdgeTopology): void {
