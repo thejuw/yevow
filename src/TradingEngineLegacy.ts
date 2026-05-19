@@ -4594,11 +4594,11 @@ export class TradingEngine {
     this.state.waitUntil(this.cancelAllQuotes("hype-usd", "BTC_LEAD_MOVE"));
   }
 
-  private async dispatchQuote(
+  private shouldSkipQuoteDispatch(
     quote: NonNullable<EngineState["quoteState"]["lastQuote"]>
-  ): Promise<void> {
+  ): boolean {
     if (!this.env.EXECUTIONER || !this.cachedConfig.TRADING_ENABLED) {
-      return;
+      return true;
     }
 
     const assetRuntimeState = this.engineState.assetMatrix?.[quote.instrumentCode];
@@ -4611,10 +4611,10 @@ export class TradingEngine {
         "Skipped quote for inactive Moltworker asset",
         quoteDispatchBlockedLogMetadata({ quote, assetRuntimeState })
       );
-      return;
+      return true;
     }
 
-    if (
+    return (
       isQuoteSuspendedAt(
         quoteStateForInstrumentState(
           this.engineState.assetQuoteStates,
@@ -4622,9 +4622,14 @@ export class TradingEngine {
           this.engineState.quoteState
         ),
         quote.createdAt
-      ) ||
-      this.shouldThrottleQuoteDispatch(quote)
-    ) {
+      ) || this.shouldThrottleQuoteDispatch(quote)
+    );
+  }
+
+  private async dispatchQuote(
+    quote: NonNullable<EngineState["quoteState"]["lastQuote"]>
+  ): Promise<void> {
+    if (this.shouldSkipQuoteDispatch(quote)) {
       return;
     }
 
