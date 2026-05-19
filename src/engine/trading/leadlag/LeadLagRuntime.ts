@@ -1,5 +1,6 @@
 import type { EngineState } from "../../../types";
 import { pearson, returns } from "../../../TradingEngineRuntimeHelpers";
+import type { MultiScaleVolatilitySnapshot } from "../../MultiScaleVolatility";
 
 export interface LeadLagSample {
   price: number;
@@ -17,6 +18,25 @@ export interface LeadLagUpdateInput {
   readonly microstructureMidPrice: number | null;
   readonly executionCostBufferBps: number;
   readonly sampleLimit: number;
+}
+
+export interface CrossAssetHypeCancelInput {
+  readonly shadowReplay?: boolean;
+  readonly tradingEnabled: boolean;
+  readonly tickInstrumentCode: string;
+  readonly volatility: MultiScaleVolatilitySnapshot | null;
+  readonly observedAt: string;
+  readonly leadThresholdBps: number;
+  readonly cooldownMs: number;
+  readonly lastCancelAtMs: number;
+  readonly fallbackNowMs: number;
+}
+
+export interface CrossAssetHypeCancelDecision {
+  readonly shouldCancel: boolean;
+  readonly nowMs: number;
+  readonly moveBps: number;
+  readonly reason: string | null;
 }
 
 export function updateLeadLagMetrics(input: LeadLagUpdateInput): EngineState["leadLag"] {
@@ -66,6 +86,52 @@ export function updateLeadLagMetrics(input: LeadLagUpdateInput): EngineState["le
   };
 }
 
+export function evaluateCrossAssetHypeQuoteCancel(
+  input: CrossAssetHypeCancelInput
+): CrossAssetHypeCancelDecision {
+  if (
+    input.shadowReplay ||
+    !input.tradingEnabled ||
+    input.tickInstrumentCode !== "btc-usd" ||
+    !input.volatility ||
+    input.volatility.midPrice <= 0
+  ) {
+    return {
+      shouldCancel: false,
+      nowMs: resolveObservedAtMs(input.observedAt, input.fallbackNowMs),
+      moveBps: 0,
+      reason: "INELIGIBLE"
+    };
+  }
+
+  const moveBps = Math.abs(input.volatility.ret) * 10_000;
+  if (moveBps < input.leadThresholdBps && !input.volatility.jumpDetected) {
+    return {
+      shouldCancel: false,
+      nowMs: resolveObservedAtMs(input.observedAt, input.fallbackNowMs),
+      moveBps,
+      reason: "BELOW_THRESHOLD"
+    };
+  }
+
+  const nowMs = resolveObservedAtMs(input.observedAt, input.fallbackNowMs);
+  if (nowMs - input.lastCancelAtMs < input.cooldownMs) {
+    return {
+      shouldCancel: false,
+      nowMs,
+      moveBps,
+      reason: "COOLDOWN"
+    };
+  }
+
+  return {
+    shouldCancel: true,
+    nowMs,
+    moveBps,
+    reason: "BTC_LEAD_MOVE"
+  };
+}
+
 interface LeadLagRelationship {
   leadInstrument: string;
   lagInstrument: string;
@@ -74,6 +140,11 @@ interface LeadLagRelationship {
   sampleCount: number;
   leadLagDelta: number;
   expectedValue: number;
+}
+
+function resolveObservedAtMs(observedAt: string, fallbackNowMs: number): number {
+  const parsed = Date.parse(observedAt);
+  return Number.isFinite(parsed) ? parsed : fallbackNowMs;
 }
 
 function findBestLeadLagRelationship(

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  evaluateCrossAssetHypeQuoteCancel,
   updateLeadLagMetrics,
   type LeadLagSample
 } from "../../src/engine/trading/leadlag/LeadLagRuntime";
+import type { MultiScaleVolatilitySnapshot } from "../../src/engine/MultiScaleVolatility";
 import type { EngineState } from "../../src/types";
 
 const OBSERVED_AT = "2026-05-18T10:00:00.000Z";
@@ -86,6 +88,50 @@ describe("LeadLagRuntime", () => {
     expect(next.lagMs).toBeGreaterThanOrEqual(4);
     expect([next.leadInstrument, next.lagInstrument].sort()).toEqual(["btc-usd", "hype-usd"]);
   });
+
+  it("evaluates BTC lead-move quote cancellation for HYPE with threshold and cooldown guards", () => {
+    const base = {
+      shadowReplay: false,
+      tradingEnabled: true,
+      tickInstrumentCode: "btc-usd",
+      volatility: volatility({ ret: 0.001 }),
+      observedAt: OBSERVED_AT,
+      leadThresholdBps: 5,
+      cooldownMs: 1_000,
+      lastCancelAtMs: 0,
+      fallbackNowMs: 1
+    };
+
+    expect(evaluateCrossAssetHypeQuoteCancel(base)).toMatchObject({
+      shouldCancel: true,
+      moveBps: 10,
+      reason: "BTC_LEAD_MOVE"
+    });
+    expect(
+      evaluateCrossAssetHypeQuoteCancel({
+        ...base,
+        volatility: volatility({ ret: 0.0001, jumpDetected: false })
+      })
+    ).toMatchObject({ shouldCancel: false, reason: "BELOW_THRESHOLD" });
+    expect(
+      evaluateCrossAssetHypeQuoteCancel({
+        ...base,
+        volatility: volatility({ ret: 0.0001, jumpDetected: true })
+      })
+    ).toMatchObject({ shouldCancel: true, reason: "BTC_LEAD_MOVE" });
+    expect(
+      evaluateCrossAssetHypeQuoteCancel({
+        ...base,
+        lastCancelAtMs: Date.parse(OBSERVED_AT) - 250
+      })
+    ).toMatchObject({ shouldCancel: false, reason: "COOLDOWN" });
+    expect(
+      evaluateCrossAssetHypeQuoteCancel({
+        ...base,
+        tickInstrumentCode: "eth-usd"
+      })
+    ).toMatchObject({ shouldCancel: false, reason: "INELIGIBLE" });
+  });
 });
 
 function samplesFrom(prices: number[]): LeadLagSample[] {
@@ -107,6 +153,24 @@ function leadLag(overrides: Partial<EngineState["leadLag"]> = {}): EngineState["
     executable: false,
     sampleCount: 0,
     updatedAt: null,
+    ...overrides
+  };
+}
+
+function volatility(
+  overrides: Partial<MultiScaleVolatilitySnapshot> = {}
+): MultiScaleVolatilitySnapshot {
+  return {
+    instrumentCode: "btc-usd",
+    midPrice: 100_000,
+    ret: 0,
+    oneMinuteVol: 0,
+    fiveMinuteVol: 0,
+    thirtyMinuteVol: 0,
+    maxVol: 0,
+    jumpDetected: false,
+    jumpZScore: 0,
+    observedAt: OBSERVED_AT,
     ...overrides
   };
 }

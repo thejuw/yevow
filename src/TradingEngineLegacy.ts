@@ -77,7 +77,10 @@ import {
   shadowQueuePostOnlyPrice as calculateShadowQueuePostOnlyPrice
 } from "./engine/trading/shadow/ShadowQueueRuntime";
 import { stateAfterAnomalyEmergencyPause } from "./engine/trading/anomaly/AnomalyRuntime";
-import { updateLeadLagMetrics as updateLeadLagRuntimeMetrics } from "./engine/trading/leadlag/LeadLagRuntime";
+import {
+  evaluateCrossAssetHypeQuoteCancel,
+  updateLeadLagMetrics as updateLeadLagRuntimeMetrics
+} from "./engine/trading/leadlag/LeadLagRuntime";
 import {
   calculateInventoryState as calculateInventoryRuntimeState,
   referencePriceForBaseAsset as resolveBaseAssetReferencePrice
@@ -4596,26 +4599,10 @@ export class TradingEngine {
     observedAt: string,
     options: TickHandlingOptions
   ): void {
-    if (
-      options.shadowReplay ||
-      !this.cachedConfig.TRADING_ENABLED ||
-      tick.instrumentCode !== "btc-usd" ||
-      !volatility ||
-      volatility.midPrice <= 0
-    ) {
-      return;
-    }
-
-    const moveBps = Math.abs(volatility.ret) * 10_000;
     const leadThresholdBps = readPositiveNumber(
       this.env.CROSS_ASSET_CANCEL_LEAD_BPS,
       DEFAULT_CROSS_ASSET_CANCEL_LEAD_BPS
     );
-
-    if (moveBps < leadThresholdBps && !volatility.jumpDetected) {
-      return;
-    }
-
     const cooldownMs = readPositiveInteger(
       this.env.CROSS_ASSET_CANCEL_COOLDOWN_MS,
       DEFAULT_CROSS_ASSET_CANCEL_COOLDOWN_MS,
@@ -4623,27 +4610,36 @@ export class TradingEngine {
       60_000
     );
     const last = this.crossAssetCancelLogAt.get("hype-usd") ?? 0;
-    const now = Date.parse(observedAt);
-    const nowMs = Number.isFinite(now) ? now : Date.now();
+    const decision = evaluateCrossAssetHypeQuoteCancel({
+      shadowReplay: options.shadowReplay,
+      tradingEnabled: this.cachedConfig.TRADING_ENABLED,
+      tickInstrumentCode: tick.instrumentCode,
+      volatility,
+      observedAt,
+      leadThresholdBps,
+      cooldownMs,
+      lastCancelAtMs: last,
+      fallbackNowMs: Date.now()
+    });
 
-    if (nowMs - last < cooldownMs) {
+    if (!decision.shouldCancel) {
       return;
     }
 
-    this.crossAssetCancelLogAt.set("hype-usd", nowMs);
+    this.crossAssetCancelLogAt.set("hype-usd", decision.nowMs);
     this.logger.warn("CROSS_ASSET_HYPE_CANCEL", "BTC lead move invalidated HYPE resting quotes", {
       leadInstrument: "btc-usd",
       lagInstrument: "hype-usd",
-      moveBps: roundMetric(moveBps, 4),
+      moveBps: roundMetric(decision.moveBps, 4),
       thresholdBps: leadThresholdBps,
-      jumpDetected: volatility.jumpDetected,
-      jumpZScore: roundMetric(volatility.jumpZScore, 4)
+      jumpDetected: volatility?.jumpDetected ?? false,
+      jumpZScore: roundMetric(volatility?.jumpZScore ?? 0, 4)
     });
     this.publish("SUSPEND_QUOTES", {
       instrumentCode: "hype-usd",
       reason: "BTC_LEAD_MOVE",
-      moveBps,
-      jumpDetected: volatility.jumpDetected,
+      moveBps: decision.moveBps,
+      jumpDetected: volatility?.jumpDetected ?? false,
       observedAt
     });
     this.state.waitUntil(this.cancelAllQuotes("hype-usd", "BTC_LEAD_MOVE"));
