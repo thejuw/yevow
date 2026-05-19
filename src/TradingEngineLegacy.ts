@@ -102,6 +102,7 @@ import {
   evaluateQuoteRefreshThrottle
 } from "./engine/trading/quotes/QuoteDispatchRuntime";
 import { buildExecutionPlanArtifacts } from "./engine/trading/execution/ExecutionPlanRuntime";
+import { evaluateExecutionDispatchGate } from "./engine/trading/execution/ExecutionDispatchRuntime";
 import { applyPaperExecutionBudget } from "./engine/trading/execution/PaperExecutionBudgetRuntime";
 import { calculateAssetMatrix as calculateRuntimeAssetMatrix } from "./engine/trading/state/AssetMatrixRuntime";
 import {
@@ -4808,18 +4809,17 @@ export class TradingEngine {
     initialDelayMs = 0
   ): Promise<void> {
     const inventoryHedge = isInventoryHedgeIntent(intent);
+    const executioner = this.env.EXECUTIONER;
+    const dispatchGate = evaluateExecutionDispatchGate({
+      intent,
+      hasExecutioner: Boolean(executioner),
+      tradingEnabled: this.cachedConfig.TRADING_ENABLED,
+      hedgeEnabled: this.cachedConfig.HEDGE_ENABLED,
+      inventoryHedge,
+      instrumentSelected: isInstrumentSelectedByMoltworker(intent.instrumentCode, this.macroBias)
+    });
 
-    if (
-      !this.env.EXECUTIONER ||
-      (!this.cachedConfig.TRADING_ENABLED && !(inventoryHedge && this.cachedConfig.HEDGE_ENABLED))
-    ) {
-      return;
-    }
-
-    if (
-      !inventoryHedge &&
-      !isInstrumentSelectedByMoltworker(intent.instrumentCode, this.macroBias)
-    ) {
+    if (dispatchGate.reason === "MOLTWORKER_NOT_SELECTED") {
       this.logger.info(
         "EXECUTION_DISPATCH_BLOCKED",
         "Skipped execution intent for inactive Moltworker asset",
@@ -4834,7 +4834,7 @@ export class TradingEngine {
       return;
     }
 
-    if ((intent.orderType !== "LIMIT" || intent.postOnly !== true) && !inventoryHedge) {
+    if (dispatchGate.reason === "TAKER_SUPPRESSED") {
       this.logger.warn(
         "TAKER_EXECUTION_SUPPRESSED",
         "Non-post-only execution suppressed by passive inventory protocol",
@@ -4847,6 +4847,10 @@ export class TradingEngine {
           rationale: intent.rationale
         }
       );
+      return;
+    }
+
+    if (!dispatchGate.allowed || !executioner) {
       return;
     }
 
@@ -4872,7 +4876,7 @@ export class TradingEngine {
     }
 
     try {
-      await this.env.EXECUTIONER.fetch(
+      await executioner.fetch(
         new Request("https://executioner.internal/execute", {
           method: "POST",
           headers: { "content-type": "application/json" },
