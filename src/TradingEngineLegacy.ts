@@ -126,6 +126,8 @@ import {
   nextExecutionProfile,
   nextLatencyAverage,
   recordProcessingLatencySample,
+  shouldLogPerformanceSpikeEvent,
+  stateAfterLatencyBaselineReset,
   stateAfterStaleDataKillSwitch,
   stateAfterHardStaleTickDrop,
   type ExecutionTraceInput
@@ -5818,22 +5820,7 @@ export class TradingEngine {
   private resetLatencyBaseline(observedAt: string, reason: string): void {
     this.latencyHistory = [];
     this.processingLatencySamples = [];
-    this.engineState = {
-      ...this.engineState,
-      averageLatency: 0,
-      latencySampleCount: 0,
-      executionProfile: {
-        ...this.engineState.executionProfile,
-        status: "STABLE",
-        jitterMs: 0,
-        sampleCount: 0,
-        averageProcessingLatencyMs: 0,
-        maxProcessingLatencyMs: 0,
-        lastProcessingLatencyMs: 0,
-        updatedAt: observedAt
-      },
-      updatedAt: observedAt
-    };
+    this.engineState = stateAfterLatencyBaselineReset(this.engineState, observedAt);
     this.logger.info("LATENCY_BASELINE_RESET", "Reset stale latency baseline", {
       reason,
       observedAt
@@ -5966,16 +5953,11 @@ export class TradingEngine {
   }
 
   private shouldLogPerformanceSpike(latencyMetrics: LatencyMetrics): boolean {
-    const key = `${latencyMetrics.instrumentCode}:${latencyMetrics.status}`;
-    const now = Date.now();
-    const previous = this.performanceSpikeLogAt.get(key) ?? 0;
-
-    if (now - previous < HOT_PATH_LOG_THROTTLE_MS) {
-      return false;
-    }
-
-    this.performanceSpikeLogAt.set(key, now);
-    return true;
+    return shouldLogPerformanceSpikeEvent({
+      logAt: this.performanceSpikeLogAt,
+      latencyMetrics,
+      throttleMs: HOT_PATH_LOG_THROTTLE_MS
+    });
   }
 
   private triggerEmergencyPause(

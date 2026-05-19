@@ -101,6 +101,48 @@ export function nextLatencyAverage(
   };
 }
 
+export function stateAfterLatencyBaselineReset(
+  currentState: EngineState,
+  observedAt: string
+): EngineState {
+  return {
+    ...currentState,
+    averageLatency: 0,
+    latencySampleCount: 0,
+    executionProfile: {
+      ...currentState.executionProfile,
+      status: "STABLE",
+      jitterMs: 0,
+      sampleCount: 0,
+      averageProcessingLatencyMs: 0,
+      maxProcessingLatencyMs: 0,
+      lastProcessingLatencyMs: 0,
+      updatedAt: observedAt
+    },
+    updatedAt: observedAt
+  };
+}
+
+export interface PerformanceSpikeLogGateInput {
+  readonly logAt: Map<string, number>;
+  readonly latencyMetrics: LatencyMetrics;
+  readonly throttleMs: number;
+  readonly nowMs?: number;
+}
+
+export function shouldLogPerformanceSpikeEvent(input: PerformanceSpikeLogGateInput): boolean {
+  const key = `${input.latencyMetrics.instrumentCode}:${input.latencyMetrics.status}`;
+  const now = input.nowMs ?? Date.now();
+  const previous = input.logAt.get(key);
+
+  if (previous !== undefined && now - previous < input.throttleMs) {
+    return false;
+  }
+
+  input.logAt.set(key, now);
+  return true;
+}
+
 export interface HardStaleTickDropInput {
   readonly currentState: EngineState;
   readonly metrics: LatencyMetrics;

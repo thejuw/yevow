@@ -7,6 +7,8 @@ import {
   nextExecutionProfile,
   nextLatencyAverage,
   recordProcessingLatencySample,
+  shouldLogPerformanceSpikeEvent,
+  stateAfterLatencyBaselineReset,
   stateAfterStaleDataKillSwitch,
   stateAfterHardStaleTickDrop
 } from "../../src/engine/trading/performance/LatencyRuntime";
@@ -54,6 +56,78 @@ describe("LatencyRuntime", () => {
     const samples = [1, 2];
     expect(recordProcessingLatencySample(samples, 3.1234, 2)).toBe(3.123);
     expect(samples).toEqual([2, 3.123]);
+  });
+
+  it("resets stale latency baselines without mutating unrelated state", () => {
+    const currentState = defaultEngineState("latency-reset");
+    currentState.averageLatency = 180;
+    currentState.latencySampleCount = 99;
+    currentState.processedTicks = 41;
+    currentState.executionProfile = profile({
+      status: "UNSTABLE",
+      jitterMs: 22,
+      sampleCount: 100,
+      averageProcessingLatencyMs: 18,
+      maxProcessingLatencyMs: 45,
+      lastProcessingLatencyMs: 28
+    });
+
+    const nextState = stateAfterLatencyBaselineReset(currentState, "2026-05-18T15:00:01.000Z");
+
+    expect(nextState).toMatchObject({
+      averageLatency: 0,
+      latencySampleCount: 0,
+      processedTicks: 41,
+      executionProfile: {
+        status: "STABLE",
+        jitterMs: 0,
+        sampleCount: 0,
+        averageProcessingLatencyMs: 0,
+        maxProcessingLatencyMs: 0,
+        lastProcessingLatencyMs: 0,
+        updatedAt: "2026-05-18T15:00:01.000Z"
+      },
+      updatedAt: "2026-05-18T15:00:01.000Z"
+    });
+  });
+
+  it("throttles performance spike logs by instrument and status", () => {
+    const logAt = new Map<string, number>();
+    const metrics = latencyMetrics({ status: "STALE" });
+
+    expect(
+      shouldLogPerformanceSpikeEvent({
+        logAt,
+        latencyMetrics: metrics,
+        throttleMs: 1_000,
+        nowMs: 0
+      })
+    ).toBe(true);
+    expect(
+      shouldLogPerformanceSpikeEvent({
+        logAt,
+        latencyMetrics: metrics,
+        throttleMs: 1_000,
+        nowMs: 10_000
+      })
+    ).toBe(true);
+    expect(
+      shouldLogPerformanceSpikeEvent({
+        logAt,
+        latencyMetrics: metrics,
+        throttleMs: 1_000,
+        nowMs: 10_500
+      })
+    ).toBe(false);
+    expect(
+      shouldLogPerformanceSpikeEvent({
+        logAt,
+        latencyMetrics: metrics,
+        throttleMs: 1_000,
+        nowMs: 11_001
+      })
+    ).toBe(true);
+    expect(logAt.get("btc-usd:STALE")).toBe(11_001);
   });
 
   it("marks hard-stale drops and suspends quote state", () => {
