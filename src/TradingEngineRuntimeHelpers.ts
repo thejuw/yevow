@@ -172,13 +172,6 @@ interface HyperliquidRawIngestPayload {
   messages?: unknown[];
 }
 
-interface QueuedExecutionIntent {
-  intent: TradeIntent;
-  priority: "CANCEL" | "NEW";
-  runAfterMs: number;
-  enqueuedAt: string;
-}
-
 interface DomBinAccumulator {
   side: OrderBookSide;
   priceStart: number;
@@ -2451,20 +2444,6 @@ export function quoteStateTelemetry(state: EngineState["quoteState"]): Record<st
     suspendedUntil: state.suspendedUntil,
     updatedAt: state.updatedAt
   };
-}
-
-export function compareQueuedExecutionIntent(
-  left: QueuedExecutionIntent,
-  right: QueuedExecutionIntent
-): number {
-  const priorityWeight = { CANCEL: 0, NEW: 1 } as const;
-  const priorityDelta = priorityWeight[left.priority] - priorityWeight[right.priority];
-
-  if (priorityDelta !== 0) {
-    return priorityDelta;
-  }
-
-  return left.runAfterMs - right.runAfterMs;
 }
 
 export function returns(values: number[]): number[] {

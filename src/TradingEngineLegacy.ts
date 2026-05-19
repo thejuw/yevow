@@ -104,6 +104,12 @@ import {
 import { buildExecutionPlanArtifacts } from "./engine/trading/execution/ExecutionPlanRuntime";
 import { evaluateExecutionDispatchGate } from "./engine/trading/execution/ExecutionDispatchRuntime";
 import { applyPaperExecutionBudget } from "./engine/trading/execution/PaperExecutionBudgetRuntime";
+import {
+  buildExecutionQueueEnqueuePlan,
+  shouldLogExecutionQueueDeferral,
+  splitExecutionQueueForDrain,
+  type QueuedExecutionIntent
+} from "./engine/trading/execution/ExecutionQueueRuntime";
 import { calculateAssetMatrix as calculateRuntimeAssetMatrix } from "./engine/trading/state/AssetMatrixRuntime";
 import {
   buildPerformanceMetricsText,
@@ -476,7 +482,6 @@ import {
   parsePositiveNumberMap,
   quoteToTelemetry,
   quoteStateTelemetry,
-  compareQueuedExecutionIntent,
   wait,
   readNumber,
   readPositiveNumber,
@@ -535,13 +540,6 @@ interface EngineReplaySnapshot {
   rateLimits: Record<string, RateLimitBucketSnapshot>;
   signals: AgentSignal[];
   latestAgentSignals: Array<[AgentName, AgentSignal]>;
-}
-
-interface QueuedExecutionIntent {
-  intent: TradeIntent;
-  priority: "CANCEL" | "NEW";
-  runAfterMs: number;
-  enqueuedAt: string;
 }
 
 type RuntimeWithMemory = typeof globalThis & {
@@ -4939,26 +4937,28 @@ export class TradingEngine {
     waitMs: number
   ): Promise<void> {
     const queue = await this.readExecutionQueue("EXECUTION_QUEUE_ENQUEUE_READ");
-    const runAfterMs = Date.now() + Math.max(0, waitMs);
-    const nextQueue = [
-      ...queue,
-      {
-        intent,
-        priority,
-        runAfterMs,
-        enqueuedAt: new Date().toISOString()
-      }
-    ]
-      .sort(compareQueuedExecutionIntent)
-      .slice(0, 1_000);
+    const now = Date.now();
+    const plan = buildExecutionQueueEnqueuePlan({
+      queue,
+      intent,
+      priority,
+      waitMs,
+      nowMs: now,
+      enqueuedAtIso: new Date(now).toISOString()
+    });
 
-    await this.safeStoragePut(EXECUTION_QUEUE_KEY, nextQueue, "EXECUTION_QUEUE_ENQUEUE");
+    await this.safeStoragePut(EXECUTION_QUEUE_KEY, plan.queue, "EXECUTION_QUEUE_ENQUEUE");
     await this.safeSetAlarm(
-      Math.min(runAfterMs, Date.now() + CONFIG_ALARM_INTERVAL_MS),
+      Math.min(plan.runAfterMs, now + CONFIG_ALARM_INTERVAL_MS),
       "EXECUTION_QUEUE_ALARM"
     );
-    const now = Date.now();
-    if (now - this.rateLimitDeferralLogAt >= HOT_PATH_LOG_THROTTLE_MS) {
+    if (
+      shouldLogExecutionQueueDeferral({
+        nowMs: now,
+        lastLoggedAtMs: this.rateLimitDeferralLogAt,
+        throttleMs: HOT_PATH_LOG_THROTTLE_MS
+      })
+    ) {
       this.rateLimitDeferralLogAt = now;
       this.logger.warn(
         "EXECUTION_DEFERRED_BY_RATE_LIMIT",
@@ -4967,7 +4967,7 @@ export class TradingEngine {
           intentId: intent.intentId,
           priority,
           waitMs,
-          queuedCount: nextQueue.length
+          queuedCount: plan.queuedCount
         }
       );
     }
@@ -4990,21 +4990,17 @@ export class TradingEngine {
     }
 
     const now = Date.now();
-    const due = queue.filter((item) => item.runAfterMs <= now).sort(compareQueuedExecutionIntent);
-    const pending = queue
-      .filter((item) => item.runAfterMs > now)
-      .sort(compareQueuedExecutionIntent);
+    const plan = splitExecutionQueueForDrain({ queue, nowMs: now });
 
-    await this.safeStoragePut(EXECUTION_QUEUE_KEY, pending, "EXECUTION_QUEUE_DRAIN");
+    await this.safeStoragePut(EXECUTION_QUEUE_KEY, plan.pending, "EXECUTION_QUEUE_DRAIN");
 
-    for (const item of due) {
+    for (const item of plan.due) {
       await this.dispatchExecution(item.intent);
     }
 
-    const nextWake = pending[0]?.runAfterMs;
-    if (nextWake) {
+    if (plan.nextWakeMs) {
       await this.safeSetAlarm(
-        Math.min(nextWake, Date.now() + CONFIG_ALARM_INTERVAL_MS),
+        Math.min(plan.nextWakeMs, Date.now() + CONFIG_ALARM_INTERVAL_MS),
         "EXECUTION_QUEUE_NEXT_WAKE"
       );
     }
