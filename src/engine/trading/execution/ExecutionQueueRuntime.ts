@@ -1,4 +1,4 @@
-import type { TradeIntent } from "../../../types";
+import type { JsonRecord, TradeIntent } from "../../../types";
 
 export type ExecutionQueuePriority = "CANCEL" | "NEW";
 
@@ -40,6 +40,13 @@ export interface ExecutionQueueDeferralLogInput {
   readonly nowMs: number;
   readonly lastLoggedAtMs: number;
   readonly throttleMs: number;
+}
+
+export interface ExecutionQueueDeferralLogMetadataInput {
+  readonly intent: TradeIntent;
+  readonly priority: ExecutionQueuePriority;
+  readonly waitMs: number;
+  readonly queuedCount: number;
 }
 
 const DEFAULT_MAX_QUEUE_SIZE = 1_000;
@@ -112,4 +119,15 @@ export function splitExecutionQueueForDrain(
 
 export function shouldLogExecutionQueueDeferral(input: ExecutionQueueDeferralLogInput): boolean {
   return input.nowMs - input.lastLoggedAtMs >= input.throttleMs;
+}
+
+export function executionQueueDeferralLogMetadata(
+  input: ExecutionQueueDeferralLogMetadataInput
+): JsonRecord {
+  return {
+    intentId: input.intent.intentId,
+    priority: input.priority,
+    waitMs: input.waitMs,
+    queuedCount: input.queuedCount
+  };
 }

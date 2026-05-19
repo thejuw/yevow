@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildExecutionQueueEnqueuePlan,
   compareExecutionQueueItems,
+  executionQueueDeferralLogMetadata,
   shouldLogExecutionQueueDeferral,
   splitExecutionQueueForDrain,
   type ExecutionQueuePriority,
@@ -91,6 +92,22 @@ describe("ExecutionQueueRuntime", () => {
         throttleMs: 5_000
       })
     ).toBe(false);
+  });
+
+  it("builds execution queue deferral log metadata", () => {
+    expect(
+      executionQueueDeferralLogMetadata({
+        intent: tradeIntent({ intentId: "intent-queued" }),
+        priority: "NEW",
+        waitMs: 250,
+        queuedCount: 3
+      })
+    ).toEqual({
+      intentId: "intent-queued",
+      priority: "NEW",
+      waitMs: 250,
+      queuedCount: 3
+    });
   });
 });
 

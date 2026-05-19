@@ -155,6 +155,7 @@ import {
 import { applyIntentPaperExecutionBudget } from "./engine/trading/execution/PaperExecutionBudgetRuntime";
 import {
   buildExecutionQueueEnqueuePlan,
+  executionQueueDeferralLogMetadata,
   shouldLogExecutionQueueDeferral,
   splitExecutionQueueForDrain,
   type QueuedExecutionIntent
@@ -4308,12 +4309,12 @@ export class TradingEngine {
       this.logger.warn(
         "EXECUTION_DEFERRED_BY_RATE_LIMIT",
         "Execution intent deferred by durable rate limiter",
-        {
-          intentId: intent.intentId,
+        executionQueueDeferralLogMetadata({
+          intent,
           priority,
           waitMs,
           queuedCount: plan.queuedCount
-        }
+        })
       );
     }
   }
