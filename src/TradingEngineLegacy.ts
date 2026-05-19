@@ -2792,6 +2792,44 @@ export class TradingEngine {
     };
   }
 
+  private async handleInformationalBookNotReady(
+    tick: MarketTick,
+    metrics: LatencyMetrics,
+    wakeUpTimeMs: number | null,
+    orderBookUpdateMs: number,
+    hotPathStartedAt: number
+  ): Promise<TickIngestResult> {
+    this.observeExecutionProfile(metrics, {
+      wakeUpTimeMs,
+      orderBookUpdateMs,
+      agentLogicMs: null,
+      hotPathStartedAt,
+      observedAt: metrics.brainTimestamp
+    });
+
+    this.engineState = stateAfterInformationalBookNotReady({
+      currentState: this.engineState,
+      tradingEnabled: this.cachedConfig.TRADING_ENABLED,
+      instrumentCode: tick.instrumentCode,
+      maxLatencyMs: this.maxLatencyMs,
+      observedAt: metrics.brainTimestamp
+    });
+
+    await this.persistHotStorageSnapshot(
+      this.latencyStorageWrites(),
+      "INFORMATIONAL_TICK_BOOK_NOT_READY"
+    );
+
+    this.publishTickTelemetry(tick, metrics, "FRESH", hotPathStartedAt);
+
+    return {
+      accepted: false,
+      status: "BOOK_NOT_READY",
+      reason: "INFORMATIONAL_TICK_WITHOUT_BOOK",
+      metrics
+    };
+  }
+
   private async handleTick(
     tick: MarketTick,
     wakeUpTimeMs: number | null,
@@ -2959,35 +2997,13 @@ export class TradingEngine {
       book = currentBookForMarketTick(this.orderBook, tick);
 
       if (!book) {
-        this.observeExecutionProfile(metrics, {
+        return this.handleInformationalBookNotReady(
+          tick,
+          metrics,
           wakeUpTimeMs,
           orderBookUpdateMs,
-          agentLogicMs: null,
-          hotPathStartedAt,
-          observedAt: metrics.brainTimestamp
-        });
-
-        this.engineState = stateAfterInformationalBookNotReady({
-          currentState: this.engineState,
-          tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-          instrumentCode: tick.instrumentCode,
-          maxLatencyMs: this.maxLatencyMs,
-          observedAt: metrics.brainTimestamp
-        });
-
-        await this.persistHotStorageSnapshot(
-          this.latencyStorageWrites(),
-          "INFORMATIONAL_TICK_BOOK_NOT_READY"
+          hotPathStartedAt
         );
-
-        this.publishTickTelemetry(tick, metrics, "FRESH", hotPathStartedAt);
-
-        return {
-          accepted: false,
-          status: "BOOK_NOT_READY",
-          reason: "INFORMATIONAL_TICK_WITHOUT_BOOK",
-          metrics
-        };
       }
     } else {
       const orderBookStartedAt = highResolutionNow();
