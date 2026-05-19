@@ -281,6 +281,12 @@ export interface StaleDataKillSwitchResult {
   readonly suspendedUntil: string;
 }
 
+export interface StaleDataKillSwitchTelemetryInput {
+  readonly tick: MarketTick;
+  readonly metrics: LatencyMetrics;
+  readonly maxLatencyMs: number;
+}
+
 export function stateAfterStaleDataKillSwitch(
   input: StaleDataKillSwitchInput
 ): StaleDataKillSwitchResult {
@@ -313,6 +319,49 @@ export function stateAfterStaleDataKillSwitch(
       maxLatencyMs: input.maxLatencyMs,
       heartbeatAt: input.metrics.brainTimestamp,
       updatedAt: input.metrics.brainTimestamp
+    }
+  };
+}
+
+export function staleDataKillSwitchStorageExtra(
+  input: StaleDataKillSwitchTelemetryInput
+): Record<string, unknown> {
+  return {
+    [`staleTick:${input.tick.source_exchange}:${input.tick.instrumentCode}:${input.tick.sequence}`]:
+      {
+        tick: input.tick,
+        metrics: input.metrics
+      }
+  };
+}
+
+export function staleDataKillSwitchTelemetryPayload(
+  input: StaleDataKillSwitchTelemetryInput
+): JsonRecord {
+  return {
+    instrumentCode: input.tick.instrumentCode,
+    exchangeCode: input.tick.exchangeCode,
+    source_exchange: input.tick.source_exchange,
+    sequence: input.tick.sequence,
+    totalLatencyMs: input.metrics.totalLatencyMs,
+    maxLatencyMs: input.maxLatencyMs,
+    action: "PULL_CURRENT_QUOTES"
+  };
+}
+
+export function staleDataKillSwitchNotification(
+  input: StaleDataKillSwitchTelemetryInput
+): NotifierEvent {
+  return {
+    priority: "HIGH",
+    title: "Sovereign-Sigma stale-data kill switch",
+    message: `${input.tick.instrumentCode} seq ${input.tick.sequence} exceeded ${input.maxLatencyMs}ms freshness threshold (${input.metrics.totalLatencyMs}ms). Quotes are being pulled.`,
+    dedupeKey: `stale:${input.tick.source_exchange}:${input.tick.instrumentCode}`,
+    metadata: {
+      instrumentCode: input.tick.instrumentCode,
+      sequence: input.tick.sequence,
+      totalLatencyMs: input.metrics.totalLatencyMs,
+      maxLatencyMs: input.maxLatencyMs
     }
   };
 }

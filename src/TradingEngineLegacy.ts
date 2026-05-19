@@ -164,6 +164,9 @@ import {
   stateAfterNativeHyperliquidLatencyPull,
   stateAfterHardStaleTickDrop,
   stateAfterStaleDataKillSwitch,
+  staleDataKillSwitchNotification,
+  staleDataKillSwitchStorageExtra,
+  staleDataKillSwitchTelemetryPayload,
   type ExecutionTraceInput
 } from "./engine/trading/performance/LatencyRuntime";
 import {
@@ -2928,39 +2931,23 @@ export class TradingEngine {
         quoteHibernateMs: resolveQuoteHibernateMs(this.cachedConfig, this.env.QUOTE_HIBERNATE_MS)
       });
       this.engineState = staleState.state;
+      const staleKillSwitch = {
+        tick,
+        metrics,
+        maxLatencyMs: this.maxLatencyMs
+      };
 
       await this.persistHotStorageSnapshot(
-        this.latencyStorageWrites({
-          [`staleTick:${tick.source_exchange}:${tick.instrumentCode}:${tick.sequence}`]: {
-            tick,
-            metrics
-          }
-        }),
+        this.latencyStorageWrites(staleDataKillSwitchStorageExtra(staleKillSwitch)),
         "STALE_DATA_KILL_SWITCH"
       );
 
       this.logPerformance(metrics);
-      this.publish("STALE_DATA_KILL_SWITCH", {
-        instrumentCode: tick.instrumentCode,
-        exchangeCode: tick.exchangeCode,
-        source_exchange: tick.source_exchange,
-        sequence: tick.sequence,
-        totalLatencyMs: metrics.totalLatencyMs,
-        maxLatencyMs: this.maxLatencyMs,
-        action: "PULL_CURRENT_QUOTES"
-      });
-      this.notifier.notify({
-        priority: "HIGH",
-        title: "Sovereign-Sigma stale-data kill switch",
-        message: `${tick.instrumentCode} seq ${tick.sequence} exceeded ${this.maxLatencyMs}ms freshness threshold (${metrics.totalLatencyMs}ms). Quotes are being pulled.`,
-        dedupeKey: `stale:${tick.source_exchange}:${tick.instrumentCode}`,
-        metadata: {
-          instrumentCode: tick.instrumentCode,
-          sequence: tick.sequence,
-          totalLatencyMs: metrics.totalLatencyMs,
-          maxLatencyMs: this.maxLatencyMs
-        }
-      });
+      this.publish(
+        "STALE_DATA_KILL_SWITCH",
+        staleDataKillSwitchTelemetryPayload(staleKillSwitch)
+      );
+      this.notifier.notify(staleDataKillSwitchNotification(staleKillSwitch));
       if (this.cachedConfig.TRADING_ENABLED) {
         this.state.waitUntil(this.cancelAllQuotes(tick.instrumentCode, "STALE_DATA_KILL_SWITCH"));
       }

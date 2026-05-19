@@ -14,6 +14,9 @@ import {
   resolveNativeHyperliquidMaxLatencyMs,
   shouldLogHardStaleTickDrop,
   shouldLogPerformanceSpikeEvent,
+  staleDataKillSwitchNotification,
+  staleDataKillSwitchStorageExtra,
+  staleDataKillSwitchTelemetryPayload,
   stateAfterLatencyBaselineReset,
   stateAfterNativeHyperliquidLatencyPull,
   stateAfterStaleDataKillSwitch,
@@ -277,6 +280,43 @@ describe("LatencyRuntime", () => {
       status: "SUSPENDED",
       reason: "STALE_DATA_KILL_SWITCH",
       suspendedUntil: "2026-05-18T15:01:00.250Z"
+    });
+  });
+
+  it("builds soft stale kill-switch storage, telemetry, and notification envelopes", () => {
+    const staleTick = tick({ sequence: 321 });
+    const metrics = latencyMetrics({ totalLatencyMs: 650 });
+    const input = {
+      tick: staleTick,
+      metrics,
+      maxLatencyMs: 250
+    };
+
+    expect(staleDataKillSwitchStorageExtra(input)).toEqual({
+      "staleTick:hyperliquid:btc-usd:321": {
+        tick: staleTick,
+        metrics
+      }
+    });
+    expect(staleDataKillSwitchTelemetryPayload(input)).toEqual({
+      instrumentCode: "btc-usd",
+      exchangeCode: "HL",
+      source_exchange: "hyperliquid",
+      sequence: 321,
+      totalLatencyMs: 650,
+      maxLatencyMs: 250,
+      action: "PULL_CURRENT_QUOTES"
+    });
+    expect(staleDataKillSwitchNotification(input)).toMatchObject({
+      priority: "HIGH",
+      title: "Sovereign-Sigma stale-data kill switch",
+      dedupeKey: "stale:hyperliquid:btc-usd",
+      metadata: {
+        instrumentCode: "btc-usd",
+        sequence: 321,
+        totalLatencyMs: 650,
+        maxLatencyMs: 250
+      }
     });
   });
 
