@@ -186,6 +186,9 @@ import {
   buildCascadeExitTradeIntent
 } from "./engine/trading/cascade/CascadeTradeIntents";
 import {
+  buildConfigRefreshLog,
+  buildRuntimeConfigAppliedLog,
+  shouldLogConfigRefresh,
   stateAfterConfigRefresh,
   stateAfterRuntimeConfigUpdate
 } from "./engine/trading/config/ConfigRuntime";
@@ -539,7 +542,6 @@ import {
   normalizeSourceExchange,
   normalizeSourceWeight,
   sanitizeWallHistory,
-  toJsonValue,
   deepClone,
   hydrateOrderBooks,
   hydrateLegacyLevel,
@@ -5421,18 +5423,19 @@ export class TradingEngine {
 
     await this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "CONFIG_REFRESH");
 
-    if (source === "ADMIN_SIGNAL" || previousVersion !== nextConfig.version) {
-      this.logger.warn("CONFIG_REFRESHED", "Trading engine config cache refreshed", {
-        source,
-        tradingEnabled: nextConfig.TRADING_ENABLED,
-        maxPositionSize: nextConfig.MAX_POSITION_SIZE,
-        maxDrawdownPct: nextConfig.MAX_DRAWDOWN_PCT,
-        latencyThresholdMs: nextConfig.LATENCY_THRESHOLD_MS,
-        goldenColos: nextConfig.GOLDEN_COLOS,
-        configVersion: nextConfig.version,
-        macroBias: toJsonValue(this.macroBias),
-        temporaryOverride: toJsonValue(this.activeTemporaryOverride)
-      });
+    const refreshLogInput = {
+      source,
+      previousVersion,
+      nextConfig,
+      macroBias: this.macroBias,
+      temporaryOverride: this.activeTemporaryOverride
+    };
+    if (shouldLogConfigRefresh(refreshLogInput)) {
+      this.logger.warn(
+        "CONFIG_REFRESHED",
+        "Trading engine config cache refreshed",
+        buildConfigRefreshLog(refreshLogInput)
+      );
     }
   }
 
@@ -5581,11 +5584,10 @@ export class TradingEngine {
 
     await this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "ADMIN_CONFIG_APPLIED");
 
-    this.logger.warn("ADMIN_CONFIG_APPLIED", "Runtime configuration updated", {
-      mode: this.engineState.mode,
-      riskConfigVersion: this.engineState.risk.configVersion,
-      maxLatencyMs: this.maxLatencyMs,
-      killSwitch: this.engineState.risk.killSwitch
-    });
+    this.logger.warn(
+      "ADMIN_CONFIG_APPLIED",
+      "Runtime configuration updated",
+      buildRuntimeConfigAppliedLog({ state: this.engineState, maxLatencyMs: this.maxLatencyMs })
+    );
   }
 }

@@ -3,10 +3,15 @@ import type {
   EngineLocation,
   EngineState,
   GlobalRiskConfig,
+  JsonRecord,
   MacroBias,
   TemporaryGovernanceOverride
 } from "../../../types";
-import { mergeRiskLimits, resolveMaxLatencyMs } from "../../../TradingEngineRuntimeHelpers";
+import {
+  mergeRiskLimits,
+  resolveMaxLatencyMs,
+  toJsonValue
+} from "../../../TradingEngineRuntimeHelpers";
 import { applyLocationRisk } from "../helpers/PlacementResolver";
 
 export interface RuntimeConfigUpdateInput {
@@ -35,6 +40,19 @@ export interface ConfigRefreshStateInput {
   readonly profilerStates: EngineState["profilerStates"];
   readonly refreshedLocation: EngineLocation;
   readonly observedAt: string;
+}
+
+export interface ConfigRefreshLogInput {
+  readonly source: "ALARM" | "ADMIN_SIGNAL";
+  readonly previousVersion: string;
+  readonly nextConfig: GlobalRiskConfig;
+  readonly macroBias: MacroBias;
+  readonly temporaryOverride: TemporaryGovernanceOverride | null;
+}
+
+export interface RuntimeConfigAppliedLogInput {
+  readonly state: EngineState;
+  readonly maxLatencyMs: number;
 }
 
 export function stateAfterRuntimeConfigUpdate(
@@ -100,5 +118,32 @@ export function stateAfterConfigRefresh(input: ConfigRefreshStateInput): EngineS
       input.observedAt
     ),
     updatedAt: input.observedAt
+  };
+}
+
+export function shouldLogConfigRefresh(input: ConfigRefreshLogInput): boolean {
+  return input.source === "ADMIN_SIGNAL" || input.previousVersion !== input.nextConfig.version;
+}
+
+export function buildConfigRefreshLog(input: ConfigRefreshLogInput): JsonRecord {
+  return {
+    source: input.source,
+    tradingEnabled: input.nextConfig.TRADING_ENABLED,
+    maxPositionSize: input.nextConfig.MAX_POSITION_SIZE,
+    maxDrawdownPct: input.nextConfig.MAX_DRAWDOWN_PCT,
+    latencyThresholdMs: input.nextConfig.LATENCY_THRESHOLD_MS,
+    goldenColos: input.nextConfig.GOLDEN_COLOS,
+    configVersion: input.nextConfig.version,
+    macroBias: toJsonValue(input.macroBias),
+    temporaryOverride: toJsonValue(input.temporaryOverride)
+  };
+}
+
+export function buildRuntimeConfigAppliedLog(input: RuntimeConfigAppliedLogInput): JsonRecord {
+  return {
+    mode: input.state.mode,
+    riskConfigVersion: input.state.risk.configVersion,
+    maxLatencyMs: input.maxLatencyMs,
+    killSwitch: input.state.risk.killSwitch
   };
 }

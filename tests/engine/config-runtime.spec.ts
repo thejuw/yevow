@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import { defaultConfig } from "../../src/ConfigManager";
 import { neutralMacroBias } from "../../src/Governor";
 import {
+  buildConfigRefreshLog,
+  buildRuntimeConfigAppliedLog,
+  shouldLogConfigRefresh,
   stateAfterConfigRefresh,
   stateAfterRuntimeConfigUpdate
 } from "../../src/engine/trading/config/ConfigRuntime";
@@ -156,5 +159,69 @@ describe("ConfigRuntime", () => {
       }
     });
     expect(result.risk.maxOrderNotional).toBe(175);
+  });
+
+  it("builds config refresh audit metadata only when meaningful", () => {
+    const nextConfig = {
+      ...defaultConfig,
+      TRADING_ENABLED: true,
+      MAX_POSITION_SIZE: 250,
+      MAX_DRAWDOWN_PCT: 0.03,
+      LATENCY_THRESHOLD_MS: 150,
+      GOLDEN_COLOS: ["NRT", "HND"],
+      version: "config-v2"
+    };
+    const input = {
+      source: "ALARM" as const,
+      previousVersion: "config-v1",
+      nextConfig,
+      macroBias: neutralMacroBias(),
+      temporaryOverride: null
+    };
+
+    expect(shouldLogConfigRefresh(input)).toBe(true);
+    expect(
+      shouldLogConfigRefresh({
+        ...input,
+        previousVersion: "config-v2"
+      })
+    ).toBe(false);
+    expect(
+      shouldLogConfigRefresh({
+        ...input,
+        source: "ADMIN_SIGNAL",
+        previousVersion: "config-v2"
+      })
+    ).toBe(true);
+    expect(buildConfigRefreshLog(input)).toMatchObject({
+      source: "ALARM",
+      tradingEnabled: true,
+      maxPositionSize: 250,
+      maxDrawdownPct: 0.03,
+      latencyThresholdMs: 150,
+      goldenColos: ["NRT", "HND"],
+      configVersion: "config-v2",
+      macroBias: {
+        schemaVersion: "macro-bias.v1"
+      },
+      temporaryOverride: null
+    });
+  });
+
+  it("builds runtime config applied audit metadata from state", () => {
+    const state = defaultEngineState("config-audit");
+    state.mode = "PAPER";
+    state.risk = {
+      ...state.risk,
+      configVersion: "risk-v3",
+      killSwitch: true
+    };
+
+    expect(buildRuntimeConfigAppliedLog({ state, maxLatencyMs: 175 })).toEqual({
+      mode: "PAPER",
+      riskConfigVersion: "risk-v3",
+      maxLatencyMs: 175,
+      killSwitch: true
+    });
   });
 });
