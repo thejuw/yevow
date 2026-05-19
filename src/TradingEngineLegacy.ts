@@ -101,6 +101,7 @@ import {
   dispatchedQuoteSnapshot,
   evaluateQuoteRefreshThrottle
 } from "./engine/trading/quotes/QuoteDispatchRuntime";
+import { evaluateQuoteCancelDispatch } from "./engine/trading/quotes/QuoteCancelRuntime";
 import { buildExecutionPlanArtifacts } from "./engine/trading/execution/ExecutionPlanRuntime";
 import { evaluateExecutionDispatchGate } from "./engine/trading/execution/ExecutionDispatchRuntime";
 import { applyPaperExecutionBudget } from "./engine/trading/execution/PaperExecutionBudgetRuntime";
@@ -5007,17 +5008,24 @@ export class TradingEngine {
   }
 
   private async cancelAllQuotes(instrumentCode: string, reason: string): Promise<void> {
-    if (!this.env.EXECUTIONER) {
-      return;
-    }
-
-    const dispatchKey = `${instrumentCode}:${reason}`;
+    const executioner = this.env.EXECUTIONER;
     const now = Date.now();
-    const previousDispatchAt = this.cancelAllLogAt.get(dispatchKey) ?? 0;
-    if (now - previousDispatchAt < HOT_PATH_LOG_THROTTLE_MS) {
+    const dispatchDecision = evaluateQuoteCancelDispatch({
+      instrumentCode,
+      reason,
+      hasExecutioner: Boolean(executioner),
+      nowMs: now,
+      lastDispatchAtMs: this.cancelAllLogAt.get(`${instrumentCode}:${reason}`),
+      throttleMs: HOT_PATH_LOG_THROTTLE_MS
+    });
+
+    if (!dispatchDecision.shouldDispatch) {
       return;
     }
-    this.cancelAllLogAt.set(dispatchKey, now);
+    if (!executioner) {
+      return;
+    }
+    this.cancelAllLogAt.set(dispatchDecision.dispatchKey, now);
 
     const reservation = this.rateLimiter.reserve("default", "CANCEL");
     this.state.waitUntil(
@@ -5033,21 +5041,21 @@ export class TradingEngine {
     }
 
     try {
-      await this.env.EXECUTIONER.fetch(
+      await executioner.fetch(
         new Request("https://executioner.internal/cancel-all", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ instrumentCode, reason })
+          body: JSON.stringify(dispatchDecision.payload)
         })
       );
       this.logger.warn("QUOTE_CANCEL_ALL_DISPATCHED", "Executioner cancel-all requested", {
-        instrumentCode,
-        reason
+        instrumentCode: dispatchDecision.payload.instrumentCode,
+        reason: dispatchDecision.payload.reason
       });
     } catch (error) {
       this.logger.error("QUOTE_CANCEL_ALL_FAILED", "Failed to dispatch cancel-all", {
-        instrumentCode,
-        reason,
+        instrumentCode: dispatchDecision.payload.instrumentCode,
+        reason: dispatchDecision.payload.reason,
         error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
       });
     }
