@@ -98,6 +98,7 @@ import {
 } from "./engine/trading/quotes/QuoteStateRuntime";
 import { buildQuoteDispatchIntents } from "./engine/trading/quotes/QuoteDispatchRuntime";
 import { buildExecutionPlanArtifacts } from "./engine/trading/execution/ExecutionPlanRuntime";
+import { applyPaperExecutionBudget } from "./engine/trading/execution/PaperExecutionBudgetRuntime";
 import { calculateAssetMatrix as calculateRuntimeAssetMatrix } from "./engine/trading/state/AssetMatrixRuntime";
 import {
   buildPerformanceMetricsText,
@@ -4878,33 +4879,28 @@ export class TradingEngine {
   }
 
   private reservePaperExecutionBudget(intent: TradeIntent): boolean {
-    if (!isShadowMode(this.env)) {
-      return true;
-    }
-
-    const now = Date.now();
     const maxPerMinute = readPositiveInteger(
       this.env.PAPER_MAX_GHOST_FILLS_PER_MINUTE,
       DEFAULT_PAPER_MAX_GHOST_FILLS_PER_MINUTE,
       1,
       10_000
     );
+    const budget = applyPaperExecutionBudget({
+      shadowMode: isShadowMode(this.env),
+      nowMs: Date.now(),
+      maxPerMinute,
+      windowStartedAtMs: this.paperExecutionWindowStartedAtMs,
+      windowCount: this.paperExecutionWindowCount,
+      windowDropped: this.paperExecutionWindowDropped,
+      throttleLoggedAtMs: this.paperExecutionThrottleLoggedAtMs
+    });
 
-    if (now - this.paperExecutionWindowStartedAtMs >= 60_000) {
-      this.paperExecutionWindowStartedAtMs = now;
-      this.paperExecutionWindowCount = 0;
-      this.paperExecutionWindowDropped = 0;
-    }
+    this.paperExecutionWindowStartedAtMs = budget.state.windowStartedAtMs;
+    this.paperExecutionWindowCount = budget.state.windowCount;
+    this.paperExecutionWindowDropped = budget.state.windowDropped;
+    this.paperExecutionThrottleLoggedAtMs = budget.state.throttleLoggedAtMs;
 
-    if (this.paperExecutionWindowCount < maxPerMinute) {
-      this.paperExecutionWindowCount += 1;
-      return true;
-    }
-
-    this.paperExecutionWindowDropped += 1;
-
-    if (now - this.paperExecutionThrottleLoggedAtMs >= 10_000) {
-      this.paperExecutionThrottleLoggedAtMs = now;
+    if (budget.shouldLogThrottle) {
       this.logger.warn("SHADOW_PAPER_CADENCE_THROTTLED", "Paper execution cadence capped", {
         intentId: intent.intentId,
         instrumentCode: intent.instrumentCode,
@@ -4921,7 +4917,7 @@ export class TradingEngine {
       });
     }
 
-    return false;
+    return budget.allowed;
   }
 
   private async enqueueExecutionIntent(
