@@ -62,7 +62,9 @@ import {
 } from "./engine/trading/book/BookRuntimeState";
 import {
   applyOrderBookResetStores,
+  orderBookResetConnectionKeys,
   orderBookResetDeleteKeys,
+  orderBookResetTelemetry,
   resolveOrderBookReset
 } from "./engine/trading/book/OrderBookResetRuntime";
 import {
@@ -193,7 +195,6 @@ import {
   calculateHyperliquidBookTotalLatencyMs,
   evaluateHyperliquidBookSequence,
   handleHyperliquidRawBatch,
-  hyperliquidIngestConnectionKey,
   registerHyperliquidIngestConnection,
   routeHyperliquidRawMessage,
   type HyperliquidRawIngestPayload
@@ -2587,15 +2588,8 @@ export class TradingEngine {
     if (reset.source === "INGEST_WORKER") {
       this.resetLatencyBaseline(reset.now, `ORDER_BOOK_RESET:${reset.reason}`);
       if (reset.connectionId) {
-        this.activeIngestConnections.set(
-          hyperliquidIngestConnectionKey(reset.resetSourceExchange, reset.resetStreamId),
-          reset.connectionId
-        );
-        if (!reset.resetStreamId) {
-          this.activeIngestConnections.set(
-            hyperliquidIngestConnectionKey(reset.resetSourceExchange, null),
-            reset.connectionId
-          );
+        for (const connectionKey of orderBookResetConnectionKeys(reset)) {
+          this.activeIngestConnections.set(connectionKey, reset.connectionId);
         }
       }
     }
@@ -2609,31 +2603,14 @@ export class TradingEngine {
       this.safeStorageDelete(deleteKeys, "ORDER_BOOK_RESET_DELETE")
     ]);
 
-    this.logger.warn("ORDER_BOOK_RESET", "Internal order book purged after stream recovery", {
-      reason: reset.reason,
-      source: reset.source,
-      streamId: reset.resetStreamId,
-      instrumentCode: reset.resetInstrument,
-      source_exchange: reset.resetSourceExchange,
-      marketKey: reset.resetMarketKey,
-      connectionId: reset.connectionId,
-      blackoutDurationMs: reset.blackoutDurationMs,
-      recoveredAt: reset.recoveredAt,
-      deletedBookSnapshots: deleteKeys.length
-    });
+    const resetTelemetry = orderBookResetTelemetry(reset, deleteKeys.length);
+    this.logger.warn(
+      "ORDER_BOOK_RESET",
+      "Internal order book purged after stream recovery",
+      resetTelemetry
+    );
 
-    this.publish("ORDER_BOOK_RESET", {
-      reason: reset.reason,
-      source: reset.source,
-      streamId: reset.resetStreamId,
-      instrumentCode: reset.resetInstrument,
-      source_exchange: reset.resetSourceExchange,
-      marketKey: reset.resetMarketKey,
-      connectionId: reset.connectionId,
-      blackoutDurationMs: reset.blackoutDurationMs,
-      recoveredAt: reset.recoveredAt,
-      deletedBookSnapshots: deleteKeys.length
-    });
+    this.publish("ORDER_BOOK_RESET", resetTelemetry);
   }
 
   private async recoverEngineState(payload: {

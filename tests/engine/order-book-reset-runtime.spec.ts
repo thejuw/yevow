@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   applyOrderBookResetStores,
+  orderBookResetConnectionKeys,
   orderBookResetDeleteKeys,
+  orderBookResetTelemetry,
   resolveOrderBookReset
 } from "../../src/engine/trading/book/OrderBookResetRuntime";
 import { SortedBookSide } from "../../src/engine/trading/book/SortedBookSide";
@@ -49,6 +51,32 @@ describe("OrderBookResetRuntime", () => {
       "order-book:hyperliquid:btc-usd",
       "order-book:hyperliquid:eth-usd"
     ]);
+    expect(orderBookResetConnectionKeys(reset)).toEqual(["hyperliquid:book"]);
+    expect(orderBookResetTelemetry(reset, 1)).toEqual({
+      reason: "STREAM_RECOVERED",
+      source: "INGEST_WORKER",
+      streamId: "book",
+      instrumentCode: "btc-usd",
+      source_exchange: "hyperliquid",
+      marketKey: "hyperliquid:btc-usd",
+      connectionId: "conn-1",
+      blackoutDurationMs: 13,
+      recoveredAt: "2026-05-18T14:00:02.000Z",
+      deletedBookSnapshots: 1
+    });
+  });
+
+  it("resolves ingest connection keys with hyperliquid defaults", () => {
+    expect(
+      orderBookResetConnectionKeys({
+        ...resolveOrderBookReset({
+          source: "INGEST_WORKER",
+          connectionId: "conn-default"
+        }),
+        resetSourceExchange: null
+      })
+    ).toEqual(["hyperliquid:default"]);
+    expect(orderBookResetConnectionKeys(resolveOrderBookReset({ source: "ADMIN" }))).toEqual([]);
   });
 
   it("mutates only scoped book stores unless reset is global", () => {

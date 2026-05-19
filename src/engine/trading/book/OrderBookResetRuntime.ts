@@ -1,5 +1,5 @@
 import { buildMarketKey, normalizeSourceExchange } from "../../../TradingEngineRuntimeHelpers";
-import type { InternalOrderBook, OrderBookResetRequest } from "../../../types";
+import type { InternalOrderBook, JsonRecord, OrderBookResetRequest } from "../../../types";
 import type { BookSyncState } from "./BookTypes";
 import type { SortedBookSide } from "./SortedBookSide";
 
@@ -94,4 +94,31 @@ export function applyOrderBookResetStores(
   stores.bids.clear();
   stores.asks.clear();
   stores.sync.clear();
+}
+
+export function orderBookResetConnectionKeys(reset: ResolvedOrderBookReset): string[] {
+  if (reset.source !== "INGEST_WORKER" || !reset.connectionId) {
+    return [];
+  }
+
+  const sourceExchange = reset.resetSourceExchange ?? "hyperliquid";
+  return [`${sourceExchange}:${reset.resetStreamId ?? "default"}`];
+}
+
+export function orderBookResetTelemetry(
+  reset: ResolvedOrderBookReset,
+  deletedBookSnapshots: number
+): JsonRecord {
+  return {
+    reason: reset.reason,
+    source: reset.source,
+    streamId: reset.resetStreamId,
+    instrumentCode: reset.resetInstrument,
+    source_exchange: reset.resetSourceExchange,
+    marketKey: reset.resetMarketKey,
+    connectionId: reset.connectionId,
+    blackoutDurationMs: reset.blackoutDurationMs,
+    recoveredAt: reset.recoveredAt,
+    deletedBookSnapshots
+  };
 }
