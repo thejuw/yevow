@@ -42,6 +42,12 @@ import {
   microstructureFromBook
 } from "./engine/trading/book/BookReconstruction";
 import {
+  calculateOrderBookPriceDiscovery,
+  currentOrderBookSnapshot,
+  findBestAssetBook as findBestOrderBookForAsset,
+  selectOrderBookMarketKey
+} from "./engine/trading/book/BookViews";
+import {
   OrderBookReconstructor,
   type OrderBookStores
 } from "./engine/trading/book/OrderBookReconstructor";
@@ -1272,34 +1278,7 @@ export class TradingEngine {
   }
 
   private findBestAssetBook(instrumentCode: string): InternalOrderBook | undefined {
-    const normalized = normalizeNativeInstrumentCode(instrumentCode);
-    let best: InternalOrderBook | undefined;
-    let bestScore = Number.NEGATIVE_INFINITY;
-    let bestObservedAt = 0;
-
-    for (const book of this.orderBook.values()) {
-      if (book.instrumentCode !== normalized) {
-        continue;
-      }
-
-      const observedAt = Date.parse(book.updatedAt);
-      const score =
-        (book.isSynced ? 100 : 0) +
-        (book.midPrice !== null ? 10 : 0) +
-        Math.min(Math.max(book.bids.length, book.asks.length), 50) / 100;
-
-      if (
-        !best ||
-        score > bestScore ||
-        (score === bestScore && Number.isFinite(observedAt) && observedAt > bestObservedAt)
-      ) {
-        best = book;
-        bestScore = score;
-        bestObservedAt = Number.isFinite(observedAt) ? observedAt : 0;
-      }
-    }
-
-    return best;
+    return findBestOrderBookForAsset(this.orderBook, instrumentCode);
   }
 
   private calculateAssetMatrix(
@@ -3398,154 +3377,39 @@ export class TradingEngine {
   private selectMarketKey(
     target?: string | MarketTick
   ): { marketKey: string; instrumentCode: string } | null {
-    if (target && typeof target !== "string") {
-      const marketKey = buildMarketKey(target.source_exchange, target.instrumentCode);
-      return { marketKey, instrumentCode: target.instrumentCode.toLowerCase() };
-    }
-
-    const requested = target?.trim().toLowerCase();
-
-    if (!requested) {
-      const currentKey = this.engineState.microstructure.marketKey;
-      const currentBook = currentKey ? this.orderBook.get(currentKey) : undefined;
-
-      if (currentBook) {
-        return {
-          marketKey: currentBook.marketKey,
-          instrumentCode: currentBook.instrumentCode
-        };
-      }
-
-      const currentInstrument = this.engineState.microstructure.instrumentCode;
-      const currentAssetBook = currentInstrument
-        ? this.findBestAssetBook(currentInstrument)
-        : undefined;
-
-      if (currentAssetBook) {
-        return {
-          marketKey: currentAssetBook.marketKey,
-          instrumentCode: currentAssetBook.instrumentCode
-        };
-      }
-    }
-
-    if (requested && this.orderBook.has(requested)) {
-      const book = this.orderBook.get(requested);
-      return {
-        marketKey: requested,
-        instrumentCode: book?.instrumentCode ?? requested.split(":").slice(1).join(":")
-      };
-    }
-
-    const instrumentCode = requested ? normalizeInstrumentSelector(requested) : undefined;
-    const candidates = [...this.orderBook.values()]
-      .filter((book) => !instrumentCode || book.instrumentCode === instrumentCode)
-      .sort((left, right) => {
-        const weightDelta = right.sourceWeight - left.sourceWeight;
-
-        if (weightDelta !== 0) {
-          return weightDelta;
-        }
-
-        return Date.parse(right.updatedAt) - Date.parse(left.updatedAt);
-      });
-    const selected = candidates[0];
-
-    return selected
-      ? { marketKey: selected.marketKey, instrumentCode: selected.instrumentCode }
-      : null;
+    return selectOrderBookMarketKey(
+      {
+        orderBook: this.orderBook,
+        microstructure: this.engineState.microstructure
+      },
+      target
+    );
   }
 
   private calculatePriceDiscovery(
     instrumentCode: string | null | undefined,
     observedAt: string
   ): PriceDiscoveryMetrics {
-    const normalizedInstrument = instrumentCode?.toLowerCase() ?? null;
-    const sources = [...this.orderBook.values()]
-      .filter(
-        (book) =>
-          (!normalizedInstrument || book.instrumentCode === normalizedInstrument) &&
-          book.midPrice !== null
-      )
-      .map((book) => ({
-        marketKey: book.marketKey,
-        source: book.source,
-        source_exchange: book.source_exchange,
-        exchangeCode: book.exchangeCode,
-        instrumentCode: book.instrumentCode,
-        weight: book.sourceWeight,
-        midPrice: book.midPrice,
-        spreadBps: book.spreadBps,
-        weightedImbalance: book.weightedImbalance,
-        updatedAt: book.updatedAt
-      }));
-    const totalWeight = sources.reduce((sum, source) => sum + source.weight, 0);
-    const weightedMidPrice =
-      totalWeight > 0
-        ? roundCrypto(
-            sources.reduce((sum, source) => sum + (source.midPrice ?? 0) * source.weight, 0) /
-              totalWeight
-          )
-        : null;
-    const primary = [...sources].sort((left, right) => right.weight - left.weight)[0];
-
-    return {
-      instrumentCode: normalizedInstrument,
-      weightedMidPrice,
-      primaryExchange: primary?.source_exchange ?? null,
-      primaryWeight: primary?.weight ?? 0,
-      sourceCount: sources.length,
-      sources,
-      updatedAt: sources.length > 0 ? observedAt : null
-    };
+    return calculateOrderBookPriceDiscovery(this.orderBook, instrumentCode, observedAt);
   }
 
   private currentBookSnapshot(
     instrumentCode: string | undefined,
     depth: number
   ): BookSnapshotResponse {
-    const selected = this.selectMarketKey(instrumentCode);
-    const normalizedInstrument =
-      selected?.instrumentCode ??
-      (instrumentCode ? normalizeInstrumentSelector(instrumentCode) : null) ??
-      this.engineState.microstructure.instrumentCode ??
-      selected?.marketKey ??
-      "unknown";
-    const marketKey = selected?.marketKey ?? normalizeMarketKey(normalizedInstrument);
-    const book = this.orderBook.get(marketKey);
-    const bidBook = getInstrumentBook(this.bids, marketKey, "bid");
-    const askBook = getInstrumentBook(this.asks, marketKey, "ask");
-    const syncState = this.getBookSync(
-      marketKey,
-      normalizedInstrument,
-      book?.exchangeCode ?? this.engineState.microstructure.exchangeCode ?? null,
-      book?.source_exchange ?? this.engineState.microstructure.source_exchange ?? "unknown",
-      book?.tickSize ?? resolveTickSize(this.env, normalizedInstrument),
-      book?.source ?? "SYSTEM",
-      book?.sourceWeight ?? DEFAULT_SOURCE_WEIGHT
+    return currentOrderBookSnapshot(
+      {
+        orderBook: this.orderBook,
+        bids: this.bids,
+        asks: this.asks,
+        microstructure: this.engineState.microstructure,
+        defaultSourceWeight: DEFAULT_SOURCE_WEIGHT,
+        getBookSync: (...args) => this.getBookSync(...args),
+        resolveTickSize: (code) => resolveTickSize(this.env, code)
+      },
+      instrumentCode,
+      depth
     );
-
-    return {
-      marketKey,
-      instrumentCode: normalizedInstrument,
-      exchangeCode: book?.exchangeCode ?? syncState.exchangeCode,
-      source_exchange: book?.source_exchange ?? syncState.source_exchange,
-      sourceWeight: book?.sourceWeight ?? syncState.sourceWeight,
-      sequence: syncState.lastSequence,
-      isSynced: syncState.isSynced,
-      desyncReason: syncState.desyncReason,
-      tickSize: syncState.tickSize,
-      ttbLatencyMs: syncState.ttbLatencyMs,
-      topLevelCount: depth,
-      bestBid: book?.bestBid ?? null,
-      bestAsk: book?.bestAsk ?? null,
-      midPrice: book?.midPrice ?? null,
-      spread: book?.spread ?? null,
-      weightedImbalance: book?.weightedImbalance ?? null,
-      bids: bidBook.top(depth),
-      asks: askBook.top(depth),
-      updatedAt: book?.updatedAt ?? null
-    };
   }
 
   getLiquidityWalls(
