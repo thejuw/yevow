@@ -3,6 +3,7 @@ import { defaultConfig } from "../../src/ConfigManager";
 import {
   buildInventoryHedgeIntent,
   calculateInventoryState,
+  inventoryHedgeAuthorizedLogMetadata,
   normalizeInventoryDelta,
   referencePriceForBaseAsset
 } from "../../src/engine/trading/inventory/InventoryRuntime";
@@ -158,6 +159,24 @@ describe("InventoryRuntime", () => {
         rationale:
           "INVENTORY_HEDGE reduce-only IOC limit; currentDelta=1.5 maxDelta=2 triggerPct=0.6"
       }
+    });
+    if (!result) {
+      throw new Error("Expected inventory hedge intent");
+    }
+    expect(
+      inventoryHedgeAuthorizedLogMetadata({
+        intent: result.intent,
+        inventory: inventory({ current_inventory_delta: 1.5 }),
+        triggerPct: 0.6
+      })
+    ).toEqual({
+      intentId: `inventory-hedge:btc-usd:${Date.parse(OBSERVED_AT)}`,
+      instrumentCode: "btc-usd",
+      action: "SELL",
+      approvedSize: 0.7,
+      expectedPrice: 99,
+      currentInventoryDelta: 1.5,
+      triggerPct: 0.6
     });
   });
 

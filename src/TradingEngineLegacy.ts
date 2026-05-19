@@ -101,6 +101,7 @@ import {
 import {
   buildInventoryHedgeIntent,
   calculateInventoryState as calculateInventoryRuntimeState,
+  inventoryHedgeAuthorizedLogMetadata,
   referencePriceForBaseAsset as resolveBaseAssetReferencePrice
 } from "./engine/trading/inventory/InventoryRuntime";
 import {
@@ -3516,15 +3517,15 @@ export class TradingEngine {
       this.lastHedgeDispatchedAt.set(book.instrumentCode, hedge.dispatchedAtMs);
     }
     if (hedgeIntent && !options.shadowReplay) {
-      this.logger.warn("INVENTORY_HEDGE_AUTHORIZED", "Inventory hedge IOC path authorized", {
-        intentId: hedgeIntent.intentId,
-        instrumentCode: hedgeIntent.instrumentCode,
-        action: hedgeIntent.action,
-        approvedSize: hedgeIntent.approvedSize,
-        expectedPrice: hedgeIntent.expectedPrice,
-        currentInventoryDelta: inventory.current_inventory_delta,
-        triggerPct: this.cachedConfig.HEDGE_TRIGGER_INVENTORY_PCT
-      });
+      this.logger.warn(
+        "INVENTORY_HEDGE_AUTHORIZED",
+        "Inventory hedge IOC path authorized",
+        inventoryHedgeAuthorizedLogMetadata({
+          intent: hedgeIntent,
+          inventory,
+          triggerPct: this.cachedConfig.HEDGE_TRIGGER_INVENTORY_PCT
+        })
+      );
       this.state.waitUntil(this.dispatchExecution(hedgeIntent));
     }
 

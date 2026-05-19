@@ -2,6 +2,7 @@ import type {
   GlobalRiskConfig,
   InternalOrderBook,
   InventoryState,
+  JsonRecord,
   Position,
   TradeIntent
 } from "../../../types";
@@ -52,6 +53,12 @@ export interface InventoryHedgeIntentInput {
 export interface InventoryHedgeIntentResult {
   readonly intent: TradeIntent;
   readonly dispatchedAtMs: number;
+}
+
+export interface InventoryHedgeAuthorizedLogInput {
+  readonly intent: TradeIntent;
+  readonly inventory: Pick<InventoryState, "current_inventory_delta">;
+  readonly triggerPct: number;
 }
 
 export function calculateInventoryState(input: InventoryStateInput): InventoryState {
@@ -183,6 +190,20 @@ export function buildInventoryHedgeIntent(
         `maxDelta=${roundMetric(maxDelta, 8)} triggerPct=${roundMetric(config.HEDGE_TRIGGER_INVENTORY_PCT, 4)}`,
       createdAt: input.observedAt
     }
+  };
+}
+
+export function inventoryHedgeAuthorizedLogMetadata(
+  input: InventoryHedgeAuthorizedLogInput
+): JsonRecord {
+  return {
+    intentId: input.intent.intentId,
+    instrumentCode: input.intent.instrumentCode,
+    action: input.intent.action,
+    approvedSize: input.intent.approvedSize,
+    expectedPrice: input.intent.expectedPrice,
+    currentInventoryDelta: input.inventory.current_inventory_delta,
+    triggerPct: input.triggerPct
   };
 }
 
