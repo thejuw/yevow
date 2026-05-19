@@ -1,6 +1,26 @@
+import { nativeIso, normalizeSourceExchange } from "../../../TradingEngineRuntimeHelpers";
 import type { EngineState, JsonRecord, LiquidationHeatmapState } from "../../../types";
 import type { CascadeAssetProfile } from "../../../strategy/cascade/AssetProfiles";
 import type { CascadeEvent } from "../../../strategy/cascade/types";
+
+export interface LiquidationEventContextInput {
+  readonly payload: {
+    readonly receivedAt?: string;
+    readonly instrumentCode?: string;
+    readonly source_exchange?: string;
+  };
+  readonly currentInstrumentCode: string | null | undefined;
+  readonly defaultAsset: string | undefined;
+  readonly midPrice: number | null;
+  readonly fallbackObservedAt?: string;
+}
+
+export interface LiquidationEventContext {
+  readonly observedAt: string;
+  readonly instrumentCode: string;
+  readonly sourceExchange: string;
+  readonly midPrice: number | null;
+}
 
 export interface LiquidationHeatmapStateInput {
   readonly currentState: EngineState;
@@ -22,12 +42,46 @@ export interface LiquidationEventProcessedCountInput {
   readonly cascadeEventCount: number;
 }
 
+export interface LiquidationHeatmapStorageInput {
+  readonly engineStateKey: string;
+  readonly state: EngineState;
+  readonly liquidationHeatmapKey: string;
+  readonly heatmap: LiquidationHeatmapState;
+}
+
+export function resolveLiquidationEventContext(
+  input: LiquidationEventContextInput
+): LiquidationEventContext {
+  const observedAt =
+    nativeIso(input.payload.receivedAt) ?? input.fallbackObservedAt ?? new Date().toISOString();
+  const defaultAsset = input.defaultAsset ?? "BTC";
+
+  return {
+    observedAt,
+    instrumentCode:
+      input.payload.instrumentCode?.toLowerCase() ??
+      input.currentInstrumentCode ??
+      `${defaultAsset.toLowerCase()}-usd`,
+    sourceExchange: normalizeSourceExchange(input.payload.source_exchange ?? "hyperliquid"),
+    midPrice: input.midPrice
+  };
+}
+
 export function stateAfterLiquidationHeatmap(input: LiquidationHeatmapStateInput): EngineState {
   return {
     ...input.currentState,
     liquidationHeatmap: input.heatmap,
     heartbeatAt: input.observedAt,
     updatedAt: input.observedAt
+  };
+}
+
+export function liquidationHeatmapStorageWrites(
+  input: LiquidationHeatmapStorageInput
+): Record<string, unknown> {
+  return {
+    [input.engineStateKey]: input.state,
+    [input.liquidationHeatmapKey]: input.heatmap
   };
 }
 

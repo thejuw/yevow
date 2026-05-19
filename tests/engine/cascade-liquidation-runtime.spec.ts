@@ -4,8 +4,10 @@ import {
   cascadeDetectedAlertMetadata,
   cascadeDetectedLogMetadata,
   cascadeDetectedTelemetryPayload,
+  liquidationHeatmapStorageWrites,
   liquidationEventProcessedCount,
   liquidationEventTelemetry,
+  resolveLiquidationEventContext,
   stateAfterLiquidationHeatmap
 } from "../../src/engine/trading/cascade/CascadeLiquidationRuntime";
 import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
@@ -15,6 +17,42 @@ import type { CascadeEvent } from "../../src/strategy/cascade/types";
 const OBSERVED_AT = "2026-05-18T18:00:00.000Z";
 
 describe("CascadeLiquidationRuntime", () => {
+  it("resolves liquidation event context from ingest payload and engine defaults", () => {
+    expect(
+      resolveLiquidationEventContext({
+        payload: {
+          receivedAt: "2026-05-18T18:00:00.000Z",
+          instrumentCode: "HYPE-USD",
+          source_exchange: "HyperLiquid"
+        },
+        currentInstrumentCode: "btc-usd",
+        defaultAsset: "ETH",
+        midPrice: 25,
+        fallbackObservedAt: "fallback"
+      })
+    ).toEqual({
+      observedAt: "2026-05-18T18:00:00.000Z",
+      instrumentCode: "hype-usd",
+      sourceExchange: "hyperliquid",
+      midPrice: 25
+    });
+
+    expect(
+      resolveLiquidationEventContext({
+        payload: { receivedAt: "invalid" },
+        currentInstrumentCode: null,
+        defaultAsset: "SOL",
+        midPrice: null,
+        fallbackObservedAt: OBSERVED_AT
+      })
+    ).toEqual({
+      observedAt: OBSERVED_AT,
+      instrumentCode: "sol-usd",
+      sourceExchange: "hyperliquid",
+      midPrice: null
+    });
+  });
+
   it("updates engine state with a refreshed liquidation heatmap", () => {
     const currentState = defaultEngineState("cascade-liquidation");
     const heatmap = {
@@ -37,6 +75,7 @@ describe("CascadeLiquidationRuntime", () => {
   });
 
   it("builds compact liquidation telemetry and processed counts", () => {
+    const currentState = defaultEngineState("cascade-liquidation-storage");
     const heatmap = {
       ...defaultLiquidationHeatmapState("btc-usd", "hyperliquid", 100, 10_000_000, 0.005),
       clusters: [
@@ -59,6 +98,17 @@ describe("CascadeLiquidationRuntime", () => {
       totalEstimatedNotionalUsd: 12_000_000
     };
 
+    expect(
+      liquidationHeatmapStorageWrites({
+        engineStateKey: "engine",
+        state: currentState,
+        liquidationHeatmapKey: "heatmap",
+        heatmap
+      })
+    ).toEqual({
+      engine: currentState,
+      heatmap
+    });
     expect(
       liquidationEventTelemetry({
         instrumentCode: "btc-usd",

@@ -179,8 +179,10 @@ import {
   cascadeDetectedAlertMetadata,
   cascadeDetectedLogMetadata,
   cascadeDetectedTelemetryPayload,
+  liquidationHeatmapStorageWrites,
   liquidationEventProcessedCount,
   liquidationEventTelemetry,
+  resolveLiquidationEventContext,
   stateAfterLiquidationHeatmap
 } from "./engine/trading/cascade/CascadeLiquidationRuntime";
 import {
@@ -479,7 +481,6 @@ import {
   AGGREGATED_BUS_TELEMETRY_TYPES
 } from "./TradingEngineConstants";
 import {
-  nativeIso,
   epochMillis,
   nativeHashSequence,
   normalizeNativeCoin,
@@ -1687,42 +1688,48 @@ export class TradingEngine {
     raw: Record<string, unknown>,
     payload: HyperliquidRawIngestPayload
   ): Promise<TickIngestResult> {
-    const observedAt = nativeIso(payload.receivedAt) ?? new Date().toISOString();
-    const instrumentCode =
-      payload.instrumentCode?.toLowerCase() ??
-      this.engineState.microstructure.instrumentCode ??
-      `${(this.env.HL_ASSET ?? "BTC").toLowerCase()}-usd`;
+    const liquidationContext = resolveLiquidationEventContext({
+      payload,
+      currentInstrumentCode: this.engineState.microstructure.instrumentCode,
+      defaultAsset: this.env.HL_ASSET,
+      midPrice: this.engineState.microstructure.midPrice
+    });
     const previousEventCount = this.engineState.liquidationHeatmap.recentEvents.length;
     const heatmap = this.heatmapAgent.recordLiquidationEvent(raw, {
-      instrumentCode,
-      sourceExchange: payload.source_exchange ?? "hyperliquid",
-      midPrice: this.engineState.microstructure.midPrice,
-      observedAt
+      instrumentCode: liquidationContext.instrumentCode,
+      sourceExchange: liquidationContext.sourceExchange,
+      midPrice: liquidationContext.midPrice,
+      observedAt: liquidationContext.observedAt
     });
     const nextEventCount = heatmap.recentEvents.length;
     const cascadeLiquidations = this.cascadeLiquidationStream.ingest(raw, {
-      instrumentCode,
-      sourceExchange: payload.source_exchange ?? "hyperliquid",
-      observedAt,
-      fallbackPrice: this.engineState.microstructure.midPrice
+      instrumentCode: liquidationContext.instrumentCode,
+      sourceExchange: liquidationContext.sourceExchange,
+      observedAt: liquidationContext.observedAt,
+      fallbackPrice: liquidationContext.midPrice
     });
     if (cascadeLiquidations.length > 0) {
       this.state.waitUntil(this.persistCascadeLiquidations(cascadeLiquidations));
     }
-    const cascadeEvents = this.recordCascadeLiquidations(cascadeLiquidations, observedAt);
+    const cascadeEvents = this.recordCascadeLiquidations(
+      cascadeLiquidations,
+      liquidationContext.observedAt
+    );
 
     this.engineState = stateAfterLiquidationHeatmap({
       currentState: this.engineState,
       heatmap,
-      observedAt
+      observedAt: liquidationContext.observedAt
     });
 
     this.state.waitUntil(
       this.safeStoragePut(
-        {
-          [ENGINE_STATE_KEY]: this.engineState,
-          [LIQUIDATION_HEATMAP_STORAGE_KEY]: heatmap
-        },
+        liquidationHeatmapStorageWrites({
+          engineStateKey: ENGINE_STATE_KEY,
+          state: this.engineState,
+          liquidationHeatmapKey: LIQUIDATION_HEATMAP_STORAGE_KEY,
+          heatmap
+        }),
         "LIQUIDATION_EVENT"
       )
     );
@@ -1731,10 +1738,10 @@ export class TradingEngine {
       this.publish(
         "LIQUIDATION_EVENT",
         liquidationEventTelemetry({
-          instrumentCode,
+          instrumentCode: liquidationContext.instrumentCode,
           heatmap,
           cascadeEventCount: cascadeEvents.length,
-          observedAt
+          observedAt: liquidationContext.observedAt
         })
       );
     }
