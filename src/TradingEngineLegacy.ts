@@ -2604,6 +2604,30 @@ export class TradingEngine {
     this.publish("ORDER_BOOK_RESET", resetTelemetry);
   }
 
+  private async resetRecoveryOrderBooks(
+    resetInstruments: readonly string[],
+    reason: string,
+    sourceExchange: string,
+    observedAt: string
+  ): Promise<void> {
+    for (const instrumentCode of resetInstruments) {
+      await this.resetOrderBook({
+        source: "ADMIN",
+        reason,
+        instrumentCode,
+        source_exchange: sourceExchange,
+        connectionId: null,
+        blackoutDurationMs: null,
+        recoveredAt: observedAt
+      });
+    }
+  }
+
+  private clearRecoveryShadowQueue(): void {
+    this.ghostBook.reset();
+    this.shadowQueueNoEdgeLogAt.clear();
+  }
+
   private async recoverEngineState(payload: {
     reason?: string;
     resetInstruments?: string[] | string;
@@ -2625,17 +2649,7 @@ export class TradingEngine {
       : "hyperliquid";
     const resetInstruments = maintenanceRecoveryInstruments(payload);
 
-    for (const instrumentCode of resetInstruments) {
-      await this.resetOrderBook({
-        source: "ADMIN",
-        reason,
-        instrumentCode,
-        source_exchange: sourceExchange,
-        connectionId: null,
-        blackoutDurationMs: null,
-        recoveredAt: observedAt
-      });
-    }
+    await this.resetRecoveryOrderBooks(resetInstruments, reason, sourceExchange, observedAt);
 
     if (payload.clearLatency !== false) {
       this.resetLatencyBaseline(observedAt, reason);
@@ -2643,8 +2657,7 @@ export class TradingEngine {
 
     const shouldClearShadowQueue = payload.clearShadowQueue !== false;
     if (shouldClearShadowQueue) {
-      this.ghostBook.reset();
-      this.shadowQueueNoEdgeLogAt.clear();
+      this.clearRecoveryShadowQueue();
     }
 
     const prunedProfilerStorageKeys = await this.deleteRetiredProfilerStorage();
