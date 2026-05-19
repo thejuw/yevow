@@ -33,6 +33,20 @@ export interface ExecutionDispatchBlockLogEvent {
   readonly metadata: JsonRecord;
 }
 
+export interface ExecutionDispatchFetcher {
+  fetch(request: Request): Promise<Response>;
+}
+
+export interface ExecutionDispatchLogger {
+  error(eventType: string, message: string, telemetry?: JsonRecord): void;
+}
+
+export interface DispatchTradeIntentInput {
+  readonly executioner: ExecutionDispatchFetcher;
+  readonly logger: ExecutionDispatchLogger;
+  readonly intent: TradeIntent;
+}
+
 export function evaluateExecutionDispatchGate(
   input: ExecutionDispatchGateInput
 ): ExecutionDispatchGateDecision {
@@ -90,4 +104,23 @@ export function buildExecutionDispatchBlockLog(
   }
 
   return null;
+}
+
+export async function dispatchTradeIntentToExecutioner(
+  input: DispatchTradeIntentInput
+): Promise<void> {
+  try {
+    await input.executioner.fetch(
+      new Request("https://executioner.internal/execute", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input.intent)
+      })
+    );
+  } catch (error) {
+    input.logger.error("EXECUTION_DISPATCH_FAILED", "Failed to dispatch trade intent", {
+      intentId: input.intent.intentId,
+      error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
+    });
+  }
 }

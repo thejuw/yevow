@@ -127,6 +127,7 @@ import {
 import { buildExecutionPlanArtifacts } from "./engine/trading/execution/ExecutionPlanRuntime";
 import {
   buildExecutionDispatchBlockLog,
+  dispatchTradeIntentToExecutioner,
   evaluateExecutionDispatchGate
 } from "./engine/trading/execution/ExecutionDispatchRuntime";
 import { applyIntentPaperExecutionBudget } from "./engine/trading/execution/PaperExecutionBudgetRuntime";
@@ -4511,20 +4512,7 @@ export class TradingEngine {
       return;
     }
 
-    try {
-      await executioner.fetch(
-        new Request("https://executioner.internal/execute", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(intent)
-        })
-      );
-    } catch (error) {
-      this.logger.error("EXECUTION_DISPATCH_FAILED", "Failed to dispatch trade intent", {
-        intentId: intent.intentId,
-        error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
-      });
-    }
+    await dispatchTradeIntentToExecutioner({ executioner, logger: this.logger, intent });
   }
 
   private reservePaperExecutionBudget(intent: TradeIntent): boolean {

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   buildExecutionDispatchBlockLog,
+  dispatchTradeIntentToExecutioner,
+  type ExecutionDispatchLogger,
   evaluateExecutionDispatchGate
 } from "../../src/engine/trading/execution/ExecutionDispatchRuntime";
 import type { TradeIntent } from "../../src/types";
@@ -142,7 +144,62 @@ describe("ExecutionDispatchRuntime", () => {
       })
     ).toBeNull();
   });
+
+  it("dispatches trade intents to the executioner binding", async () => {
+    const requests: Request[] = [];
+    const { logger } = loggerSpy();
+    const executioner = {
+      async fetch(request: Request) {
+        requests.push(request);
+        return Response.json({ ok: true });
+      }
+    };
+
+    await dispatchTradeIntentToExecutioner({ executioner, logger, intent: tradeIntent() });
+
+    expect(requests[0].url).toBe("https://executioner.internal/execute");
+    expect(requests[0].method).toBe("POST");
+    await expect(requests[0].json()).resolves.toMatchObject({
+      intentId: "intent-1",
+      instrumentCode: "btc-usd",
+      orderType: "LIMIT"
+    });
+  });
+
+  it("logs execution dispatch failures without throwing", async () => {
+    const { logger, errors } = loggerSpy();
+    const executioner = {
+      async fetch() {
+        throw new Error("executioner unreachable");
+      }
+    };
+
+    await dispatchTradeIntentToExecutioner({ executioner, logger, intent: tradeIntent() });
+
+    expect(errors[0]).toMatchObject({
+      eventType: "EXECUTION_DISPATCH_FAILED",
+      telemetry: {
+        intentId: "intent-1",
+        error: "executioner unreachable"
+      }
+    });
+  });
 });
+
+function loggerSpy(): {
+  logger: ExecutionDispatchLogger;
+  errors: { eventType: string; message: string; telemetry?: Record<string, unknown> }[];
+} {
+  const errors: { eventType: string; message: string; telemetry?: Record<string, unknown> }[] = [];
+  return {
+    logger: {
+      error(eventType, message, telemetry) {
+        errors.push({ eventType, message, telemetry });
+      }
+    },
+    errors
+  };
+}
 
 function tradeIntent(overrides: Partial<TradeIntent> = {}): TradeIntent {
   return {
