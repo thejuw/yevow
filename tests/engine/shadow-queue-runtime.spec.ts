@@ -3,6 +3,7 @@ import {
   buildShadowQueueDecisionTrace,
   buildShadowQueueGhostFillRecord,
   buildShadowQueueTradeIntent,
+  buildShadowQueueTradeIntentFromDecision,
   enforceShadowQueueDecisionLatency,
   resolveShadowQueueNoEdgeLogInterval,
   resolveShadowQueueSizingConfig,
@@ -281,6 +282,49 @@ describe("ShadowQueueRuntime", () => {
         positionSizeMultiplier: 1
       })
     ).toBe(0);
+  });
+
+  it("assembles shadow queue trade intents from drift decisions and runtime sizing", () => {
+    const intent = buildShadowQueueTradeIntentFromDecision({
+      decision: decision({ action: "GREEN_LIGHT", dispatchSide: "BUY", pnMidPrice: 100 }),
+      book: book({ bestBid: 99.5, bestAsk: 100.5, tickSize: 0.5, spread: 1 }),
+      observedAt: OBSERVED_AT,
+      engineId: "engine-1",
+      baseSpreadBps: 10,
+      exchangeFeeBps: 1,
+      toxicityScore: 0.3,
+      equity: 1_000,
+      maxPositionPct: 0.1,
+      kellyFraction: 0.5,
+      inventory: inventory({ netDelta: 0, maxInventoryUnits: 2 }),
+      positionSizeMultiplier: 1
+    });
+
+    expect(intent).toMatchObject({
+      action: "BUY",
+      expectedPrice: 99,
+      requestedSize: 0.2,
+      approvedSize: 0.2,
+      postOnly: true,
+      timeInForce: "ALO"
+    });
+
+    expect(
+      buildShadowQueueTradeIntentFromDecision({
+        decision: decision({ dispatchSide: null }),
+        book: book(),
+        observedAt: OBSERVED_AT,
+        engineId: "engine-1",
+        baseSpreadBps: 10,
+        exchangeFeeBps: 1,
+        toxicityScore: 0.3,
+        equity: 1_000,
+        maxPositionPct: 0.1,
+        kellyFraction: 0.5,
+        inventory: inventory(),
+        positionSizeMultiplier: 1
+      })
+    ).toBeNull();
   });
 
   it("builds green and red light trade intents with bounded confidence", () => {

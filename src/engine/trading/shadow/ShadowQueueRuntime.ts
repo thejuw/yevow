@@ -44,6 +44,21 @@ export interface ShadowQueueIntentInput {
   readonly price: number;
 }
 
+export interface ShadowQueueIntentFromDecisionInput {
+  readonly decision: ShadowQueueDecision;
+  readonly book: InternalOrderBook;
+  readonly observedAt: string;
+  readonly engineId: string;
+  readonly baseSpreadBps: number;
+  readonly exchangeFeeBps: number;
+  readonly toxicityScore: number;
+  readonly equity: number;
+  readonly maxPositionPct: number;
+  readonly kellyFraction: number;
+  readonly inventory: InventoryState;
+  readonly positionSizeMultiplier: number;
+}
+
 export interface ShadowQueueTickGateInput {
   readonly book: InternalOrderBook;
   readonly shadowReplay?: boolean;
@@ -293,6 +308,45 @@ export function shadowQueueKellySize(input: ShadowQueueSizingInput): number {
   const bounded = Math.min(Math.max(0, budgetSize), Math.max(0, inventoryRoom), depthCap);
 
   return bounded > 0 ? roundCrypto(Math.max(DEFAULT_SHADOW_VLO_MIN_SIZE, bounded)) : 0;
+}
+
+export function buildShadowQueueTradeIntentFromDecision(
+  input: ShadowQueueIntentFromDecisionInput
+): TradeIntent | null {
+  const action = input.decision.dispatchSide;
+
+  if (!action || input.book.midPrice === null || input.book.midPrice <= 0) {
+    return null;
+  }
+
+  const price = shadowQueuePostOnlyPrice(
+    action,
+    input.book,
+    input.decision.pnMidPrice,
+    input.baseSpreadBps
+  );
+  const requestedSize = shadowQueueKellySize({
+    action,
+    price,
+    book: input.book,
+    equity: input.equity,
+    maxPositionPct: input.maxPositionPct,
+    kellyFraction: input.kellyFraction,
+    inventory: input.inventory,
+    positionSizeMultiplier: input.positionSizeMultiplier
+  });
+
+  return buildShadowQueueTradeIntent({
+    decision: input.decision,
+    book: input.book,
+    observedAt: input.observedAt,
+    engineId: input.engineId,
+    baseSpreadBps: input.baseSpreadBps,
+    exchangeFeeBps: input.exchangeFeeBps,
+    toxicityScore: input.toxicityScore,
+    requestedSize,
+    price
+  });
 }
 
 export function buildShadowQueueTradeIntent(input: ShadowQueueIntentInput): TradeIntent | null {
