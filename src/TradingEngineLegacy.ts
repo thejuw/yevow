@@ -71,6 +71,7 @@ import {
   nextQuoteStateForInstrument as nextRuntimeQuoteStateForInstrument,
   strategyQuoteDisabledReason as runtimeStrategyQuoteDisabledReason
 } from "./engine/trading/quotes/QuoteStateRuntime";
+import { buildExecutionPlanArtifacts } from "./engine/trading/execution/ExecutionPlanRuntime";
 import {
   OrderBookReconstructor,
   type OrderBookStores
@@ -5098,47 +5099,17 @@ export class TradingEngine {
         }
       );
     }
-    const executionChildren =
-      sorPlan.routes.length > 0
-        ? sorPlan.routes.map((route, index) => ({
-            ...camouflage.intent,
-            intentId: `${camouflage.intent.intentId}:sor:${index + 1}`,
-            marketKey: route.marketKey,
-            source_exchange: route.source_exchange,
-            intendedPrice: route.expectedPrice,
-            expectedPrice: route.expectedPrice,
-            requestedSize: route.size,
-            approvedSize: route.size,
-            rationale: `${camouflage.intent.rationale}; SOR child ${index + 1}/${sorPlan.routes.length}`
-          }))
-        : camouflage.icebergChunks;
-    const routedCamouflage = {
-      ...camouflage,
-      icebergChunks: executionChildren
-    };
-    const ackDeadlineAt = new Date(
-      Date.parse(observedAt) +
-        readPositiveInteger(
-          this.env.ORDER_ACK_TIMEOUT_MS,
-          DEFAULT_ORDER_ACK_TIMEOUT_MS,
-          100,
-          60_000
-        )
-    ).toISOString();
-    const orders = routedCamouflage.icebergChunks.map((chunk) => ({
-      clientId: chunk.intentId,
-      exchangeOrderId: null,
-      intentId: camouflage.intent.intentId,
-      instrumentCode: chunk.instrumentCode,
-      side: chunk.action,
-      price: chunk.expectedPrice,
-      size: chunk.approvedSize ?? chunk.requestedSize,
-      filledSize: 0,
-      status: "PENDING" as const,
-      createdAt: observedAt,
-      updatedAt: observedAt,
-      ackDeadlineAt
-    }));
+    const { camouflage: routedCamouflage, orders } = buildExecutionPlanArtifacts({
+      camouflage,
+      sorPlan,
+      observedAt,
+      ackTimeoutMs: readPositiveInteger(
+        this.env.ORDER_ACK_TIMEOUT_MS,
+        DEFAULT_ORDER_ACK_TIMEOUT_MS,
+        100,
+        60_000
+      )
+    });
 
     return { intent: camouflage.intent, camouflage: routedCamouflage, sorPlan, orders };
   }
