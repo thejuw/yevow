@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildExecutionPerformanceTransition,
   buildPerformanceMetricsText,
   buildPerformanceSnapshot,
   calculateTickLatency,
@@ -194,6 +195,56 @@ describe("LatencyRuntime", () => {
     expect(metrics).toContain('engine_id="engine-1"');
     expect(metrics).toContain("sovereign_sigma_execution_unstable");
     expect(metrics).toContain("sovereign_sigma_toxicity_score");
+  });
+
+  it("builds performance transition telemetry and notification envelopes", () => {
+    const unstableTransition = buildExecutionPerformanceTransition(
+      buildPerformanceSnapshot(
+        "engine-1",
+        profile({ status: "UNSTABLE", jitterMs: 12, jitterThresholdMs: 10 }),
+        42,
+        "2026-05-18T15:00:00.000Z"
+      )
+    );
+
+    expect(unstableTransition).toMatchObject({
+      telemetryType: "ENGINE_PERFORMANCE_UNSTABLE",
+      correlationId: "engine-1:42",
+      telemetryPayload: {
+        status: "UNSTABLE",
+        jitterMs: 12,
+        jitterThresholdMs: 10
+      },
+      notification: {
+        priority: "HIGH",
+        title: "Sovereign-Sigma execution jitter unstable",
+        dedupeKey: "performance:UNSTABLE",
+        metadata: {
+          engineId: "engine-1",
+          status: "UNSTABLE",
+          processedTicks: 42
+        }
+      }
+    });
+
+    const stableTransition = buildExecutionPerformanceTransition(
+      buildPerformanceSnapshot(
+        "engine-1",
+        profile({ status: "STABLE", jitterMs: 2, jitterThresholdMs: 10 }),
+        43,
+        "2026-05-18T15:01:00.000Z"
+      )
+    );
+
+    expect(stableTransition).toMatchObject({
+      telemetryType: "ENGINE_PERFORMANCE_STABLE",
+      correlationId: "engine-1:43",
+      notification: {
+        priority: "LOW",
+        title: "Sovereign-Sigma execution jitter recovered",
+        dedupeKey: "performance:STABLE"
+      }
+    });
   });
 });
 

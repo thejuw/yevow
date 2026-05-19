@@ -113,6 +113,7 @@ import {
 } from "./engine/trading/execution/ExecutionQueueRuntime";
 import { calculateAssetMatrix as calculateRuntimeAssetMatrix } from "./engine/trading/state/AssetMatrixRuntime";
 import {
+  buildExecutionPerformanceTransition,
   buildPerformanceMetricsText,
   buildPerformanceSnapshot,
   calculateTickLatency,
@@ -5879,51 +5880,11 @@ export class TradingEngine {
     if (shouldCompute && nextProfile.status !== this.lastPerformanceStatus) {
       this.lastPerformanceStatus = nextProfile.status;
       const snapshot = this.performanceSnapshot(nextProfile, nextProcessedTicks, trace.observedAt);
+      const transition = buildExecutionPerformanceTransition(snapshot);
 
       this.logger.logPerformanceSnapshot(snapshot);
-      this.publish(
-        nextProfile.status === "UNSTABLE"
-          ? "ENGINE_PERFORMANCE_UNSTABLE"
-          : "ENGINE_PERFORMANCE_STABLE",
-        {
-          status: snapshot.status,
-          jitterMs: snapshot.jitterMs,
-          jitterThresholdMs: snapshot.jitterThresholdMs,
-          sampleCount: snapshot.sampleCount,
-          sampleWindow: snapshot.sampleWindow,
-          processingLatencyMs: snapshot.lastProcessingLatencyMs,
-          averageProcessingLatencyMs: snapshot.averageProcessingLatencyMs,
-          maxProcessingLatencyMs: snapshot.maxProcessingLatencyMs,
-          wakeUpTimeMs: snapshot.wakeUpTimeMs,
-          orderBookUpdateMs: snapshot.orderBookUpdateMs,
-          agentLogicMs: snapshot.agentLogicMs,
-          totalHotPathMs: snapshot.totalHotPathMs,
-          coldStartSuspected: snapshot.coldStartSuspected
-        },
-        `${snapshot.engineId}:${snapshot.processedTicks}`
-      );
-      this.notifier.notify({
-        priority: nextProfile.status === "UNSTABLE" ? "HIGH" : "LOW",
-        title:
-          nextProfile.status === "UNSTABLE"
-            ? "Sovereign-Sigma execution jitter unstable"
-            : "Sovereign-Sigma execution jitter recovered",
-        message:
-          nextProfile.status === "UNSTABLE"
-            ? `Processing jitter ${snapshot.jitterMs}ms exceeded ${snapshot.jitterThresholdMs}ms threshold.`
-            : `Processing jitter ${snapshot.jitterMs}ms returned below ${snapshot.jitterThresholdMs}ms threshold.`,
-        dedupeKey: `performance:${nextProfile.status}`,
-        metadata: {
-          engineId: snapshot.engineId,
-          status: snapshot.status,
-          jitterMs: snapshot.jitterMs,
-          jitterThresholdMs: snapshot.jitterThresholdMs,
-          averageProcessingLatencyMs: snapshot.averageProcessingLatencyMs,
-          maxProcessingLatencyMs: snapshot.maxProcessingLatencyMs,
-          sampleCount: snapshot.sampleCount,
-          processedTicks: snapshot.processedTicks
-        }
-      });
+      this.publish(transition.telemetryType, transition.telemetryPayload, transition.correlationId);
+      this.notifier.notify(transition.notification);
     }
   }
 
