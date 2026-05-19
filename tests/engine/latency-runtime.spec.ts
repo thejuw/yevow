@@ -6,6 +6,7 @@ import {
   nextExecutionProfile,
   nextLatencyAverage,
   recordProcessingLatencySample,
+  stateAfterStaleDataKillSwitch,
   stateAfterHardStaleTickDrop
 } from "../../src/engine/trading/performance/LatencyRuntime";
 import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
@@ -81,6 +82,58 @@ describe("LatencyRuntime", () => {
       quoteState: { status: "SUSPENDED", reason: "HARD_STALE_DROP" },
       heartbeatAt: "2026-05-18T15:00:00.250Z",
       updatedAt: "2026-05-18T15:00:00.250Z"
+    });
+  });
+
+  it("marks soft stale kill-switch state with a quote hibernation window", () => {
+    const currentState = defaultEngineState("latency-test");
+    currentState.processedTicks = 10;
+    currentState.staleTickCount = 2;
+    currentState.quoteState = {
+      status: "ACTIVE",
+      reason: null,
+      suspendedUntil: null,
+      lastQuote: null,
+      updatedAt: "2026-05-18T15:00:00.000Z"
+    };
+    currentState.assetQuoteStates = Object.fromEntries(
+      Object.keys(currentState.assetQuoteStates).map((instrumentCode) => [
+        instrumentCode,
+        {
+          status: "ACTIVE" as const,
+          reason: null,
+          suspendedUntil: null,
+          lastQuote: null,
+          updatedAt: "2026-05-18T15:00:00.000Z"
+        }
+      ])
+    );
+
+    const result = stateAfterStaleDataKillSwitch({
+      currentState,
+      metrics: latencyMetrics(),
+      instrumentCode: "btc-usd",
+      maxLatencyMs: 150,
+      quoteHibernateMs: 60_000
+    });
+
+    expect(result.suspendedUntil).toBe("2026-05-18T15:01:00.250Z");
+    expect(result.state).toMatchObject({
+      processedTicks: 11,
+      staleTickCount: 3,
+      maxLatencyMs: 150,
+      quoteState: {
+        status: "ACTIVE",
+        reason: "PARTIAL_ASSET_SUSPENSION",
+        suspendedUntil: null
+      },
+      heartbeatAt: "2026-05-18T15:00:00.250Z",
+      updatedAt: "2026-05-18T15:00:00.250Z"
+    });
+    expect(result.state.assetQuoteStates["btc-usd"]).toMatchObject({
+      status: "SUSPENDED",
+      reason: "STALE_DATA_KILL_SWITCH",
+      suspendedUntil: "2026-05-18T15:01:00.250Z"
     });
   });
 

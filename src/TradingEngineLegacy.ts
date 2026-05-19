@@ -90,6 +90,7 @@ import {
   nextExecutionProfile,
   nextLatencyAverage,
   recordProcessingLatencySample,
+  stateAfterStaleDataKillSwitch,
   stateAfterHardStaleTickDrop,
   type ExecutionTraceInput
 } from "./engine/trading/performance/LatencyRuntime";
@@ -3306,33 +3307,14 @@ export class TradingEngine {
         observedAt: metrics.brainTimestamp
       });
 
-      const suspendedUntil = new Date(
-        Date.parse(metrics.brainTimestamp) + this.resolveQuoteHibernateMs()
-      ).toISOString();
-      const assetQuoteStates = suspendAssetQuoteStates(
-        this.engineState.assetQuoteStates,
-        "STALE_DATA_KILL_SWITCH",
-        metrics.brainTimestamp,
-        {
-          instrumentCode: tick.instrumentCode,
-          suspendedUntil,
-          lastQuote: this.engineState.quoteState.lastQuote
-        }
-      );
-      this.engineState = {
-        ...this.engineState,
-        processedTicks: this.engineState.processedTicks + 1,
-        staleTickCount: this.engineState.staleTickCount + 1,
-        quoteState: aggregateQuoteState(
-          assetQuoteStates,
-          this.engineState.quoteState,
-          metrics.brainTimestamp
-        ),
-        assetQuoteStates,
+      const staleState = stateAfterStaleDataKillSwitch({
+        currentState: this.engineState,
+        metrics,
+        instrumentCode: tick.instrumentCode,
         maxLatencyMs: this.maxLatencyMs,
-        heartbeatAt: metrics.brainTimestamp,
-        updatedAt: metrics.brainTimestamp
-      };
+        quoteHibernateMs: this.resolveQuoteHibernateMs()
+      });
+      this.engineState = staleState.state;
 
       await this.persistHotStorageSnapshot(
         {

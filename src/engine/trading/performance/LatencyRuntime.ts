@@ -144,6 +144,55 @@ export function stateAfterHardStaleTickDrop(
   };
 }
 
+export interface StaleDataKillSwitchInput {
+  readonly currentState: EngineState;
+  readonly metrics: LatencyMetrics;
+  readonly instrumentCode: string;
+  readonly maxLatencyMs: number;
+  readonly quoteHibernateMs: number;
+}
+
+export interface StaleDataKillSwitchResult {
+  readonly state: EngineState;
+  readonly suspendedUntil: string;
+}
+
+export function stateAfterStaleDataKillSwitch(
+  input: StaleDataKillSwitchInput
+): StaleDataKillSwitchResult {
+  const suspendedUntil = new Date(
+    Date.parse(input.metrics.brainTimestamp) + input.quoteHibernateMs
+  ).toISOString();
+  const assetQuoteStates = suspendAssetQuoteStates(
+    input.currentState.assetQuoteStates,
+    "STALE_DATA_KILL_SWITCH",
+    input.metrics.brainTimestamp,
+    {
+      instrumentCode: input.instrumentCode,
+      suspendedUntil,
+      lastQuote: input.currentState.quoteState.lastQuote
+    }
+  );
+
+  return {
+    suspendedUntil,
+    state: {
+      ...input.currentState,
+      processedTicks: input.currentState.processedTicks + 1,
+      staleTickCount: input.currentState.staleTickCount + 1,
+      quoteState: aggregateQuoteState(
+        assetQuoteStates,
+        input.currentState.quoteState,
+        input.metrics.brainTimestamp
+      ),
+      assetQuoteStates,
+      maxLatencyMs: input.maxLatencyMs,
+      heartbeatAt: input.metrics.brainTimestamp,
+      updatedAt: input.metrics.brainTimestamp
+    }
+  };
+}
+
 export function recordProcessingLatencySample(
   samples: number[],
   processingLatencyMs: number,
