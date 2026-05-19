@@ -1,6 +1,7 @@
 import type {
   EdgeTopology,
   EngineLocation,
+  EngineState,
   Env,
   GlobalRiskConfig,
   RiskLimits
@@ -154,6 +155,92 @@ export function applyLocationRisk(
     maxOrderNotional: roundMetric(config.MAX_POSITION_SIZE * location.positionSizeMultiplier, 8),
     maxDrawdownPct: config.MAX_DRAWDOWN_PCT,
     updatedAt
+  };
+}
+
+export interface TopologyObservationInput {
+  readonly state: EngineState;
+  readonly topology: EdgeTopology;
+  readonly env: Pick<
+    Env,
+    "PLACEMENT_TARGET_COLO" | "GOLDEN_COLOS" | "HIGH_LATENCY_COLO_RISK_MULTIPLIER"
+  >;
+  readonly config: Pick<
+    GlobalRiskConfig,
+    "version" | "TRADING_ENABLED" | "MAX_POSITION_SIZE" | "MAX_DRAWDOWN_PCT" | "GOLDEN_COLOS"
+  >;
+}
+
+export interface TopologyObservationResult {
+  readonly state: EngineState;
+  readonly previousLocation: EngineLocation;
+  readonly nextLocation: EngineLocation;
+  readonly changed: boolean;
+  readonly placementChanged: boolean;
+  readonly riskAdjustedForNonGoldenRegion: boolean;
+}
+
+export function stateAfterTopologyObservation(
+  input: TopologyObservationInput
+): TopologyObservationResult {
+  const previousLocation = input.state.location;
+  const nextLocation = resolveEngineLocation(
+    input.topology,
+    previousLocation,
+    input.env,
+    input.config,
+    previousLocation.observedLatencyMs
+  );
+  const changed = locationChanged(previousLocation, nextLocation);
+
+  return {
+    previousLocation,
+    nextLocation,
+    changed,
+    placementChanged:
+      previousLocation.colo !== nextLocation.colo ||
+      previousLocation.placement !== nextLocation.placement,
+    riskAdjustedForNonGoldenRegion: changed && !nextLocation.isGoldenRegion,
+    state: changed
+      ? {
+          ...input.state,
+          location: nextLocation,
+          risk: applyLocationRisk(
+            input.state.risk,
+            input.config,
+            nextLocation,
+            input.topology.observedAt
+          ),
+          updatedAt: input.topology.observedAt
+        }
+      : {
+          ...input.state,
+          location: nextLocation
+        }
+  };
+}
+
+export interface LocationLatencyInput {
+  readonly state: EngineState;
+  readonly totalLatencyMs: number;
+  readonly observedAt: string;
+  readonly config: Pick<
+    GlobalRiskConfig,
+    "version" | "TRADING_ENABLED" | "MAX_POSITION_SIZE" | "MAX_DRAWDOWN_PCT"
+  >;
+}
+
+export function stateAfterLocationLatency(input: LocationLatencyInput): EngineState {
+  const location = {
+    ...input.state.location,
+    observedLatencyMs: roundMetric(input.totalLatencyMs, 3),
+    lastSeenAt: input.observedAt
+  };
+
+  return {
+    ...input.state,
+    location,
+    risk: applyLocationRisk(input.state.risk, input.config, location, input.observedAt)
   };
 }
 

@@ -21,10 +21,11 @@ import { AdverseSelectionModel, adversePenaltyForQuoteSide } from "./engine/Adve
 import {
   applyLocationRisk,
   defaultEngineLocation,
-  locationChanged,
   locationTelemetry,
   readTopologyHeaders,
-  resolveEngineLocation
+  resolveEngineLocation,
+  stateAfterLocationLatency,
+  stateAfterTopologyObservation
 } from "./engine/trading/helpers/PlacementResolver";
 import {
   DEFAULT_ORDER_BOOK_TICK_SIZE,
@@ -6070,47 +6071,34 @@ export class TradingEngine {
   }
 
   private observeTopology(topology: EdgeTopology): void {
-    const previous = this.engineState.location;
-    const next = resolveEngineLocation(
+    const observation = stateAfterTopologyObservation({
+      state: this.engineState,
       topology,
-      previous,
-      this.env,
-      this.cachedConfig,
-      previous.observedLatencyMs
-    );
+      env: this.env,
+      config: this.cachedConfig
+    });
+    this.engineState = observation.state;
 
-    if (!locationChanged(previous, next)) {
-      this.engineState = {
-        ...this.engineState,
-        location: next
-      };
+    if (!observation.changed) {
       return;
     }
 
-    const now = topology.observedAt;
-    this.engineState = {
-      ...this.engineState,
-      location: next,
-      risk: applyLocationRisk(this.engineState.risk, this.cachedConfig, next, now),
-      updatedAt: now
-    };
-
     this.waitUntilStoragePut(ENGINE_STATE_KEY, this.engineState, "COLO_TOPOLOGY_CHANGED");
 
-    if (previous.colo !== next.colo || previous.placement !== next.placement) {
+    if (observation.placementChanged) {
       this.logger.warn(
         "COLO_TOPOLOGY_CHANGED",
         "Trading engine observed a Cloudflare placement change",
-        locationTelemetry(next)
+        locationTelemetry(observation.nextLocation)
       );
     }
 
-    if (!next.isGoldenRegion) {
+    if (observation.riskAdjustedForNonGoldenRegion) {
       this.logger.warn(
         "PIT_BOSS_RISK_ADJUSTED",
         "Pit Boss reduced max order notional for execution-location risk",
         {
-          ...locationTelemetry(next),
+          ...locationTelemetry(observation.nextLocation),
           maxOrderNotional: this.engineState.risk.maxOrderNotional,
           baseMaxPositionSize: this.cachedConfig.MAX_POSITION_SIZE
         }
@@ -6119,17 +6107,12 @@ export class TradingEngine {
   }
 
   private applyLocationLatency(totalLatencyMs: number, observedAt: string): void {
-    const location = {
-      ...this.engineState.location,
-      observedLatencyMs: roundLatency(totalLatencyMs),
-      lastSeenAt: observedAt
-    };
-
-    this.engineState = {
-      ...this.engineState,
-      location,
-      risk: applyLocationRisk(this.engineState.risk, this.cachedConfig, location, observedAt)
-    };
+    this.engineState = stateAfterLocationLatency({
+      state: this.engineState,
+      totalLatencyMs,
+      observedAt,
+      config: this.cachedConfig
+    });
   }
 
   private warmUpForTopology(topology: EdgeTopology): void {

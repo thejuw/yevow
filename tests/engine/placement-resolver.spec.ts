@@ -9,8 +9,11 @@ import {
   placementColo,
   readTopologyHeaders,
   resolveEngineLocation,
-  resolveRiskMultiplier
+  resolveRiskMultiplier,
+  stateAfterLocationLatency,
+  stateAfterTopologyObservation
 } from "../../src/engine/trading/helpers/PlacementResolver";
+import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
 import type { RiskLimits } from "../../src/types";
 
 const baseRisk: RiskLimits = {
@@ -194,5 +197,93 @@ describe("PlacementResolver", () => {
     expect(resolveRiskMultiplier("0")).toBe(0.5);
     expect(resolveRiskMultiplier("2")).toBe(0.5);
     expect(resolveRiskMultiplier("not-a-number")).toBe(0.5);
+  });
+
+  it("applies topology observations to engine state and flags risk adjustment", () => {
+    const state = defaultEngineState("placement-state");
+    const result = stateAfterTopologyObservation({
+      state,
+      topology: {
+        colo: "DFW",
+        placement: "remote-dfw",
+        country: null,
+        city: null,
+        region: null,
+        timezone: null,
+        latitude: null,
+        longitude: null,
+        requestId: "req-1",
+        observedAt: "2026-05-18T04:00:00.000Z"
+      },
+      env: {
+        PLACEMENT_TARGET_COLO: undefined,
+        GOLDEN_COLOS: "NRT,HND",
+        HIGH_LATENCY_COLO_RISK_MULTIPLIER: "0.25"
+      },
+      config: {
+        version: "risk-v3",
+        TRADING_ENABLED: true,
+        MAX_POSITION_SIZE: 100,
+        MAX_DRAWDOWN_PCT: 0.05,
+        GOLDEN_COLOS: "NRT,HND"
+      }
+    });
+
+    expect(result.changed).toBe(true);
+    expect(result.placementChanged).toBe(true);
+    expect(result.riskAdjustedForNonGoldenRegion).toBe(true);
+    expect(result.state).toMatchObject({
+      updatedAt: "2026-05-18T04:00:00.000Z",
+      location: {
+        colo: "DFW",
+        placement: "remote-dfw",
+        isGoldenRegion: false,
+        positionSizeMultiplier: 0.25
+      },
+      risk: {
+        configVersion: "risk-v3",
+        killSwitch: false,
+        maxOrderNotional: 25,
+        maxDrawdownPct: 0.05,
+        updatedAt: "2026-05-18T04:00:00.000Z"
+      }
+    });
+  });
+
+  it("updates observed location latency without changing the placement identity", () => {
+    const state = defaultEngineState("placement-latency");
+    state.location = {
+      ...state.location,
+      colo: "NRT",
+      placement: "remote-nrt",
+      isGoldenRegion: true,
+      positionSizeMultiplier: 1,
+      latencyRiskMultiplier: 1
+    };
+
+    const result = stateAfterLocationLatency({
+      state,
+      totalLatencyMs: 12.34567,
+      observedAt: "2026-05-18T05:00:00.000Z",
+      config: {
+        version: "risk-v4",
+        TRADING_ENABLED: false,
+        MAX_POSITION_SIZE: 50,
+        MAX_DRAWDOWN_PCT: 0.04
+      }
+    });
+
+    expect(result.location).toMatchObject({
+      colo: "NRT",
+      placement: "remote-nrt",
+      observedLatencyMs: 12.346,
+      lastSeenAt: "2026-05-18T05:00:00.000Z"
+    });
+    expect(result.risk).toMatchObject({
+      configVersion: "risk-v4",
+      killSwitch: true,
+      maxOrderNotional: 50,
+      maxDrawdownPct: 0.04
+    });
   });
 });
