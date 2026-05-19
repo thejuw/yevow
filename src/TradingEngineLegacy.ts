@@ -63,6 +63,7 @@ import {
   shadowQueueKellySize as calculateShadowQueueKellySize,
   shadowQueuePostOnlyPrice as calculateShadowQueuePostOnlyPrice
 } from "./engine/trading/shadow/ShadowQueueRuntime";
+import { updateLeadLagMetrics as updateLeadLagRuntimeMetrics } from "./engine/trading/leadlag/LeadLagRuntime";
 import {
   OrderBookReconstructor,
   type OrderBookStores
@@ -420,8 +421,6 @@ import {
   quoteToTelemetry,
   quoteStateTelemetry,
   compareQueuedExecutionIntent,
-  returns,
-  pearson,
   wait,
   readNumber,
   readPositiveNumber,
@@ -4900,104 +4899,18 @@ export class TradingEngine {
     book: InternalOrderBook,
     observedAt: string
   ): EngineState["leadLag"] {
-    if (book.midPrice === null) {
-      return this.engineState.leadLag;
-    }
-
-    const samples = this.leadLagSamples.get(tick.instrumentCode) ?? [];
-    samples.push({ price: book.midPrice, observedAt });
-    this.leadLagSamples.set(tick.instrumentCode, samples.slice(-100));
-    const instruments = [...this.leadLagSamples.keys()].sort();
-
-    if (instruments.length < 2) {
-      return {
-        ...this.engineState.leadLag,
-        sampleCount: samples.length,
-        updatedAt: observedAt
-      };
-    }
-
-    let best: {
-      leadInstrument: string;
-      lagInstrument: string;
-      correlation: number;
-      lagSteps: number;
-      sampleCount: number;
-      leadLagDelta: number;
-      expectedValue: number;
-    } | null = null;
-
-    for (const leadInstrument of instruments) {
-      for (const lagInstrument of instruments) {
-        if (leadInstrument === lagInstrument) {
-          continue;
-        }
-
-        const lead = this.leadLagSamples.get(leadInstrument) ?? [];
-        const lag = this.leadLagSamples.get(lagInstrument) ?? [];
-        const sampleCount = Math.min(lead.length, lag.length, 100);
-
-        if (sampleCount < 10) {
-          continue;
-        }
-
-        const leadPrices = lead.slice(-sampleCount).map((sample) => sample.price);
-        const lagPrices = lag.slice(-sampleCount).map((sample) => sample.price);
-
-        for (let lagSteps = 1; lagSteps <= Math.min(10, sampleCount - 2); lagSteps += 1) {
-          const leadReturns = returns(leadPrices.slice(0, -lagSteps));
-          const lagReturns = returns(lagPrices.slice(lagSteps));
-          const correlation = pearson(leadReturns, lagReturns);
-
-          if (correlation === null) {
-            continue;
-          }
-
-          const leadMove = leadPrices.at(-1)! - leadPrices.at(-2)!;
-          const lagMove = lagPrices.at(-1)! - lagPrices.at(-2)!;
-          const leadLagDelta = leadMove - lagMove;
-          const expectedValue = Math.abs(leadLagDelta) * Math.abs(correlation);
-
-          if (!best || expectedValue > best.expectedValue) {
-            best = {
-              leadInstrument,
-              lagInstrument,
-              correlation,
-              lagSteps,
-              sampleCount,
-              leadLagDelta,
-              expectedValue
-            };
-          }
-        }
-      }
-    }
-
-    if (!best) {
-      return {
-        ...this.engineState.leadLag,
-        sampleCount: samples.length,
-        updatedAt: observedAt
-      };
-    }
-    const lagMs = best.lagSteps * Math.max(1, this.engineState.averageLatency || 1);
-    const spreadCost =
-      (this.engineState.microstructure.spread ?? 0) +
-      (this.engineState.microstructure.midPrice ?? 0) *
-        (this.engineState.slippage.executionCostBufferBps / 10_000);
-
-    return {
-      schemaVersion: "lead-lag.v1",
-      leadInstrument: best.leadInstrument,
-      lagInstrument: best.lagInstrument,
-      correlation: best.correlation,
-      lagMs,
-      leadLagDelta: best.leadLagDelta,
-      expectedValue: best.expectedValue,
-      executable: best.expectedValue > spreadCost,
-      sampleCount: best.sampleCount,
-      updatedAt: observedAt
-    };
+    return updateLeadLagRuntimeMetrics({
+      samples: this.leadLagSamples,
+      currentLeadLag: this.engineState.leadLag,
+      instrumentCode: tick.instrumentCode,
+      midPrice: book.midPrice,
+      observedAt,
+      averageLatencyMs: this.engineState.averageLatency,
+      microstructureSpread: this.engineState.microstructure.spread,
+      microstructureMidPrice: this.engineState.microstructure.midPrice,
+      executionCostBufferBps: this.engineState.slippage.executionCostBufferBps,
+      sampleLimit: 100
+    });
   }
 
   private calculateInventoryState(
