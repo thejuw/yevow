@@ -219,6 +219,44 @@ export function currentOrderBookSnapshot(
   };
 }
 
+export function currentBookForMarketTick(
+  orderBook: Map<string, InternalOrderBook>,
+  tick: MarketTick
+): InternalOrderBook | undefined {
+  const directBook = orderBook.get(buildMarketKey(tick.source_exchange, tick.instrumentCode));
+  if (directBook) {
+    return directBook;
+  }
+
+  const normalized = normalizeNativeInstrumentCode(tick.instrumentCode);
+  let selected: InternalOrderBook | undefined;
+  let selectedWeight = Number.NEGATIVE_INFINITY;
+  let selectedObservedAt = Number.NEGATIVE_INFINITY;
+
+  for (const book of orderBook.values()) {
+    if (book.instrumentCode !== normalized) {
+      continue;
+    }
+
+    const observedAt = Date.parse(book.updatedAt);
+    const comparableObservedAt = Number.isFinite(observedAt)
+      ? observedAt
+      : Number.NEGATIVE_INFINITY;
+
+    if (
+      !selected ||
+      book.sourceWeight > selectedWeight ||
+      (book.sourceWeight === selectedWeight && comparableObservedAt > selectedObservedAt)
+    ) {
+      selected = book;
+      selectedWeight = book.sourceWeight;
+      selectedObservedAt = comparableObservedAt;
+    }
+  }
+
+  return selected;
+}
+
 export function findBestAssetBook(
   orderBook: Map<string, InternalOrderBook>,
   instrumentCode: string

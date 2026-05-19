@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   calculateOrderBookPriceDiscovery,
+  currentBookForMarketTick,
   currentOrderBookSnapshot,
   findBestAssetBook,
   selectOrderBookMarketKey
@@ -89,6 +90,68 @@ describe("BookViews", () => {
         undefined
       )
     ).toEqual({ marketKey: "hyperliquid:eth-usd", instrumentCode: "eth-usd" });
+  });
+
+  it("selects the direct market book for incoming ticks before falling back by source quality", () => {
+    const binanceBook = book({
+      marketKey: "binance:btc-usd",
+      source: "BINANCE",
+      source_exchange: "binance",
+      sourceWeight: 2,
+      updatedAt: "2026-05-18T06:00:02.000Z"
+    });
+    const hyperliquidBook = book({
+      marketKey: "hyperliquid:btc-usd",
+      sourceWeight: 1,
+      updatedAt: OBSERVED_AT
+    });
+    const orderBook = new Map<string, InternalOrderBook>([
+      [hyperliquidBook.marketKey, hyperliquidBook],
+      [binanceBook.marketKey, binanceBook]
+    ]);
+
+    expect(
+      currentBookForMarketTick(orderBook, {
+        source_exchange: "hyperliquid",
+        instrumentCode: "BTC-USD"
+      } as MarketTick)
+    ).toBe(hyperliquidBook);
+  });
+
+  it("falls back to the highest weighted current book for the tick instrument", () => {
+    const older = book({
+      marketKey: "binance:btc-usd",
+      source: "BINANCE",
+      source_exchange: "binance",
+      sourceWeight: 2,
+      updatedAt: "2026-05-18T06:00:01.000Z"
+    });
+    const newest = book({
+      marketKey: "okx:btc-usd",
+      source: "OKX",
+      source_exchange: "okx",
+      sourceWeight: 2,
+      updatedAt: "2026-05-18T06:00:02.000Z"
+    });
+    const lowerWeight = book({
+      marketKey: "kraken:btc-usd",
+      source: "KRAKEN",
+      source_exchange: "kraken",
+      sourceWeight: 1,
+      updatedAt: "2026-05-18T06:00:03.000Z"
+    });
+    const orderBook = new Map<string, InternalOrderBook>([
+      [older.marketKey, older],
+      [lowerWeight.marketKey, lowerWeight],
+      [newest.marketKey, newest]
+    ]);
+
+    expect(
+      currentBookForMarketTick(orderBook, {
+        source_exchange: "coinbase",
+        instrumentCode: "BTC-USD"
+      } as MarketTick)
+    ).toBe(newest);
   });
 
   it("calculates weighted price discovery without allocating sorted source clones", () => {

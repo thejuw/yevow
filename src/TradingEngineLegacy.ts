@@ -42,6 +42,7 @@ import {
 } from "./engine/trading/book/BookReconstruction";
 import {
   calculateOrderBookPriceDiscovery,
+  currentBookForMarketTick,
   currentOrderBookSnapshot,
   findBestAssetBook as findBestOrderBookForAsset,
   selectOrderBookMarketKey
@@ -4019,13 +4020,7 @@ export class TradingEngine {
   }
 
   private currentBookForTick(tick: MarketTick): InternalOrderBook | undefined {
-    const marketKey = buildMarketKey(tick.source_exchange, tick.instrumentCode);
-    return (
-      this.orderBook.get(marketKey) ??
-      [...this.orderBook.values()]
-        .filter((book) => book.instrumentCode === tick.instrumentCode)
-        .sort((left, right) => right.sourceWeight - left.sourceWeight)[0]
-    );
+    return currentBookForMarketTick(this.orderBook, tick);
   }
 
   private currentFundingRate(book: InternalOrderBook): number {
