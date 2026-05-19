@@ -1,5 +1,5 @@
 import type { LogPruneReport } from "../../LogRetention";
-import type { EngineState, ExchangeOpenOrder, JanitorState } from "../../../types";
+import type { EngineState, ExchangeOpenOrder, JanitorState, JsonRecord } from "../../../types";
 
 export type JanitorCancelReason = "JANITOR_ORPHAN_EXCHANGE_ORDER" | "JANITOR_ZOMBIE_LOCAL_ORDER";
 
@@ -34,6 +34,35 @@ export interface JanitorReportInput {
 export interface JanitorReportResult {
   readonly report: JanitorState;
   readonly shouldWarn: boolean;
+}
+
+export interface JanitorExecutionerFetcher {
+  fetch(request: Request): Promise<Response>;
+}
+
+export interface JanitorExecutionLogger {
+  error(eventType: string, message: string, telemetry?: JsonRecord): void;
+  warn(eventType: string, message: string, telemetry?: JsonRecord): void;
+}
+
+export interface FetchJanitorExchangeOpenOrdersInput {
+  readonly executioner: JanitorExecutionerFetcher | undefined;
+  readonly logger: JanitorExecutionLogger;
+}
+
+export interface CancelJanitorOrderInput {
+  readonly executioner: JanitorExecutionerFetcher | undefined;
+  readonly logger: JanitorExecutionLogger;
+  readonly orderId: string;
+  readonly reason: string;
+  readonly instrumentCode?: string;
+}
+
+export interface RecordPostOnlyDustCloseSkipInput {
+  readonly openPositions: EngineState["openPositions"];
+  readonly logger: JanitorExecutionLogger;
+  readonly instrumentCode: string;
+  readonly observedAt: string;
 }
 
 export function reconcileJanitorOrders(
@@ -116,6 +145,82 @@ export function reconcileJanitorOrders(
     cancelledOrders,
     cancellationRequests
   };
+}
+
+export async function fetchJanitorExchangeOpenOrders(
+  input: FetchJanitorExchangeOpenOrdersInput
+): Promise<ExchangeOpenOrder[]> {
+  if (!input.executioner) {
+    return [];
+  }
+
+  try {
+    const response = await input.executioner.fetch(
+      new Request("https://executioner.internal/open-orders")
+    );
+
+    if (!response.ok) {
+      return [];
+    }
+
+    const payload = await response.json<{ orders?: ExchangeOpenOrder[] }>();
+    return Array.isArray(payload.orders) ? payload.orders : [];
+  } catch (error) {
+    input.logger.error("JANITOR_OPEN_ORDERS_FAILED", "Failed to fetch exchange open orders", {
+      error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
+    });
+    return [];
+  }
+}
+
+export async function cancelJanitorOrder(input: CancelJanitorOrderInput): Promise<void> {
+  if (!input.executioner) {
+    return;
+  }
+
+  try {
+    await input.executioner.fetch(
+      new Request("https://executioner.internal/cancel", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          orderId: input.orderId,
+          instrumentCode: input.instrumentCode,
+          reason: input.reason
+        })
+      })
+    );
+  } catch (error) {
+    input.logger.error("JANITOR_CANCEL_FAILED", "Failed to cancel order during janitor run", {
+      orderId: input.orderId,
+      instrumentCode: input.instrumentCode ?? null,
+      reason: input.reason,
+      error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
+    });
+  }
+}
+
+export function recordPostOnlyDustCloseSkip(
+  input: RecordPostOnlyDustCloseSkipInput
+): string | null {
+  const position = input.openPositions[input.instrumentCode];
+
+  if (!position) {
+    return null;
+  }
+
+  input.logger.warn(
+    "JANITOR_DUST_CLOSE_SKIPPED",
+    "Dust closeout skipped because taker execution is disabled",
+    {
+      instrumentCode: input.instrumentCode,
+      side: position.side,
+      quantity: position.quantity,
+      observedAt: input.observedAt,
+      inventoryProtocol: "POST_ONLY_SKEW"
+    }
+  );
+  return null;
 }
 
 export function buildJanitorReport(input: JanitorReportInput): JanitorReportResult {

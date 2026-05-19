@@ -137,7 +137,13 @@ import {
   stateAfterHardStaleTickDrop,
   type ExecutionTraceInput
 } from "./engine/trading/performance/LatencyRuntime";
-import { buildJanitorReport, reconcileJanitorOrders } from "./engine/trading/janitor/JanitorRuntime";
+import {
+  buildJanitorReport,
+  cancelJanitorOrder,
+  fetchJanitorExchangeOpenOrders,
+  reconcileJanitorOrders,
+  recordPostOnlyDustCloseSkip
+} from "./engine/trading/janitor/JanitorRuntime";
 import {
   currentCascadeActiveSnapshot as buildCurrentCascadeActiveSnapshot,
   currentCascadeHeatSnapshot as buildCurrentCascadeHeatSnapshot,
@@ -278,7 +284,6 @@ import type {
   AgentSignal,
   AssetRuntimeState,
   BookSnapshotResponse,
-  ExchangeOpenOrder,
   ExecutionReport,
   EngineState,
   Env,
@@ -4941,7 +4946,10 @@ export class TradingEngine {
       ),
       dustThreshold: 0.000001
     });
-    const exchangeOpenOrders = await this.fetchExchangeOpenOrders();
+    const exchangeOpenOrders = await fetchJanitorExchangeOpenOrders({
+      executioner: this.env.EXECUTIONER,
+      logger: this.logger
+    });
     const reconciliation = reconcileJanitorOrders({
       orderMap: this.engineState.orderMap,
       exchangeOpenOrders,
@@ -4956,7 +4964,12 @@ export class TradingEngine {
 
     const dustCloseIntents: string[] = [];
     for (const instrumentCode of baseReport.dustPositions) {
-      const intentId = await this.closeDustPosition(instrumentCode, observedAt);
+      const intentId = recordPostOnlyDustCloseSkip({
+        openPositions: this.engineState.openPositions,
+        logger: this.logger,
+        instrumentCode,
+        observedAt
+      });
       if (intentId) {
         dustCloseIntents.push(intentId);
       }
@@ -4993,30 +5006,6 @@ export class TradingEngine {
     await this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "JANITOR_REPORT");
   }
 
-  private async fetchExchangeOpenOrders(): Promise<ExchangeOpenOrder[]> {
-    if (!this.env.EXECUTIONER) {
-      return [];
-    }
-
-    try {
-      const response = await this.env.EXECUTIONER.fetch(
-        new Request("https://executioner.internal/open-orders")
-      );
-
-      if (!response.ok) {
-        return [];
-      }
-
-      const payload = await response.json<{ orders?: ExchangeOpenOrder[] }>();
-      return Array.isArray(payload.orders) ? payload.orders : [];
-    } catch (error) {
-      this.logger.error("JANITOR_OPEN_ORDERS_FAILED", "Failed to fetch exchange open orders", {
-        error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
-      });
-      return [];
-    }
-  }
-
   private async cancelOrder(
     orderId: string,
     reason: string,
@@ -5037,46 +5026,13 @@ export class TradingEngine {
       await wait(reservation.waitMs);
     }
 
-    try {
-      await this.env.EXECUTIONER.fetch(
-        new Request("https://executioner.internal/cancel", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ orderId, instrumentCode, reason })
-        })
-      );
-    } catch (error) {
-      this.logger.error("JANITOR_CANCEL_FAILED", "Failed to cancel order during janitor run", {
-        orderId,
-        instrumentCode: instrumentCode ?? null,
-        reason,
-        error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
-      });
-    }
-  }
-
-  private async closeDustPosition(
-    instrumentCode: string,
-    observedAt: string
-  ): Promise<string | null> {
-    const position = this.engineState.openPositions[instrumentCode];
-
-    if (!position) {
-      return null;
-    }
-
-    this.logger.warn(
-      "JANITOR_DUST_CLOSE_SKIPPED",
-      "Dust closeout skipped because taker execution is disabled",
-      {
-        instrumentCode,
-        side: position.side,
-        quantity: position.quantity,
-        observedAt,
-        inventoryProtocol: "POST_ONLY_SKEW"
-      }
-    );
-    return null;
+    await cancelJanitorOrder({
+      executioner: this.env.EXECUTIONER,
+      logger: this.logger,
+      orderId,
+      reason,
+      instrumentCode
+    });
   }
 
   private async pruneOperationalLogs(): Promise<LogPruneReport> {

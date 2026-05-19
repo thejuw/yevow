@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   buildJanitorReport,
-  reconcileJanitorOrders
+  cancelJanitorOrder,
+  fetchJanitorExchangeOpenOrders,
+  type JanitorExecutionLogger,
+  reconcileJanitorOrders,
+  recordPostOnlyDustCloseSkip
 } from "../../src/engine/trading/janitor/JanitorRuntime";
 import type { LogPruneReport } from "../../src/engine/LogRetention";
 import type { ExchangeOpenOrder, JanitorState, ManagedOrder } from "../../src/types";
@@ -144,6 +148,101 @@ describe("JanitorRuntime", () => {
     expect(result.shouldWarn).toBe(false);
     expect(result.report.reconciledOrders).toEqual(["client-2"]);
   });
+
+  it("fetches exchange open orders through the executioner binding", async () => {
+    const { logger } = loggerSpy();
+    const requests: Request[] = [];
+    const executioner = {
+      async fetch(request: Request) {
+        requests.push(request);
+        return Response.json({ orders: [exchangeOrder({ exchangeOrderId: "remote-live" })] });
+      }
+    };
+
+    const orders = await fetchJanitorExchangeOpenOrders({ executioner, logger });
+
+    expect(orders).toHaveLength(1);
+    expect(orders[0].exchangeOrderId).toBe("remote-live");
+    expect(requests[0].url).toBe("https://executioner.internal/open-orders");
+  });
+
+  it("logs executioner open-order failures without throwing", async () => {
+    const { logger, errors } = loggerSpy();
+    const executioner = {
+      async fetch() {
+        throw new Error("network offline");
+      }
+    };
+
+    const orders = await fetchJanitorExchangeOpenOrders({ executioner, logger });
+
+    expect(orders).toEqual([]);
+    expect(errors[0]).toMatchObject({
+      eventType: "JANITOR_OPEN_ORDERS_FAILED",
+      telemetry: { error: "network offline" }
+    });
+  });
+
+  it("sends janitor cancel requests to the executioner binding", async () => {
+    const { logger } = loggerSpy();
+    const requests: Request[] = [];
+    const executioner = {
+      async fetch(request: Request) {
+        requests.push(request);
+        return Response.json({ ok: true });
+      }
+    };
+
+    await cancelJanitorOrder({
+      executioner,
+      logger,
+      orderId: "orphan-1",
+      reason: "JANITOR_ORPHAN_EXCHANGE_ORDER",
+      instrumentCode: "hype-usd"
+    });
+
+    expect(requests[0].url).toBe("https://executioner.internal/cancel");
+    expect(requests[0].method).toBe("POST");
+    await expect(requests[0].json()).resolves.toEqual({
+      orderId: "orphan-1",
+      instrumentCode: "hype-usd",
+      reason: "JANITOR_ORPHAN_EXCHANGE_ORDER"
+    });
+  });
+
+  it("records post-only dust close skips with position context", () => {
+    const { logger, warnings } = loggerSpy();
+
+    const intentId = recordPostOnlyDustCloseSkip({
+      openPositions: {
+        "hype-usd": {
+          instrumentCode: "hype-usd",
+          side: "LONG",
+          quantity: 0.0000004,
+          averageEntryPrice: 30,
+          markPrice: 31,
+          unrealizedPnl: 0.1,
+          realizedPnl: 0,
+          updatedAt: OBSERVED_AT
+        }
+      },
+      logger,
+      instrumentCode: "hype-usd",
+      observedAt: OBSERVED_AT
+    });
+
+    expect(intentId).toBeNull();
+    expect(warnings[0]).toMatchObject({
+      eventType: "JANITOR_DUST_CLOSE_SKIPPED",
+      telemetry: {
+        instrumentCode: "hype-usd",
+        side: "LONG",
+        quantity: 0.0000004,
+        observedAt: OBSERVED_AT,
+        inventoryProtocol: "POST_ONLY_SKEW"
+      }
+    });
+  });
 });
 
 function order(overrides: Partial<ManagedOrder> = {}): ManagedOrder {
@@ -214,5 +313,28 @@ function logPruneReport(overrides: Partial<LogPruneReport> = {}): LogPruneReport
     marketTickRows: 0,
     totalRows: 0,
     ...overrides
+  };
+}
+
+function loggerSpy(): {
+  logger: JanitorExecutionLogger;
+  errors: { eventType: string; message: string; telemetry?: Record<string, unknown> }[];
+  warnings: { eventType: string; message: string; telemetry?: Record<string, unknown> }[];
+} {
+  const errors: { eventType: string; message: string; telemetry?: Record<string, unknown> }[] = [];
+  const warnings: { eventType: string; message: string; telemetry?: Record<string, unknown> }[] =
+    [];
+
+  return {
+    logger: {
+      error(eventType, message, telemetry) {
+        errors.push({ eventType, message, telemetry });
+      },
+      warn(eventType, message, telemetry) {
+        warnings.push({ eventType, message, telemetry });
+      }
+    },
+    errors,
+    warnings
   };
 }
