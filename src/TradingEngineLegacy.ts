@@ -70,6 +70,7 @@ import {
   shadowQueueKellySize as calculateShadowQueueKellySize,
   shadowQueuePostOnlyPrice as calculateShadowQueuePostOnlyPrice
 } from "./engine/trading/shadow/ShadowQueueRuntime";
+import { stateAfterAnomalyEmergencyPause } from "./engine/trading/anomaly/AnomalyRuntime";
 import { updateLeadLagMetrics as updateLeadLagRuntimeMetrics } from "./engine/trading/leadlag/LeadLagRuntime";
 import { calculateInventoryState as calculateInventoryRuntimeState } from "./engine/trading/inventory/InventoryRuntime";
 import { calculatePortfolioRisk as calculatePortfolioRuntimeRisk } from "./engine/trading/risk/PortfolioRiskRuntime";
@@ -3525,22 +3526,14 @@ export class TradingEngine {
         observedAt: metrics.brainTimestamp
       });
 
-      this.engineState = {
-        ...this.engineState,
-        mode: "HALTED",
-        processedTicks: this.engineState.processedTicks + 1,
-        internalOrderBookDepth: countBookLevels(this.bids, this.asks),
-        microstructure: microstructureFromBook(book),
+      this.engineState = stateAfterAnomalyEmergencyPause({
+        currentState: this.engineState,
+        book,
         dom: domSnapshot,
         anomaly: anomalyResult.status,
-        risk: {
-          ...this.engineState.risk,
-          killSwitch: true,
-          updatedAt: metrics.brainTimestamp
-        },
-        heartbeatAt: metrics.brainTimestamp,
-        updatedAt: metrics.brainTimestamp
-      };
+        internalOrderBookDepth: countBookLevels(this.bids, this.asks),
+        observedAt: metrics.brainTimestamp
+      });
 
       await this.safeStoragePut(
         {
