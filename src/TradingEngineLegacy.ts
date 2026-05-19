@@ -95,7 +95,10 @@ import {
   calculateInventoryState as calculateInventoryRuntimeState,
   referencePriceForBaseAsset as resolveBaseAssetReferencePrice
 } from "./engine/trading/inventory/InventoryRuntime";
-import { calculatePortfolioRisk as calculatePortfolioRuntimeRisk } from "./engine/trading/risk/PortfolioRiskRuntime";
+import {
+  buildDrawdownKillSwitchTransition,
+  calculatePortfolioRisk as calculatePortfolioRuntimeRisk
+} from "./engine/trading/risk/PortfolioRiskRuntime";
 import { calculateEnsembleState as calculateRuntimeEnsembleState } from "./engine/trading/ensemble/EnsembleRuntime";
 import {
   currentFundingRate as resolveCurrentFundingRate,
@@ -4100,27 +4103,16 @@ export class TradingEngine {
     });
 
     if (drawdownBreached && this.cachedConfig.TRADING_ENABLED) {
-      this.cachedConfig = {
-        ...this.cachedConfig,
-        TRADING_ENABLED: false,
-        updatedAt: observedAt,
-        updatedBy: "risk:drawdown",
-        version: `${this.cachedConfig.version}:drawdown`
-      };
-      this.state.waitUntil(this.configManager.writeConfig(this.cachedConfig));
-      this.state.waitUntil(this.cancelAllQuotes("ALL", "MAX_DRAWDOWN_BREACH"));
-      this.notifier.notify({
-        priority: "CRITICAL",
-        title: "Sovereign-Sigma drawdown kill switch",
-        message: `Drawdown ${(metrics.rollingDrawdownPct * 100).toFixed(2)}% breached configured limit ${(this.cachedConfig.MAX_DRAWDOWN_PCT * 100).toFixed(2)}%. Trading disabled.`,
-        dedupeKey: "risk:max-drawdown",
-        metadata: {
-          rollingDrawdownPct: metrics.rollingDrawdownPct,
-          maxDrawdownPct: this.cachedConfig.MAX_DRAWDOWN_PCT,
-          highWaterMark: metrics.highWaterMark,
-          equity: Math.max(this.engineState.bankroll.equity, 0)
-        }
+      const killSwitch = buildDrawdownKillSwitchTransition({
+        cachedConfig: this.cachedConfig,
+        metrics,
+        equity: this.engineState.bankroll.equity,
+        observedAt
       });
+      this.cachedConfig = killSwitch.config;
+      this.state.waitUntil(this.configManager.writeConfig(this.cachedConfig));
+      this.state.waitUntil(this.cancelAllQuotes("ALL", killSwitch.cancelReason));
+      this.notifier.notify(killSwitch.notification);
     }
 
     return metrics;

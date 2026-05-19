@@ -1,4 +1,5 @@
-import type { EngineState, Position } from "../../../types";
+import type { EngineState, GlobalRiskConfig, Position } from "../../../types";
+import type { NotifierEvent } from "../../../utils/Notifier";
 
 export interface PortfolioRiskInput {
   readonly mode: EngineState["mode"];
@@ -15,6 +16,19 @@ export interface PortfolioRiskInput {
 export interface PortfolioRiskResult {
   readonly metrics: EngineState["riskMetrics"];
   readonly drawdownBreached: boolean;
+}
+
+export interface DrawdownKillSwitchInput {
+  readonly cachedConfig: GlobalRiskConfig;
+  readonly metrics: EngineState["riskMetrics"];
+  readonly equity: number;
+  readonly observedAt: string;
+}
+
+export interface DrawdownKillSwitchTransition {
+  readonly config: GlobalRiskConfig;
+  readonly cancelReason: "MAX_DRAWDOWN_BREACH";
+  readonly notification: NotifierEvent;
 }
 
 export function calculatePortfolioRisk(input: PortfolioRiskInput): PortfolioRiskResult {
@@ -43,6 +57,39 @@ export function calculatePortfolioRisk(input: PortfolioRiskInput): PortfolioRisk
       var99OneHour,
       isTradingEnabled: !drawdownBreached && input.tradingEnabled,
       updatedAt: input.observedAt
+    }
+  };
+}
+
+export function buildDrawdownKillSwitchTransition(
+  input: DrawdownKillSwitchInput
+): DrawdownKillSwitchTransition {
+  const config = {
+    ...input.cachedConfig,
+    TRADING_ENABLED: false,
+    updatedAt: input.observedAt,
+    updatedBy: "risk:drawdown",
+    version: `${input.cachedConfig.version}:drawdown`
+  };
+
+  return {
+    config,
+    cancelReason: "MAX_DRAWDOWN_BREACH",
+    notification: {
+      priority: "CRITICAL",
+      title: "Sovereign-Sigma drawdown kill switch",
+      message: `Drawdown ${(input.metrics.rollingDrawdownPct * 100).toFixed(
+        2
+      )}% breached configured limit ${(config.MAX_DRAWDOWN_PCT * 100).toFixed(
+        2
+      )}%. Trading disabled.`,
+      dedupeKey: "risk:max-drawdown",
+      metadata: {
+        rollingDrawdownPct: input.metrics.rollingDrawdownPct,
+        maxDrawdownPct: config.MAX_DRAWDOWN_PCT,
+        highWaterMark: input.metrics.highWaterMark,
+        equity: Math.max(input.equity, 0)
+      }
     }
   };
 }

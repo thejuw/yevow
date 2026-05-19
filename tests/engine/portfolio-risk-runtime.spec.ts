@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { calculatePortfolioRisk } from "../../src/engine/trading/risk/PortfolioRiskRuntime";
+import { defaultConfig } from "../../src/ConfigManager";
+import {
+  buildDrawdownKillSwitchTransition,
+  calculatePortfolioRisk
+} from "../../src/engine/trading/risk/PortfolioRiskRuntime";
 import type { Position } from "../../src/types";
 
 const OBSERVED_AT = "2026-05-18T12:00:00.000Z";
@@ -59,6 +63,47 @@ describe("PortfolioRiskRuntime", () => {
     expect(breached.drawdownBreached).toBe(true);
     expect(breached.metrics.isTradingEnabled).toBe(false);
     expect(breached.metrics.rollingDrawdownPct).toBe(0.3);
+  });
+
+  it("builds drawdown kill-switch config and notification artifacts", () => {
+    const transition = buildDrawdownKillSwitchTransition({
+      cachedConfig: {
+        ...defaultConfig,
+        TRADING_ENABLED: true,
+        MAX_DRAWDOWN_PCT: 0.2,
+        version: "risk-v1"
+      },
+      metrics: {
+        highWaterMark: 1_000,
+        rollingDrawdownPct: 0.3,
+        var99OneHour: 0,
+        isTradingEnabled: false,
+        updatedAt: OBSERVED_AT
+      },
+      equity: 700,
+      observedAt: OBSERVED_AT
+    });
+
+    expect(transition.config).toMatchObject({
+      TRADING_ENABLED: false,
+      updatedAt: OBSERVED_AT,
+      updatedBy: "risk:drawdown",
+      version: "risk-v1:drawdown"
+    });
+    expect(transition.cancelReason).toBe("MAX_DRAWDOWN_BREACH");
+    expect(transition.notification).toMatchObject({
+      priority: "CRITICAL",
+      title: "Sovereign-Sigma drawdown kill switch",
+      dedupeKey: "risk:max-drawdown",
+      metadata: {
+        rollingDrawdownPct: 0.3,
+        maxDrawdownPct: 0.2,
+        highWaterMark: 1_000,
+        equity: 700
+      }
+    });
+    expect(transition.notification.message).toContain("30.00%");
+    expect(transition.notification.message).toContain("20.00%");
   });
 });
 
