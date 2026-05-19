@@ -29,6 +29,27 @@ export interface ResumeExpiredQuoteStatesResult {
   readonly changed: boolean;
 }
 
+export interface QuoteSuppressionDecisionInput {
+  readonly previous: EngineState["quoteState"];
+  readonly profilerSignalType: unknown;
+  readonly profilerSuspendedUntil?: string;
+  readonly profilerQuoteHaltUntil?: string | null;
+  readonly amVpinQuoteHaltMs: number;
+  readonly quoteHibernateMs: number;
+  readonly ensembleAnomalyCircuitBreaker: boolean;
+  readonly ensembleRationale: string;
+  readonly observedAt: string;
+}
+
+export interface QuoteSuppressionDecisionResult {
+  readonly quoteState: EngineState["quoteState"];
+  readonly executionPlansAllowed: boolean;
+  readonly isCascadeShield: boolean;
+  readonly isProfilerQuoteHalt: boolean;
+  readonly cancelReason: string | null;
+  readonly suspendTelemetry: Record<string, unknown> | null;
+}
+
 export function nextQuoteStateForInstrument(input: NextQuoteStateInput): EngineState["quoteState"] {
   if (!input.tradingEnabled) {
     return suspendedQuoteState(input.previous, "TRADING_DISABLED", null, input.observedAt);
@@ -69,6 +90,70 @@ export function nextQuoteStateForInstrument(input: NextQuoteStateInput): EngineS
     suspendedUntil: null,
     lastQuote: input.quote ?? input.previous.lastQuote,
     updatedAt: input.observedAt
+  };
+}
+
+export function quoteSuppressionDecision(
+  input: QuoteSuppressionDecisionInput
+): QuoteSuppressionDecisionResult {
+  const isCascadeShield = isCascadeShieldSignal(input.profilerSignalType);
+  const isProfilerQuoteHalt = isProfilerQuoteHaltSignal(input.profilerSignalType);
+
+  if (input.ensembleAnomalyCircuitBreaker) {
+    const quoteState = suspendedQuoteState(
+      input.previous,
+      "ENSEMBLE_ANOMALY_CIRCUIT_BREAKER",
+      new Date(Date.parse(input.observedAt) + 60_000).toISOString(),
+      input.observedAt
+    );
+
+    return {
+      quoteState,
+      executionPlansAllowed: false,
+      isCascadeShield,
+      isProfilerQuoteHalt,
+      cancelReason: "ENSEMBLE_CIRCUIT_BREAKER",
+      suspendTelemetry: {
+        reason: input.ensembleRationale,
+        ...quoteStateTelemetry(quoteState)
+      }
+    };
+  }
+
+  if (isProfilerQuoteHalt) {
+    const suspendedUntil =
+      input.profilerSuspendedUntil ??
+      input.profilerQuoteHaltUntil ??
+      new Date(
+        Date.parse(input.observedAt) +
+          (input.profilerSignalType === "AM_VPIN_CRITICAL"
+            ? input.amVpinQuoteHaltMs
+            : input.quoteHibernateMs)
+      ).toISOString();
+    const quoteState = suspendedQuoteState(
+      input.previous,
+      input.profilerSignalType === "AM_VPIN_CRITICAL" ? "AM_VPIN_CRITICAL" : "WHALE_PRINT",
+      suspendedUntil,
+      input.observedAt
+    );
+
+    return {
+      quoteState,
+      executionPlansAllowed: false,
+      isCascadeShield,
+      isProfilerQuoteHalt,
+      cancelReason: null,
+      suspendTelemetry: quoteStateTelemetry(quoteState)
+    };
+  }
+
+  return {
+    quoteState: input.previous,
+    executionPlansAllowed: true,
+    isCascadeShield,
+    isProfilerQuoteHalt,
+    cancelReason: null,
+    suspendTelemetry: null
   };
 }
 
@@ -127,6 +212,14 @@ export function resolveQuoteHibernateMs(
     : readPositiveInteger(envQuoteHibernateMs, DEFAULT_QUOTE_HIBERNATE_MS, 100, 60_000);
 }
 
+export function isCascadeShieldSignal(signalType: unknown): boolean {
+  return signalType === "CASCADE_SHIELD";
+}
+
+export function isProfilerQuoteHaltSignal(signalType: unknown): boolean {
+  return signalType === "SUSPEND_QUOTES" || signalType === "AM_VPIN_CRITICAL";
+}
+
 function quoteAssetStatesChanged(
   previous: EngineState["assetQuoteStates"],
   next: EngineState["assetQuoteStates"]
@@ -158,5 +251,14 @@ function suspendedQuoteState(
     suspendedUntil,
     lastQuote: previous.lastQuote,
     updatedAt: observedAt
+  };
+}
+
+function quoteStateTelemetry(state: EngineState["quoteState"]): Record<string, unknown> {
+  return {
+    status: state.status,
+    reason: state.reason,
+    suspendedUntil: state.suspendedUntil,
+    updatedAt: state.updatedAt
   };
 }

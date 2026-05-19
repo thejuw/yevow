@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { defaultConfig } from "../../src/ConfigManager";
 import {
+  isCascadeShieldSignal,
+  isProfilerQuoteHaltSignal,
   nextQuoteStateForInstrument,
+  quoteSuppressionDecision,
   resumeExpiredQuoteStates,
   resolveQuoteHibernateMs,
   strategyQuoteDisabledReason
@@ -171,6 +174,99 @@ describe("QuoteStateRuntime", () => {
       observedAt: OBSERVED_AT
     });
     expect(unchanged.changed).toBe(false);
+  });
+
+  it("builds ensemble circuit-breaker quote suspension decisions", () => {
+    const previous = quoteState({ lastQuote: quote("old") });
+
+    const result = quoteSuppressionDecision({
+      previous,
+      profilerSignalType: undefined,
+      amVpinQuoteHaltMs: 60_000,
+      quoteHibernateMs: 30_000,
+      ensembleAnomalyCircuitBreaker: true,
+      ensembleRationale: "jump-risk",
+      observedAt: OBSERVED_AT
+    });
+
+    expect(result.executionPlansAllowed).toBe(false);
+    expect(result.cancelReason).toBe("ENSEMBLE_CIRCUIT_BREAKER");
+    expect(result.quoteState).toMatchObject({
+      status: "SUSPENDED",
+      reason: "ENSEMBLE_ANOMALY_CIRCUIT_BREAKER",
+      suspendedUntil: "2026-05-18T13:01:00.000Z",
+      lastQuote: previous.lastQuote,
+      updatedAt: OBSERVED_AT
+    });
+    expect(result.suspendTelemetry).toEqual({
+      reason: "ENSEMBLE_ANOMALY_CIRCUIT_BREAKER",
+      status: "SUSPENDED",
+      suspendedUntil: "2026-05-18T13:01:00.000Z",
+      updatedAt: OBSERVED_AT
+    });
+  });
+
+  it("builds profiler quote halt decisions with explicit or fallback hibernation windows", () => {
+    expect(
+      quoteSuppressionDecision({
+        previous: quoteState(),
+        profilerSignalType: "SUSPEND_QUOTES",
+        profilerSuspendedUntil: "2026-05-18T13:02:00.000Z",
+        amVpinQuoteHaltMs: 60_000,
+        quoteHibernateMs: 30_000,
+        ensembleAnomalyCircuitBreaker: false,
+        ensembleRationale: "",
+        observedAt: OBSERVED_AT
+      }).quoteState
+    ).toMatchObject({
+      status: "SUSPENDED",
+      reason: "WHALE_PRINT",
+      suspendedUntil: "2026-05-18T13:02:00.000Z"
+    });
+
+    expect(
+      quoteSuppressionDecision({
+        previous: quoteState(),
+        profilerSignalType: "AM_VPIN_CRITICAL",
+        amVpinQuoteHaltMs: 45_000,
+        quoteHibernateMs: 30_000,
+        ensembleAnomalyCircuitBreaker: false,
+        ensembleRationale: "",
+        observedAt: OBSERVED_AT
+      }).quoteState
+    ).toMatchObject({
+      status: "SUSPENDED",
+      reason: "AM_VPIN_CRITICAL",
+      suspendedUntil: "2026-05-18T13:00:45.000Z"
+    });
+  });
+
+  it("identifies cascade shield and profiler halt signal types without suspending neutral signals", () => {
+    expect(isCascadeShieldSignal("CASCADE_SHIELD")).toBe(true);
+    expect(isCascadeShieldSignal("SUSPEND_QUOTES")).toBe(false);
+    expect(isProfilerQuoteHaltSignal("SUSPEND_QUOTES")).toBe(true);
+    expect(isProfilerQuoteHaltSignal("AM_VPIN_CRITICAL")).toBe(true);
+    expect(isProfilerQuoteHaltSignal("CASCADE_SHIELD")).toBe(false);
+
+    const previous = quoteState();
+    expect(
+      quoteSuppressionDecision({
+        previous,
+        profilerSignalType: "CASCADE_SHIELD",
+        amVpinQuoteHaltMs: 60_000,
+        quoteHibernateMs: 30_000,
+        ensembleAnomalyCircuitBreaker: false,
+        ensembleRationale: "",
+        observedAt: OBSERVED_AT
+      })
+    ).toMatchObject({
+      quoteState: previous,
+      executionPlansAllowed: true,
+      isCascadeShield: true,
+      isProfilerQuoteHalt: false,
+      cancelReason: null,
+      suspendTelemetry: null
+    });
   });
 });
 

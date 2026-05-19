@@ -101,6 +101,7 @@ import {
 } from "./engine/trading/funding/FundingRuntime";
 import {
   nextQuoteStateForInstrument as nextRuntimeQuoteStateForInstrument,
+  quoteSuppressionDecision,
   resolveQuoteHibernateMs,
   resumeExpiredQuoteStates,
   strategyQuoteDisabledReason as runtimeStrategyQuoteDisabledReason
@@ -3648,50 +3649,41 @@ export class TradingEngine {
       this.state.waitUntil(this.cancelAllQuotes(tick.instrumentCode, strategyQuoteDisableReason));
     }
     const profilerSignalType = profilerResult.signal?.featureVector.signalType;
-    const isCascadeShield = profilerSignalType === "CASCADE_SHIELD";
-    const isProfilerQuoteHalt =
-      profilerSignalType === "SUSPEND_QUOTES" || profilerSignalType === "AM_VPIN_CRITICAL";
-
-    if (ensemble.anomalyCircuitBreaker) {
-      executionPlans = [];
-      assetQuoteState = {
-        status: "SUSPENDED",
-        reason: "ENSEMBLE_ANOMALY_CIRCUIT_BREAKER",
-        suspendedUntil: new Date(Date.parse(metrics.brainTimestamp) + 60_000).toISOString(),
-        lastQuote: assetQuoteState.lastQuote,
-        updatedAt: metrics.brainTimestamp
-      };
-      this.publish("SUSPEND_QUOTES", {
-        instrumentCode: tick.instrumentCode,
-        reason: ensemble.rationale,
-        ...quoteStateTelemetry(assetQuoteState)
-      });
-      if (!options.shadowReplay && this.cachedConfig.TRADING_ENABLED) {
-        this.state.waitUntil(this.cancelAllQuotes(tick.instrumentCode, "ENSEMBLE_CIRCUIT_BREAKER"));
-      }
-    } else if (isProfilerQuoteHalt) {
-      executionPlans = [];
-      const suspendedUntil =
+    const quoteSuppression = quoteSuppressionDecision({
+      previous: assetQuoteState,
+      profilerSignalType,
+      profilerSuspendedUntil:
         typeof profilerResult.signal?.featureVector.suspendedUntil === "string"
           ? profilerResult.signal.featureVector.suspendedUntil
-          : (profilerResult.state.quoteHaltUntil ??
-            new Date(
-              Date.parse(metrics.brainTimestamp) +
-                (profilerSignalType === "AM_VPIN_CRITICAL"
-                  ? this.cachedConfig.AM_VPIN_QUOTE_HALT_MS
-                  : resolveQuoteHibernateMs(this.cachedConfig, this.env.QUOTE_HIBERNATE_MS))
-            ).toISOString());
-      assetQuoteState = {
-        status: "SUSPENDED",
-        reason: profilerSignalType === "AM_VPIN_CRITICAL" ? "AM_VPIN_CRITICAL" : "WHALE_PRINT",
-        suspendedUntil,
-        lastQuote: assetQuoteState.lastQuote,
-        updatedAt: metrics.brainTimestamp
-      };
+          : undefined,
+      profilerQuoteHaltUntil: profilerResult.state.quoteHaltUntil,
+      amVpinQuoteHaltMs: this.cachedConfig.AM_VPIN_QUOTE_HALT_MS,
+      quoteHibernateMs: resolveQuoteHibernateMs(this.cachedConfig, this.env.QUOTE_HIBERNATE_MS),
+      ensembleAnomalyCircuitBreaker: ensemble.anomalyCircuitBreaker,
+      ensembleRationale: ensemble.rationale,
+      observedAt: metrics.brainTimestamp
+    });
+    const isCascadeShield = quoteSuppression.isCascadeShield;
+    const isProfilerQuoteHalt = quoteSuppression.isProfilerQuoteHalt;
+
+    if (!quoteSuppression.executionPlansAllowed) {
+      executionPlans = [];
+      assetQuoteState = quoteSuppression.quoteState;
+    }
+    if (quoteSuppression.suspendTelemetry) {
       this.publish("SUSPEND_QUOTES", {
         instrumentCode: tick.instrumentCode,
-        ...quoteStateTelemetry(assetQuoteState)
+        ...quoteSuppression.suspendTelemetry
       });
+    }
+    if (
+      quoteSuppression.cancelReason &&
+      !options.shadowReplay &&
+      this.cachedConfig.TRADING_ENABLED
+    ) {
+      this.state.waitUntil(
+        this.cancelAllQuotes(tick.instrumentCode, quoteSuppression.cancelReason)
+      );
     }
 
     const assetQuoteStates = {
