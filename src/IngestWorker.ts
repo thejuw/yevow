@@ -1,24 +1,27 @@
-import {
-  Logger,
-  createLogSink,
-  structuredConsoleLogsEnabled
-} from "./Logger";
+import { Logger, createLogSink, structuredConsoleLogsEnabled } from "./Logger";
 import { encode as msgpackEncode } from "@msgpack/msgpack";
 import {
   DwellirHyperliquidGrpcClient,
   type DwellirGrpcPayload,
   type DwellirGrpcStreamKind
 } from "./grpc/DwellirHyperliquidGrpcClient";
-import {
-  HyperliquidGrpcClient,
-  type HyperliquidGrpcUpdate
-} from "./grpc/HyperliquidGrpcClient";
+import { HyperliquidGrpcClient, type HyperliquidGrpcUpdate } from "./grpc/HyperliquidGrpcClient";
 import { Notifier } from "./utils/Notifier";
-import {
-  durableObjectLocationOptions,
-  getTradingEngineStub
-} from "./utils/TradingEngineStub";
+import { durableObjectLocationOptions, getTradingEngineStub } from "./utils/TradingEngineStub";
 import { isHyperliquidLiquidationMessage } from "./strategy/cascade/LiquidationStream";
+import {
+  DEFAULT_HAWKES_BASELINE_MU,
+  DEFAULT_HAWKES_DECAY_ALPHA,
+  DEFAULT_HAWKES_JUMP_BETA,
+  DEFAULT_HAWKES_SIGNAL_COOLDOWN_MS,
+  DEFAULT_HAWKES_THRESHOLD_QUANTILE,
+  HawkesFlowTracker,
+  clampNumber,
+  type HawkesFlowObservation,
+  type HawkesFlowSide
+} from "./ingest/HawkesFlowTracker";
+import { ingestNewsFeeds } from "./ingest/NewsIngestor";
+import { ClockSyncTracker, ClusterPool } from "./ingest/StreamRuntime";
 import type {
   Env,
   AgentSignal,
@@ -35,7 +38,8 @@ import type {
   OrderBookResetRequest
 } from "./types";
 
-const DEFAULT_INGEST_COORDINATOR_NAME = "sovereign-sigma:singleton:ingest-coordinator:v3:apac-tokyo";
+const DEFAULT_INGEST_COORDINATOR_NAME =
+  "sovereign-sigma:singleton:ingest-coordinator:v3:apac-tokyo";
 const DEFAULT_AUTH_HEADER = "X-Api-Key";
 const DEFAULT_GRPC_AUTH_HEADER = "x-token";
 const DWELLIR_GRPC_ENDPOINT = "https://api-hyperliquid-mainnet-grpc.n.dwellir.com";
@@ -51,12 +55,6 @@ const DEFAULT_DWELLIR_GRPC_FILLS_WATCHDOG_TIMEOUT_MS = 60_000;
 const DEFAULT_DWELLIR_GRPC_START_LOOKBACK_MS = 1_000;
 const DEFAULT_DWELLIR_GRPC_FORWARD_MAX_AGE_MS = 5_000;
 const NORMAL_RECYCLE_LOG_THROTTLE_MS = 60_000;
-const DEFAULT_HAWKES_BASELINE_MU = 0.1;
-const DEFAULT_HAWKES_JUMP_BETA = 0.9;
-const DEFAULT_HAWKES_DECAY_ALPHA = 2.2;
-const DEFAULT_HAWKES_THRESHOLD_QUANTILE = 0.95;
-const DEFAULT_HAWKES_SIGNAL_COOLDOWN_MS = 60_000;
-const HAWKES_WINDOW_SECONDS = 3_600;
 const SNAPSHOT_SEQUENCE_FALLBACK_SEED = "snapshot";
 const DEFAULT_SOURCE_WEIGHT = 1;
 const DEFAULT_CLOCK_SYNC_ALPHA = 0.1;
@@ -110,19 +108,6 @@ interface EngineTickResponse {
   reason?: string;
 }
 
-interface NewsFeedConfig {
-  url: string;
-  source?: string;
-}
-
-interface NewsItem {
-  id: string;
-  headline: string;
-  source: string;
-  url: string | null;
-  publishedAt: string | null;
-}
-
 interface BinanceSequenceWindow {
   firstUpdateId: number;
   finalUpdateId: number;
@@ -140,188 +125,8 @@ interface DwellirL4OrderState {
   updatedAt: string;
 }
 
-type HawkesFlowSide = "BUY" | "SELL" | "UNKNOWN";
-
-interface HawkesFlowObservation {
-  triggered: boolean;
-  instrumentCode: string;
-  side: HawkesFlowSide;
-  pullSide: "BID" | "ASK" | "BOTH";
-  size: number;
-  intensity: number;
-  threshold: number;
-  confidence: number;
-  baselineMu: number;
-  jumpBeta: number;
-  decayAlpha: number;
-  observedAtMs: number;
-  receivedAt: string;
-  cooldownMs: number;
-}
-
-interface HawkesFlowTrackerConfig {
-  baselineMu: number;
-  jumpBeta: number;
-  decayAlpha: number;
-  thresholdQuantile: number;
-  signalCooldownMs: number;
-}
-
-interface HawkesInstrumentState {
-  excitation: number;
-  lastEventMs: number | null;
-  sampleValues: Float32Array;
-  sampleTimes: Float64Array;
-  scratch: Float32Array;
-  sampleIndex: number;
-  sampleCount: number;
-  lastSampleSecond: number;
-  lastThreshold: number;
-  lastSignalMs: number;
-}
-
-const seenNewsItems = new Map<string, number>();
-
-class HawkesFlowTracker {
-  private readonly states = new Map<string, HawkesInstrumentState>();
-  private readonly baselineMu: number;
-  private readonly jumpBeta: number;
-  private readonly decayAlpha: number;
-  private readonly thresholdQuantile: number;
-  private readonly signalCooldownMs: number;
-
-  constructor(config: HawkesFlowTrackerConfig) {
-    this.baselineMu = positiveConfigNumber(config.baselineMu, DEFAULT_HAWKES_BASELINE_MU);
-    this.jumpBeta = positiveConfigNumber(config.jumpBeta, DEFAULT_HAWKES_JUMP_BETA);
-    this.decayAlpha = positiveConfigNumber(config.decayAlpha, DEFAULT_HAWKES_DECAY_ALPHA);
-    this.thresholdQuantile = clampNumber(
-      config.thresholdQuantile,
-      0.5,
-      0.999,
-      DEFAULT_HAWKES_THRESHOLD_QUANTILE
-    );
-    this.signalCooldownMs = positiveConfigNumber(
-      config.signalCooldownMs,
-      DEFAULT_HAWKES_SIGNAL_COOLDOWN_MS
-    );
-  }
-
-  observe(input: {
-    instrumentCode: string;
-    side: HawkesFlowSide;
-    size: number;
-    observedAtMs: number;
-    receivedAt: string;
-  }): HawkesFlowObservation {
-    const observedAtMs = Number.isFinite(input.observedAtMs)
-      ? input.observedAtMs
-      : Date.parse(input.receivedAt);
-    const state = this.stateFor(input.instrumentCode);
-    const dtSeconds = state.lastEventMs === null
-      ? 0
-      : Math.max(0, (observedAtMs - state.lastEventMs) / 1_000);
-    const decay = Math.exp(-this.decayAlpha * dtSeconds);
-    const sizeScale = Math.max(1, Math.log1p(Math.max(0, input.size)));
-
-    state.excitation = state.excitation * decay + this.jumpBeta * sizeScale;
-    state.lastEventMs = observedAtMs;
-    const intensity = this.baselineMu + state.excitation;
-    const second = Math.floor(observedAtMs / 1_000);
-
-    if (second !== state.lastSampleSecond) {
-      this.recordSample(state, intensity, observedAtMs);
-      state.lastSampleSecond = second;
-      state.lastThreshold = this.quantile(state);
-    }
-
-    const threshold = Math.max(state.lastThreshold, this.baselineMu + this.jumpBeta);
-    const cooldownOpen = observedAtMs - state.lastSignalMs >= this.signalCooldownMs;
-    const triggered =
-      state.sampleCount >= 30 &&
-      cooldownOpen &&
-      input.side !== "UNKNOWN" &&
-      intensity > threshold;
-
-    if (triggered) {
-      state.lastSignalMs = observedAtMs;
-    }
-
-    return {
-      triggered,
-      instrumentCode: input.instrumentCode,
-      side: input.side,
-      pullSide: input.side === "BUY" ? "ASK" : input.side === "SELL" ? "BID" : "BOTH",
-      size: input.size,
-      intensity,
-      threshold,
-      confidence: clampNumber(intensity / Math.max(threshold, 1e-9) - 1, 0, 1, 0),
-      baselineMu: this.baselineMu,
-      jumpBeta: this.jumpBeta,
-      decayAlpha: this.decayAlpha,
-      observedAtMs,
-      receivedAt: input.receivedAt,
-      cooldownMs: this.signalCooldownMs
-    };
-  }
-
-  private stateFor(instrumentCode: string): HawkesInstrumentState {
-    const existing = this.states.get(instrumentCode);
-    if (existing) {
-      return existing;
-    }
-
-    const created: HawkesInstrumentState = {
-      excitation: 0,
-      lastEventMs: null,
-      sampleValues: new Float32Array(HAWKES_WINDOW_SECONDS),
-      sampleTimes: new Float64Array(HAWKES_WINDOW_SECONDS),
-      scratch: new Float32Array(HAWKES_WINDOW_SECONDS),
-      sampleIndex: 0,
-      sampleCount: 0,
-      lastSampleSecond: -1,
-      lastThreshold: 0,
-      lastSignalMs: 0
-    };
-    this.states.set(instrumentCode, created);
-    return created;
-  }
-
-  private recordSample(state: HawkesInstrumentState, intensity: number, observedAtMs: number): void {
-    state.sampleValues[state.sampleIndex] = intensity;
-    state.sampleTimes[state.sampleIndex] = observedAtMs;
-    state.sampleIndex = (state.sampleIndex + 1) % HAWKES_WINDOW_SECONDS;
-    state.sampleCount = Math.min(HAWKES_WINDOW_SECONDS, state.sampleCount + 1);
-  }
-
-  private quantile(state: HawkesInstrumentState): number {
-    const cutoffMs = (state.lastEventMs ?? Date.now()) - 3_600_000;
-    let count = 0;
-
-    for (let index = 0; index < state.sampleCount; index += 1) {
-      if (state.sampleTimes[index] >= cutoffMs) {
-        state.scratch[count] = state.sampleValues[index];
-        count += 1;
-      }
-    }
-
-    if (count === 0) {
-      return this.baselineMu + this.jumpBeta;
-    }
-
-    const targetIndex = Math.min(
-      count - 1,
-      Math.floor((count - 1) * this.thresholdQuantile)
-    );
-    return quickSelect(state.scratch, 0, count - 1, targetIndex);
-  }
-}
-
 export default {
-  async fetch(
-    request: Request,
-    env: Env,
-    ctx: ExecutionContext
-  ): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const logger = new Logger(
       env.TRADING_DB,
@@ -380,9 +185,7 @@ export default {
 
 function routeToIngestCoordinator(request: Request, env: Env): Promise<Response> {
   if (!env.INGEST_COORDINATOR) {
-    return Promise.resolve(
-      json({ ok: false, error: "INGEST_COORDINATOR_NOT_BOUND" }, 503)
-    );
+    return Promise.resolve(json({ ok: false, error: "INGEST_COORDINATOR_NOT_BOUND" }, 503));
   }
 
   const url = new URL(request.url);
@@ -496,141 +299,6 @@ function stopAllStreams(
   activeStreams.clear();
 }
 
-async function ingestNewsFeeds(env: Env, logger: Logger): Promise<void> {
-  const feeds = loadNewsFeedConfigs(env);
-
-  if (feeds.length === 0) {
-    return;
-  }
-
-  pruneSeenNewsItems();
-
-  for (const feed of feeds) {
-    try {
-      const response = await fetch(feed.url, { headers: { accept: "application/rss+xml, application/xml, text/xml" } });
-
-      if (!response.ok) {
-        logger.warn("NEWS_FEED_FETCH_FAILED", "News feed returned non-2xx status", {
-          source: feed.source ?? feed.url,
-          url: feed.url,
-          status: response.status
-        });
-        continue;
-      }
-
-      const items = parseRssItems(await response.text(), feed);
-
-      for (const item of items) {
-        if (seenNewsItems.has(item.id)) {
-          continue;
-        }
-
-        seenNewsItems.set(item.id, Date.now());
-        await forwardNewsItem(env, item);
-        logger.info("NEWS_ITEM_FORWARDED", "Forwarded attributed news item to sentiment agent", {
-          source: item.source,
-          headline: item.headline,
-          url: item.url,
-          publishedAt: item.publishedAt
-        });
-      }
-    } catch (error) {
-      logger.warn("NEWS_FEED_INGEST_FAILED", "Failed to ingest configured news feed", {
-        source: feed.source ?? feed.url,
-        url: feed.url,
-        error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
-      });
-    }
-  }
-}
-
-async function forwardNewsItem(env: Env, item: NewsItem): Promise<void> {
-  const engine = getTradingEngineStub(env);
-
-  await engine.fetch(
-    new Request("https://trading-engine.internal/news/sentiment", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-source": "sovereign-sigma-ingest-news"
-      },
-      body: JSON.stringify(item)
-    })
-  );
-}
-
-function loadNewsFeedConfigs(env: Env): NewsFeedConfig[] {
-  const parsed = env.NEWS_FEEDS ? parseJson<Array<string | NewsFeedConfig>>(env.NEWS_FEEDS) : null;
-
-  if (!Array.isArray(parsed)) {
-    return [];
-  }
-
-  return parsed.flatMap((entry) => {
-    if (typeof entry === "string" && entry.startsWith("http")) {
-      return [{ url: entry }];
-    }
-
-    if (isRecord(entry) && typeof entry.url === "string" && entry.url.startsWith("http")) {
-      return [{ url: entry.url, source: typeof entry.source === "string" ? entry.source : undefined }];
-    }
-
-    return [];
-  });
-}
-
-function parseRssItems(xml: string, feed: NewsFeedConfig): NewsItem[] {
-  return [...xml.matchAll(/<item\b[\s\S]*?<\/item>/gi)].slice(0, 25).flatMap((match) => {
-    const itemXml = match[0];
-    const headline = decodeXml(readXmlTag(itemXml, "title") ?? "");
-
-    if (!headline) {
-      return [];
-    }
-
-    const url = decodeXml(readXmlTag(itemXml, "link") ?? "") || null;
-    const guid = decodeXml(readXmlTag(itemXml, "guid") ?? "") || url || headline;
-    const publishedAt = coerceTimestamp(readXmlTag(itemXml, "pubDate")) ?? null;
-
-    return [{
-      id: hashNewsId(`${feed.url}:${guid}`),
-      headline,
-      source: feed.source ?? hostnameOf(feed.url),
-      url,
-      publishedAt
-    }];
-  });
-}
-
-function readXmlTag(xml: string, tag: string): string | null {
-  const match = xml.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "i"));
-  return match?.[1]?.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1").trim() ?? null;
-}
-
-function decodeXml(value: string): string {
-  return value
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .trim();
-}
-
-function hashNewsId(value: string): string {
-  return `news:${hashSequenceId(value)}`;
-}
-
-function pruneSeenNewsItems(): void {
-  const cutoff = Date.now() - 24 * 60 * 60 * 1_000;
-
-  for (const [id, observedAtMs] of seenNewsItems.entries()) {
-    if (observedAtMs < cutoff) {
-      seenNewsItems.delete(id);
-    }
-  }
-}
-
 class ExchangeStreamController {
   private socket: WebSocket | null = null;
   private grpcAbort: AbortController | null = null;
@@ -688,10 +356,7 @@ class ExchangeStreamController {
         env.HAWKES_THRESHOLD_QUANTILE,
         DEFAULT_HAWKES_THRESHOLD_QUANTILE
       ),
-      signalCooldownMs: readNumber(
-        env.HAWKES_SIGNAL_COOLDOWN_MS,
-        DEFAULT_HAWKES_SIGNAL_COOLDOWN_MS
-      )
+      signalCooldownMs: readNumber(env.HAWKES_SIGNAL_COOLDOWN_MS, DEFAULT_HAWKES_SIGNAL_COOLDOWN_MS)
     });
   }
 
@@ -783,10 +448,7 @@ class ExchangeStreamController {
 
       this.status = "BACKING_OFF";
       this.backoffCounter += 1;
-      const maxBackoffMs = Math.min(
-        this.config.maxBackoffMs,
-        DEFAULT_MAX_BACKOFF_MS
-      );
+      const maxBackoffMs = Math.min(this.config.maxBackoffMs, DEFAULT_MAX_BACKOFF_MS);
       const backoffMs = calculateBackoffMs(
         this.backoffCounter,
         this.config.backoffBaseMs,
@@ -841,9 +503,7 @@ class ExchangeStreamController {
     const streamUrl = this.clusterPool.activeUrl();
     const fetchUrl = websocketFetchUrl(streamUrl);
     const authHeader = this.config.authHeader;
-    const apiKey = this.config.apiKeyEnv
-      ? readEnvSecret(this.env, this.config.apiKeyEnv)
-      : null;
+    const apiKey = this.config.apiKeyEnv ? readEnvSecret(this.env, this.config.apiKeyEnv) : null;
     const heartbeatIntervalMs = this.config.heartbeatIntervalMs;
     const watchdogTimeoutMs = this.config.watchdogTimeoutMs;
     const pingIntervalMs = Math.min(
@@ -904,16 +564,15 @@ class ExchangeStreamController {
     return new Promise<void>((resolve, reject) => {
       let settled = false;
       let watchdog: ReturnType<typeof setTimeout> | null = null;
-      const heartbeat =
-        !shouldSendApplicationHeartbeat(this.config)
-          ? null
-          : setInterval(() => {
-              try {
-                socket.send(JSON.stringify(heartbeatPayload(this.config.source)));
-              } catch {
-                fail("PING_SEND_FAILED");
-              }
-            }, pingIntervalMs);
+      const heartbeat = !shouldSendApplicationHeartbeat(this.config)
+        ? null
+        : setInterval(() => {
+            try {
+              socket.send(JSON.stringify(heartbeatPayload(this.config.source)));
+            } catch {
+              fail("PING_SEND_FAILED");
+            }
+          }, pingIntervalMs);
 
       const cleanup = () => {
         if (heartbeat !== null) {
@@ -969,14 +628,18 @@ class ExchangeStreamController {
         this.clusterPool.recordFailure(streamUrl);
         const nextClusterUrl = this.clusterPool.activeUrl();
         if (nextClusterUrl !== previousClusterUrl) {
-          this.logger.warn("STREAM_CLUSTER_HOT_SWAP", "Market stream cluster hot-swapped after health degradation", {
-            streamId: this.config.id,
-            source: this.config.source,
-            source_exchange: this.config.source_exchange,
-            previousClusterUrl: redactEndpoint(previousClusterUrl) ?? null,
-            nextClusterUrl: redactEndpoint(nextClusterUrl) ?? null,
-            reason
-          });
+          this.logger.warn(
+            "STREAM_CLUSTER_HOT_SWAP",
+            "Market stream cluster hot-swapped after health degradation",
+            {
+              streamId: this.config.id,
+              source: this.config.source,
+              source_exchange: this.config.source_exchange,
+              previousClusterUrl: redactEndpoint(previousClusterUrl) ?? null,
+              nextClusterUrl: redactEndpoint(nextClusterUrl) ?? null,
+              reason
+            }
+          );
         }
         this.markDisconnected(reason);
         closeSocket(socket, 1011, reason);
@@ -1050,13 +713,10 @@ class ExchangeStreamController {
           this.sendSubscription(socket);
           await this.flushPreSnapshotBuffer();
         } catch (error) {
-          this.lastError =
-            error instanceof Error ? error.message : "SNAPSHOT_SYNC_FAILED";
+          this.lastError = error instanceof Error ? error.message : "SNAPSHOT_SYNC_FAILED";
           closeSocket(socket, 1011, "SNAPSHOT_SYNC_FAILED");
           this.markDisconnected("SNAPSHOT_SYNC_FAILED");
-          finish(
-            new Error(error instanceof Error ? error.message : "SNAPSHOT_SYNC_FAILED")
-          );
+          finish(new Error(error instanceof Error ? error.message : "SNAPSHOT_SYNC_FAILED"));
         }
       })();
     });
@@ -1102,10 +762,8 @@ class ExchangeStreamController {
         this.config.grpcUpdateType ?? this.env.RPC_GRPC_UPDATE_TYPE,
         "RPC_GRPC_UPDATE_TYPE"
       ),
-      pingRequestType:
-        this.config.grpcPingRequestType ?? this.env.RPC_GRPC_PING_REQUEST_TYPE,
-      pingResponseType:
-        this.config.grpcPingResponseType ?? this.env.RPC_GRPC_PING_RESPONSE_TYPE,
+      pingRequestType: this.config.grpcPingRequestType ?? this.env.RPC_GRPC_PING_REQUEST_TYPE,
+      pingResponseType: this.config.grpcPingResponseType ?? this.env.RPC_GRPC_PING_RESPONSE_TYPE,
       streamTypes:
         this.config.grpcStreamTypes ??
         parseCsvList(this.env.RPC_GRPC_STREAM_TYPES, ["TRADES", "BOOK_UPDATES"]),
@@ -1233,15 +891,8 @@ class ExchangeStreamController {
     const apiKey = await this.resolveDwellirApiKey();
     const routeTokenConfigured = hasEndpointPath(endpoint);
     const streams = dwellirGrpcStreams(this.env, this.config);
-    const watchdogTimeoutMs = dwellirGrpcWatchdogTimeoutMs(
-      this.env,
-      this.config,
-      streams
-    );
-    const emitFatalDropOnWatchdog = shouldEmitDwellirGrpcFatalDrop(
-      streams,
-      this.env
-    );
+    const watchdogTimeoutMs = dwellirGrpcWatchdogTimeoutMs(this.env, this.config, streams);
+    const emitFatalDropOnWatchdog = shouldEmitDwellirGrpcFatalDrop(streams, this.env);
     const startTimestampMs = resolveDwellirStartTimestampMs(this.env);
     const startBlockHeight = readOptionalNumber(this.env.DWELLIR_GRPC_START_BLOCK_HEIGHT);
 
@@ -1367,10 +1018,7 @@ class ExchangeStreamController {
           });
 
           if (emitFatalDropOnWatchdog) {
-            void this.emitGrpcFatalDropIfNeeded(
-              "DWELLIR_GRPC_WATCHDOG_TIMEOUT",
-              staleForMs
-            );
+            void this.emitGrpcFatalDropIfNeeded("DWELLIR_GRPC_WATCHDOG_TIMEOUT", staleForMs);
           } else {
             this.logger.info(
               "DWELLIR_GRPC_FILLS_IDLE_RECYCLE",
@@ -1401,11 +1049,7 @@ class ExchangeStreamController {
       if (streams.has("ORDERBOOK_SNAPSHOT")) {
         streamTasks.push(client.streamOrderbookSnapshots(onUpdate, controller.signal));
         streamTasks.push(
-          this.pollDwellirGrpcOrderbookSnapshots(
-            client,
-            onUpdate,
-            controller.signal
-          )
+          this.pollDwellirGrpcOrderbookSnapshots(client, onUpdate, controller.signal)
         );
       }
       if (streams.has("FILLS")) {
@@ -1418,7 +1062,11 @@ class ExchangeStreamController {
       // Snapshot streams may complete after a fresh book frame. Keep the
       // long-lived fills/block stream alive instead of recycling the whole
       // coordinator and repeatedly resetting the engine book.
-      Promise.all(streamTasks.length > 0 ? streamTasks : [Promise.reject(new Error("DWELLIR_NO_STREAMS_CONFIGURED"))])
+      Promise.all(
+        streamTasks.length > 0
+          ? streamTasks
+          : [Promise.reject(new Error("DWELLIR_NO_STREAMS_CONFIGURED"))]
+      )
         .then(() => finish())
         .catch((error) => fail("DWELLIR_GRPC_STREAM_ERROR", error));
     });
@@ -1435,11 +1083,7 @@ class ExchangeStreamController {
     }
 
     for (const subscription of subscriptions) {
-      socket.send(
-        typeof subscription === "string"
-          ? subscription
-          : JSON.stringify(subscription)
-      );
+      socket.send(typeof subscription === "string" ? subscription : JSON.stringify(subscription));
     }
   }
 
@@ -1458,13 +1102,17 @@ class ExchangeStreamController {
       this.ticksDropped += 1;
 
       if (this.ticksDropped <= 5 || this.ticksDropped % 100 === 0) {
-        this.logger.warn("PRE_SNAPSHOT_BUFFER_OVERFLOW", "Dropped buffered stream packet before snapshot bridge", {
-          streamId: this.config.id,
-          source: this.config.source,
-          source_exchange: this.config.source_exchange,
-          connectionId: this.connectionId,
-          bufferLimit: PRE_SNAPSHOT_BUFFER_LIMIT
-        });
+        this.logger.warn(
+          "PRE_SNAPSHOT_BUFFER_OVERFLOW",
+          "Dropped buffered stream packet before snapshot bridge",
+          {
+            streamId: this.config.id,
+            source: this.config.source,
+            source_exchange: this.config.source_exchange,
+            connectionId: this.connectionId,
+            bufferLimit: PRE_SNAPSHOT_BUFFER_LIMIT
+          }
+        );
       }
     }
 
@@ -1626,10 +1274,7 @@ class ExchangeStreamController {
       update,
       this.config,
       streamCoins(this.config),
-      readNumber(
-        this.env.DWELLIR_GRPC_FORWARD_MAX_AGE_MS,
-        DEFAULT_DWELLIR_GRPC_FORWARD_MAX_AGE_MS
-      )
+      readNumber(this.env.DWELLIR_GRPC_FORWARD_MAX_AGE_MS, DEFAULT_DWELLIR_GRPC_FORWARD_MAX_AGE_MS)
     );
 
     if (rawMessages.length === 0) {
@@ -1678,13 +1323,17 @@ class ExchangeStreamController {
       this.ticksDropped += 1;
 
       if (this.ticksDropped <= 5 || this.ticksDropped % 100 === 0) {
-        this.logger.warn("DWELLIR_L4_PACKET_DROPPED", "Dropped unsupported Dwellir L4 book packet", {
-          streamId: this.config.id,
-          source: this.config.source,
-          source_exchange: this.config.source_exchange,
-          connectionId: this.connectionId,
-          reason: "UNSUPPORTED_L4BOOK_PAYLOAD"
-        });
+        this.logger.warn(
+          "DWELLIR_L4_PACKET_DROPPED",
+          "Dropped unsupported Dwellir L4 book packet",
+          {
+            streamId: this.config.id,
+            source: this.config.source,
+            source_exchange: this.config.source_exchange,
+            connectionId: this.connectionId,
+            reason: "UNSUPPORTED_L4BOOK_PAYLOAD"
+          }
+        );
       }
     }
 
@@ -1696,10 +1345,7 @@ class ExchangeStreamController {
     onUpdate: (update: DwellirGrpcPayload) => Promise<void>,
     signal: AbortSignal
   ): Promise<void> {
-    const pollIntervalMs = Math.max(
-      250,
-      readNumber(this.env.DWELLIR_GRPC_SNAPSHOT_POLL_MS, 1_000)
-    );
+    const pollIntervalMs = Math.max(250, readNumber(this.env.DWELLIR_GRPC_SNAPSHOT_POLL_MS, 1_000));
     let consecutiveFailures = 0;
 
     while (!signal.aborted) {
@@ -1727,9 +1373,7 @@ class ExchangeStreamController {
         );
 
         if (consecutiveFailures >= 3) {
-          throw error instanceof Error
-            ? error
-            : new Error("DWELLIR_GRPC_SNAPSHOT_POLL_FAILED");
+          throw error instanceof Error ? error : new Error("DWELLIR_GRPC_SNAPSHOT_POLL_FAILED");
         }
       }
 
@@ -1827,11 +1471,14 @@ class ExchangeStreamController {
       return ticks;
     }
 
-    const byMarket = new Map<string, {
-      template: MarketTick;
-      bids: Set<string>;
-      asks: Set<string>;
-    }>();
+    const byMarket = new Map<
+      string,
+      {
+        template: MarketTick;
+        bids: Set<string>;
+        asks: Set<string>;
+      }
+    >();
 
     for (const tick of ticks) {
       const marketKey = buildMarketKey(tick.source_exchange, tick.instrumentCode);
@@ -1879,9 +1526,7 @@ class ExchangeStreamController {
     return [...ticks, ...deletes];
   }
 
-  private async evaluateProviderSequence(
-    event: unknown
-  ): Promise<"PROCESS" | "SKIP" | "RESYNC"> {
+  private async evaluateProviderSequence(event: unknown): Promise<"PROCESS" | "SKIP" | "RESYNC"> {
     if (this.config.source !== "BINANCE") {
       return "PROCESS";
     }
@@ -1952,9 +1597,7 @@ class ExchangeStreamController {
 
   private async fetchSnapshot(receivedAt: string): Promise<OrderBookSnapshot> {
     const snapshotUrl = requireString(this.config.snapshotUrl, "SNAPSHOT_URL");
-    const apiKey = this.config.apiKeyEnv
-      ? readEnvSecret(this.env, this.config.apiKeyEnv)
-      : null;
+    const apiKey = this.config.apiKeyEnv ? readEnvSecret(this.env, this.config.apiKeyEnv) : null;
     const headers: Record<string, string> = { accept: "application/json" };
 
     if (apiKey) {
@@ -2112,8 +1755,7 @@ class ExchangeStreamController {
       }
 
       const instrumentCode = hyperliquidInstrumentCode(normalizedCoin, this.config.instrumentCode);
-      const tradeMs =
-        Date.parse(coerceExchangeTime(item.time ?? item.timestamp) ?? receivedAt);
+      const tradeMs = Date.parse(coerceExchangeTime(item.time ?? item.timestamp) ?? receivedAt);
       const side = hawkesTradeSide(item);
       const size = Number(item.sz ?? item.size);
       const observation = this.hawkesTracker.observe({
@@ -2182,20 +1824,28 @@ class ExchangeStreamController {
       );
 
       if (!response.ok) {
-        this.logger.warn("HAWKES_SIGNAL_FORWARD_FAILED", "Engine rejected Hawkes evacuation signal", {
-          streamId: this.config.id,
-          instrumentCode: observation.instrumentCode,
-          status: response.status,
-          intensity: observation.intensity,
-          threshold: observation.threshold
-        });
+        this.logger.warn(
+          "HAWKES_SIGNAL_FORWARD_FAILED",
+          "Engine rejected Hawkes evacuation signal",
+          {
+            streamId: this.config.id,
+            instrumentCode: observation.instrumentCode,
+            status: response.status,
+            intensity: observation.intensity,
+            threshold: observation.threshold
+          }
+        );
       }
     } catch (error) {
-      this.logger.warn("HAWKES_SIGNAL_FORWARD_FAILED", "Failed to forward Hawkes evacuation signal", {
-        streamId: this.config.id,
-        instrumentCode: observation.instrumentCode,
-        error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
-      });
+      this.logger.warn(
+        "HAWKES_SIGNAL_FORWARD_FAILED",
+        "Failed to forward Hawkes evacuation signal",
+        {
+          streamId: this.config.id,
+          instrumentCode: observation.instrumentCode,
+          error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
+        }
+      );
     }
   }
 
@@ -2326,25 +1976,30 @@ class ExchangeStreamController {
       );
 
       if (!response.ok) {
-        this.logger.error("GRPC_FATAL_DROP_FORWARD_FAILED", "Engine rejected fatal gRPC drop signal", {
-          streamId: this.config.id,
-          status: response.status,
-          reason
-        });
+        this.logger.error(
+          "GRPC_FATAL_DROP_FORWARD_FAILED",
+          "Engine rejected fatal gRPC drop signal",
+          {
+            streamId: this.config.id,
+            status: response.status,
+            reason
+          }
+        );
       }
     } catch (error) {
-      this.logger.error("GRPC_FATAL_DROP_FORWARD_FAILED", "Failed to forward fatal gRPC drop signal", {
-        streamId: this.config.id,
-        reason,
-        error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
-      });
+      this.logger.error(
+        "GRPC_FATAL_DROP_FORWARD_FAILED",
+        "Failed to forward fatal gRPC drop signal",
+        {
+          streamId: this.config.id,
+          reason,
+          error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
+        }
+      );
     }
   }
 
-  private async resetEngineBook(
-    blackoutDurationMs: number,
-    recoveredAt: string
-  ): Promise<void> {
+  private async resetEngineBook(blackoutDurationMs: number, recoveredAt: string): Promise<void> {
     const engine = getTradingEngineStub(this.env);
     const payload: OrderBookResetRequest = {
       source: "INGEST_WORKER",
@@ -2475,9 +2130,9 @@ class ExchangeStreamController {
       return true;
     }
 
-    return blackoutDurationMs > Math.max(
-      1_000,
-      readNumber(this.env.DWELLIR_GRPC_FATAL_DROP_MS, DEFAULT_GRPC_FATAL_DROP_MS)
+    return (
+      blackoutDurationMs >
+      Math.max(1_000, readNumber(this.env.DWELLIR_GRPC_FATAL_DROP_MS, DEFAULT_GRPC_FATAL_DROP_MS))
     );
   }
 
@@ -2590,7 +2245,8 @@ function aggregateSubscriptionProfile(
     l4BookEnabled,
     assetCount,
     optimization:
-      bookDepth >= maxBookDepth && !profiles.some((profile) => profile.optimization === "CONSERVATIVE")
+      bookDepth >= maxBookDepth &&
+      !profiles.some((profile) => profile.optimization === "CONSERVATIVE")
         ? "MAXIMIZED"
         : primary.optimization,
     normalMode: profiles.every((profile) => profile.normalMode),
@@ -2643,8 +2299,7 @@ function normalizeRestOrderBookSnapshot(
   }
 
   const exchangeTimestamp =
-    coerceTimestamp(readField(raw, ["timestamp", "time", "ts", "tsExchange"])) ??
-    receivedAt;
+    coerceTimestamp(readField(raw, ["timestamp", "time", "ts", "tsExchange"])) ?? receivedAt;
 
   return {
     schemaVersion: "order-book.snapshot.v1",
@@ -2799,7 +2454,8 @@ function normalizeHyperliquidTrades(
         price,
         size,
         side,
-        sequence: coerceGenericSequence(readField(trade, ["tid", "id", "hash", "time"])) + ticks.length,
+        sequence:
+          coerceGenericSequence(readField(trade, ["tid", "id", "hash", "time"])) + ticks.length,
         exchangeTimestamp,
         synchronized,
         receivedAt,
@@ -2889,9 +2545,7 @@ function normalizeBinanceData(
   const receivedAt = new Date().toISOString();
   const eventType = normalizeString(readField(raw, ["e", "eventType", "type"]));
   const symbol = String(
-    readField(raw, ["s", "symbol", "instrument", "instrumentCode"]) ??
-      config.instrumentCode ??
-      ""
+    readField(raw, ["s", "symbol", "instrument", "instrumentCode"]) ?? config.instrumentCode ?? ""
   ).toLowerCase();
   const instrumentCode = normalizeInstrumentCode(symbol);
   const eventTime = readField(raw, ["E", "eventTime", "time", "timestamp"]);
@@ -2902,11 +2556,7 @@ function normalizeBinanceData(
   const bidUpdates = readField(raw, ["b", "bids"]);
   const askUpdates = readField(raw, ["a", "asks"]);
 
-  if (
-    eventType === "DEPTHUPDATE" ||
-    Array.isArray(bidUpdates) ||
-    Array.isArray(askUpdates)
-  ) {
+  if (eventType === "DEPTHUPDATE" || Array.isArray(bidUpdates) || Array.isArray(askUpdates)) {
     const ticks: MarketTick[] = [];
 
     for (const [price, size] of normalizeDepthLevels(bidUpdates)) {
@@ -3036,7 +2686,8 @@ function normalizeCoinbaseData(
           price: normalized.price,
           size: normalized.size,
           side: normalized.side,
-          sequence: coerceGenericSequence(readField(raw, ["sequence", "sequence_num"])) + ticks.length,
+          sequence:
+            coerceGenericSequence(readField(raw, ["sequence", "sequence_num"])) + ticks.length,
           exchangeTimestamp,
           synchronized,
           receivedAt,
@@ -3076,8 +2727,7 @@ function normalizeGenericExchangeData(
     "size"
   );
   const exchangeTimestamp =
-    coerceTimestamp(readField(raw, ["exchangeTimestamp", "timestamp", "time", "ts"])) ??
-    receivedAt;
+    coerceTimestamp(readField(raw, ["exchangeTimestamp", "timestamp", "time", "ts"])) ?? receivedAt;
   const synchronized = clockSync.observe(exchangeTimestamp, receivedAt);
   const side = normalizeUniversalSide(
     readField(raw, ["side", "orderSide", "liquiditySide", "updateType"])
@@ -3133,10 +2783,7 @@ function extractMarketEvents(raw: unknown, source: MarketDataSource): unknown[] 
   return [raw];
 }
 
-function readSnapshotLevels(
-  snapshot: Record<string, unknown>,
-  side: "bid" | "ask"
-): unknown {
+function readSnapshotLevels(snapshot: Record<string, unknown>, side: "bid" | "ask"): unknown {
   const plural = side === "bid" ? "bids" : "asks";
   const singular = side;
   const direct = readField(snapshot, [
@@ -3168,10 +2815,7 @@ function unwrapLevelsContainer(value: unknown): unknown {
   return value;
 }
 
-function normalizeSnapshotLevels(
-  value: unknown,
-  observedAt: string
-): OrderBookSnapshotLevel[] {
+function normalizeSnapshotLevels(value: unknown, observedAt: string): OrderBookSnapshotLevel[] {
   if (!Array.isArray(value)) {
     return [];
   }
@@ -3189,10 +2833,7 @@ function normalizeSnapshotLevels(
   return levels;
 }
 
-function normalizeSnapshotLevel(
-  level: unknown,
-  observedAt: string
-): OrderBookSnapshotLevel | null {
+function normalizeSnapshotLevel(level: unknown, observedAt: string): OrderBookSnapshotLevel | null {
   let price: unknown;
   let size: unknown;
   let updatedAt: string | null = null;
@@ -3251,10 +2892,7 @@ function coerceSnapshotSequence(snapshot: Record<string, unknown>): number {
   );
 }
 
-function readField(
-  record: Record<string, unknown>,
-  keys: readonly string[]
-): unknown {
+function readField(record: Record<string, unknown>, keys: readonly string[]): unknown {
   for (const key of keys) {
     if (record[key] !== undefined) {
       return record[key];
@@ -3264,10 +2902,7 @@ function readField(
   return undefined;
 }
 
-function readStringField(
-  record: Record<string, unknown>,
-  keys: readonly string[]
-): string | null {
+function readStringField(record: Record<string, unknown>, keys: readonly string[]): string | null {
   const value = readField(record, keys);
   return typeof value === "string" && value.trim() !== "" ? value : null;
 }
@@ -3285,10 +2920,7 @@ function inferSubscriptionField(
   return typeof value === "string" && value.trim() !== "" ? value : null;
 }
 
-function normalizeSide(
-  side: string | undefined,
-  updateType: string | null
-): MarketTick["side"] {
+function normalizeSide(side: string | undefined, updateType: string | null): MarketTick["side"] {
   const normalizedSide = normalizeString(side);
 
   if (normalizedSide === "BUY") {
@@ -3555,18 +3187,17 @@ function defaultHyperliquidStreamConfig(env: Env): ExchangeStreamConfig[] {
       grpcUpdateType: env.RPC_GRPC_UPDATE_TYPE ?? "hyperliquid_l1_gateway.v2.OrderBookSnapshot",
       grpcPingRequestType: env.RPC_GRPC_PING_REQUEST_TYPE,
       grpcPingResponseType: env.RPC_GRPC_PING_RESPONSE_TYPE,
-      grpcStreamTypes: parseCsvList(
-        env.RPC_GRPC_STREAM_TYPES ?? env.DWELLIR_GRPC_STREAMS,
-        ["ORDERBOOK_SNAPSHOT", "FILLS"]
-      ),
+      grpcStreamTypes: parseCsvList(env.RPC_GRPC_STREAM_TYPES ?? env.DWELLIR_GRPC_STREAMS, [
+        "ORDERBOOK_SNAPSHOT",
+        "FILLS"
+      ]),
       subscriptions: activeCoins.flatMap((coin) => [
         { method: "subscribe", subscription: { type: "l2Book", coin } },
         { method: "subscribe", subscription: { type: "trades", coin } },
         { method: "subscribe", subscription: { type: "activeAssetCtx", coin } },
         { method: "subscribe", subscription: { type: "liquidations", coin } }
       ]),
-      instrumentCode:
-        activeCoins.length === 1 ? `${activeCoins[0].toLowerCase()}-usd` : undefined,
+      instrumentCode: activeCoins.length === 1 ? `${activeCoins[0].toLowerCase()}-usd` : undefined,
       exchangeCode: "hyperliquid"
     }
   ];
@@ -3621,12 +3252,7 @@ function resolveDwellirSubscriptionProfile(
     tier === "PUBLIC" || (orderbookTransport === "websocket" && !l4Requested)
       ? HYPERLIQUID_PUBLIC_L2_DEPTH_LIMIT
       : DWELLIR_MAX_L2_DEPTH_LIMIT;
-  const bookDepth = readPositiveInteger(
-    env.DWELLIR_ORDERBOOK_DEPTH,
-    maxBookDepth,
-    1,
-    maxBookDepth
-  );
+  const bookDepth = readPositiveInteger(env.DWELLIR_ORDERBOOK_DEPTH, maxBookDepth, 1, maxBookDepth);
   const l4BookEnabled = l4Requested && tier !== "PUBLIC";
   const optimization =
     bookDepth >= maxBookDepth && !l4Requested
@@ -3670,10 +3296,7 @@ function dwellirOrderbookTransport(env: Env): "grpc" | "websocket" {
   return normalized === "GRPC" && tier !== "PUBLIC" ? "grpc" : "websocket";
 }
 
-function mergeGrpcStreamTypes(
-  current: string[] | undefined,
-  required: string[]
-): string[] {
+function mergeGrpcStreamTypes(current: string[] | undefined, required: string[]): string[] {
   const merged: string[] = [];
 
   for (const entry of [...(current ?? []), ...required]) {
@@ -3686,9 +3309,7 @@ function mergeGrpcStreamTypes(
   return merged;
 }
 
-function normalizeDwellirSubscriptionTier(
-  value: string | undefined
-): MarketDataSubscriptionTier {
+function normalizeDwellirSubscriptionTier(value: string | undefined): MarketDataSubscriptionTier {
   const normalized = normalizeString(value);
 
   if (
@@ -3729,10 +3350,7 @@ function resolveDwellirStartTimestampMs(env: Env): number | null {
 
   const lookbackMs = Math.min(
     60_000,
-    readNumber(
-      env.DWELLIR_GRPC_START_LOOKBACK_MS,
-      DEFAULT_DWELLIR_GRPC_START_LOOKBACK_MS
-    )
+    readNumber(env.DWELLIR_GRPC_START_LOOKBACK_MS, DEFAULT_DWELLIR_GRPC_START_LOOKBACK_MS)
   );
 
   return Math.max(1, Date.now() - lookbackMs);
@@ -3770,7 +3388,12 @@ function parseAssetList(value: string | undefined): string[] {
     ...new Set(
       value
         .split(",")
-        .map((entry) => entry.trim().replace(/-perp$/i, "").toUpperCase())
+        .map((entry) =>
+          entry
+            .trim()
+            .replace(/-perp$/i, "")
+            .toUpperCase()
+        )
         .filter((entry) => /^[A-Z0-9]+$/.test(entry))
     )
   ];
@@ -3790,11 +3413,12 @@ function isDwellirGrpcRawConfig(config: ExchangeStreamConfig, env: Env): boolean
     return false;
   }
 
-  const endpoint = config.grpcEndpoint ?? config.streamUrl ?? env.DWELLIR_GRPC_URL ?? env.RPC_GRPC_ENDPOINT;
+  const endpoint =
+    config.grpcEndpoint ?? config.streamUrl ?? env.DWELLIR_GRPC_URL ?? env.RPC_GRPC_ENDPOINT;
   return (
-    typeof endpoint === "string" &&
-    endpoint.includes("dwellir.com")
-  ) || (config.grpcService ?? env.RPC_GRPC_SERVICE ?? "").startsWith("hyperliquid_l1_gateway.");
+    (typeof endpoint === "string" && endpoint.includes("dwellir.com")) ||
+    (config.grpcService ?? env.RPC_GRPC_SERVICE ?? "").startsWith("hyperliquid_l1_gateway.")
+  );
 }
 
 function shouldSendApplicationHeartbeat(config: ResolvedExchangeStreamConfig): boolean {
@@ -3861,10 +3485,7 @@ function dwellirGrpcStreams(
 ): Set<DwellirGrpcStreamKind> {
   const configured = config?.grpcStreamTypes?.length
     ? config.grpcStreamTypes
-    : parseCsvList(env.DWELLIR_GRPC_STREAMS, [
-        "ORDERBOOK_SNAPSHOT",
-        "FILLS"
-      ]);
+    : parseCsvList(env.DWELLIR_GRPC_STREAMS, ["ORDERBOOK_SNAPSHOT", "FILLS"]);
   const streams = new Set<DwellirGrpcStreamKind>();
 
   for (const entry of configured) {
@@ -3914,10 +3535,7 @@ function dwellirGrpcWatchdogTimeoutMs(
   return config.watchdogTimeoutMs;
 }
 
-function shouldEmitDwellirGrpcFatalDrop(
-  streams: Set<DwellirGrpcStreamKind>,
-  env: Env
-): boolean {
+function shouldEmitDwellirGrpcFatalDrop(streams: Set<DwellirGrpcStreamKind>, env: Env): boolean {
   if (streams.has("ORDERBOOK_SNAPSHOT") || streams.has("BLOCK")) {
     return true;
   }
@@ -4014,11 +3632,7 @@ function dwellirOrderbookSnapshotMessagesFromBytes(
     }
 
     const market = parseJson<unknown[]>(tupleJson);
-    if (
-      !Array.isArray(market) ||
-      typeof market[0] !== "string" ||
-      !Array.isArray(market[1])
-    ) {
+    if (!Array.isArray(market) || typeof market[0] !== "string" || !Array.isArray(market[1])) {
       continue;
     }
 
@@ -4079,13 +3693,13 @@ function extractJsonArrayAt(text: string, start: number): string | null {
         escaped = false;
       } else if (char === "\\") {
         escaped = true;
-      } else if (char === "\"") {
+      } else if (char === '"') {
         inString = false;
       }
       continue;
     }
 
-    if (char === "\"") {
+    if (char === '"') {
       inString = true;
       continue;
     }
@@ -4188,31 +3802,27 @@ function dwellirFillMessages(
   }
 
   const targetCoins = new Set(coins.map((coin) => coin.toUpperCase()));
-  const fills =
-    Array.isArray(decoded)
-      ? decoded
-      : isRecord(decoded) && Array.isArray(decoded.data)
-        ? decoded.data
-        : isRecord(decoded) && Array.isArray(decoded.fills)
-          ? decoded.fills
-          : isRecord(decoded) && Array.isArray(decoded.events)
-            ? decoded.events
-            : [];
+  const fills = Array.isArray(decoded)
+    ? decoded
+    : isRecord(decoded) && Array.isArray(decoded.data)
+      ? decoded.data
+      : isRecord(decoded) && Array.isArray(decoded.fills)
+        ? decoded.fills
+        : isRecord(decoded) && Array.isArray(decoded.events)
+          ? decoded.events
+          : [];
   const byTradeId = new Map<string, Record<string, unknown>>();
 
   for (const entry of fills) {
     const fill =
-      Array.isArray(entry) && isRecord(entry[1])
-        ? entry[1]
-        : isRecord(entry)
-          ? entry
-          : null;
+      Array.isArray(entry) && isRecord(entry[1]) ? entry[1] : isRecord(entry) ? entry : null;
 
     if (!fill) {
       continue;
     }
 
-    const coin = stringifyOrNull(fill.coin) ?? config.instrumentCode?.replace(/-usd$/i, "").toUpperCase();
+    const coin =
+      stringifyOrNull(fill.coin) ?? config.instrumentCode?.replace(/-usd$/i, "").toUpperCase();
     const normalizedCoin = coin?.toUpperCase();
     if (!normalizedCoin || (targetCoins.size > 0 && !targetCoins.has(normalizedCoin))) {
       continue;
@@ -4222,7 +3832,8 @@ function dwellirFillMessages(
       continue;
     }
 
-    const tradeId = stringifyOrNull(fill.tid ?? fill.id ?? fill.hash ?? fill.oid) ??
+    const tradeId =
+      stringifyOrNull(fill.tid ?? fill.id ?? fill.hash ?? fill.oid) ??
       `${normalizedCoin}:${fill.time ?? fill.timestamp ?? ""}:${fill.px ?? fill.price ?? fill.limitPx ?? ""}:${fill.sz ?? fill.size ?? ""}`;
     const normalized: Record<string, unknown> = {
       coin: normalizedCoin,
@@ -4248,11 +3859,9 @@ function dwellirFillMessages(
     }
   }
 
-  const normalized = [...byTradeId.values()].filter((fill) => (
-    fill.coin &&
-    fill.px !== undefined &&
-    fill.sz !== undefined
-  ));
+  const normalized = [...byTradeId.values()].filter(
+    (fill) => fill.coin && fill.px !== undefined && fill.sz !== undefined
+  );
 
   return normalized.length > 0 ? [{ channel: "trades", data: normalized }] : [];
 }
@@ -4265,23 +3874,20 @@ function normalizeDwellirL4BookForEngine(
   maxCacheOrders: number
 ): Record<string, unknown> | null {
   const envelope = isRecord(raw.data) ? raw.data : raw;
-  const data =
-    isRecord(envelope.Snapshot)
-      ? envelope.Snapshot
-      : isRecord(envelope.Updates)
-        ? envelope.Updates
-        : envelope;
+  const data = isRecord(envelope.Snapshot)
+    ? envelope.Snapshot
+    : isRecord(envelope.Updates)
+      ? envelope.Updates
+      : envelope;
   const coin =
-    readDwellirL4Coin(data) ??
-    config.instrumentCode?.replace(/-usd$/i, "").toUpperCase();
+    readDwellirL4Coin(data) ?? config.instrumentCode?.replace(/-usd$/i, "").toUpperCase();
 
   if (!coin) {
     return null;
   }
 
   const exchangeTime =
-    coerceExchangeTime(readField(data, ["time", "timestamp", "ts", "blockTime"])) ??
-    receivedAt;
+    coerceExchangeTime(readField(data, ["time", "timestamp", "ts", "blockTime"])) ?? receivedAt;
   const sequence =
     readField(data, ["sequence", "seq", "block", "height", "time"]) ?? Date.parse(exchangeTime);
 
@@ -4323,14 +3929,12 @@ function applyDwellirL4Snapshot(
   maxCacheOrders: number
 ): boolean {
   const levels = readField(data, ["levels", "book", "orderBook"]);
-  const bids =
-    isRecord(levels)
-      ? readField(levels, ["bids", "bid", "buy"])
-      : readField(data, ["bids", "bidOrders", "buy"]);
-  const asks =
-    isRecord(levels)
-      ? readField(levels, ["asks", "ask", "sell"])
-      : readField(data, ["asks", "askOrders", "sell"]);
+  const bids = isRecord(levels)
+    ? readField(levels, ["bids", "bid", "buy"])
+    : readField(data, ["bids", "bidOrders", "buy"]);
+  const asks = isRecord(levels)
+    ? readField(levels, ["asks", "ask", "sell"])
+    : readField(data, ["asks", "askOrders", "sell"]);
 
   if (Array.isArray(levels) && (Array.isArray(levels[0]) || Array.isArray(levels[1]))) {
     orderCache.clear();
@@ -4485,7 +4089,8 @@ function normalizeDwellirL4OrderSource(
       return {
         ...value,
         ...nested,
-        status: readField(value, ["status", "type", "event", "state"]) ?? readField(nested, ["status"])
+        status:
+          readField(value, ["status", "type", "event", "state"]) ?? readField(nested, ["status"])
       };
     }
 
@@ -4520,10 +4125,7 @@ function normalizeDwellirL4OrderSource(
   };
 }
 
-function readDwellirL4OrderId(
-  source: Record<string, unknown>,
-  fallbackId: string
-): string {
+function readDwellirL4OrderId(source: Record<string, unknown>, fallbackId: string): string {
   const id = readField(source, [
     "oid",
     "orderId",
@@ -4622,10 +4224,7 @@ function readDwellirL4Side(
   return fallback;
 }
 
-function isDwellirL4Delete(
-  source: Record<string, unknown>,
-  size: number | null
-): boolean {
+function isDwellirL4Delete(source: Record<string, unknown>, size: number | null): boolean {
   const status = normalizeString(readField(source, ["status", "type", "event", "state", "action"]));
   const rawBookDiff = readField(source, ["raw_book_diff", "rawBookDiff", "bookDiff"]);
   const rawBookDiffStatus = normalizeString(rawBookDiff);
@@ -4657,7 +4256,10 @@ function buildDwellirL4AggregatedLevels(
   side: "buy" | "sell",
   depthLimit: number
 ): Array<{ px: string; sz: string; n: number; updatedAt: string }> {
-  const byPrice = new Map<string, { price: number; size: number; count: number; updatedAt: string }>();
+  const byPrice = new Map<
+    string,
+    { price: number; size: number; count: number; updatedAt: string }
+  >();
 
   for (const order of orderCache.values()) {
     if (order.side !== side || order.size <= 0) {
@@ -4677,7 +4279,8 @@ function buildDwellirL4AggregatedLevels(
     };
     aggregate.size += order.size;
     aggregate.count += 1;
-    aggregate.updatedAt = order.updatedAt > aggregate.updatedAt ? order.updatedAt : aggregate.updatedAt;
+    aggregate.updatedAt =
+      order.updatedAt > aggregate.updatedAt ? order.updatedAt : aggregate.updatedAt;
     byPrice.set(order.price, aggregate);
   }
 
@@ -4788,7 +4391,10 @@ function isDwellirPacketFresh(
   return Math.max(0, receivedMs - exchangeMs) <= maxAgeMs;
 }
 
-function aggregateDwellirOrders(value: unknown, receivedAt: string): Array<{ px: string; sz: string; n: number; updatedAt: string }> {
+function aggregateDwellirOrders(
+  value: unknown,
+  receivedAt: string
+): Array<{ px: string; sz: string; n: number; updatedAt: string }> {
   const orders = Array.isArray(value) ? value : [];
   const byPrice = new Map<string, { size: number; count: number }>();
 
@@ -4860,15 +4466,18 @@ function streamCoins(config: ResolvedExchangeStreamConfig): string[] {
   }
 
   if (config.instrumentCode) {
-    coins.add(config.instrumentCode.replace(/-usd$/i, "").replace(/-perp$/i, "").toUpperCase());
+    coins.add(
+      config.instrumentCode
+        .replace(/-usd$/i, "")
+        .replace(/-perp$/i, "")
+        .toUpperCase()
+    );
   }
 
   return coins.size > 0 ? [...coins] : [...DEFAULT_HYPERLIQUID_ASSET_MATRIX];
 }
 
-function resetInstrumentForStream(
-  config: ResolvedExchangeStreamConfig
-): string | null {
+function resetInstrumentForStream(config: ResolvedExchangeStreamConfig): string | null {
   const coins = new Set<string>();
 
   for (const subscription of config.subscriptions ?? []) {
@@ -4902,9 +4511,9 @@ function resolveStreamConfig(
   const weight =
     Number.isFinite(configuredWeight) && configuredWeight > 0
       ? configuredWeight
-      : weights[sourceExchange] ??
+      : (weights[sourceExchange] ??
         weights[`${source.toLowerCase()}:${sourceExchange}`] ??
-        DEFAULT_SOURCE_WEIGHT;
+        DEFAULT_SOURCE_WEIGHT);
 
   return {
     id: config.id || `${source.toLowerCase()}-${sourceExchange}-${index}`,
@@ -4913,7 +4522,7 @@ function resolveStreamConfig(
     transport,
     streamUrl: requireString(
       transport === "grpc"
-        ? config.grpcEndpoint ?? dwellirGrpcUrl ?? config.streamUrl
+        ? (config.grpcEndpoint ?? dwellirGrpcUrl ?? config.streamUrl)
         : config.streamUrl,
       transport === "grpc" ? "RPC_GRPC_ENDPOINT" : "STREAM_URL"
     ),
@@ -4929,10 +4538,8 @@ function resolveStreamConfig(
     grpcPingMethod: config.grpcPingMethod ?? env.RPC_GRPC_PING_METHOD,
     grpcSubscribeType: config.grpcSubscribeType ?? env.RPC_GRPC_SUBSCRIBE_TYPE,
     grpcUpdateType: config.grpcUpdateType ?? env.RPC_GRPC_UPDATE_TYPE,
-    grpcPingRequestType:
-      config.grpcPingRequestType ?? env.RPC_GRPC_PING_REQUEST_TYPE,
-    grpcPingResponseType:
-      config.grpcPingResponseType ?? env.RPC_GRPC_PING_RESPONSE_TYPE,
+    grpcPingRequestType: config.grpcPingRequestType ?? env.RPC_GRPC_PING_REQUEST_TYPE,
+    grpcPingResponseType: config.grpcPingResponseType ?? env.RPC_GRPC_PING_RESPONSE_TYPE,
     grpcStreamTypes:
       config.grpcStreamTypes ??
       parseCsvList(env.RPC_GRPC_STREAM_TYPES ?? env.DWELLIR_GRPC_STREAMS, [
@@ -4963,140 +4570,16 @@ function assertIngestEnv(env: Env, config: ResolvedExchangeStreamConfig): void {
   if (config.transport === "grpc") {
     requireString(config.grpcEndpoint ?? config.streamUrl, "RPC_GRPC_ENDPOINT");
     requireString(config.grpcService ?? env.RPC_GRPC_SERVICE, "RPC_GRPC_SERVICE");
-    requireString(
-      config.grpcStreamMethod ?? env.RPC_GRPC_STREAM_METHOD,
-      "RPC_GRPC_STREAM_METHOD"
-    );
+    requireString(config.grpcStreamMethod ?? env.RPC_GRPC_STREAM_METHOD, "RPC_GRPC_STREAM_METHOD");
     requireString(
       config.grpcSubscribeType ?? env.RPC_GRPC_SUBSCRIBE_TYPE,
       "RPC_GRPC_SUBSCRIBE_TYPE"
     );
-    requireString(
-      config.grpcUpdateType ?? env.RPC_GRPC_UPDATE_TYPE,
-      "RPC_GRPC_UPDATE_TYPE"
-    );
+    requireString(config.grpcUpdateType ?? env.RPC_GRPC_UPDATE_TYPE, "RPC_GRPC_UPDATE_TYPE");
   }
 
   if (config.apiKeyEnv) {
     requireString(readEnvSecret(env, config.apiKeyEnv), config.apiKeyEnv);
-  }
-}
-
-class ClockSyncTracker {
-  private offsetMs: number | null = null;
-
-  constructor(
-    private readonly alpha = DEFAULT_CLOCK_SYNC_ALPHA,
-    private readonly maxOffsetMs = DEFAULT_CLOCK_SYNC_MAX_OFFSET_MS
-  ) {}
-
-  observe(
-    exchangeTimestamp: string,
-    receivedAt: string
-  ): { timestamp: string; offsetMs: number } {
-    const exchangeMs = Date.parse(exchangeTimestamp);
-    const receivedMs = Date.parse(receivedAt);
-
-    if (!Number.isFinite(exchangeMs) || !Number.isFinite(receivedMs)) {
-      return { timestamp: receivedAt, offsetMs: this.currentOffsetMs() ?? 0 };
-    }
-
-    const observedOffset = clampNumber(
-      receivedMs - exchangeMs,
-      -this.maxOffsetMs,
-      this.maxOffsetMs
-    );
-    this.offsetMs =
-      this.offsetMs === null
-        ? observedOffset
-        : this.offsetMs + this.alpha * (observedOffset - this.offsetMs);
-
-    return {
-      timestamp: new Date(exchangeMs + this.offsetMs).toISOString(),
-      offsetMs: Math.round(this.offsetMs)
-    };
-  }
-
-  currentOffsetMs(): number | null {
-    return this.offsetMs === null ? null : Math.round(this.offsetMs);
-  }
-}
-
-class ClusterPool {
-  private activeIndex = 0;
-  private readonly health = new Map<
-    string,
-    { score: number; failures: number; heartbeatLatencyMs: number | null; cooldownUntilMs: number }
-  >();
-
-  constructor(private readonly urls: string[]) {
-    for (const url of urls) {
-      this.health.set(url, {
-        score: 1,
-        failures: 0,
-        heartbeatLatencyMs: null,
-        cooldownUntilMs: 0
-      });
-    }
-  }
-
-  activeUrl(): string {
-    return this.urls[this.activeIndex] ?? this.urls[0];
-  }
-
-  recordHeartbeat(url: string, latencyMs: number): void {
-    const entry = this.health.get(url) ?? {
-      score: 1,
-      failures: 0,
-      heartbeatLatencyMs: null,
-      cooldownUntilMs: 0
-    };
-    const latencyPenalty = Math.min(0.5, latencyMs / 10_000);
-    entry.score = Math.min(1, entry.score * 0.9 + (1 - latencyPenalty) * 0.1);
-    entry.failures = 0;
-    entry.heartbeatLatencyMs = latencyMs;
-    entry.cooldownUntilMs = 0;
-    this.health.set(url, entry);
-  }
-
-  recordFailure(url: string): void {
-    const entry = this.health.get(url) ?? {
-      score: 1,
-      failures: 0,
-      heartbeatLatencyMs: null,
-      cooldownUntilMs: 0
-    };
-    entry.failures += 1;
-    entry.score = Math.max(0, entry.score - 0.25);
-    if (entry.failures >= 2) {
-      entry.cooldownUntilMs = Date.now() + Math.min(60_000, entry.failures * 5_000);
-    }
-    this.health.set(url, entry);
-    this.maybePromote();
-  }
-
-  activeHeartbeatLatencyMs(): number | null {
-    return this.health.get(this.activeUrl())?.heartbeatLatencyMs ?? null;
-  }
-
-  private maybePromote(): void {
-    const activeUrl = this.activeUrl();
-    const activeScore = this.health.get(activeUrl)?.score ?? 0;
-    const best = this.urls
-      .map((url, index) => {
-        const health = this.health.get(url);
-        const coolingDown = (health?.cooldownUntilMs ?? 0) > Date.now();
-        return {
-          url,
-          index,
-          score: coolingDown ? -1 : health?.score ?? 0
-        };
-      })
-      .sort((left, right) => right.score - left.score)[0];
-
-    if (best && best.index !== this.activeIndex && best.score > activeScore + 0.2) {
-      this.activeIndex = best.index;
-    }
   }
 }
 
@@ -5122,7 +4605,8 @@ function createUniversalTick(input: {
     transport: input.config.transport,
     streamId: input.config.id,
     connectionId: null,
-    sourceChannel: typeof input.rawMetadata.eventType === "string" ? input.rawMetadata.eventType : null,
+    sourceChannel:
+      typeof input.rawMetadata.eventType === "string" ? input.rawMetadata.eventType : null,
     exchangeCode: (input.config.exchangeCode ?? input.config.source_exchange).toLowerCase(),
     instrumentCode,
     baseAsset,
@@ -5312,9 +4796,19 @@ function normalizeHyperliquidBookLevels(value: unknown): Array<[number, number, 
   return value
     .map((level) => {
       const record = Array.isArray(level) ? null : isRecord(level) ? level : null;
-      const price = Number(record ? readField(record, ["px", "price", "p"]) : Array.isArray(level) ? level[0] : null);
-      const size = Number(record ? readField(record, ["sz", "size", "q"]) : Array.isArray(level) ? level[1] : null);
-      const orderCount = finiteOrNull(record ? readField(record, ["n", "count", "orders"]) : Array.isArray(level) ? level[2] : null);
+      const price = Number(
+        record ? readField(record, ["px", "price", "p"]) : Array.isArray(level) ? level[0] : null
+      );
+      const size = Number(
+        record ? readField(record, ["sz", "size", "q"]) : Array.isArray(level) ? level[1] : null
+      );
+      const orderCount = finiteOrNull(
+        record
+          ? readField(record, ["n", "count", "orders"])
+          : Array.isArray(level)
+            ? level[2]
+            : null
+      );
 
       return Number.isFinite(price) && Number.isFinite(size) && price >= 0 && size >= 0
         ? ([price, size, orderCount] as [number, number, number | null])
@@ -5389,7 +4883,9 @@ function createDeleteTick(
 }
 
 function formatPriceKey(value: number): string {
-  return Number(value).toFixed(8).replace(/\.?0+$/, "");
+  return Number(value)
+    .toFixed(8)
+    .replace(/\.?0+$/, "");
 }
 
 function normalizeCoinbaseChange(
@@ -5459,55 +4955,6 @@ function websocketFetchUrl(url: string): string {
   return url;
 }
 
-function clampNumber(value: number, min: number, max: number, fallback = min): number {
-  return Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : fallback;
-}
-
-function positiveConfigNumber(value: number, fallback: number): number {
-  return Number.isFinite(value) && value > 0 ? value : fallback;
-}
-
-function quickSelect(values: Float32Array, left: number, right: number, target: number): number {
-  let low = left;
-  let high = right;
-
-  while (low < high) {
-    const pivotIndex = partition(values, low, high, Math.floor((low + high) / 2));
-    if (target === pivotIndex) {
-      return values[target];
-    }
-    if (target < pivotIndex) {
-      high = pivotIndex - 1;
-    } else {
-      low = pivotIndex + 1;
-    }
-  }
-
-  return values[target];
-}
-
-function partition(values: Float32Array, left: number, right: number, pivotIndex: number): number {
-  const pivotValue = values[pivotIndex];
-  swapFloat32(values, pivotIndex, right);
-  let storeIndex = left;
-
-  for (let index = left; index < right; index += 1) {
-    if (values[index] < pivotValue) {
-      swapFloat32(values, storeIndex, index);
-      storeIndex += 1;
-    }
-  }
-
-  swapFloat32(values, right, storeIndex);
-  return storeIndex;
-}
-
-function swapFloat32(values: Float32Array, left: number, right: number): void {
-  const temp = values[left];
-  values[left] = values[right];
-  values[right] = temp;
-}
-
 function isAuthorizedControlRequest(request: Request, env: Env): boolean {
   if (!env.INGESTOR_CONTROL_TOKEN) {
     return false;
@@ -5522,10 +4969,7 @@ function calculateBackoffMs(
   baseBackoffMs: number,
   maxBackoffMs: number
 ): number {
-  const exponential = Math.min(
-    maxBackoffMs,
-    baseBackoffMs * 2 ** Math.max(0, backoffCounter)
-  );
+  const exponential = Math.min(maxBackoffMs, baseBackoffMs * 2 ** Math.max(0, backoffCounter));
   const jitter = Math.floor(Math.random() * Math.min(baseBackoffMs, exponential));
   return Math.min(maxBackoffMs, exponential + jitter);
 }

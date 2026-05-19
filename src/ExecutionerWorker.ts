@@ -1,6 +1,60 @@
 import { ConfigManager, configDefaultsFromEnv } from "./ConfigManager";
+import {
+  ceilToIncrement,
+  decimalPlaces,
+  floorToIncrement,
+  formatDecimal,
+  maskAddress,
+  positive,
+  positiveIntegerOrDefault,
+  positiveNumberOrDefault,
+  positiveOrNull,
+  roundLatency,
+  shortHash,
+  snapPrice
+} from "./execution/ExecutionFormatters";
+import {
+  averageExecutionPrice,
+  extractFees,
+  normalizeOrderStatus,
+  normalizeSide,
+  rejectedReport,
+  toExecutionReport
+} from "./execution/ExecutionReports";
+import {
+  cappedExecutionPrice,
+  evaluateCascadeTakerGate,
+  isTakerExecutionStyle,
+  resolveExecutionStyle,
+  takerExpectedSlippageBps,
+  takerSpreadDecision
+} from "./execution/ExecutionPricing";
+import {
+  hyperliquidCloid,
+  hyperliquidOrderWire,
+  hyperliquidPriceDecimals,
+  isReduceOnlyIntent,
+  normalizeHyperliquidCloid,
+  normalizeOptionalAddress,
+  type HyperliquidAssetMeta
+} from "./execution/HyperliquidWire";
 import { IntentIdempotencyLedger } from "./execution/IntentIdempotency";
+import {
+  finiteNumber,
+  isRecord,
+  numberField,
+  requireEndpoint,
+  requireString,
+  safeJson,
+  stringField
+} from "./execution/ResponseParsing";
 import { evaluateExecutionRisk, isInventoryHedgeIntent } from "./execution/RiskGuards";
+import { exchangeSecret, exchangeSecretWithSource } from "./execution/SecretResolver";
+import {
+  buildShadowRestingQuoteReport,
+  estimateShadowFees
+} from "./execution/ShadowExecutionReports";
+import { buildTwapSlices, fillRatio, type TwapSlice } from "./execution/TwapSlicing";
 import { Logger, createLogSink, structuredConsoleLogsEnabled } from "./Logger";
 import { RiskLimiter } from "./strategy/cascade/RiskLimiter";
 import { RateLimiter } from "./utils/RateLimiter";
@@ -31,7 +85,6 @@ const limiter = new RateLimiter();
 limiter.configure("default", 10, 10);
 limiter.configure("hyperliquid", 1_000, 18);
 let hyperliquidRateLimitConfigKey = "1000:18";
-const secretCache = new Map<string, { value: string | null; expiresAt: number }>();
 const intentLedger = new IntentIdempotencyLedger();
 const hedgeCooldownByInstrument = new Map<string, number>();
 
@@ -46,17 +99,6 @@ interface PreparedExchangeRequest {
 
 type IntentResponder = (body: unknown, status?: number, remember?: boolean) => Response;
 
-interface TwapSliceConfig {
-  sliceNotionalPerChunk: number;
-  sliceIntervalMs: number;
-  sliceJitterMs: number;
-}
-
-interface TwapSlice {
-  intent: TradeIntent;
-  delayMs: number;
-}
-
 interface BinanceSymbolFilters {
   symbol: string;
   tickSize: number | null;
@@ -69,20 +111,6 @@ interface BinanceSymbolFilters {
 }
 
 const binanceFilterCache = new Map<string, BinanceSymbolFilters>();
-
-interface HyperliquidAssetMeta {
-  coin: string;
-  assetIndex: number;
-  szDecimals: number;
-  loadedAt: number;
-}
-
-interface HyperliquidOrderWire {
-  price: string;
-  size: string;
-  priceRounded: boolean;
-  sizeRounded: boolean;
-}
 
 const hyperliquidAssetCache = new Map<string, HyperliquidAssetMeta>();
 
@@ -469,56 +497,6 @@ async function executeIntent(
   return respond({ ok: true, report, retryReport, body });
 }
 
-function resolveExecutionStyle(intent: TradeIntent): ExecutionStyle {
-  if (intent.executionStyle) {
-    return intent.executionStyle;
-  }
-  if (intent.postOnly && intent.orderType === "LIMIT") {
-    return "POST_ONLY_QUOTE";
-  }
-  if (intent.orderType === "MARKET") {
-    return "TAKER_MARKET";
-  }
-  if (!intent.postOnly && (intent.orderType === "IOC" || intent.timeInForce === "IOC")) {
-    return "TAKER_IOC";
-  }
-  return "POST_ONLY_QUOTE";
-}
-
-function isTakerExecutionStyle(executionStyle: ExecutionStyle): boolean {
-  return executionStyle === "TAKER_IOC" || executionStyle === "TAKER_MARKET";
-}
-
-function evaluateCascadeTakerGate(
-  intent: TradeIntent,
-  config: GlobalRiskConfig,
-  inventoryHedge: boolean
-): { ok: true } | { ok: false; reason: string; status: number } {
-  if (inventoryHedge) {
-    return { ok: true };
-  }
-  if (config.STRATEGY_MODE !== "CASCADE_RECOVERY" && config.STRATEGY_MODE !== "BOTH_LIVE") {
-    return { ok: false, reason: "CASCADE_STRATEGY_MODE_DISABLED", status: 423 };
-  }
-  if (!config.TRADING_ENABLED) {
-    return { ok: false, reason: "TRADING_DISABLED", status: 423 };
-  }
-  if (!config.CASCADE_TAKER_ENABLED) {
-    return { ok: false, reason: "CASCADE_TAKER_DISABLED", status: 423 };
-  }
-
-  const notional = (intent.approvedSize ?? intent.requestedSize) * intent.expectedPrice;
-  if (
-    intent.executionStyle !== "SLICED_TWAP" &&
-    config.MAX_SINGLE_ORDER_NOTIONAL_USD > 0 &&
-    notional > config.MAX_SINGLE_ORDER_NOTIONAL_USD
-  ) {
-    return { ok: false, reason: "MAX_SINGLE_ORDER_NOTIONAL_EXCEEDED", status: 409 };
-  }
-
-  return { ok: true };
-}
-
 async function evaluateCascadeRiskLimiter(
   env: Env,
   config: GlobalRiskConfig,
@@ -710,56 +688,6 @@ async function retryPartialStopClose(
     });
     return null;
   }
-}
-
-function buildTwapSlices(intent: TradeIntent, config: TwapSliceConfig): TwapSlice[] {
-  const size = positiveOrNull(intent.approvedSize ?? intent.requestedSize) ?? 0;
-  const price = positiveOrNull(intent.expectedPrice) ?? 0;
-  const perChunkNotional =
-    positiveOrNull(config.sliceNotionalPerChunk) ?? Math.max(size * price, 1);
-  const notional = size * price;
-  const count = Math.max(1, Math.ceil(notional / perChunkNotional));
-  const chunkSize = size / count;
-  const slices: TwapSlice[] = [];
-
-  for (let index = 0; index < count; index += 1) {
-    const sliceSize = index === count - 1 ? size - chunkSize * index : chunkSize;
-    if (sliceSize <= 0) {
-      continue;
-    }
-
-    slices.push({
-      intent: {
-        ...intent,
-        intentId: `${intent.intentId}-slice-${index + 1}`,
-        executionStyle: "TAKER_IOC",
-        orderType: "IOC",
-        postOnly: false,
-        timeInForce: "IOC",
-        requestedSize: roundOrderSize(sliceSize),
-        approvedSize: roundOrderSize(sliceSize),
-        rationale: `${intent.rationale} sliced_twap_child=${index + 1}/${count}`
-      },
-      delayMs: index === 0 ? 0 : twapDelay(config.sliceIntervalMs, config.sliceJitterMs, index)
-    });
-  }
-
-  return slices;
-}
-
-function twapDelay(intervalMs: number, jitterMs: number, index: number): number {
-  const base = Number.isFinite(intervalMs) && intervalMs > 0 ? intervalMs : 0;
-  const jitter = Number.isFinite(jitterMs) && jitterMs > 0 ? jitterMs : 0;
-  const deterministicJitter = jitter === 0 ? 0 : ((index * 9973) % (jitter * 2 + 1)) - jitter;
-  return Math.max(0, Math.round(base + deterministicJitter));
-}
-
-function fillRatio(filledSize: number, requestedSize: number): number {
-  return requestedSize > 0 ? filledSize / requestedSize : 0;
-}
-
-function roundOrderSize(value: number): number {
-  return Number(value.toFixed(8));
 }
 
 async function cancelOrder(
@@ -1333,36 +1261,6 @@ async function validatePreTrade(
   return { ok: true };
 }
 
-function takerSpreadDecision(
-  bestBid: number | null,
-  bestAsk: number | null,
-  maxSpreadBps: number
-): { ok: true } | { ok: false; reason: string; status: number } {
-  if (bestBid === null || bestAsk === null || bestBid <= 0 || bestAsk <= 0 || bestAsk <= bestBid) {
-    return { ok: false, reason: "TAKER_BBO_INVALID", status: 503 };
-  }
-
-  const mid = (bestBid + bestAsk) / 2;
-  const spreadBps = ((bestAsk - bestBid) / mid) * 10_000;
-  if (spreadBps > maxSpreadBps) {
-    return { ok: false, reason: "TAKER_SPREAD_TOO_WIDE", status: 409 };
-  }
-
-  return { ok: true };
-}
-
-function takerExpectedSlippageBps(intent: TradeIntent, touch: number): number {
-  if (touch <= 0) {
-    return Number.POSITIVE_INFINITY;
-  }
-
-  if (intent.action === "BUY") {
-    return Math.max(0, ((intent.expectedPrice - touch) / touch) * 10_000);
-  }
-
-  return Math.max(0, ((touch - intent.expectedPrice) / touch) * 10_000);
-}
-
 async function fetchBookSnapshot(
   env: Env,
   instrumentCode: string
@@ -1876,60 +1774,6 @@ function binanceClientOrderId(value: string): string {
   return `${sanitized.slice(0, 27)}_${suffix}`.slice(0, 36);
 }
 
-function shortHash(value: string): string {
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(36);
-}
-
-function snapPrice(value: number, tickSize: number, side: "BUY" | "SELL"): number {
-  return side === "BUY" ? floorToIncrement(value, tickSize) : ceilToIncrement(value, tickSize);
-}
-
-function floorToIncrement(value: number, increment: number): number {
-  const precision = decimalPlaces(increment);
-  return Number((Math.floor((value + Number.EPSILON) / increment) * increment).toFixed(precision));
-}
-
-function ceilToIncrement(value: number, increment: number): number {
-  const precision = decimalPlaces(increment);
-  return Number((Math.ceil((value - Number.EPSILON) / increment) * increment).toFixed(precision));
-}
-
-function formatDecimal(value: number, precision: number): string {
-  const fixed = value.toFixed(Math.max(0, Math.min(12, precision)));
-  const compact = fixed.includes(".") ? fixed.replace(/\.?0+$/, "") : fixed;
-  return compact.length > 0 ? compact : "0";
-}
-
-function decimalPlaces(value: unknown): number {
-  const text = String(value ?? "");
-
-  if (text.includes("e-")) {
-    const exponent = Number(text.split("e-")[1]);
-    return Number.isFinite(exponent) ? exponent : 8;
-  }
-
-  const [, decimals = ""] = text.split(".");
-  return decimals.replace(/0+$/, "").length;
-}
-
-function positive(value: unknown, field: string): number {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw new Error(`INVALID_${field}`);
-  }
-  return parsed;
-}
-
-function positiveOrNull(value: unknown): number | null {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-}
-
 function recvWindowMs(env: Env): number {
   const parsed = Number(env.EXCHANGE_RECV_WINDOW_MS ?? DEFAULT_RECV_WINDOW_MS);
   if (!Number.isFinite(parsed) || parsed <= 0) {
@@ -1948,60 +1792,6 @@ function isBinanceOrderTestMode(env: Env): boolean {
 
 function isExchangeOrderTestMode(env: Env): boolean {
   return env.EXCHANGE_ORDER_TEST_MODE !== "false";
-}
-
-function estimateShadowFees(env: Env, intent: TradeIntent): number {
-  const size = intent.approvedSize ?? intent.requestedSize;
-  const feeBps = Number(env.EXCHANGE_FEE_BPS ?? 0);
-
-  if (
-    !Number.isFinite(intent.expectedPrice) ||
-    !Number.isFinite(size) ||
-    intent.expectedPrice <= 0 ||
-    size <= 0 ||
-    !Number.isFinite(feeBps) ||
-    feeBps <= 0
-  ) {
-    return 0;
-  }
-
-  return Number(((intent.expectedPrice * size * feeBps) / 10_000).toFixed(8));
-}
-
-function cappedExecutionPrice(intent: TradeIntent, referencePrice: number): number {
-  const executionStyle = resolveExecutionStyle(intent);
-  if (executionStyle !== "TAKER_MARKET") {
-    return referencePrice;
-  }
-
-  const slippageMultiplier = Math.max(0, intent.maxSlippageBps * 3) / 10_000;
-  if (intent.action === "BUY") {
-    return referencePrice * (1 + slippageMultiplier);
-  }
-
-  return Math.max(referencePrice * (1 - slippageMultiplier), Number.EPSILON);
-}
-
-function buildShadowRestingQuoteReport(intent: TradeIntent, observedAt: string): ExecutionReport {
-  const size = intent.approvedSize ?? intent.requestedSize;
-
-  return {
-    clientId: intent.intentId,
-    exchangeOrderId: `shadow-open-${intent.intentId}`,
-    instrumentCode: intent.instrumentCode,
-    side: intent.action,
-    orderSize: size,
-    status: "OPEN",
-    filledSize: 0,
-    fillIncrementSize: 0,
-    achievedPrice: intent.expectedPrice,
-    expectedPrice: intent.expectedPrice,
-    fees: 0,
-    latencyMs: 0,
-    reason: "SHADOW_MODE_POST_ONLY_RESTING_QUOTE",
-    rawStatus: "OPEN",
-    observedAt
-  };
 }
 
 function configureRuntimeRateLimits(env: Env): void {
@@ -2155,102 +1945,6 @@ function hyperliquidExpiresAfter(env: Env, nonce: number): number | null {
   return Number.isFinite(ttlMs) && ttlMs > 0 ? nonce + Math.round(ttlMs) : null;
 }
 
-function hyperliquidOrderWire(
-  price: number,
-  size: number,
-  side: "BUY" | "SELL",
-  asset: HyperliquidAssetMeta
-): HyperliquidOrderWire {
-  const priceDecimals = hyperliquidPriceDecimals(price, asset.szDecimals);
-  const snappedPrice =
-    side === "BUY"
-      ? floorToDecimalPlaces(price, priceDecimals)
-      : ceilToDecimalPlaces(price, priceDecimals);
-  const snappedSize = floorToDecimalPlaces(size, asset.szDecimals);
-
-  if (snappedPrice <= 0) {
-    throw new Error("HYPERLIQUID_PRICE_ROUNDED_TO_ZERO");
-  }
-  if (snappedSize <= 0) {
-    throw new Error("HYPERLIQUID_SIZE_ROUNDED_TO_ZERO");
-  }
-
-  return {
-    price: hyperliquidWireNumber(snappedPrice, priceDecimals),
-    size: hyperliquidWireNumber(snappedSize, asset.szDecimals),
-    priceRounded: Math.abs(snappedPrice - price) >= 1e-12,
-    sizeRounded: Math.abs(snappedSize - size) >= 1e-12
-  };
-}
-
-function hyperliquidPriceDecimals(value: number, szDecimals: number): number {
-  const maxDecimals = Math.max(0, 6 - Math.max(0, Math.trunc(szDecimals)));
-  const absolute = Math.abs(value);
-
-  if (!Number.isFinite(absolute) || absolute === 0 || Number.isInteger(absolute)) {
-    return 0;
-  }
-
-  const significantFigureDecimals = Math.max(0, 5 - Math.floor(Math.log10(absolute)) - 1);
-
-  return Math.min(maxDecimals, significantFigureDecimals);
-}
-
-function floorToDecimalPlaces(value: number, precision: number): number {
-  const scale = 10 ** Math.max(0, precision);
-  return Math.floor((value + Number.EPSILON) * scale) / scale;
-}
-
-function ceilToDecimalPlaces(value: number, precision: number): number {
-  const scale = 10 ** Math.max(0, precision);
-  return Math.ceil((value - Number.EPSILON) * scale) / scale;
-}
-
-function hyperliquidWireNumber(value: number, precision: number): string {
-  const fixed = value.toFixed(Math.max(0, Math.min(12, precision)));
-  const compact = fixed.includes(".") ? fixed.replace(/\.?0+$/, "") : fixed;
-  return compact === "-0" || compact.length === 0 ? "0" : compact;
-}
-
-function hyperliquidCloid(value: string): string {
-  const hex = value
-    .replace(/[^0-9a-fA-F]/g, "")
-    .padEnd(32, "0")
-    .slice(0, 32);
-  return `0x${hex}`;
-}
-
-function normalizeHyperliquidCloid(value: string): string {
-  return value.startsWith("0x") ? value : hyperliquidCloid(value);
-}
-
-function normalizeOptionalAddress(value: string | null | undefined): string | null {
-  if (!value || value.trim() === "") {
-    return null;
-  }
-
-  const normalized = value.trim().toLowerCase();
-  if (!/^0x[0-9a-f]{40}$/.test(normalized)) {
-    throw new Error("INVALID_HYPERLIQUID_VAULT_ADDRESS");
-  }
-  return normalized;
-}
-
-function isReduceOnlyIntent(intent: TradeIntent): boolean {
-  const rationale = intent.rationale.toLowerCase();
-  return rationale.includes("closeout") || rationale.includes("reduce-only");
-}
-
-function positiveIntegerOrDefault(value: unknown, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function positiveNumberOrDefault(value: unknown, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
 function redactBinanceParams(params: Record<string, string>): Record<string, unknown> {
   const redacted: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(params)) {
@@ -2308,53 +2002,6 @@ async function signHeaders(env: Env, payload: string): Promise<Record<string, st
   throw new Error("UNSUPPORTED_SIGNATURE_ALGORITHM");
 }
 
-function toExecutionReport(
-  intent: TradeIntent,
-  response: Response,
-  body: Record<string, unknown> | null,
-  latencyMs: number
-): ExecutionReport {
-  const hyperliquid = extractHyperliquidExecution(body);
-  const exchangeOrderId =
-    stringField(body, ["order_id", "orderId", "id", "exchange_order_id", "clientOrderId"]) ??
-    hyperliquid.exchangeOrderId;
-  const filledSize = Number(
-    numberField(body, ["filled_size", "filledSize", "executed_size", "executedQty"]) ??
-      hyperliquid.filledSize ??
-      0
-  );
-  const rawStatus = hyperliquid.rawStatus ?? stringField(body, ["status", "state", "order_status"]);
-  const status = normalizeOrderStatus(
-    rawStatus,
-    response.ok,
-    filledSize,
-    intent.approvedSize ?? intent.requestedSize
-  );
-
-  return {
-    clientId: intent.intentId,
-    exchangeOrderId,
-    instrumentCode: intent.instrumentCode,
-    side: intent.action,
-    orderSize: intent.approvedSize ?? intent.requestedSize,
-    status,
-    filledSize,
-    achievedPrice:
-      hyperliquid.achievedPrice ??
-      averageExecutionPrice(body) ??
-      numberField(body, ["price", "avg_price", "average_price"]) ??
-      intent.expectedPrice,
-    expectedPrice: intent.expectedPrice,
-    fees: extractFees(body),
-    latencyMs,
-    reason: response.ok
-      ? hyperliquid.reason
-      : String(body?.message ?? body?.error ?? response.status),
-    rawStatus: rawStatus ?? undefined,
-    observedAt: new Date().toISOString()
-  };
-}
-
 function cancelExecutionReport(
   orderId: string,
   instrumentCode: string | undefined,
@@ -2394,81 +2041,6 @@ function cancelExecutionReport(
   };
 }
 
-function averageExecutionPrice(body: Record<string, unknown> | null): number | undefined {
-  const executedQty = numberField(body, [
-    "executedQty",
-    "filled_size",
-    "filledSize",
-    "executed_size"
-  ]);
-  const cumulativeQuote = numberField(body, [
-    "cummulativeQuoteQty",
-    "cumulativeQuoteQty",
-    "filled_quote"
-  ]);
-
-  if (executedQty && cumulativeQuote && executedQty > 0 && cumulativeQuote > 0) {
-    return cumulativeQuote / executedQty;
-  }
-
-  return undefined;
-}
-
-function extractFees(body: Record<string, unknown> | null): number {
-  const directFee = numberField(body, ["fees", "fee", "commission"]);
-  if (directFee !== undefined) {
-    return directFee;
-  }
-
-  const fills = Array.isArray(body?.fills) ? body.fills.filter(isRecord) : [];
-  return fills.reduce((sum, fill) => sum + (numberField(fill, ["commission"]) ?? 0), 0);
-}
-
-function extractHyperliquidExecution(body: Record<string, unknown> | null): {
-  exchangeOrderId?: string;
-  filledSize?: number;
-  achievedPrice?: number;
-  rawStatus?: string;
-  reason?: string;
-} {
-  const response = isRecord(body?.response) ? body.response : null;
-  const data = isRecord(response?.data) ? response.data : null;
-  const statuses = Array.isArray(data?.statuses) ? data.statuses.filter(isRecord) : [];
-  const first = statuses[0];
-
-  if (!first) {
-    return {};
-  }
-
-  if (isRecord(first.resting)) {
-    return {
-      exchangeOrderId: stringField(first.resting, ["oid"]),
-      rawStatus: "NEW"
-    };
-  }
-
-  if (isRecord(first.filled)) {
-    const totalSz = numberField(first.filled, ["totalSz", "sz", "size"]);
-    const avgPx = numberField(first.filled, ["avgPx", "px", "price"]);
-    return {
-      exchangeOrderId: stringField(first.filled, ["oid"]),
-      filledSize: totalSz,
-      achievedPrice: avgPx,
-      rawStatus: "FILLED"
-    };
-  }
-
-  const error = stringField(first, ["error"]);
-  if (error) {
-    return {
-      rawStatus: "REJECTED",
-      reason: error
-    };
-  }
-
-  return {};
-}
-
 async function forwardReport(env: Env, report: ExecutionReport): Promise<void> {
   const engine = getTradingEngineStub(env);
   await engine.fetch(
@@ -2478,28 +2050,6 @@ async function forwardReport(env: Env, report: ExecutionReport): Promise<void> {
       body: JSON.stringify(report)
     })
   );
-}
-
-function rejectedReport(
-  intent: TradeIntent,
-  reason: string,
-  statusCode: number,
-  latencyMs = 0
-): ExecutionReport {
-  return {
-    clientId: intent.intentId,
-    instrumentCode: intent.instrumentCode,
-    side: intent.action,
-    orderSize: intent.approvedSize ?? intent.requestedSize,
-    status: "REJECTED",
-    filledSize: 0,
-    achievedPrice: intent.expectedPrice,
-    expectedPrice: intent.expectedPrice,
-    fees: 0,
-    latencyMs,
-    reason: `${reason}:${statusCode}`,
-    observedAt: new Date().toISOString()
-  };
 }
 
 function validateIntent(intent: TradeIntent): void {
@@ -2551,217 +2101,8 @@ function normalizeOpenOrders(body: Record<string, unknown> | null): ExchangeOpen
   });
 }
 
-function normalizeOrderStatus(
-  rawStatus: string | undefined,
-  responseOk: boolean,
-  filledSize: number,
-  orderSize: number
-): ExecutionReport["status"] {
-  if (!responseOk) {
-    return "REJECTED";
-  }
-
-  const normalized = rawStatus?.toLowerCase();
-  if (!normalized && orderSize > 0 && filledSize >= orderSize) {
-    return "FILLED";
-  }
-  if (normalized === "test_accepted") {
-    return "CANCELLED";
-  }
-  if (normalized?.includes("reject")) {
-    return "REJECTED";
-  }
-  if (normalized?.includes("expired")) {
-    return "REJECTED";
-  }
-  if (normalized?.includes("cancel")) {
-    return "CANCELLED";
-  }
-  if (normalized?.includes("partial")) {
-    return "PARTIAL_FILL";
-  }
-  if (normalized === "new" || normalized === "pending_cancel") {
-    return "OPEN";
-  }
-  if (normalized?.includes("fill") || (orderSize > 0 && filledSize >= orderSize)) {
-    return "FILLED";
-  }
-
-  return "OPEN";
-}
-
-function normalizeSide(value: string | undefined): "BUY" | "SELL" {
-  return value?.toUpperCase() === "SELL" || value?.toLowerCase() === "ask" ? "SELL" : "BUY";
-}
-
-async function safeJson(response: Response): Promise<Record<string, unknown> | null> {
-  try {
-    const body = await response.json<unknown>();
-    if (Array.isArray(body)) {
-      return { data: body };
-    }
-    return isRecord(body) ? body : null;
-  } catch {
-    return null;
-  }
-}
-
-function stringField(value: Record<string, unknown> | null, keys: string[]): string | undefined {
-  if (!value) {
-    return undefined;
-  }
-
-  for (const key of keys) {
-    const candidate = value[key];
-    if (typeof candidate === "string" && candidate.length > 0) {
-      return candidate;
-    }
-    if (typeof candidate === "number" && Number.isFinite(candidate)) {
-      return String(candidate);
-    }
-  }
-
-  return undefined;
-}
-
-function numberField(value: Record<string, unknown> | null, keys: string[]): number | undefined {
-  if (!value) {
-    return undefined;
-  }
-
-  for (const key of keys) {
-    const parsed = Number(value[key]);
-    if (Number.isFinite(parsed)) {
-      return parsed;
-    }
-  }
-
-  return undefined;
-}
-
-function finiteNumber(value: unknown): number | null {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function requireString(value: unknown, field: string): string {
-  if (typeof value !== "string" || value.length === 0) {
-    throw new Error(`MISSING_${field.toUpperCase()}`);
-  }
-
-  return value;
-}
-
-function requireEndpoint(value: string | undefined, field: string): string {
-  if (!value) {
-    throw new Error(`MISSING_${field}`);
-  }
-
-  return value;
-}
-
-async function exchangeSecret(env: Env, keyName: string): Promise<string | undefined> {
-  const direct = (env as unknown as Record<string, string | undefined>)[keyName];
-  if (direct) {
-    return direct;
-  }
-
-  const now = Date.now();
-  const cached = secretCache.get(keyName);
-  if (cached && cached.expiresAt > now) {
-    return cached.value ?? undefined;
-  }
-
-  const value = await readVaultSecret(env, keyName);
-  secretCache.set(keyName, {
-    value: value ?? null,
-    expiresAt: now + 60_000
-  });
-
-  return value ?? undefined;
-}
-
-async function exchangeSecretWithSource(
-  env: Env,
-  keyName: string
-): Promise<{ source: "ENV" | "VAULT" | "MISSING"; value: string | null }> {
-  const direct = (env as unknown as Record<string, string | undefined>)[keyName];
-  if (direct) {
-    return { source: "ENV", value: direct };
-  }
-
-  const value = await readVaultSecret(env, keyName);
-  return value ? { source: "VAULT", value } : { source: "MISSING", value: null };
-}
-
-async function readVaultSecret(env: Env, keyName: string): Promise<string | null> {
-  try {
-    const encryptionSecret = env.VAULT_ENCRYPTION_SECRET ?? env.JWT_SECRET ?? env.ADMIN_JWT_SECRET;
-    if (!encryptionSecret) {
-      return null;
-    }
-
-    const encrypted = await env.RISK_VAULT.get<JsonRecord>(`vault:secret:${keyName}`, "json");
-    if (!encrypted) {
-      return null;
-    }
-
-    return decryptSecret(encrypted, encryptionSecret);
-  } catch (error) {
-    console.error(
-      "[Sovereign-Sigma] executioner vault secret lookup failed",
-      keyName,
-      error instanceof Error ? error.message : error
-    );
-    return null;
-  }
-}
-
-async function decryptSecret(encrypted: JsonRecord, keyMaterial: string): Promise<string | null> {
-  if (
-    encrypted.alg !== "AES-GCM" ||
-    typeof encrypted.iv !== "string" ||
-    typeof encrypted.ciphertext !== "string"
-  ) {
-    return null;
-  }
-
-  const keyBytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(keyMaterial));
-  const key = await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["decrypt"]);
-  const plaintext = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv: base64ToBytes(encrypted.iv) },
-    key,
-    base64ToBytes(encrypted.ciphertext)
-  );
-
-  return new TextDecoder().decode(plaintext);
-}
-
-function base64ToBytes(value: string): Uint8Array {
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-
-  return bytes;
-}
-
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function roundLatency(value: number): number {
-  return Math.round(value * 1000) / 1000;
-}
-
-function maskAddress(value: string): string {
-  return value.length > 12 ? `${value.slice(0, 6)}...${value.slice(-4)}` : "configured";
 }
 
 function json(body: unknown, status = 200): Response {
