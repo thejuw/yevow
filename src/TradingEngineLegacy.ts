@@ -68,6 +68,10 @@ import { calculateInventoryState as calculateInventoryRuntimeState } from "./eng
 import { calculatePortfolioRisk as calculatePortfolioRuntimeRisk } from "./engine/trading/risk/PortfolioRiskRuntime";
 import { calculateEnsembleState as calculateRuntimeEnsembleState } from "./engine/trading/ensemble/EnsembleRuntime";
 import {
+  nextQuoteStateForInstrument as nextRuntimeQuoteStateForInstrument,
+  strategyQuoteDisabledReason as runtimeStrategyQuoteDisabledReason
+} from "./engine/trading/quotes/QuoteStateRuntime";
+import {
   OrderBookReconstructor,
   type OrderBookStores
 } from "./engine/trading/book/OrderBookReconstructor";
@@ -5145,83 +5149,24 @@ export class TradingEngine {
     pullAllQuotes: boolean,
     observedAt: string
   ): EngineState["quoteState"] {
-    const previous = quoteStateForInstrumentState(
-      this.engineState.assetQuoteStates,
-      instrumentCode,
-      this.engineState.quoteState
-    );
-    const suspendedUntil = previous.suspendedUntil;
-
-    if (!this.cachedConfig.TRADING_ENABLED) {
-      return {
-        status: "SUSPENDED",
-        reason: "TRADING_DISABLED",
-        suspendedUntil: null,
-        lastQuote: previous.lastQuote,
-        updatedAt: observedAt
-      };
-    }
-
-    const strategyDisabledReason = this.strategyQuoteDisabledReason();
-    if (strategyDisabledReason) {
-      return {
-        status: "SUSPENDED",
-        reason: strategyDisabledReason,
-        suspendedUntil: null,
-        lastQuote: previous.lastQuote,
-        updatedAt: observedAt
-      };
-    }
-
-    if (!isInstrumentSelectedByMoltworker(instrumentCode, this.macroBias)) {
-      return {
-        status: "SUSPENDED",
-        reason: "MOLTWORKER_NOT_SELECTED",
-        suspendedUntil: null,
-        lastQuote: previous.lastQuote,
-        updatedAt: observedAt
-      };
-    }
-
-    if (pullAllQuotes) {
-      return {
-        status: "SUSPENDED",
-        reason: "ADVERSE_SELECTION_CRITICAL",
-        suspendedUntil: new Date(
-          Date.parse(observedAt) + this.resolveQuoteHibernateMs()
-        ).toISOString(),
-        lastQuote: previous.lastQuote,
-        updatedAt: observedAt
-      };
-    }
-
-    if (suspendedUntil && Date.parse(suspendedUntil) > Date.parse(observedAt)) {
-      return previous;
-    }
-
-    return {
-      status: "ACTIVE",
-      reason: null,
-      suspendedUntil: null,
-      lastQuote: quote ?? previous.lastQuote,
-      updatedAt: observedAt
-    };
+    return nextRuntimeQuoteStateForInstrument({
+      previous: quoteStateForInstrumentState(
+        this.engineState.assetQuoteStates,
+        instrumentCode,
+        this.engineState.quoteState
+      ),
+      quote,
+      tradingEnabled: this.cachedConfig.TRADING_ENABLED,
+      strategyDisabledReason: this.strategyQuoteDisabledReason(),
+      instrumentSelected: isInstrumentSelectedByMoltworker(instrumentCode, this.macroBias),
+      pullAllQuotes,
+      quoteHibernateMs: this.resolveQuoteHibernateMs(),
+      observedAt
+    });
   }
 
   private strategyQuoteDisabledReason(): string | null {
-    if (!this.cachedConfig.CROUPIER_ENABLED) {
-      return "CROUPIER_DISABLED";
-    }
-
-    if (this.cachedConfig.MARKET_MAKING_MODE === "OFF") {
-      return "MARKET_MAKING_OFF";
-    }
-
-    if (!this.cachedConfig.PIT_BOSS_ENABLED) {
-      return "PIT_BOSS_DISABLED";
-    }
-
-    return null;
+    return runtimeStrategyQuoteDisabledReason(this.cachedConfig);
   }
 
   private canDispatchStrategyOrders(): boolean {
