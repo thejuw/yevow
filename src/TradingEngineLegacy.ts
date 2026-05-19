@@ -3914,7 +3914,19 @@ export class TradingEngine {
       }
     }
 
-    const hedgeIntent = this.createInventoryHedgeIntent(book, inventory, metrics.brainTimestamp);
+    const hedge = buildInventoryHedgeIntent({
+      book,
+      inventory,
+      observedAt: metrics.brainTimestamp,
+      engineId: this.engineState.engineId,
+      config: this.cachedConfig,
+      lastHedgeAtMs: this.lastHedgeDispatchedAt.get(book.instrumentCode) ?? 0,
+      fallbackNowMs: Date.now()
+    });
+    const hedgeIntent = hedge?.intent ?? null;
+    if (hedge) {
+      this.lastHedgeDispatchedAt.set(book.instrumentCode, hedge.dispatchedAtMs);
+    }
     if (hedgeIntent && !options.shadowReplay) {
       this.logger.warn("INVENTORY_HEDGE_AUTHORIZED", "Inventory hedge IOC path authorized", {
         intentId: hedgeIntent.intentId,
@@ -4685,29 +4697,6 @@ export class TradingEngine {
       quote.instrumentCode,
       dispatchedQuoteSnapshot(quote, Date.now())
     );
-  }
-
-  private createInventoryHedgeIntent(
-    book: InternalOrderBook,
-    inventory: InventoryState,
-    observedAt: string
-  ): TradeIntent | null {
-    const result = buildInventoryHedgeIntent({
-      book,
-      inventory,
-      observedAt,
-      engineId: this.engineState.engineId,
-      config: this.cachedConfig,
-      lastHedgeAtMs: this.lastHedgeDispatchedAt.get(book.instrumentCode) ?? 0,
-      fallbackNowMs: Date.now()
-    });
-
-    if (!result) {
-      return null;
-    }
-
-    this.lastHedgeDispatchedAt.set(book.instrumentCode, result.dispatchedAtMs);
-    return result.intent;
   }
 
   private async dispatchExecution(
