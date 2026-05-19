@@ -156,6 +156,7 @@ import {
   syncStateMicrostructureFromBook as syncEngineStateMicrostructure
 } from "./engine/trading/state/EngineDiagnostics";
 import { nextTickAgentHealth } from "./engine/trading/state/AgentHealthRuntime";
+import { stateAfterAcceptedTick } from "./engine/trading/state/TickStateRuntime";
 import { StorageWriteGuard } from "./engine/trading/state/StorageWriteGuard";
 import {
   LOW_VALUE_OPERATIONAL_EVENT_TYPES,
@@ -3816,58 +3817,37 @@ export class TradingEngine {
       pitBossIntentId: executionPlan?.intent.intentId
     });
 
-    this.engineState = {
-      ...this.engineState,
-      mode:
-        !this.cachedConfig.TRADING_ENABLED && this.engineState.mode === "HALTED"
-          ? "PAPER"
-          : this.engineState.mode,
-      processedTicks: this.engineState.processedTicks + 1,
-      staleTickCount:
-        metrics.status === "STALE" && !options.shadowReplay
-          ? this.engineState.staleTickCount + 1
-          : this.engineState.staleTickCount,
+    this.engineState = stateAfterAcceptedTick({
+      currentState: this.engineState,
+      tradingEnabled: this.cachedConfig.TRADING_ENABLED,
+      shadowReplay: options.shadowReplay === true,
+      latencyStatus: metrics.status,
       internalOrderBookDepth: countBookLevels(this.bids, this.asks),
-      microstructure: microstructureFromBook(book),
+      book,
       oracle: oracleResult.state,
       sentiment: sentimentForDecision,
       ensemble,
       leadLag,
       inventory,
-      current_inventory_delta: inventory.current_inventory_delta,
       riskMetrics,
-      risk: {
-        ...this.engineState.risk,
-        killSwitch: !riskMetrics.isTradingEnabled,
-        updatedAt: metrics.brainTimestamp
-      },
       quoteState,
       assetQuoteStates,
       shadowQueue: shadowQueueState,
       lastTradeIntent: executionPlan?.intent ?? croupierDecision.intent,
       inventoryGuard,
-      orderMap:
-        executionPlans.length > 0 && (this.cachedConfig.TRADING_ENABLED || options.shadowReplay)
-          ? {
-              ...this.engineState.orderMap,
-              ...Object.fromEntries(
-                executionPlans.flatMap((plan) =>
-                  plan.orders.map((order) => [order.clientId, order])
-                )
-              )
-            }
-          : this.engineState.orderMap,
+      ordersToTrack: executionPlans.flatMap((plan) => plan.orders),
+      shouldTrackOrders:
+        executionPlans.length > 0 &&
+        (this.cachedConfig.TRADING_ENABLED || options.shadowReplay === true),
       dom: domSnapshot,
       anomaly: anomalyResult.status,
-      liquidationHeatmap: this.engineState.liquidationHeatmap,
       assetMatrix: finalAssetMatrix,
       profilerStates,
       toxicityScore: profilerResult.toxicityScore,
       agentHealth,
       maxLatencyMs: this.maxLatencyMs,
-      heartbeatAt: metrics.brainTimestamp,
-      updatedAt: metrics.brainTimestamp
-    };
+      observedAt: metrics.brainTimestamp
+    });
 
     const writes: Record<string, unknown> = {
       [ENGINE_STATE_KEY]: this.engineState,
