@@ -1,4 +1,4 @@
-import type { TradeIntent } from "../../../types";
+import type { JsonRecord, TradeIntent } from "../../../types";
 
 export type ExecutionDispatchBlockReason =
   | "NO_EXECUTIONER"
@@ -18,6 +18,19 @@ export interface ExecutionDispatchGateInput {
 export interface ExecutionDispatchGateDecision {
   readonly allowed: boolean;
   readonly reason: ExecutionDispatchBlockReason | null;
+}
+
+export interface ExecutionDispatchBlockLogInput {
+  readonly decision: ExecutionDispatchGateDecision;
+  readonly intent: TradeIntent;
+  readonly selectedInstruments: readonly string[];
+}
+
+export interface ExecutionDispatchBlockLogEvent {
+  readonly level: "INFO" | "WARN";
+  readonly eventType: string;
+  readonly message: string;
+  readonly metadata: JsonRecord;
 }
 
 export function evaluateExecutionDispatchGate(
@@ -40,4 +53,41 @@ export function evaluateExecutionDispatchGate(
   }
 
   return { allowed: true, reason: null };
+}
+
+export function buildExecutionDispatchBlockLog(
+  input: ExecutionDispatchBlockLogInput
+): ExecutionDispatchBlockLogEvent | null {
+  if (input.decision.reason === "MOLTWORKER_NOT_SELECTED") {
+    return {
+      level: "INFO",
+      eventType: "EXECUTION_DISPATCH_BLOCKED",
+      message: "Skipped execution intent for inactive Moltworker asset",
+      metadata: {
+        intentId: input.intent.intentId,
+        instrumentCode: input.intent.instrumentCode,
+        action: input.intent.action,
+        orderType: input.intent.orderType,
+        selectedInstruments: [...input.selectedInstruments]
+      }
+    };
+  }
+
+  if (input.decision.reason === "TAKER_SUPPRESSED") {
+    return {
+      level: "WARN",
+      eventType: "TAKER_EXECUTION_SUPPRESSED",
+      message: "Non-post-only execution suppressed by passive inventory protocol",
+      metadata: {
+        intentId: input.intent.intentId,
+        instrumentCode: input.intent.instrumentCode,
+        orderType: input.intent.orderType,
+        postOnly: input.intent.postOnly,
+        timeInForce: input.intent.timeInForce,
+        rationale: input.intent.rationale
+      }
+    };
+  }
+
+  return null;
 }

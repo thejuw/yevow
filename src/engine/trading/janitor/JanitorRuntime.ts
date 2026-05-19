@@ -36,6 +36,13 @@ export interface JanitorReportResult {
   readonly shouldWarn: boolean;
 }
 
+export interface JanitorStateUpdateInput {
+  readonly state: EngineState;
+  readonly orderMap: EngineState["orderMap"];
+  readonly report: JanitorState;
+  readonly observedAt: string;
+}
+
 export interface JanitorExecutionerFetcher {
   fetch(request: Request): Promise<Response>;
 }
@@ -240,6 +247,16 @@ export function buildJanitorReport(input: JanitorReportInput): JanitorReportResu
       report.orphanExchangeOrders.length > 0 ||
       report.dustPositions.length > 0 ||
       report.prunedTelemetryCount > 0
+  };
+}
+
+export function stateAfterJanitorRun(input: JanitorStateUpdateInput): EngineState {
+  return {
+    ...input.state,
+    orderMap: input.orderMap,
+    janitor: input.report,
+    updatedAt: input.observedAt,
+    heartbeatAt: input.observedAt
   };
 }
 

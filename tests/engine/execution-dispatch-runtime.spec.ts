@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { evaluateExecutionDispatchGate } from "../../src/engine/trading/execution/ExecutionDispatchRuntime";
+import {
+  buildExecutionDispatchBlockLog,
+  evaluateExecutionDispatchGate
+} from "../../src/engine/trading/execution/ExecutionDispatchRuntime";
 import type { TradeIntent } from "../../src/types";
 
 describe("ExecutionDispatchRuntime", () => {
@@ -73,6 +76,71 @@ describe("ExecutionDispatchRuntime", () => {
         instrumentSelected: true
       })
     ).toEqual({ allowed: true, reason: null });
+  });
+
+  it("builds dispatch-block telemetry for inactive Moltworker instruments", () => {
+    expect(
+      buildExecutionDispatchBlockLog({
+        decision: { allowed: false, reason: "MOLTWORKER_NOT_SELECTED" },
+        intent: tradeIntent({ instrumentCode: "sol-usd", action: "SELL" }),
+        selectedInstruments: ["btc-usd", "hype-usd"]
+      })
+    ).toEqual({
+      level: "INFO",
+      eventType: "EXECUTION_DISPATCH_BLOCKED",
+      message: "Skipped execution intent for inactive Moltworker asset",
+      metadata: {
+        intentId: "intent-1",
+        instrumentCode: "sol-usd",
+        action: "SELL",
+        orderType: "LIMIT",
+        selectedInstruments: ["btc-usd", "hype-usd"]
+      }
+    });
+  });
+
+  it("builds dispatch-block telemetry for suppressed taker intents", () => {
+    expect(
+      buildExecutionDispatchBlockLog({
+        decision: { allowed: false, reason: "TAKER_SUPPRESSED" },
+        intent: tradeIntent({
+          orderType: "IOC",
+          postOnly: false,
+          timeInForce: "IOC",
+          rationale: "hedge attempt"
+        }),
+        selectedInstruments: ["btc-usd"]
+      })
+    ).toEqual({
+      level: "WARN",
+      eventType: "TAKER_EXECUTION_SUPPRESSED",
+      message: "Non-post-only execution suppressed by passive inventory protocol",
+      metadata: {
+        intentId: "intent-1",
+        instrumentCode: "btc-usd",
+        orderType: "IOC",
+        postOnly: false,
+        timeInForce: "IOC",
+        rationale: "hedge attempt"
+      }
+    });
+  });
+
+  it("does not emit dispatch-block telemetry for terminal non-loggable reasons", () => {
+    expect(
+      buildExecutionDispatchBlockLog({
+        decision: { allowed: false, reason: "NO_EXECUTIONER" },
+        intent: tradeIntent(),
+        selectedInstruments: ["btc-usd"]
+      })
+    ).toBeNull();
+    expect(
+      buildExecutionDispatchBlockLog({
+        decision: { allowed: true, reason: null },
+        intent: tradeIntent(),
+        selectedInstruments: ["btc-usd"]
+      })
+    ).toBeNull();
   });
 });
 

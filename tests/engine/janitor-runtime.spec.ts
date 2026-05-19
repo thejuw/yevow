@@ -5,10 +5,11 @@ import {
   fetchJanitorExchangeOpenOrders,
   type JanitorExecutionLogger,
   reconcileJanitorOrders,
-  recordPostOnlyDustCloseSkip
+  recordPostOnlyDustCloseSkip,
+  stateAfterJanitorRun
 } from "../../src/engine/trading/janitor/JanitorRuntime";
 import type { LogPruneReport } from "../../src/engine/LogRetention";
-import type { ExchangeOpenOrder, JanitorState, ManagedOrder } from "../../src/types";
+import type { EngineState, ExchangeOpenOrder, JanitorState, ManagedOrder } from "../../src/types";
 
 const OBSERVED_AT = "2026-05-18T16:00:00.000Z";
 
@@ -241,6 +242,37 @@ describe("JanitorRuntime", () => {
         observedAt: OBSERVED_AT,
         inventoryProtocol: "POST_ONLY_SKEW"
       }
+    });
+  });
+
+  it("merges janitor reports back into engine state", () => {
+    const previous = {
+      bankroll: 500,
+      orderMap: {
+        "old-order": order({ clientId: "old-order" })
+      },
+      janitor: janitorState({ zombieOrders: ["old-order"] }),
+      updatedAt: "2026-05-18T15:00:00.000Z",
+      heartbeatAt: "2026-05-18T15:00:00.000Z"
+    } as EngineState;
+    const nextOrderMap = {
+      "new-order": order({ clientId: "new-order", status: "OPEN" })
+    };
+    const report = janitorState({ reconciledOrders: ["new-order"] });
+
+    expect(
+      stateAfterJanitorRun({
+        state: previous,
+        orderMap: nextOrderMap,
+        report,
+        observedAt: OBSERVED_AT
+      })
+    ).toMatchObject({
+      bankroll: 500,
+      orderMap: nextOrderMap,
+      janitor: report,
+      updatedAt: OBSERVED_AT,
+      heartbeatAt: OBSERVED_AT
     });
   });
 });

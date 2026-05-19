@@ -122,7 +122,10 @@ import {
 } from "./engine/trading/quotes/QuoteDispatchRuntime";
 import { evaluateQuoteCancelDispatch } from "./engine/trading/quotes/QuoteCancelRuntime";
 import { buildExecutionPlanArtifacts } from "./engine/trading/execution/ExecutionPlanRuntime";
-import { evaluateExecutionDispatchGate } from "./engine/trading/execution/ExecutionDispatchRuntime";
+import {
+  buildExecutionDispatchBlockLog,
+  evaluateExecutionDispatchGate
+} from "./engine/trading/execution/ExecutionDispatchRuntime";
 import { applyIntentPaperExecutionBudget } from "./engine/trading/execution/PaperExecutionBudgetRuntime";
 import {
   buildExecutionQueueEnqueuePlan,
@@ -155,7 +158,8 @@ import {
   cancelJanitorOrder,
   fetchJanitorExchangeOpenOrders,
   reconcileJanitorOrders,
-  recordPostOnlyDustCloseSkip
+  recordPostOnlyDustCloseSkip,
+  stateAfterJanitorRun
 } from "./engine/trading/janitor/JanitorRuntime";
 import {
   currentCascadeActiveSnapshot as buildCurrentCascadeActiveSnapshot,
@@ -4465,34 +4469,17 @@ export class TradingEngine {
       instrumentSelected: isInstrumentSelectedByMoltworker(intent.instrumentCode, this.macroBias)
     });
 
-    if (dispatchGate.reason === "MOLTWORKER_NOT_SELECTED") {
-      this.logger.info(
-        "EXECUTION_DISPATCH_BLOCKED",
-        "Skipped execution intent for inactive Moltworker asset",
-        {
-          intentId: intent.intentId,
-          instrumentCode: intent.instrumentCode,
-          action: intent.action,
-          orderType: intent.orderType,
-          selectedInstruments: [...selectedMoltworkerInstruments(this.macroBias)]
-        }
-      );
-      return;
-    }
-
-    if (dispatchGate.reason === "TAKER_SUPPRESSED") {
-      this.logger.warn(
-        "TAKER_EXECUTION_SUPPRESSED",
-        "Non-post-only execution suppressed by passive inventory protocol",
-        {
-          intentId: intent.intentId,
-          instrumentCode: intent.instrumentCode,
-          orderType: intent.orderType,
-          postOnly: intent.postOnly,
-          timeInForce: intent.timeInForce,
-          rationale: intent.rationale
-        }
-      );
+    const blockLog = buildExecutionDispatchBlockLog({
+      decision: dispatchGate,
+      intent,
+      selectedInstruments: [...selectedMoltworkerInstruments(this.macroBias)]
+    });
+    if (blockLog) {
+      if (blockLog.level === "INFO") {
+        this.logger.info(blockLog.eventType, blockLog.message, blockLog.metadata);
+      } else {
+        this.logger.warn(blockLog.eventType, blockLog.message, blockLog.metadata);
+      }
       return;
     }
 
@@ -4815,13 +4802,12 @@ export class TradingEngine {
       });
     }
 
-    this.engineState = {
-      ...this.engineState,
+    this.engineState = stateAfterJanitorRun({
+      state: this.engineState,
       orderMap: nextOrderMap,
-      janitor: janitorResult.report,
-      updatedAt: observedAt,
-      heartbeatAt: observedAt
-    };
+      report: janitorResult.report,
+      observedAt
+    });
     await this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "JANITOR_REPORT");
   }
 
