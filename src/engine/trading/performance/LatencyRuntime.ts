@@ -17,6 +17,7 @@ import type {
   EngineState,
   EngineStabilityStatus,
   ExecutionProfile,
+  JsonRecord,
   LatencyMetrics,
   MarketTransport,
   MarketTick
@@ -188,6 +189,13 @@ export interface HardStaleTickDropResult {
   readonly shouldResetLatencyBaseline: boolean;
 }
 
+export interface HardStaleTickDropTelemetryInput {
+  readonly tick: MarketTick;
+  readonly metrics: LatencyMetrics;
+  readonly streamId: string | null;
+  readonly hardStaleDropMs: number;
+}
+
 export function stateAfterHardStaleTickDrop(
   input: HardStaleTickDropInput
 ): HardStaleTickDropResult {
@@ -223,6 +231,40 @@ export function stateAfterHardStaleTickDrop(
       heartbeatAt: metrics.brainTimestamp,
       updatedAt: metrics.brainTimestamp
     }
+  };
+}
+
+export function shouldLogHardStaleTickDrop(nextStaleTickCount: number): boolean {
+  return nextStaleTickCount <= 5 || nextStaleTickCount % 500 === 0;
+}
+
+export function hardStaleTickDropLogMetadata(input: HardStaleTickDropTelemetryInput): JsonRecord {
+  return {
+    instrumentCode: input.tick.instrumentCode,
+    exchangeCode: input.tick.exchangeCode,
+    source_exchange: input.tick.source_exchange,
+    transport: input.tick.transport,
+    streamId: input.streamId,
+    sequence: input.tick.sequence,
+    totalLatencyMs: input.metrics.totalLatencyMs,
+    networkLatencyMs: input.metrics.networkLatencyMs,
+    processingLatencyMs: input.metrics.processingLatencyMs,
+    hardStaleDropMs: input.hardStaleDropMs
+  };
+}
+
+export function hardStalePullTelemetryPayload(input: HardStaleTickDropTelemetryInput): JsonRecord {
+  return {
+    instrumentCode: input.tick.instrumentCode,
+    exchangeCode: input.tick.exchangeCode,
+    source_exchange: input.tick.source_exchange,
+    transport: input.tick.transport,
+    streamId: input.streamId,
+    sequence: input.tick.sequence,
+    totalLatencyMs: input.metrics.totalLatencyMs,
+    maxLatencyMs: input.hardStaleDropMs,
+    action: "PULL_ALL_QUOTES",
+    source: "NATIVE_HYPERLIQUID"
   };
 }
 

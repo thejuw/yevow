@@ -126,15 +126,18 @@ import {
   buildPerformanceMetricsText,
   buildPerformanceSnapshot,
   calculateTickLatency,
+  hardStalePullTelemetryPayload,
+  hardStaleTickDropLogMetadata,
   nextExecutionProfile,
   nextLatencyAverage,
   recordProcessingLatencySample,
   resolveNativeHyperliquidMaxLatencyMs,
+  shouldLogHardStaleTickDrop,
   shouldLogPerformanceSpikeEvent,
   stateAfterLatencyBaselineReset,
   stateAfterNativeHyperliquidLatencyPull,
-  stateAfterStaleDataKillSwitch,
   stateAfterHardStaleTickDrop,
+  stateAfterStaleDataKillSwitch,
   type ExecutionTraceInput
 } from "./engine/trading/performance/LatencyRuntime";
 import {
@@ -3167,33 +3170,20 @@ export class TradingEngine {
         "HARD_STALE_TICK_DROPPED"
       );
 
-      if (hardStale.nextStaleTickCount <= 5 || hardStale.nextStaleTickCount % 500 === 0) {
+      const staleTelemetry = {
+        tick,
+        metrics: hardStale.metrics,
+        streamId,
+        hardStaleDropMs
+      };
+
+      if (shouldLogHardStaleTickDrop(hardStale.nextStaleTickCount)) {
         this.logger.warn("HARD_STALE_TICK_DROPPED", "Dropped tick beyond hard stale threshold", {
-          instrumentCode: tick.instrumentCode,
-          exchangeCode: tick.exchangeCode,
-          source_exchange: tick.source_exchange,
-          transport: tick.transport,
-          streamId,
-          sequence: tick.sequence,
-          totalLatencyMs: hardStale.metrics.totalLatencyMs,
-          networkLatencyMs: hardStale.metrics.networkLatencyMs,
-          processingLatencyMs: hardStale.metrics.processingLatencyMs,
-          hardStaleDropMs
+          ...hardStaleTickDropLogMetadata(staleTelemetry)
         });
       }
       this.logPerformance(hardStale.metrics);
-      this.publish("STALE_DATA_KILL_SWITCH", {
-        instrumentCode: tick.instrumentCode,
-        exchangeCode: tick.exchangeCode,
-        source_exchange: tick.source_exchange,
-        transport: tick.transport,
-        streamId,
-        sequence: tick.sequence,
-        totalLatencyMs: hardStale.metrics.totalLatencyMs,
-        maxLatencyMs: hardStaleDropMs,
-        action: "PULL_ALL_QUOTES",
-        source: "NATIVE_HYPERLIQUID"
-      });
+      this.publish("STALE_DATA_KILL_SWITCH", hardStalePullTelemetryPayload(staleTelemetry));
       if (this.cachedConfig.TRADING_ENABLED) {
         this.state.waitUntil(this.cancelAllQuotes(tick.instrumentCode, "HARD_STALE_DROP"));
       }

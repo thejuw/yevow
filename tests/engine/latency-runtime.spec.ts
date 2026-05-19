@@ -4,10 +4,13 @@ import {
   buildPerformanceMetricsText,
   buildPerformanceSnapshot,
   calculateTickLatency,
+  hardStalePullTelemetryPayload,
+  hardStaleTickDropLogMetadata,
   nextExecutionProfile,
   nextLatencyAverage,
   recordProcessingLatencySample,
   resolveNativeHyperliquidMaxLatencyMs,
+  shouldLogHardStaleTickDrop,
   shouldLogPerformanceSpikeEvent,
   stateAfterLatencyBaselineReset,
   stateAfterNativeHyperliquidLatencyPull,
@@ -186,6 +189,40 @@ describe("LatencyRuntime", () => {
       quoteState: { status: "SUSPENDED", reason: "HARD_STALE_DROP" },
       heartbeatAt: "2026-05-18T15:00:00.250Z",
       updatedAt: "2026-05-18T15:00:00.250Z"
+    });
+  });
+
+  it("builds hard-stale log and quote-pull telemetry", () => {
+    const staleTick = tick({ transport: "grpc", sequence: 777 });
+    const metrics = latencyMetrics({ totalLatencyMs: 275, networkLatencyMs: 125 });
+    const input = {
+      tick: staleTick,
+      metrics,
+      streamId: "dwellir-main",
+      hardStaleDropMs: 150
+    };
+
+    expect(shouldLogHardStaleTickDrop(1)).toBe(true);
+    expect(shouldLogHardStaleTickDrop(499)).toBe(false);
+    expect(shouldLogHardStaleTickDrop(500)).toBe(true);
+    expect(hardStaleTickDropLogMetadata(input)).toMatchObject({
+      instrumentCode: "btc-usd",
+      exchangeCode: "HL",
+      source_exchange: "hyperliquid",
+      transport: "grpc",
+      streamId: "dwellir-main",
+      sequence: 777,
+      totalLatencyMs: 275,
+      networkLatencyMs: 125,
+      processingLatencyMs: 150,
+      hardStaleDropMs: 150
+    });
+    expect(hardStalePullTelemetryPayload(input)).toMatchObject({
+      instrumentCode: "btc-usd",
+      action: "PULL_ALL_QUOTES",
+      source: "NATIVE_HYPERLIQUID",
+      maxLatencyMs: 150,
+      totalLatencyMs: 275
     });
   });
 
