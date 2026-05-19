@@ -4,6 +4,7 @@ import {
   buildShadowQueueGhostFillRecord,
   buildShadowQueueTradeIntent,
   enforceShadowQueueDecisionLatency,
+  resolveShadowQueueNoEdgeLogInterval,
   resolveShadowQueueSizingConfig,
   shouldLogShadowQueueNoEdge,
   shouldProcessShadowQueueTick,
@@ -144,6 +145,12 @@ describe("ShadowQueueRuntime", () => {
         intervalMs: 500
       })
     ).toBe(true);
+  });
+
+  it("resolves no-edge log throttle intervals from bounded env input", () => {
+    expect(resolveShadowQueueNoEdgeLogInterval("2500")).toBe(2_500);
+    expect(resolveShadowQueueNoEdgeLogInterval("10")).toBe(1_000);
+    expect(resolveShadowQueueNoEdgeLogInterval("600000")).toBe(300_000);
   });
 
   it("suppresses shadow queue decisions that breach the latency budget", () => {

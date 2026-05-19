@@ -76,6 +76,7 @@ import {
   buildShadowQueueDecisionTrace,
   buildShadowQueueTradeIntent,
   enforceShadowQueueDecisionLatency,
+  resolveShadowQueueNoEdgeLogInterval,
   resolveShadowQueueSizingConfig,
   shouldLogShadowQueueNoEdge as shouldLogShadowQueueNoEdgeEvent,
   shouldProcessShadowQueueTick,
@@ -399,7 +400,6 @@ import {
   DEFAULT_SHADOW_VLO_QUEUE_DEPTH_MULTIPLIER,
   DEFAULT_SHADOW_VLO_BASE_SPREAD_BPS,
   DEFAULT_SHADOW_VLO_LATENCY_BUDGET_MS,
-  DEFAULT_SHADOW_QUEUE_NO_EDGE_LOG_INTERVAL_MS,
   DEFAULT_VAR_CONFIDENCE_Z,
   TARGET_ASSET_MATRIX,
   TARGET_INSTRUMENTS,
@@ -4240,18 +4240,11 @@ export class TradingEngine {
   }
 
   private shouldLogShadowQueueNoEdge(instrumentCode: string): boolean {
-    const intervalMs = readPositiveInteger(
-      this.env.SHADOW_QUEUE_NO_EDGE_LOG_INTERVAL_MS,
-      DEFAULT_SHADOW_QUEUE_NO_EDGE_LOG_INTERVAL_MS,
-      1_000,
-      300_000
-    );
-
     return shouldLogShadowQueueNoEdgeEvent({
       lastLoggedAtByInstrument: this.shadowQueueNoEdgeLogAt,
       instrumentCode,
       nowMs: Date.now(),
-      intervalMs
+      intervalMs: resolveShadowQueueNoEdgeLogInterval(this.env.SHADOW_QUEUE_NO_EDGE_LOG_INTERVAL_MS)
     });
   }
 

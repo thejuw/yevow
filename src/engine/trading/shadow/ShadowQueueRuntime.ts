@@ -15,7 +15,11 @@ import {
   normalizePriceToTick,
   roundCrypto
 } from "../book/SortedBookSide";
-import { DEFAULT_SHADOW_VLO_MIN_SIZE } from "../../../TradingEngineConstants";
+import {
+  DEFAULT_SHADOW_QUEUE_NO_EDGE_LOG_INTERVAL_MS,
+  DEFAULT_SHADOW_VLO_MIN_SIZE
+} from "../../../TradingEngineConstants";
+import { readPositiveInteger } from "../../../TradingEngineRuntimeHelpers";
 
 export interface ShadowQueueSizingInput {
   readonly action: "BUY" | "SELL";
@@ -69,6 +73,15 @@ export interface ShadowQueueNoEdgeThrottleInput {
   readonly instrumentCode: string;
   readonly nowMs: number;
   readonly intervalMs: number;
+}
+
+export function resolveShadowQueueNoEdgeLogInterval(envValue?: string): number {
+  return readPositiveInteger(
+    envValue,
+    DEFAULT_SHADOW_QUEUE_NO_EDGE_LOG_INTERVAL_MS,
+    1_000,
+    300_000
+  );
 }
 
 export interface ShadowQueueLatencyBudgetResult {
