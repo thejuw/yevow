@@ -3,6 +3,8 @@ import type {
   EngineState,
   InternalOrderBook,
   JsonRecord,
+  LatencyMetrics,
+  MarketTick,
   MicrostructureMetrics,
   PriceDiscoveryMetrics
 } from "../../../types";
@@ -87,6 +89,14 @@ export interface DesyncedBookStateInput {
 export interface DesyncedBookStateResult {
   readonly state: EngineState;
   readonly book: InternalOrderBook;
+}
+
+export interface BookDesyncStorageInput {
+  readonly tick: MarketTick;
+  readonly metrics: LatencyMetrics;
+  readonly reason: string;
+  readonly expectedSequence?: number;
+  readonly actualSequence?: number;
 }
 
 export function stateAfterOrderBookReset(input: BookResetStateInput): EngineState {
@@ -214,6 +224,19 @@ export function stateAfterDesyncedBook(input: DesyncedBookStateInput): DesyncedB
         isSynced: false
       }
     }
+  };
+}
+
+export function bookDesyncStorageExtra(input: BookDesyncStorageInput): Record<string, unknown> {
+  return {
+    [`bookDesync:${input.tick.source_exchange}:${input.tick.instrumentCode}:${input.tick.sequence}`]:
+      {
+        tick: input.tick,
+        metrics: input.metrics,
+        reason: input.reason,
+        expectedSequence: input.expectedSequence,
+        actualSequence: input.actualSequence
+      }
   };
 }
 

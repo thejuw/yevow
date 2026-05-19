@@ -56,6 +56,7 @@ import {
   nullableMarkPriceForInstrument
 } from "./engine/trading/book/BookViews";
 import {
+  bookDesyncStorageExtra,
   markBookSyncDesynced,
   shouldEmitBookSnapshotTelemetry,
   stateAfterAcceptedBookDelta,
@@ -2403,11 +2404,7 @@ export class TradingEngine {
       return registration as unknown as Record<string, unknown>;
     }
 
-    this.engineState = {
-      ...this.engineState,
-      heartbeatAt: registration.observedAt,
-      updatedAt: registration.observedAt
-    };
+    this.engineState = stateAfterHealthHeartbeat(this.engineState, registration.observedAt);
     this.waitUntilStoragePut(ENGINE_STATE_KEY, this.engineState, "INGEST_CONNECTION_REGISTERED");
 
     return registration as unknown as Record<string, unknown>;
@@ -3042,15 +3039,15 @@ export class TradingEngine {
         });
 
         await this.persistHotStorageSnapshot(
-          this.latencyStorageWrites({
-            [`bookDesync:${tick.source_exchange}:${tick.instrumentCode}:${tick.sequence}`]: {
+          this.latencyStorageWrites(
+            bookDesyncStorageExtra({
               tick,
               metrics,
-              reason: applied.reason,
+              reason: applied.reason ?? "BOOK_UPDATE_REJECTED",
               expectedSequence: applied.expectedSequence,
               actualSequence: applied.actualSequence
-            }
-          }),
+            })
+          ),
           "BOOK_DESYNC"
         );
 

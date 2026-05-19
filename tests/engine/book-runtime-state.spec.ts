@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  bookDesyncStorageExtra,
   bookSnapshotTelemetry,
   bookSnapshotStorageWrites,
   markBookSyncDesynced,
@@ -16,6 +17,8 @@ import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
 import type {
   DomAnalysisSnapshot,
   InternalOrderBook,
+  LatencyMetrics,
+  MarketTick,
   MicrostructureMetrics,
   PriceDiscoveryMetrics
 } from "../../src/types";
@@ -328,6 +331,29 @@ describe("BookRuntimeState", () => {
     });
     expect(result.state.processedTicks).toBe(12);
   });
+
+  it("builds persisted book desync snapshots with stable storage keys", () => {
+    const tick = marketTick({ sequence: 11 });
+    const metrics = latencyMetrics({ sequence: 11 });
+
+    expect(
+      bookDesyncStorageExtra({
+        tick,
+        metrics,
+        reason: "SEQUENCE_GAP",
+        expectedSequence: 10,
+        actualSequence: 11
+      })
+    ).toEqual({
+      "bookDesync:hyperliquid:btc-usd:11": {
+        tick,
+        metrics,
+        reason: "SEQUENCE_GAP",
+        expectedSequence: 10,
+        actualSequence: 11
+      }
+    });
+  });
 });
 
 function book(overrides: Partial<InternalOrderBook> = {}): InternalOrderBook {
@@ -417,5 +443,56 @@ function dom(instrumentCode: string): DomAnalysisSnapshot {
     },
     history: [],
     updatedAt: OBSERVED_AT
+  };
+}
+
+function marketTick(overrides: Partial<MarketTick> = {}): MarketTick {
+  return {
+    schemaVersion: "universal-tick.v1",
+    source: "HYPERLIQUID",
+    source_exchange: "hyperliquid",
+    transport: "grpc",
+    exchangeCode: "hyperliquid",
+    instrumentCode: "btc-usd",
+    baseAsset: "BTC",
+    quoteAsset: "USD",
+    price: 100,
+    size: 1,
+    side: "buy",
+    sequence: 7,
+    exchangeTimestamp: OBSERVED_AT,
+    synchronizedExchangeTimestamp: OBSERVED_AT,
+    clockOffsetMs: 0,
+    receivedAt: OBSERVED_AT,
+    sourceWeight: 1,
+    ...overrides
+  };
+}
+
+function latencyMetrics(overrides: Partial<LatencyMetrics> = {}): LatencyMetrics {
+  return {
+    instrumentCode: "btc-usd",
+    exchangeCode: "hyperliquid",
+    source: "HYPERLIQUID",
+    sourceExchange: "hyperliquid",
+    sourceWeight: 1,
+    sequence: 7,
+    providerTimestamp: OBSERVED_AT,
+    sourceTimestamp: OBSERVED_AT,
+    ingestTimestamp: OBSERVED_AT,
+    brainTimestamp: OBSERVED_AT,
+    clockOffsetMs: 0,
+    networkLatencyMs: 1,
+    processingLatencyMs: 2,
+    totalLatencyMs: 3,
+    maxLatencyMs: 150,
+    averageLatencyMs: 3,
+    sampleCount: 1,
+    status: "FRESH",
+    colo: "NRT",
+    placement: "tokyo",
+    latencyRiskMultiplier: 1,
+    positionSizeMultiplier: 1,
+    ...overrides
   };
 }
