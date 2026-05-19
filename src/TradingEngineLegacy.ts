@@ -3091,60 +3091,52 @@ export class TradingEngine {
     }
   }
 
-  private async handleTick(
-    tick: MarketTick,
-    wakeUpTimeMs: number | null,
-    options: TickHandlingOptions = {}
-  ): Promise<TickIngestResult> {
-    const hotPathStartedAt = highResolutionNow();
-    const normalizedInstrument = normalizeNativeInstrumentCode(tick.instrumentCode);
-
-    if (!options.shadowReplay && !isTargetInstrument(normalizedInstrument)) {
-      return {
-        accepted: false,
-        status: "IGNORED",
-        reason: "NON_TARGET_ASSET",
-        processedCount: 0
-      };
-    }
-
+  private maybeAutoResumeShadowMode(tick: MarketTick, shadowReplay: boolean): void {
     if (
-      shouldAutoResumeShadowMode({
-        shadowReplay: options.shadowReplay === true,
+      !shouldAutoResumeShadowMode({
+        shadowReplay,
         shadowMode: isShadowMode(this.env),
         tradingEnabled: this.cachedConfig.TRADING_ENABLED,
         mode: this.engineState.mode
       })
     ) {
-      const resumedAt = new Date().toISOString();
-      const assetQuoteStates = normalizeAssetQuoteStates(
-        defaultAssetQuoteStates(this.cachedConfig, this.macroBias, resumedAt),
-        this.cachedConfig,
-        this.macroBias,
-        resumedAt
-      );
-      this.engineState = stateAfterShadowModeAutoResume({
-        currentState: this.engineState,
-        normalizedBankroll: normalizePaperBankroll(this.engineState.bankroll, this.env, resumedAt),
-        assetQuoteStates,
-        quoteState: aggregateQuoteState(assetQuoteStates, this.engineState.quoteState, resumedAt),
-        observedAt: resumedAt
-      });
-      this.killSwitchLogged = false;
-      this.logger.warn(
-        "SHADOW_MODE_AUTO_RESUME",
-        "Shadow mode resumed paper trading after a stale halt",
-        shadowModeAutoResumeLogMetadata({
-          tick,
-          configVersion: this.cachedConfig.version
-        })
-      );
-      this.publish("RESUME_QUOTES", shadowModeAutoResumeTelemetry(resumedAt));
+      return;
     }
 
+    const resumedAt = new Date().toISOString();
+    const assetQuoteStates = normalizeAssetQuoteStates(
+      defaultAssetQuoteStates(this.cachedConfig, this.macroBias, resumedAt),
+      this.cachedConfig,
+      this.macroBias,
+      resumedAt
+    );
+
+    this.engineState = stateAfterShadowModeAutoResume({
+      currentState: this.engineState,
+      normalizedBankroll: normalizePaperBankroll(this.engineState.bankroll, this.env, resumedAt),
+      assetQuoteStates,
+      quoteState: aggregateQuoteState(assetQuoteStates, this.engineState.quoteState, resumedAt),
+      observedAt: resumedAt
+    });
+    this.killSwitchLogged = false;
+    this.logger.warn(
+      "SHADOW_MODE_AUTO_RESUME",
+      "Shadow mode resumed paper trading after a stale halt",
+      shadowModeAutoResumeLogMetadata({
+        tick,
+        configVersion: this.cachedConfig.version
+      })
+    );
+    this.publish("RESUME_QUOTES", shadowModeAutoResumeTelemetry(resumedAt));
+  }
+
+  private resolveTradingAvailability(
+    tick: MarketTick,
+    shadowReplay: boolean
+  ): TickIngestResult | null {
     if (
       shouldBlockHaltedTrading({
-        shadowReplay: options.shadowReplay === true,
+        shadowReplay,
         shadowMode: isShadowMode(this.env),
         tradingEnabled: this.cachedConfig.TRADING_ENABLED,
         mode: this.engineState.mode
@@ -3173,7 +3165,7 @@ export class TradingEngine {
 
     if (
       shouldLogDisabledTrading({
-        shadowReplay: options.shadowReplay === true,
+        shadowReplay,
         tradingEnabled: this.cachedConfig.TRADING_ENABLED,
         killSwitchLogged: this.killSwitchLogged
       })
@@ -3189,6 +3181,33 @@ export class TradingEngine {
         })
       );
       this.killSwitchLogged = true;
+    }
+
+    return null;
+  }
+
+  private async handleTick(
+    tick: MarketTick,
+    wakeUpTimeMs: number | null,
+    options: TickHandlingOptions = {}
+  ): Promise<TickIngestResult> {
+    const hotPathStartedAt = highResolutionNow();
+    const shadowReplay = options.shadowReplay === true;
+    const normalizedInstrument = normalizeNativeInstrumentCode(tick.instrumentCode);
+
+    if (!shadowReplay && !isTargetInstrument(normalizedInstrument)) {
+      return {
+        accepted: false,
+        status: "IGNORED",
+        reason: "NON_TARGET_ASSET",
+        processedCount: 0
+      };
+    }
+
+    this.maybeAutoResumeShadowMode(tick, shadowReplay);
+    const tradingAvailability = this.resolveTradingAvailability(tick, shadowReplay);
+    if (tradingAvailability) {
+      return tradingAvailability;
     }
 
     this.lastTickTimestamp = tick.receivedAt;
