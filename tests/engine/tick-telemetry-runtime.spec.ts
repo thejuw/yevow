@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { neutralMacroBias } from "../../src/Governor";
-import { buildTickTelemetryPayload } from "../../src/engine/trading/telemetry/TickTelemetryRuntime";
+import {
+  bayesianPosteriorUpdatedLogMetadata,
+  buildTickTelemetryPayload,
+  marketTickAcceptedLogMetadata,
+  shouldLogBayesianPosteriorUpdate,
+  shouldLogMarketTickAccepted
+} from "../../src/engine/trading/telemetry/TickTelemetryRuntime";
 import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
-import type { AgentSignal, LatencyMetrics, MarketTick } from "../../src/types";
+import type { AgentSignal, BayesianUpdateTrace, LatencyMetrics, MarketTick } from "../../src/types";
 
 describe("TickTelemetryRuntime", () => {
   it("builds the tick telemetry payload from current engine state", () => {
@@ -118,6 +124,63 @@ describe("TickTelemetryRuntime", () => {
       }
     ]);
   });
+
+  it("builds accepted tick and Bayesian posterior log metadata", () => {
+    expect(shouldLogMarketTickAccepted(1)).toBe(true);
+    expect(shouldLogMarketTickAccepted(999)).toBe(false);
+    expect(shouldLogMarketTickAccepted(1_000)).toBe(true);
+    expect(
+      marketTickAcceptedLogMetadata({
+        tick: tick(),
+        metrics: latencyMetrics({ totalLatencyMs: 33 }),
+        processedTicks: 1_000,
+        averageLatencyMs: 12
+      })
+    ).toEqual({
+      instrumentCode: "btc-usd",
+      exchangeCode: "HL",
+      sequence: 10,
+      processedTicks: 1_000,
+      totalLatencyMs: 33,
+      averageLatencyMs: 12
+    });
+
+    const trace = bayesianTrace();
+    expect(
+      shouldLogBayesianPosteriorUpdate({
+        trace,
+        processedTicks: 1_000,
+        interval: 1_000
+      })
+    ).toBe(true);
+    expect(
+      shouldLogBayesianPosteriorUpdate({
+        trace,
+        processedTicks: 999,
+        interval: 1_000
+      })
+    ).toBe(false);
+    expect(
+      shouldLogBayesianPosteriorUpdate({
+        trace: null,
+        processedTicks: 1_000,
+        interval: 1_000
+      })
+    ).toBe(false);
+    expect(
+      bayesianPosteriorUpdatedLogMetadata({
+        instrumentCode: "btc-usd",
+        trace
+      })
+    ).toEqual({
+      instrumentCode: "btc-usd",
+      priorBullishProbability: 0.45,
+      posteriorBullishProbability: 0.55,
+      delta: 0.1,
+      evidence: { imbalance: 0.25 },
+      updatedAt: "2026-05-19T12:00:00.000Z"
+    });
+  });
 });
 
 function tick(overrides: Partial<MarketTick> = {}): MarketTick {
@@ -187,5 +250,15 @@ function signal(rationale: string): AgentSignal {
     featureVector: {},
     riskContext: {},
     createdAt: "2026-05-19T12:00:00.000Z"
+  };
+}
+
+function bayesianTrace(): BayesianUpdateTrace {
+  return {
+    priorBullishProbability: 0.45,
+    posteriorBullishProbability: 0.55,
+    delta: 0.1,
+    evidence: { imbalance: 0.25 },
+    updatedAt: "2026-05-19T12:00:00.000Z"
   };
 }

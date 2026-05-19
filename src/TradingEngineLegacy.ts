@@ -285,7 +285,13 @@ import {
   buildAmVpinTelemetry,
   buildProfilerAlertTelemetry
 } from "./engine/trading/telemetry/ProfilerTelemetryRuntime";
-import { buildTickTelemetryPayload } from "./engine/trading/telemetry/TickTelemetryRuntime";
+import {
+  bayesianPosteriorUpdatedLogMetadata,
+  buildTickTelemetryPayload,
+  marketTickAcceptedLogMetadata,
+  shouldLogBayesianPosteriorUpdate,
+  shouldLogMarketTickAccepted
+} from "./engine/trading/telemetry/TickTelemetryRuntime";
 import { type ReplayOptions, type ReplayScenario } from "./engine/trading/routes/ReplayAdminRoutes";
 import { markHistoricalReplayTrades, ReplayJournal } from "./engine/trading/replay/ReplayJournal";
 import {
@@ -3421,14 +3427,23 @@ export class TradingEngine {
       this.logger.recordMarketTick(tick);
     }
 
+    const bayesianTrace = oracleResult.bayesianTrace;
     if (
-      oracleResult.bayesianTrace &&
-      this.engineState.processedTicks % AGENT_SNAPSHOT_TICK_INTERVAL === 0
+      bayesianTrace &&
+      shouldLogBayesianPosteriorUpdate({
+        trace: bayesianTrace,
+        processedTicks: this.engineState.processedTicks,
+        interval: AGENT_SNAPSHOT_TICK_INTERVAL
+      })
     ) {
-      this.logger.info("BAYESIAN_POSTERIOR_UPDATED", "Oracle posterior PDF updated", {
-        instrumentCode: tick.instrumentCode,
-        ...oracleResult.bayesianTrace
-      });
+      this.logger.info(
+        "BAYESIAN_POSTERIOR_UPDATED",
+        "Oracle posterior PDF updated",
+        bayesianPosteriorUpdatedLogMetadata({
+          instrumentCode: tick.instrumentCode,
+          trace: bayesianTrace
+        })
+      );
     }
 
     const croupierQuoteAction = buildCroupierQuoteAction({
@@ -3543,15 +3558,17 @@ export class TradingEngine {
       }
     }
 
-    if (this.engineState.processedTicks <= 5 || this.engineState.processedTicks % 1_000 === 0) {
-      this.logger.info("MARKET_TICK_ACCEPTED", "Market tick processed", {
-        instrumentCode: tick.instrumentCode,
-        exchangeCode: tick.exchangeCode,
-        sequence: tick.sequence,
-        processedTicks: this.engineState.processedTicks,
-        totalLatencyMs: metrics.totalLatencyMs,
-        averageLatencyMs: this.engineState.averageLatency
-      });
+    if (shouldLogMarketTickAccepted(this.engineState.processedTicks)) {
+      this.logger.info(
+        "MARKET_TICK_ACCEPTED",
+        "Market tick processed",
+        marketTickAcceptedLogMetadata({
+          tick,
+          metrics,
+          processedTicks: this.engineState.processedTicks,
+          averageLatencyMs: this.engineState.averageLatency
+        })
+      );
     }
 
     this.publishTickTelemetry(tick, metrics, metrics.status, hotPathStartedAt);

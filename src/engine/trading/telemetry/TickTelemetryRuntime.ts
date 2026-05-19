@@ -1,6 +1,8 @@
 import type {
   AgentSignal,
+  BayesianUpdateTrace,
   EngineState,
+  JsonRecord,
   LatencyMetrics,
   MacroBias,
   MarketTick,
@@ -22,6 +24,44 @@ export interface TickTelemetryPayloadInput {
 export interface TickTelemetryPayloadResult {
   readonly payload: Record<string, unknown>;
   readonly correlationId: string;
+}
+
+export function shouldLogMarketTickAccepted(processedTicks: number): boolean {
+  return processedTicks <= 5 || processedTicks % 1_000 === 0;
+}
+
+export function marketTickAcceptedLogMetadata(input: {
+  readonly tick: MarketTick;
+  readonly metrics: LatencyMetrics;
+  readonly processedTicks: number;
+  readonly averageLatencyMs: number;
+}): JsonRecord {
+  return {
+    instrumentCode: input.tick.instrumentCode,
+    exchangeCode: input.tick.exchangeCode,
+    sequence: input.tick.sequence,
+    processedTicks: input.processedTicks,
+    totalLatencyMs: input.metrics.totalLatencyMs,
+    averageLatencyMs: input.averageLatencyMs
+  };
+}
+
+export function shouldLogBayesianPosteriorUpdate(input: {
+  readonly trace: BayesianUpdateTrace | null;
+  readonly processedTicks: number;
+  readonly interval: number;
+}): boolean {
+  return input.trace !== null && input.interval > 0 && input.processedTicks % input.interval === 0;
+}
+
+export function bayesianPosteriorUpdatedLogMetadata(input: {
+  readonly instrumentCode: string;
+  readonly trace: BayesianUpdateTrace;
+}): JsonRecord {
+  return {
+    instrumentCode: input.instrumentCode,
+    ...(input.trace as unknown as JsonRecord)
+  };
 }
 
 export function buildTickTelemetryPayload(
