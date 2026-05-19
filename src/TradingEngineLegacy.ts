@@ -65,6 +65,8 @@ import {
 } from "./engine/trading/shadow/ShadowQueueRuntime";
 import { updateLeadLagMetrics as updateLeadLagRuntimeMetrics } from "./engine/trading/leadlag/LeadLagRuntime";
 import { calculateInventoryState as calculateInventoryRuntimeState } from "./engine/trading/inventory/InventoryRuntime";
+import { calculatePortfolioRisk as calculatePortfolioRuntimeRisk } from "./engine/trading/risk/PortfolioRiskRuntime";
+import { calculateEnsembleState as calculateRuntimeEnsembleState } from "./engine/trading/ensemble/EnsembleRuntime";
 import {
   OrderBookReconstructor,
   type OrderBookStores
@@ -4968,28 +4970,20 @@ export class TradingEngine {
     oracle: EngineState["oracle"],
     observedAt: string
   ): EngineState["riskMetrics"] {
-    const equity = Math.max(this.engineState.bankroll.equity, 0);
-    const priorHighWaterMark = Math.max(this.engineState.riskMetrics.highWaterMark, equity);
-    const highWaterMark =
-      this.engineState.mode === "PAPER" &&
-      priorHighWaterMark > Math.max(equity * 1.5, equity + 1_000)
-        ? equity
-        : Math.max(priorHighWaterMark, equity);
-    const rollingDrawdownPct =
-      highWaterMark > 0 ? Math.max(0, (highWaterMark - equity) / highWaterMark) : 0;
-    const notional = Object.values(this.engineState.openPositions).reduce(
-      (sum, position) => sum + Math.abs(position.quantity * position.markPrice),
-      0
-    );
-    const oneHourVolatilityScale = Math.sqrt(60);
-    const var99OneHour =
-      notional *
-      oracle.volatility *
-      oneHourVolatilityScale *
-      (this.cachedConfig.VAR_CONFIDENCE_Z > 0
-        ? this.cachedConfig.VAR_CONFIDENCE_Z
-        : readPositiveNumber(this.env.VAR_CONFIDENCE_Z, DEFAULT_VAR_CONFIDENCE_Z));
-    const drawdownBreached = rollingDrawdownPct > this.cachedConfig.MAX_DRAWDOWN_PCT;
+    const { drawdownBreached, metrics } = calculatePortfolioRuntimeRisk({
+      mode: this.engineState.mode,
+      equity: this.engineState.bankroll.equity,
+      priorHighWaterMark: this.engineState.riskMetrics.highWaterMark,
+      positions: this.engineState.openPositions,
+      oracleVolatility: oracle.volatility,
+      varConfidenceZ:
+        this.cachedConfig.VAR_CONFIDENCE_Z > 0
+          ? this.cachedConfig.VAR_CONFIDENCE_Z
+          : readPositiveNumber(this.env.VAR_CONFIDENCE_Z, DEFAULT_VAR_CONFIDENCE_Z),
+      maxDrawdownPct: this.cachedConfig.MAX_DRAWDOWN_PCT,
+      tradingEnabled: this.cachedConfig.TRADING_ENABLED,
+      observedAt
+    });
 
     if (drawdownBreached && this.cachedConfig.TRADING_ENABLED) {
       this.cachedConfig = {
@@ -5004,24 +4998,18 @@ export class TradingEngine {
       this.notifier.notify({
         priority: "CRITICAL",
         title: "Sovereign-Sigma drawdown kill switch",
-        message: `Drawdown ${(rollingDrawdownPct * 100).toFixed(2)}% breached configured limit ${(this.cachedConfig.MAX_DRAWDOWN_PCT * 100).toFixed(2)}%. Trading disabled.`,
+        message: `Drawdown ${(metrics.rollingDrawdownPct * 100).toFixed(2)}% breached configured limit ${(this.cachedConfig.MAX_DRAWDOWN_PCT * 100).toFixed(2)}%. Trading disabled.`,
         dedupeKey: "risk:max-drawdown",
         metadata: {
-          rollingDrawdownPct,
+          rollingDrawdownPct: metrics.rollingDrawdownPct,
           maxDrawdownPct: this.cachedConfig.MAX_DRAWDOWN_PCT,
-          highWaterMark,
-          equity
+          highWaterMark: metrics.highWaterMark,
+          equity: Math.max(this.engineState.bankroll.equity, 0)
         }
       });
     }
 
-    return {
-      highWaterMark,
-      rollingDrawdownPct,
-      var99OneHour,
-      isTradingEnabled: !drawdownBreached && this.cachedConfig.TRADING_ENABLED,
-      updatedAt: observedAt
-    };
+    return metrics;
   }
 
   private calculateEnsembleState(
@@ -5032,123 +5020,15 @@ export class TradingEngine {
     anomalyStatus: EngineState["anomaly"],
     observedAt: string
   ): EngineState["ensemble"] {
-    const anomalyScore = Math.max(
-      anomalyStatus.status === "ANOMALY" ? 1 : 0,
-      Math.min(1, Math.abs(anomalyStatus.priceZScore ?? 0) / 8),
-      Math.min(1, Math.abs(anomalyStatus.volumeZScore ?? 0) / 8),
-      Math.min(1, anomalyStatus.cancellationToExecutionRatio / 12)
-    );
-    const anomalyCircuitBreaker =
-      anomalyScore >= 0.85 || profilerState.toxicityState === "CRITICAL";
-    const profilerConfidence = !this.cachedConfig.PROFILER_ENABLED
-      ? 0
-      : profilerState.toxicityState === "CRITICAL"
-        ? 0
-        : profilerState.toxicityState === "TOXIC"
-          ? 0.15
-          : profilerState.toxicityState === "CONTESTED"
-            ? 0.55
-            : 0.85;
-    const oracleConfidence = !this.cachedConfig.ORACLE_ENABLED
-      ? 0
-      : oracleState.regime === "REGIME_CRISIS"
-        ? 0.25
-        : oracleState.regime === "REGIME_TREND"
-          ? 0.7
-          : 0.62;
-    const sentimentDirectionMatches =
-      !intent ||
-      sentimentState.bias === "NEUTRAL" ||
-      (intent.direction === "LONG" && sentimentState.bias === "BULLISH") ||
-      (intent.direction === "SHORT" && sentimentState.bias === "BEARISH");
-    const sentimentConfidence = !this.cachedConfig.SENTIMENT_ENABLED
-      ? 0
-      : sentimentDirectionMatches
-        ? Math.max(0.35, sentimentState.confidence)
-        : Math.max(0.1, 1 - sentimentState.confidence);
-    const croupierConfidence =
-      this.cachedConfig.CROUPIER_ENABLED && intent
-        ? Math.min(
-            1,
-            Math.max(
-              0,
-              (intent.confidence +
-                Math.min(
-                  1,
-                  Math.max(
-                    0,
-                    intent.expectedValue /
-                      Math.max(1, intent.executionCosts + intent.adverseSelectionCost)
-                  )
-                )) /
-                2
-            )
-          )
-        : 0;
-    const votes: EngineState["ensemble"]["votes"] = [
-      {
-        agent: "ORACLE",
-        confidence: roundMetric(oracleConfidence, 6),
-        weight: 0.3,
-        contribution: roundMetric(oracleConfidence * 0.3, 6),
-        rationale: this.cachedConfig.ORACLE_ENABLED ? oracleState.regime : "DISABLED"
-      },
-      {
-        agent: "PROFILER",
-        confidence: roundMetric(profilerConfidence, 6),
-        weight: 0.3,
-        contribution: roundMetric(profilerConfidence * 0.3, 6),
-        rationale: this.cachedConfig.PROFILER_ENABLED
-          ? (profilerState.toxicityState ?? "NORMAL")
-          : "DISABLED"
-      },
-      {
-        agent: "CROUPIER",
-        confidence: roundMetric(croupierConfidence, 6),
-        weight: 0.25,
-        contribution: roundMetric(croupierConfidence * 0.25, 6),
-        rationale: this.cachedConfig.CROUPIER_ENABLED
-          ? intent
-            ? `EV=${roundMetric(intent.expectedValue, 8)}`
-            : "NO_INTENT"
-          : "DISABLED"
-      },
-      {
-        agent: "SENTIMENT",
-        confidence: roundMetric(sentimentConfidence, 6),
-        weight: 0.15,
-        contribution: roundMetric(sentimentConfidence * 0.15, 6),
-        rationale: this.cachedConfig.SENTIMENT_ENABLED
-          ? `${sentimentState.provider ?? "LEXICAL"}:${sentimentState.bias}`
-          : "DISABLED"
-      }
-    ];
-    const weightedConfidence = votes.reduce((sum, vote) => sum + vote.contribution, 0);
-    const regimeMultiplier =
-      oracleState.regime === "REGIME_CRISIS"
-        ? 0.25
-        : oracleState.regime === "REGIME_TREND"
-          ? 0.8
-          : 1;
-    const confidence = anomalyCircuitBreaker
-      ? 0
-      : Math.min(1, Math.max(0, weightedConfidence * (1 - anomalyScore * 0.75)));
-    const kellyMultiplier = anomalyCircuitBreaker
-      ? 0
-      : Math.min(1, Math.max(0, confidence * regimeMultiplier));
-
-    return {
-      schemaVersion: "ensemble.v1",
-      confidence: roundMetric(confidence, 6),
-      kellyMultiplier: roundMetric(kellyMultiplier, 6),
-      regimeMultiplier,
-      anomalyCircuitBreaker,
-      votes,
-      rationale: anomalyCircuitBreaker
-        ? "ANOMALY_CIRCUIT_BREAKER"
-        : `ENSEMBLE_WEIGHTED_CONFIDENCE:${roundMetric(confidence, 6)}`,
-      updatedAt: observedAt
-    };
+    return calculateRuntimeEnsembleState({
+      intent,
+      profilerState,
+      oracleState,
+      sentimentState,
+      anomalyStatus,
+      config: this.cachedConfig,
+      observedAt
+    });
   }
 
   private prepareExecutionPlan(
