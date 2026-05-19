@@ -6,7 +6,8 @@ import {
 import {
   applyExecutionAccounting,
   buildSlippagePoint,
-  mapManagedStatusToTradeStatus
+  mapManagedStatusToTradeStatus,
+  stateAfterExecutionAccounting
 } from "../../src/engine/ExecutionAccounting";
 import { evaluateIntentDispatchGate } from "../../src/engine/IntentGeneration";
 import { countOrderBookLevels } from "../../src/engine/OrderBookState";
@@ -295,6 +296,51 @@ describe("execution accounting", () => {
 
     expect(executioner.tradeExecution.primaryDriver).toBe("EXECUTIONER");
     expect(executioner.tradeExecution.size).toBe(5);
+  });
+
+  it("merges execution accounting results back into engine state", () => {
+    const observedAt = "2026-05-18T12:03:00.000Z";
+    const state = engineState({
+      orderMap: {
+        "order-open": managedOrder({
+          clientId: "order-open",
+          side: "BUY",
+          price: 100,
+          size: 1
+        })
+      }
+    });
+    const accounting = applyExecutionAccounting({
+      state,
+      report: {
+        clientId: "order-open",
+        instrumentCode: "btc-usd",
+        side: "BUY",
+        status: "FILLED",
+        filledSize: 1,
+        achievedPrice: 100,
+        expectedPrice: 100,
+        observedAt
+      },
+      observedAt,
+      markPrice: () => 101
+    });
+    const inventory = {
+      ...state.inventory,
+      current_inventory_delta: 1,
+      updatedAt: observedAt
+    };
+
+    expect(stateAfterExecutionAccounting({ state, accounting, inventory })).toMatchObject({
+      bankroll: accounting.bankroll,
+      openPositions: accounting.openPositions,
+      inventory,
+      current_inventory_delta: 1,
+      orderMap: accounting.orderMap,
+      slippage: accounting.slippage,
+      updatedAt: observedAt,
+      heartbeatAt: observedAt
+    });
   });
 });
 

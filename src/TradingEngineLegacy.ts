@@ -20,7 +20,10 @@ import {
   type AnomalyDetectionResult
 } from "./agents/AnomalyDetector";
 import { CroupierAgent, type CroupierDecision } from "./agents/CroupierAgent";
-import { applyExecutionAccounting } from "./engine/ExecutionAccounting";
+import {
+  applyExecutionAccounting,
+  stateAfterExecutionAccounting
+} from "./engine/ExecutionAccounting";
 import { evaluateIntentDispatchGate } from "./engine/IntentGeneration";
 import { AdverseSelectionModel, adversePenaltyForQuoteSide } from "./engine/AdverseSelectionModel";
 import {
@@ -4733,17 +4736,11 @@ export class TradingEngine {
       observedAt: report.observedAt
     });
 
-    this.engineState = {
-      ...this.engineState,
-      bankroll: accounting.bankroll,
-      openPositions: accounting.openPositions,
-      inventory,
-      current_inventory_delta: inventory.current_inventory_delta,
-      orderMap: accounting.orderMap,
-      slippage: accounting.slippage,
-      updatedAt: accounting.observedAt,
-      heartbeatAt: accounting.observedAt
-    };
+    this.engineState = stateAfterExecutionAccounting({
+      state: this.engineState,
+      accounting,
+      inventory
+    });
 
     await this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "EXECUTION_REPORT");
     this.logger.recordExecution(accounting.tradeExecution);

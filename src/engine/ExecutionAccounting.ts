@@ -31,6 +31,12 @@ export interface ExecutionAccountingResult {
   observedAt: string;
 }
 
+export interface ExecutionAccountingStateInput {
+  readonly state: EngineState;
+  readonly accounting: ExecutionAccountingResult;
+  readonly inventory: EngineState["inventory"];
+}
+
 export function applyExecutionAccounting(
   input: ExecutionAccountingInput
 ): ExecutionAccountingResult {
@@ -118,6 +124,20 @@ export function applyExecutionAccounting(
     fillIncrementSize,
     realizedPnlDelta,
     observedAt
+  };
+}
+
+export function stateAfterExecutionAccounting(input: ExecutionAccountingStateInput): EngineState {
+  return {
+    ...input.state,
+    bankroll: input.accounting.bankroll,
+    openPositions: input.accounting.openPositions,
+    inventory: input.inventory,
+    current_inventory_delta: input.inventory.current_inventory_delta,
+    orderMap: input.accounting.orderMap,
+    slippage: input.accounting.slippage,
+    updatedAt: input.accounting.observedAt,
+    heartbeatAt: input.accounting.observedAt
   };
 }
 
