@@ -1,0 +1,89 @@
+import { defaultCascadeRecoverySignalConfig } from "../../../strategy/cascade/CascadeRecoverySignal";
+import {
+  resolveCascadeAssetProfile,
+  type CascadeAssetProfile
+} from "../../../strategy/cascade/AssetProfiles";
+import type { GlobalRiskConfig } from "../../../types";
+import type {
+  AbsorptionAnalyzerConfig,
+  CascadeDetectorConfig,
+  CascadeRecoverySignalConfig
+} from "../../../strategy/cascade/types";
+
+export function cascadeAssetProfileFromConfig(
+  instrumentCode: string,
+  config: GlobalRiskConfig
+): CascadeAssetProfile {
+  return resolveCascadeAssetProfile(instrumentCode, config.CASCADE_ASSET_PROFILES, {
+    notionalThresholdUsd: config.CASCADE_NOTIONAL_THRESHOLD_USD,
+    zScoreThreshold: config.CASCADE_ZSCORE_THRESHOLD,
+    minPriceMoveAtr: config.CASCADE_MIN_PRICE_MOVE_ATR,
+    maxPositionNotionalPct: config.MAX_POSITION_NOTIONAL_PCT,
+    assetLiquidityCapUsd: config.ASSET_LIQUIDITY_CAP_USD,
+    maxSlippageBps: config.HEDGE_MAX_SLIPPAGE_BPS
+  });
+}
+
+export interface CascadeDetectorRuntimeConfigInput {
+  readonly config: GlobalRiskConfig;
+  readonly profile: CascadeAssetProfile;
+  readonly minBaselineWindows: number;
+  readonly minCascadeSeparationMs: number;
+  readonly maxEventsPerInstrument: number;
+}
+
+export function cascadeDetectorConfig(
+  input: CascadeDetectorRuntimeConfigInput
+): CascadeDetectorConfig {
+  return {
+    windowMs: input.config.CASCADE_WINDOW_MS,
+    notionalThresholdUsd: input.profile.notionalThresholdUsd,
+    zScoreThreshold: input.profile.zScoreThreshold,
+    lookbackHours: input.config.CASCADE_LOOKBACK_HOURS,
+    directionalPct: input.config.CASCADE_DIRECTIONAL_PCT,
+    minPriceMoveAtr: input.profile.minPriceMoveAtr,
+    minBaselineWindows: input.minBaselineWindows,
+    minCascadeSeparationMs: input.minCascadeSeparationMs,
+    maxEventsPerInstrument: input.maxEventsPerInstrument
+  };
+}
+
+export interface AbsorptionAnalyzerRuntimeConfigInput {
+  readonly config: GlobalRiskConfig;
+  readonly oiStabilityBps: number;
+  readonly maxActiveCascades: number;
+}
+
+export function absorptionAnalyzerConfig(
+  input: AbsorptionAnalyzerRuntimeConfigInput
+): AbsorptionAnalyzerConfig {
+  return {
+    absorptionWindowMs: input.config.ABSORPTION_WINDOW_MS,
+    priceBandBps: input.config.ABSORPTION_PRICE_BAND_BPS,
+    minHoldSeconds: input.config.ABSORPTION_MIN_HOLD_SECONDS,
+    oiStabilityBps: input.oiStabilityBps,
+    maxActiveCascades: input.maxActiveCascades
+  };
+}
+
+export function cascadeRecoverySignalConfig(config: GlobalRiskConfig): CascadeRecoverySignalConfig {
+  return {
+    ...defaultCascadeRecoverySignalConfig,
+    entryWindowSeconds: config.ENTRY_WINDOW_SECONDS,
+    impulsiveBarBodyAtr: config.IMPULSIVE_BAR_BODY_ATR,
+    impulsiveBarVolumeMult: config.IMPULSIVE_BAR_VOLUME_MULT,
+    stopBufferAtr: config.STOP_BUFFER_ATR,
+    minStopDistanceBps: config.MIN_STOP_DISTANCE_BPS,
+    maxStopDistanceBps: config.MAX_STOP_DISTANCE_BPS,
+    minTimeSinceLastCascadeSeconds: config.MIN_TIME_SINCE_LAST_CASCADE_SECONDS,
+    newsBlackoutMinutes: config.NEWS_BLACKOUT_MINUTES,
+    maxRealizedVolPercentile: config.MAX_REALIZED_VOL_PERCENTILE,
+    timeStopHours: config.CASCADE_TIME_STOP_HOURS,
+    partial1R: config.PARTIAL_1_R,
+    partial1SizePct: config.PARTIAL_1_SIZE_PCT,
+    partial2R: config.PARTIAL_2_R,
+    partial2SizePct: config.PARTIAL_2_SIZE_PCT,
+    runnerTrailingType: config.TRAILING_STOP_TYPE,
+    runnerTrailingParam: config.TRAILING_STOP_PARAM
+  };
+}

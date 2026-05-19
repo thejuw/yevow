@@ -94,6 +94,12 @@ import {
   buildCascadeExitTradeIntent
 } from "./engine/trading/cascade/CascadeTradeIntents";
 import {
+  absorptionAnalyzerConfig as buildAbsorptionAnalyzerConfig,
+  cascadeAssetProfileFromConfig,
+  cascadeDetectorConfig as buildCascadeDetectorConfig,
+  cascadeRecoverySignalConfig as buildCascadeRecoverySignalConfig
+} from "./engine/trading/cascade/CascadeConfigRuntime";
+import {
   OrderBookReconstructor,
   type OrderBookStores
 } from "./engine/trading/book/OrderBookReconstructor";
@@ -159,17 +165,11 @@ import { Notifier } from "./utils/Notifier";
 import { evaluateGrpcDrop, isShadowMode } from "./utils/CitadelProtocol";
 import { GhostBook, type GhostBookConfig, type GhostBookObservation } from "./utils/GhostBook";
 import { AbsorptionAnalyzer } from "./strategy/cascade/AbsorptionAnalyzer";
-import {
-  resolveCascadeAssetProfile,
-  type CascadeAssetProfile
-} from "./strategy/cascade/AssetProfiles";
+import type { CascadeAssetProfile } from "./strategy/cascade/AssetProfiles";
 import { Backtester } from "./strategy/cascade/Backtester";
 import { CascadeCandleAggregator } from "./strategy/cascade/CandleAggregator";
 import { CascadeDetector } from "./strategy/cascade/CascadeDetector";
-import {
-  CascadeRecoverySignalEngine,
-  defaultCascadeRecoverySignalConfig
-} from "./strategy/cascade/CascadeRecoverySignal";
+import { CascadeRecoverySignalEngine } from "./strategy/cascade/CascadeRecoverySignal";
 import { calculateAtr } from "./strategy/cascade/indicators/ATR";
 import { cumulativeVolumeDelta } from "./strategy/cascade/indicators/CumulativeVolumeDelta";
 import { HyperliquidLiquidationStream } from "./strategy/cascade/LiquidationStream";
@@ -244,7 +244,6 @@ import type {
   CascadeOpenPosition,
   CascadePositionIntent,
   CascadeRecoverySignal,
-  CascadeRecoverySignalConfig,
   LiquidationEvent
 } from "./strategy/cascade/types";
 
@@ -2053,14 +2052,9 @@ export class TradingEngine {
   }
 
   private currentCascadeDetectorConfig(instrumentCode: string): CascadeDetectorConfig {
-    const profile = this.cascadeAssetProfile(instrumentCode);
-    return {
-      windowMs: this.cachedConfig.CASCADE_WINDOW_MS,
-      notionalThresholdUsd: profile.notionalThresholdUsd,
-      zScoreThreshold: profile.zScoreThreshold,
-      lookbackHours: this.cachedConfig.CASCADE_LOOKBACK_HOURS,
-      directionalPct: this.cachedConfig.CASCADE_DIRECTIONAL_PCT,
-      minPriceMoveAtr: profile.minPriceMoveAtr,
+    return buildCascadeDetectorConfig({
+      config: this.cachedConfig,
+      profile: this.cascadeAssetProfile(instrumentCode),
       minBaselineWindows: readPositiveInteger(this.env.CASCADE_MIN_BASELINE_WINDOWS, 12, 0, 10_000),
       minCascadeSeparationMs: readPositiveInteger(
         this.env.CASCADE_MIN_SEPARATION_MS,
@@ -2074,28 +2068,19 @@ export class TradingEngine {
         100,
         100_000
       )
-    };
-  }
-
-  private cascadeAssetProfile(instrumentCode: string): CascadeAssetProfile {
-    return resolveCascadeAssetProfile(instrumentCode, this.cachedConfig.CASCADE_ASSET_PROFILES, {
-      notionalThresholdUsd: this.cachedConfig.CASCADE_NOTIONAL_THRESHOLD_USD,
-      zScoreThreshold: this.cachedConfig.CASCADE_ZSCORE_THRESHOLD,
-      minPriceMoveAtr: this.cachedConfig.CASCADE_MIN_PRICE_MOVE_ATR,
-      maxPositionNotionalPct: this.cachedConfig.MAX_POSITION_NOTIONAL_PCT,
-      assetLiquidityCapUsd: this.cachedConfig.ASSET_LIQUIDITY_CAP_USD,
-      maxSlippageBps: this.cachedConfig.HEDGE_MAX_SLIPPAGE_BPS
     });
   }
 
+  private cascadeAssetProfile(instrumentCode: string): CascadeAssetProfile {
+    return cascadeAssetProfileFromConfig(instrumentCode, this.cachedConfig);
+  }
+
   private currentAbsorptionAnalyzerConfig(): AbsorptionAnalyzerConfig {
-    return {
-      absorptionWindowMs: this.cachedConfig.ABSORPTION_WINDOW_MS,
-      priceBandBps: this.cachedConfig.ABSORPTION_PRICE_BAND_BPS,
-      minHoldSeconds: this.cachedConfig.ABSORPTION_MIN_HOLD_SECONDS,
+    return buildAbsorptionAnalyzerConfig({
+      config: this.cachedConfig,
       oiStabilityBps: readPositiveNumber(this.env.ABSORPTION_OI_STABILITY_BPS, 5),
       maxActiveCascades: readPositiveInteger(this.env.ABSORPTION_MAX_ACTIVE_CASCADES, 24, 1, 100)
-    };
+    });
   }
 
   private resolveCascadeAtr1h(event: LiquidationEvent): number | null {
@@ -2490,26 +2475,7 @@ export class TradingEngine {
   }
 
   private cascadeSignalEngineWithConfig(): CascadeRecoverySignalEngine {
-    const config: CascadeRecoverySignalConfig = {
-      ...defaultCascadeRecoverySignalConfig,
-      entryWindowSeconds: this.cachedConfig.ENTRY_WINDOW_SECONDS,
-      impulsiveBarBodyAtr: this.cachedConfig.IMPULSIVE_BAR_BODY_ATR,
-      impulsiveBarVolumeMult: this.cachedConfig.IMPULSIVE_BAR_VOLUME_MULT,
-      stopBufferAtr: this.cachedConfig.STOP_BUFFER_ATR,
-      minStopDistanceBps: this.cachedConfig.MIN_STOP_DISTANCE_BPS,
-      maxStopDistanceBps: this.cachedConfig.MAX_STOP_DISTANCE_BPS,
-      minTimeSinceLastCascadeSeconds: this.cachedConfig.MIN_TIME_SINCE_LAST_CASCADE_SECONDS,
-      newsBlackoutMinutes: this.cachedConfig.NEWS_BLACKOUT_MINUTES,
-      maxRealizedVolPercentile: this.cachedConfig.MAX_REALIZED_VOL_PERCENTILE,
-      timeStopHours: this.cachedConfig.CASCADE_TIME_STOP_HOURS,
-      partial1R: this.cachedConfig.PARTIAL_1_R,
-      partial1SizePct: this.cachedConfig.PARTIAL_1_SIZE_PCT,
-      partial2R: this.cachedConfig.PARTIAL_2_R,
-      partial2SizePct: this.cachedConfig.PARTIAL_2_SIZE_PCT,
-      runnerTrailingType: this.cachedConfig.TRAILING_STOP_TYPE,
-      runnerTrailingParam: this.cachedConfig.TRAILING_STOP_PARAM
-    };
-    return new CascadeRecoverySignalEngine(config);
+    return new CascadeRecoverySignalEngine(buildCascadeRecoverySignalConfig(this.cachedConfig));
   }
 
   private tradeIntentFromCascadeSignal(
