@@ -130,6 +130,25 @@ export interface ShadowQueueDecisionTraceInput {
   readonly observedAt: string;
 }
 
+export interface ShadowQueueDecisionActionInput {
+  readonly decision: ShadowQueueDecision;
+  readonly intent: TradeIntent | null;
+  readonly tradingEnabled: boolean;
+}
+
+export interface ShadowQueueDecisionAction {
+  readonly publish: {
+    readonly type:
+      | "SHADOW_QUEUE_SIGNAL_SUPPRESSED"
+      | "SHADOW_QUEUE_RED_LIGHT"
+      | "SHADOW_QUEUE_GREEN_LIGHT";
+    readonly payload: Record<string, unknown>;
+    readonly correlationId: string;
+  };
+  readonly cancelReason: "SHADOW_QUEUE_RED_LIGHT" | null;
+  readonly dispatchIntent: TradeIntent | null;
+}
+
 export function shouldProcessShadowQueueTick(input: ShadowQueueTickGateInput): boolean {
   return (
     !input.shadowReplay &&
@@ -321,6 +340,34 @@ export function buildShadowQueueDecisionTrace(
     rawSignal: input.decision as unknown as JsonRecord,
     latencyMs: input.decision.decisionLatencyMs,
     createdAt: input.observedAt
+  };
+}
+
+export function buildShadowQueueDecisionAction(
+  input: ShadowQueueDecisionActionInput
+): ShadowQueueDecisionAction {
+  if (!input.intent) {
+    return {
+      publish: {
+        type: "SHADOW_QUEUE_SIGNAL_SUPPRESSED",
+        payload: input.decision as unknown as Record<string, unknown>,
+        correlationId: input.decision.decisionId
+      },
+      cancelReason: null,
+      dispatchIntent: null
+    };
+  }
+
+  const isRedLight = input.decision.action === "RED_LIGHT";
+
+  return {
+    publish: {
+      type: isRedLight ? "SHADOW_QUEUE_RED_LIGHT" : "SHADOW_QUEUE_GREEN_LIGHT",
+      payload: input.decision as unknown as Record<string, unknown>,
+      correlationId: input.decision.decisionId
+    },
+    cancelReason: isRedLight && input.tradingEnabled ? "SHADOW_QUEUE_RED_LIGHT" : null,
+    dispatchIntent: input.tradingEnabled ? input.intent : null
   };
 }
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildShadowQueueDecisionAction,
   buildShadowQueueDecisionTrace,
   buildShadowQueueGhostFillRecord,
   buildShadowQueueLatencyBreachTelemetry,
@@ -285,6 +286,62 @@ describe("ShadowQueueRuntime", () => {
       },
       latencyMs: 1,
       createdAt: OBSERVED_AT
+    });
+  });
+
+  it("plans shadow queue decision side effects without touching runtime IO", () => {
+    const intent = buildShadowQueueTradeIntent({
+      decision: decision({ action: "RED_LIGHT", dispatchSide: "SELL" }),
+      book: book(),
+      observedAt: OBSERVED_AT,
+      engineId: "engine-1",
+      baseSpreadBps: 4,
+      exchangeFeeBps: 1,
+      toxicityScore: 0.3,
+      requestedSize: 0.25,
+      price: 100.5
+    });
+
+    expect(
+      buildShadowQueueDecisionAction({
+        decision: decision({ action: "GREEN_LIGHT" }),
+        intent: null,
+        tradingEnabled: true
+      })
+    ).toMatchObject({
+      publish: {
+        type: "SHADOW_QUEUE_SIGNAL_SUPPRESSED",
+        correlationId: "decision-1"
+      },
+      cancelReason: null,
+      dispatchIntent: null
+    });
+    expect(
+      buildShadowQueueDecisionAction({
+        decision: decision({ action: "RED_LIGHT" }),
+        intent,
+        tradingEnabled: true
+      })
+    ).toMatchObject({
+      publish: {
+        type: "SHADOW_QUEUE_RED_LIGHT",
+        correlationId: "decision-1"
+      },
+      cancelReason: "SHADOW_QUEUE_RED_LIGHT",
+      dispatchIntent: intent
+    });
+    expect(
+      buildShadowQueueDecisionAction({
+        decision: decision({ action: "GREEN_LIGHT" }),
+        intent,
+        tradingEnabled: false
+      })
+    ).toMatchObject({
+      publish: {
+        type: "SHADOW_QUEUE_GREEN_LIGHT"
+      },
+      cancelReason: null,
+      dispatchIntent: null
     });
   });
 

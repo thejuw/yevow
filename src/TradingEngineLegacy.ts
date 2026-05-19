@@ -80,6 +80,7 @@ import {
   currentDomHeatmapSnapshot
 } from "./engine/trading/book/DomAnalyzer";
 import {
+  buildShadowQueueDecisionAction,
   buildShadowQueueGhostFillRecord,
   buildShadowQueueDecisionTrace,
   buildShadowQueueLatencyBreachTelemetry,
@@ -3771,34 +3772,18 @@ export class TradingEngine {
       })
     );
 
-    if (!intent) {
-      this.publish(
-        "SHADOW_QUEUE_SIGNAL_SUPPRESSED",
-        updatedDecision as unknown as Record<string, unknown>,
-        updatedDecision.decisionId
-      );
-      return updatedDecision;
-    }
+    const action = buildShadowQueueDecisionAction({
+      decision: updatedDecision,
+      intent,
+      tradingEnabled: this.cachedConfig.TRADING_ENABLED
+    });
+    this.publish(action.publish.type, action.publish.payload, action.publish.correlationId);
 
-    if (updatedDecision.action === "RED_LIGHT") {
-      this.publish(
-        "SHADOW_QUEUE_RED_LIGHT",
-        updatedDecision as unknown as Record<string, unknown>,
-        updatedDecision.decisionId
-      );
-      if (this.cachedConfig.TRADING_ENABLED) {
-        this.state.waitUntil(this.cancelAllQuotes(book.instrumentCode, "SHADOW_QUEUE_RED_LIGHT"));
-      }
-    } else {
-      this.publish(
-        "SHADOW_QUEUE_GREEN_LIGHT",
-        updatedDecision as unknown as Record<string, unknown>,
-        updatedDecision.decisionId
-      );
+    if (action.cancelReason) {
+      this.state.waitUntil(this.cancelAllQuotes(book.instrumentCode, action.cancelReason));
     }
-
-    if (this.cachedConfig.TRADING_ENABLED) {
-      this.state.waitUntil(this.dispatchExecution(intent));
+    if (action.dispatchIntent) {
+      this.state.waitUntil(this.dispatchExecution(action.dispatchIntent));
     }
 
     return updatedDecision;
