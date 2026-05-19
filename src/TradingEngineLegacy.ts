@@ -84,6 +84,12 @@ import {
 } from "./engine/trading/performance/LatencyRuntime";
 import { reconcileJanitorOrders } from "./engine/trading/janitor/JanitorRuntime";
 import {
+  currentCascadeActiveSnapshot as buildCurrentCascadeActiveSnapshot,
+  currentCascadeHeatSnapshot as buildCurrentCascadeHeatSnapshot,
+  currentCascadePositionSnapshot as buildCurrentCascadePositionSnapshot,
+  currentCascadeSignalSnapshot as buildCurrentCascadeSignalSnapshot
+} from "./engine/trading/cascade/CascadeSnapshots";
+import {
   OrderBookReconstructor,
   type OrderBookStores
 } from "./engine/trading/book/OrderBookReconstructor";
@@ -1928,143 +1934,35 @@ export class TradingEngine {
   }
 
   private currentCascadeActiveSnapshot(): JsonRecord[] {
-    const positionsByCascade = new Map(
-      this.cascadePositionManager.snapshot().map((position) => [position.cascadeId, position])
-    );
-    const maxAgeMs = Math.max(this.cachedConfig.ABSORPTION_WINDOW_MS * 2, 60_000);
-    const nowMs = Date.now();
-
-    return [...this.cascadeEventsById.values()]
-      .map((cascade) => {
-        const absorption = this.cascadeAbsorptionsById.get(cascade.cascadeId) ?? null;
-        const position = positionsByCascade.get(cascade.cascadeId) ?? null;
-        const phase = position
-          ? isOpenCascadePosition(position)
-            ? "POSITION_OPEN"
-            : "POSITION_CLOSED"
-          : absorption
-            ? "ABSORPTION_CONFIRMED"
-            : "DETECTED";
-
-        return {
-          cascadeId: cascade.cascadeId,
-          instrumentCode: cascade.instrumentCode,
-          direction: cascade.direction,
-          phase,
-          liquidationNotional: roundMetric(cascade.liquidationNotional, 2),
-          liquidationCount: cascade.liquidationCount,
-          zScore: roundMetric(cascade.zScore, 4),
-          directionalPct: roundMetric(cascade.directionalPct, 4),
-          priceMoveAtr: roundMetric(cascade.priceMoveAtr, 4),
-          detectedAt: cascade.detectedAt,
-          absorption: absorption ? (absorption as unknown as JsonRecord) : null,
-          position: position ? (position as unknown as JsonRecord) : null
-        };
-      })
-      .filter((cascade) => {
-        if (cascade.phase === "POSITION_OPEN") {
-          return true;
-        }
-
-        return (
-          cascade.phase !== "POSITION_CLOSED" &&
-          nowMs - Date.parse(String(cascade.detectedAt)) <= maxAgeMs
-        );
-      })
-      .sort(
-        (left, right) => Date.parse(String(right.detectedAt)) - Date.parse(String(left.detectedAt))
-      )
-      .slice(0, 50);
+    return buildCurrentCascadeActiveSnapshot({
+      events: this.cascadeEventsById.values(),
+      absorptionsById: this.cascadeAbsorptionsById,
+      positions: this.cascadePositionManager.snapshot(),
+      maxAgeMs: Math.max(this.cachedConfig.ABSORPTION_WINDOW_MS * 2, 60_000),
+      nowMs: Date.now()
+    });
   }
 
   private currentCascadeSignalSnapshot(limit: number): JsonRecord[] {
-    return this.signals
-      .filter((signal) => {
-        const context = signal.featureVector as JsonRecord;
-        const risk = signal.riskContext as JsonRecord;
-        return (
-          typeof context.cascadeId === "string" ||
-          typeof risk.cascadeId === "string" ||
-          signal.rationale.toLowerCase().includes("cascade")
-        );
-      })
-      .slice(-limit)
-      .reverse()
-      .map((signal) => ({
-        signalId: signal.signalId,
-        traceId: signal.traceId,
-        sourceAgent: signal.sourceAgent,
-        targetAgent: signal.targetAgent,
-        instrumentCode: signal.instrumentCode,
-        action: signal.action,
-        confidence: signal.confidence,
-        expectedValue: signal.expectedValue,
-        maxSlippageBps: signal.maxSlippageBps,
-        rationale: signal.rationale,
-        outcome: (signal.riskContext as JsonRecord).outcome ?? "EMITTED",
-        closeReason: (signal.riskContext as JsonRecord).closeReason ?? null,
-        cascadeId:
-          (signal.featureVector as JsonRecord).cascadeId ??
-          (signal.riskContext as JsonRecord).cascadeId ??
-          null,
-        createdAt: signal.createdAt,
-        featureVector: signal.featureVector,
-        riskContext: signal.riskContext
-      }));
+    return buildCurrentCascadeSignalSnapshot(this.signals, limit);
   }
 
   private currentCascadePositionSnapshot(): JsonRecord[] {
-    const nowMs = Date.now();
-
-    return this.cascadePositionManager
-      .snapshot()
-      .map((position) => {
-        const markPrice = this.markPriceForInstrument(position.instrumentCode);
-        const unrealizedPnl =
-          markPrice === null
-            ? null
-            : roundMetric(
-                (position.direction === "LONG"
-                  ? markPrice - position.entryPrice
-                  : position.entryPrice - markPrice) * position.remainingSize,
-                8
-              );
-        const unrealizedR =
-          unrealizedPnl === null || position.rDistance <= 0 || position.remainingSize <= 0
-            ? null
-            : roundMetric(unrealizedPnl / (position.rDistance * position.remainingSize), 6);
-        const timeStopMs = Date.parse(position.timeStopAt);
-
-        return {
-          ...position,
-          targets: position.targets as unknown as JsonRecord,
-          markPrice,
-          unrealizedPnl,
-          unrealizedR,
-          timeToTimeStopMs: Number.isFinite(timeStopMs) ? Math.max(0, timeStopMs - nowMs) : null
-        };
-      })
-      .sort(
-        (left, right) => Date.parse(String(right.updatedAt)) - Date.parse(String(left.updatedAt))
-      );
+    return buildCurrentCascadePositionSnapshot({
+      positions: this.cascadePositionManager.snapshot(),
+      nowMs: Date.now(),
+      markPriceForInstrument: (instrumentCode) => this.markPriceForInstrument(instrumentCode)
+    });
   }
 
   private currentCascadeHeatSnapshot(): JsonRecord {
     const positions = this.cascadePositionManager.snapshot();
-    const currentHeatPct = this.cascadeHeatManager.currentHeat(positions);
-    const heatCapPct = this.cachedConfig.HEAT_CAP_PCT;
-    const remainingRiskUsd = positions
-      .filter(isOpenCascadePosition)
-      .reduce((sum, position) => sum + position.rDistance * position.remainingSize, 0);
-
-    return {
-      currentHeatPct: roundMetric(currentHeatPct, 8),
-      heatCapPct: roundMetric(heatCapPct, 8),
-      percentOfCap: heatCapPct > 0 ? roundMetric(currentHeatPct / heatCapPct, 8) : 0,
-      openPositionCount: positions.filter(isOpenCascadePosition).length,
-      remainingRiskUsd: roundMetric(remainingRiskUsd, 2),
+    return buildCurrentCascadeHeatSnapshot({
+      positions,
+      currentHeatPct: this.cascadeHeatManager.currentHeat(positions),
+      heatCapPct: this.cachedConfig.HEAT_CAP_PCT,
       updatedAt: new Date().toISOString()
-    };
+    });
   }
 
   private async closeCascadePosition(
