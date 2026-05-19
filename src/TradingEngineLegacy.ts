@@ -8,6 +8,7 @@ import {
   PROFILER_STATE_STORAGE_PREFIX,
   type ProfilerEvaluation
 } from "./agents/ProfilerAgent";
+import { ProfilerRegistry, createProfilerAgentFromEnv } from "./agents/ProfilerRegistry";
 import {
   AnomalyDetector,
   ANOMALY_DETECTOR_STORAGE_KEY,
@@ -51,6 +52,10 @@ import type {
 } from "./engine/trading/book/BookTypes";
 import { handleTradingEngineHttpRoute } from "./engine/trading/routes/EngineHttpRoutes";
 import {
+  acceptMarketStream as acceptTradingMarketStream,
+  acceptTelemetryStream as acceptTradingTelemetryStream
+} from "./engine/trading/routes/EngineWebSocketStreams";
+import {
   type ReplayOptions,
   type ReplayScenario,
   type ReplayStatus
@@ -59,6 +64,11 @@ import type {
   GrpcFatalDropPayload,
   TickIngestResult
 } from "./engine/trading/TradingEngineRouteTypes";
+import {
+  engineDiagnostics as buildEngineDiagnostics,
+  syncStateMicrostructureFromBook as syncEngineStateMicrostructure
+} from "./engine/trading/state/EngineDiagnostics";
+import { StorageWriteGuard } from "./engine/trading/state/StorageWriteGuard";
 import {
   LOW_VALUE_OPERATIONAL_EVENT_TYPES,
   operationalEventPlaceholders,
@@ -209,9 +219,6 @@ import {
   BOOK_SNAPSHOT_TOP_LEVELS,
   TOP_OF_BOOK_CROSS_CHECK_INTERVAL_MS,
   DEFAULT_SOURCE_WEIGHT,
-  DEFAULT_PROFILER_BUCKET_VOLUME,
-  DEFAULT_PROFILER_ROLLING_WINDOW,
-  DEFAULT_PROFILER_ALERT_THRESHOLD,
   PROCESSING_LATENCY_SAMPLES_KEY,
   DOM_WALL_HISTORY_KEY,
   RATE_LIMIT_STATE_KEY,
@@ -246,7 +253,6 @@ import {
   DEFAULT_HEATMAP_CLUSTER_NOTIONAL_USD,
   DEFAULT_CASCADE_DISTANCE_PCT,
   DEFAULT_PREDATORY_ORDER_OFFSET_BPS,
-  DEFAULT_WHALE_PRINT_Z_THRESHOLD,
   DEFAULT_QUOTE_HIBERNATE_MS,
   DEFAULT_PAPER_BANKROLL_USD,
   DEFAULT_PAPER_MAX_GHOST_FILLS_PER_MINUTE,
@@ -349,7 +355,6 @@ import {
   resolveCurrentInstrument,
   buildMarketKey,
   profilerStorageKey,
-  profilerInstrumentFromStorageKey,
   selectedMoltworkerInstruments,
   isTargetInstrument,
   isInstrumentSelectedByMoltworker,
@@ -425,7 +430,6 @@ import {
   readBoundedNumber,
   resolveGhostBookConfig,
   clampInteger,
-  assertMarketTick,
   assertAgentSignal,
   readTelemetryNumber,
   finiteNumber,
@@ -434,8 +438,6 @@ import {
   extractTickStreamId,
   isPlainObject,
   shouldAggregateBusTelemetry,
-  decodeWebSocketMessage,
-  parseJson,
   readHyperliquidRawIngestPayload,
   readJsonOrNull,
   json
@@ -593,7 +595,7 @@ export class TradingEngine {
   private readonly notifier: Notifier;
   private readonly ghostBook: GhostBook;
   private readonly profilerAgent: ProfilerAgent;
-  private readonly profilerAgents = new Map<string, ProfilerAgent>();
+  private readonly profilerRegistry: ProfilerRegistry;
   private readonly heatmapAgent: HeatmapAgent;
   private readonly cascadeLiquidationStream = new HyperliquidLiquidationStream();
   private readonly cascadeDetector: CascadeDetector;
@@ -621,6 +623,7 @@ export class TradingEngine {
   private readonly domWallHistoryLimit: number;
   private readonly domSpoofProximityBps: number;
   private readonly orderBookReconstructor: OrderBookReconstructor;
+  private readonly storageGuard: StorageWriteGuard;
   private ingestQueue: Promise<void> = Promise.resolve();
   private orderBook = new Map<string, InternalOrderBook>();
   private bids = new Map<string, SortedBookSide>();
@@ -672,8 +675,6 @@ export class TradingEngine {
   private lastConfigRefreshAttemptAt = 0;
   private warmedColo: string | null = null;
   private warmedAt = 0;
-  private storageWriteDisabledUntil = 0;
-  private storageWriteFailures = 0;
   private lastHotStorageSnapshotAt = 0;
   private lastHotStorageSnapshotTick = 0;
   private engineState: EngineState = defaultEngineState("booting");
@@ -687,6 +688,7 @@ export class TradingEngine {
     this.cascadeNewsCalendar = new NewsCalendar(env.CONFIG_STORE);
     this.cascadeBacktester = new Backtester(env.TRADING_DB);
     this.ghostBook = createShadowQueue(env);
+    this.storageGuard = new StorageWriteGuard(state.storage, STORAGE_WRITE_BACKOFF_MS);
     this.jitterSampleWindow = readPositiveInteger(
       env.JITTER_SAMPLE_WINDOW,
       DEFAULT_JITTER_SAMPLE_WINDOW,
@@ -723,31 +725,8 @@ export class TradingEngine {
       env.DOM_SPOOF_PROXIMITY_BPS,
       DEFAULT_DOM_SPOOF_PROXIMITY_BPS
     );
-    this.profilerAgent = new ProfilerAgent({
-      bucketSize: readPositiveNumber(env.PROFILER_BUCKET_VOLUME, DEFAULT_PROFILER_BUCKET_VOLUME),
-      rollingWindow: readPositiveInteger(
-        env.PROFILER_ROLLING_WINDOW,
-        DEFAULT_PROFILER_ROLLING_WINDOW,
-        1,
-        500
-      ),
-      alertThreshold: readBoundedNumber(
-        env.PROFILER_ALERT_THRESHOLD,
-        DEFAULT_PROFILER_ALERT_THRESHOLD,
-        0,
-        1
-      ),
-      whalePrintZThreshold: readPositiveNumber(
-        env.WHALE_PRINT_Z_THRESHOLD,
-        DEFAULT_WHALE_PRINT_Z_THRESHOLD
-      ),
-      quoteHibernateMs: readPositiveInteger(
-        env.QUOTE_HIBERNATE_MS,
-        DEFAULT_QUOTE_HIBERNATE_MS,
-        100,
-        60_000
-      )
-    });
+    this.profilerAgent = createProfilerAgentFromEnv(env);
+    this.profilerRegistry = new ProfilerRegistry(env, this.profilerAgent, () => this.cachedConfig);
     this.heatmapAgent = new HeatmapAgent({
       coin: env.HL_ASSET ?? "BTC",
       instrumentCode: `${(env.HL_ASSET ?? "BTC").toLowerCase()}-usd`,
@@ -1293,246 +1272,77 @@ export class TradingEngine {
   }
 
   private syncStateMicrostructureFromBook(): void {
-    if (this.orderBook.size === 0) {
-      return;
+    const nextState = syncEngineStateMicrostructure({
+      engineState: this.engineState,
+      orderBook: this.orderBook,
+      bids: this.bids,
+      asks: this.asks,
+      calculatePriceDiscovery: (instrumentCode, observedAt) =>
+        this.calculatePriceDiscovery(instrumentCode, observedAt),
+      calculateAssetMatrix: (
+        observedAt,
+        latestInstrumentCode,
+        latestOracle,
+        profilerStates,
+        assetQuoteStates
+      ) =>
+        this.calculateAssetMatrix(
+          observedAt,
+          latestInstrumentCode,
+          latestOracle,
+          profilerStates,
+          assetQuoteStates
+        ),
+      profilerStateSnapshot: () => this.profilerStateSnapshot()
+    });
+
+    if (nextState) {
+      this.engineState = nextState;
     }
-
-    const currentKey = this.engineState.microstructure.marketKey;
-    const currentBook = currentKey ? this.orderBook.get(currentKey) : undefined;
-    const bestBook =
-      currentBook ??
-      [...this.orderBook.values()].sort((left, right) => {
-        const leftScore =
-          (left.isSynced ? 10 : 0) + (left.midPrice === null ? 0 : 1) + left.sourceWeight;
-        const rightScore =
-          (right.isSynced ? 10 : 0) + (right.midPrice === null ? 0 : 1) + right.sourceWeight;
-        return rightScore - leftScore;
-      })[0];
-
-    if (!bestBook) {
-      return;
-    }
-
-    const microstructure = microstructureFromBook(bestBook);
-    const updatedAt = microstructure.updatedAt ?? new Date().toISOString();
-
-    this.engineState = {
-      ...this.engineState,
-      internalOrderBookDepth: countBookLevels(this.bids, this.asks),
-      microstructure,
-      priceDiscovery: this.calculatePriceDiscovery(bestBook.instrumentCode, updatedAt),
-      assetMatrix: this.calculateAssetMatrix(
-        updatedAt,
-        bestBook.instrumentCode,
-        this.engineState.oracle,
-        this.profilerStateSnapshot(),
-        this.engineState.assetQuoteStates
-      ),
-      updatedAt
-    };
   }
 
   private engineDiagnostics(): JsonRecord {
-    const memory = (globalThis as RuntimeWithMemory).performance?.memory;
-    const marketSync = [...this.bookSync.entries()].map(([marketKey, sync]) => ({
-      marketKey,
-      instrumentCode: sync.instrumentCode,
-      isSynced: sync.isSynced,
-      lastSequence: sync.lastSequence,
-      expectedNextSequence: sync.lastSequence === null ? null : sync.lastSequence + 1,
-      desyncReason: sync.desyncReason ?? null,
-      lastDesyncAt: sync.lastDesyncAt ?? null
-    }));
-    const desynced = marketSync.filter((entry) => !entry.isSynced);
-    const profilerBuffers = Object.fromEntries(
-      [...this.profilerAgents.entries()].map(([instrumentCode, agent]) => [
-        instrumentCode,
-        agent.diagnostics()
-      ])
-    );
-    const allBuffersFlat = Object.values(profilerBuffers).every(
-      (entry) =>
-        typeof entry === "object" &&
-        entry !== null &&
-        (entry as { flatMemory?: boolean }).flatMemory === true
-    );
-    const heapRatio =
-      memory?.jsHeapSizeLimit && memory.usedJSHeapSize
-        ? memory.usedJSHeapSize / memory.jsHeapSizeLimit
-        : null;
-
-    return {
-      ok: desynced.length === 0 && allBuffersFlat && (heapRatio === null || heapRatio < 0.8),
-      observedAt: new Date().toISOString(),
-      l1Sync: {
-        ok: desynced.length === 0,
-        desyncCount: desynced.length,
-        markets: marketSync,
-        expectedAssets: TARGET_ASSET_MATRIX.map((asset) => asset.instrumentCode)
-      },
-      v8Memory: {
-        ok: allBuffersFlat && (heapRatio === null || heapRatio < 0.8),
-        profilerBuffers,
-        heap: {
-          available: Boolean(memory),
-          usedJSHeapSize: memory?.usedJSHeapSize ?? null,
-          totalJSHeapSize: memory?.totalJSHeapSize ?? null,
-          jsHeapSizeLimit: memory?.jsHeapSizeLimit ?? null,
-          heapRatio
-        }
-      },
-      shadowQueue: this.engineState.shadowQueue as unknown as JsonValue,
-      assetMatrix: this.engineState.assetMatrix as unknown as JsonValue
-    };
+    return buildEngineDiagnostics({
+      engineState: this.engineState,
+      bookSync: this.bookSync,
+      profilerAgents: this.profilerRegistry.agents
+    });
   }
 
   private profilerFor(instrumentCode: string): ProfilerAgent {
-    const normalized = normalizeNativeInstrumentCode(instrumentCode);
-    const existing = this.profilerAgents.get(normalized);
-
-    if (existing) {
-      return existing;
-    }
-
-    const agent = normalized === "btc-usd" ? this.profilerAgent : this.createProfilerAgent();
-    agent.configure(this.cachedConfig);
-    this.profilerAgents.set(normalized, agent);
-    return agent;
-  }
-
-  private createProfilerAgent(): ProfilerAgent {
-    return new ProfilerAgent({
-      bucketSize: readPositiveNumber(
-        this.env.PROFILER_BUCKET_VOLUME,
-        DEFAULT_PROFILER_BUCKET_VOLUME
-      ),
-      rollingWindow: readPositiveInteger(
-        this.env.PROFILER_ROLLING_WINDOW,
-        DEFAULT_PROFILER_ROLLING_WINDOW,
-        1,
-        500
-      ),
-      alertThreshold: readBoundedNumber(
-        this.env.PROFILER_ALERT_THRESHOLD,
-        DEFAULT_PROFILER_ALERT_THRESHOLD,
-        0,
-        1
-      ),
-      whalePrintZThreshold: readPositiveNumber(
-        this.env.WHALE_PRINT_Z_THRESHOLD,
-        DEFAULT_WHALE_PRINT_Z_THRESHOLD
-      ),
-      quoteHibernateMs: readPositiveInteger(
-        this.env.QUOTE_HIBERNATE_MS,
-        DEFAULT_QUOTE_HIBERNATE_MS,
-        100,
-        60_000
-      )
-    });
+    return this.profilerRegistry.forInstrument(instrumentCode);
   }
 
   private hydrateProfilerAgents(
     legacyState: ProfilerState | undefined,
     persistedStates: Map<string, ProfilerState>
   ): void {
-    this.profilerAgents.clear();
-    this.profilerAgent.hydrate(legacyState);
-    this.profilerAgents.set("btc-usd", this.profilerAgent);
-
-    for (const [storageKey, state] of persistedStates) {
-      const instrumentCode = profilerInstrumentFromStorageKey(storageKey);
-      if (!isTargetInstrument(instrumentCode)) {
-        continue;
-      }
-      const agent = instrumentCode === "btc-usd" ? this.profilerAgent : this.createProfilerAgent();
-      agent.hydrate(state);
-      this.profilerAgents.set(instrumentCode, agent);
-    }
-
-    for (const asset of TARGET_ASSET_MATRIX) {
-      this.profilerFor(asset.instrumentCode);
-    }
+    this.profilerRegistry.hydrate(legacyState, persistedStates);
   }
 
   private resetProfilerAgents(): void {
-    this.profilerAgents.clear();
-    this.profilerAgent.hydrate(null);
-    this.profilerAgent.configure(this.cachedConfig);
-    this.profilerAgents.set("btc-usd", this.profilerAgent);
-
-    for (const asset of TARGET_ASSET_MATRIX) {
-      this.profilerFor(asset.instrumentCode).hydrate(null);
-      this.profilerFor(asset.instrumentCode).configure(this.cachedConfig);
-    }
+    this.profilerRegistry.reset();
   }
 
   private async deleteRetiredProfilerStorage(): Promise<string[]> {
-    const retiredKeys: string[] = [];
-
-    for (const instrumentCode of [...this.profilerAgents.keys()]) {
-      if (!isTargetInstrument(instrumentCode)) {
-        this.profilerAgents.delete(instrumentCode);
-      }
-    }
-
-    try {
-      const stored = await this.state.storage.list<ProfilerState>({
-        prefix: PROFILER_STATE_STORAGE_PREFIX
-      });
-      for (const key of stored.keys()) {
-        if (!isTargetInstrument(profilerInstrumentFromStorageKey(key))) {
-          retiredKeys.push(key);
-        }
-      }
-      if (retiredKeys.length > 0) {
-        await this.state.storage.delete(retiredKeys);
-      }
-    } catch (error) {
-      this.handleStorageWriteFailure("RETIRED_PROFILER_STORAGE_DELETE", error);
-    }
-
-    return retiredKeys;
+    return this.profilerRegistry.deleteRetiredStorage(this.state.storage, (reason, error) =>
+      this.handleStorageWriteFailure(reason, error)
+    );
   }
 
   private configureProfilerAgents(config: GlobalRiskConfig): void {
-    this.profilerAgent.configure(config);
-    for (const agent of this.profilerAgents.values()) {
-      agent.configure(config);
-    }
+    this.profilerRegistry.configure(config);
   }
 
   private profilerStateSnapshot(
     overrideInstrument?: string,
     overrideState?: ProfilerState
   ): Record<string, ProfilerState> {
-    const entries: Array<[string, ProfilerState]> = [];
-
-    for (const asset of TARGET_ASSET_MATRIX) {
-      entries.push([asset.instrumentCode, this.profilerFor(asset.instrumentCode).snapshot()]);
-    }
-
-    if (overrideInstrument && overrideState) {
-      const normalized = normalizeNativeInstrumentCode(overrideInstrument);
-      if (!isTargetInstrument(normalized)) {
-        return Object.fromEntries(entries);
-      }
-      const index = entries.findIndex(([instrumentCode]) => instrumentCode === normalized);
-      if (index >= 0) {
-        entries[index] = [normalized, overrideState];
-      } else {
-        entries.push([normalized, overrideState]);
-      }
-    }
-
-    return Object.fromEntries(entries);
+    return this.profilerRegistry.snapshot(overrideInstrument, overrideState);
   }
 
   private maxProfilerToxicity(): number {
-    let max = this.profilerAgent.toxicityScore;
-    for (const agent of this.profilerAgents.values()) {
-      max = Math.max(max, agent.toxicityScore);
-    }
-    return max;
+    return this.profilerRegistry.maxToxicity();
   }
 
   private findBestAssetBook(instrumentCode: string): InternalOrderBook | undefined {
@@ -1671,26 +1481,13 @@ export class TradingEngine {
     valueOrReason: unknown,
     maybeReason?: string
   ): Promise<void> {
-    if (this.storageWriteDisabledUntil > Date.now()) {
-      return;
-    }
-
-    const reason =
-      typeof keyOrEntries === "string"
-        ? (maybeReason ?? "STORAGE_WRITE")
-        : typeof valueOrReason === "string"
-          ? valueOrReason
-          : "STORAGE_WRITE";
-
-    try {
-      if (typeof keyOrEntries === "string") {
-        await this.state.storage.put(keyOrEntries, valueOrReason);
-      } else {
-        await this.state.storage.put(keyOrEntries);
-      }
-      this.storageWriteFailures = 0;
-    } catch (error) {
-      this.handleStorageWriteFailure(reason, error);
+    if (typeof keyOrEntries === "string") {
+      await this.storageGuard.put(keyOrEntries, valueOrReason, maybeReason ?? "STORAGE_WRITE");
+    } else {
+      await this.storageGuard.put(
+        keyOrEntries,
+        typeof valueOrReason === "string" ? valueOrReason : "STORAGE_WRITE"
+      );
     }
   }
 
@@ -1703,29 +1500,11 @@ export class TradingEngine {
   }
 
   private async safeStorageDelete(keys: string[], reason: string): Promise<void> {
-    if (keys.length === 0 || this.storageWriteDisabledUntil > Date.now()) {
-      return;
-    }
-
-    try {
-      await this.state.storage.delete(keys);
-      this.storageWriteFailures = 0;
-    } catch (error) {
-      this.handleStorageWriteFailure(reason, error);
-    }
+    await this.storageGuard.delete(keys, reason);
   }
 
   private async safeSetAlarm(timestamp: number, reason: string): Promise<void> {
-    if (this.storageWriteDisabledUntil > Date.now()) {
-      return;
-    }
-
-    try {
-      await this.state.storage.setAlarm(timestamp);
-      this.storageWriteFailures = 0;
-    } catch (error) {
-      this.handleStorageWriteFailure(reason, error);
-    }
+    await this.storageGuard.setAlarm(timestamp, reason);
   }
 
   private async persistHotStorageSnapshot(
@@ -1766,206 +1545,30 @@ export class TradingEngine {
   }
 
   private handleStorageWriteFailure(reason: string, error: unknown): void {
-    this.storageWriteFailures += 1;
-    const message = error instanceof Error ? error.message : "UNKNOWN_STORAGE_ERROR";
-    const lowered = message.toLowerCase();
-    const isQuota =
-      message.includes("Exceeded allowed rows written") ||
-      lowered.includes("quota") ||
-      lowered.includes("limit");
-    const backoffMs = isQuota
-      ? STORAGE_WRITE_BACKOFF_MS
-      : Math.min(STORAGE_WRITE_BACKOFF_MS, this.storageWriteFailures * 5_000);
-
-    this.storageWriteDisabledUntil = Date.now() + backoffMs;
-    console.error(
-      JSON.stringify({
-        event: "DO_STORAGE_WRITE_FAILED",
-        reason,
-        message,
-        backoffMs,
-        failures: this.storageWriteFailures
-      })
-    );
+    this.storageGuard.recordFailure(reason, error);
   }
 
   private acceptMarketStream(): Response {
-    const pair = new WebSocketPair();
-    const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
-
-    server.accept();
-    server.send(
-      JSON.stringify({
-        type: "SYSTEM_INIT",
-        engineId: this.engineState.engineId,
-        heartbeatAt: this.engineState.heartbeatAt
-      })
-    );
-
-    server.addEventListener("message", (event) => {
-      const payload = decodeWebSocketMessage(event.data);
-      const tick = payload ? parseJson<MarketTick>(payload) : null;
-
-      if (!tick) {
-        server.send(JSON.stringify({ type: "ERROR", reason: "INVALID_JSON" }));
-        return;
-      }
-
-      let marketTick: MarketTick;
-
-      try {
-        marketTick = assertMarketTick(tick);
-      } catch (error) {
-        server.send(
-          JSON.stringify({
-            type: "ERROR",
-            reason: error instanceof Error ? error.message : "INVALID_MARKET_TICK"
-          })
-        );
-        return;
-      }
-
-      const queued = this.enqueueTick(marketTick)
-        .then((result) => {
-          server.send(
-            JSON.stringify({
-              type: "ACK",
-              accepted: result.accepted,
-              status: result.status,
-              reason: result.reason,
-              instrumentCode: result.metrics?.instrumentCode ?? null,
-              sequence: result.metrics?.sequence ?? null,
-              totalLatencyMs: result.metrics?.totalLatencyMs ?? null
-            })
-          );
-        })
-        .catch((error) => {
-          server.send(
-            JSON.stringify({
-              type: "ERROR",
-              reason: error instanceof Error ? error.message : "UNKNOWN"
-            })
-          );
-        });
-
-      this.state.waitUntil(queued);
-    });
-
-    return new Response(null, { status: 101, webSocket: client });
+    return acceptTradingMarketStream(this.streamContext());
   }
 
   private acceptTelemetryStream(): Response {
-    const pair = new WebSocketPair();
-    const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
-
-    server.accept();
-    this.adminSockets.add(server);
-    this.sendSocketMessage(server, {
-      type: "TELEMETRY_SNAPSHOT",
-      sequence: this.nextBusSequence(),
-      emittedAt: new Date().toISOString(),
-      payload: {
-        state: this.engineState,
-        recentSignals: this.signals.slice(-SIGNAL_BUFFER_LIMIT),
-        recentLatency: this.latencyHistory.slice(-PERFORMANCE_HISTORY_LIMIT),
-        connectedAdminStreams: this.adminSockets.size
-      }
-    });
-    const pulseInterval = setInterval(() => {
-      this.sendSocketMessage(server, {
-        type: "DASHBOARD_PULSE",
-        sequence: this.nextBusSequence(),
-        emittedAt: new Date().toISOString(),
-        payload: this.dashboardPulsePayload()
-      });
-    }, ADMIN_STREAM_PULSE_INTERVAL_MS);
-
-    server.addEventListener("message", (event) => {
-      const payload = decodeWebSocketMessage(event.data);
-      const message = payload ? parseJson<{ type?: string; sentAt?: string }>(payload) : null;
-
-      if (message?.type?.toUpperCase() === "PING") {
-        this.sendSocketMessage(server, {
-          type: "PONG",
-          sequence: this.nextBusSequence(),
-          emittedAt: new Date().toISOString(),
-          payload: {
-            sentAt: message.sentAt ?? null
-          }
-        });
-      }
-    });
-
-    const cleanup = () => {
-      clearInterval(pulseInterval);
-      this.adminSockets.delete(server);
-    };
-
-    server.addEventListener("close", cleanup);
-    server.addEventListener("error", cleanup);
-
-    this.publish("ADMIN_STREAM_CONNECTED", {
-      connectedAdminStreams: this.adminSockets.size,
-      engineId: this.engineState.engineId
-    });
-
-    return new Response(null, { status: 101, webSocket: client });
+    return acceptTradingTelemetryStream(this.streamContext());
   }
 
-  private dashboardPulsePayload(): Record<string, unknown> {
-    const equity = this.engineState.bankroll.equity;
-    const unrealizedPnl = Object.values(this.engineState.openPositions).reduce(
-      (sum, position) => sum + position.unrealizedPnl,
-      0
-    );
-    const latestSignals = this.signals.slice(-10).map((signal) => ({
-      signalId: signal.signalId,
-      traceId: signal.traceId,
-      agent: signal.sourceAgent,
-      target: signal.targetAgent,
-      action: signal.action,
-      confidence: signal.confidence,
-      expectedValue: signal.expectedValue,
-      rationale: signal.rationale,
-      createdAt: signal.createdAt
-    }));
-    const latestLatency = this.latencyHistory.at(-1) ?? null;
-
+  private streamContext() {
     return {
-      schemaVersion: "admin.dashboard-pulse.v1",
-      total_equity: equity,
-      unrealized_pnl: unrealizedPnl,
-      active_drawdown: this.engineState.riskMetrics.rollingDrawdownPct,
-      current_imbalance: this.engineState.microstructure.weightedImbalance,
-      processed_ticks: this.engineState.processedTicks,
-      mode: this.engineState.mode,
-      quote_state: this.engineState.quoteState.status,
-      shadow_queue: this.engineState.shadowQueue,
-      toxicity_score: this.engineState.toxicityScore,
-      latency_ms: this.engineState.averageLatency,
-      exchange_to_receipt_ms: latestLatency?.networkLatencyMs ?? this.engineState.averageLatency,
-      jitter_ms: this.engineState.executionProfile.jitterMs,
-      regime: this.engineState.oracle.regime,
-      regimeCoefficient: this.engineState.oracle.skepticismMultiplier,
-      macroBias: this.macroBias,
-      temporaryOverride: this.activeTemporaryOverride,
-      liquidationHeatmap: {
-        totalEstimatedNotionalUsd: this.engineState.liquidationHeatmap.totalEstimatedNotionalUsd,
-        clusterCount: this.engineState.liquidationHeatmap.clusters.length,
-        nearestCascade: this.engineState.liquidationHeatmap.nearestCascade,
-        providerEventCount: this.engineState.liquidationHeatmap.recentEvents.length,
-        updatedAt: this.engineState.liquidationHeatmap.updatedAt
-      },
-      AgentLogicTrace: latestSignals,
-      sparkline: this.latencyHistory.slice(-60).map((metric) => ({
-        t: metric.brainTimestamp,
-        latency: metric.totalLatencyMs,
-        imbalance:
-          metric.status === "FRESH" ? this.engineState.microstructure.weightedImbalance : null
-      })),
-      location: this.engineState.location.colo,
-      connectedAdminStreams: this.adminSockets.size,
-      heartbeatAt: this.engineState.heartbeatAt
+      adminSockets: this.adminSockets,
+      getEngineState: () => this.engineState,
+      getSignals: () => this.signals,
+      getLatencyHistory: () => this.latencyHistory,
+      getMacroBias: () => this.macroBias,
+      getTemporaryOverride: () => this.activeTemporaryOverride,
+      enqueueTick: (tick: MarketTick) => this.enqueueTick(tick),
+      waitUntil: (promise: Promise<unknown>) => this.state.waitUntil(promise),
+      publish: (type: string, payload: Record<string, unknown>, correlationId?: string) =>
+        this.publish(type, payload, correlationId),
+      nextBusSequence: () => this.nextBusSequence()
     };
   }
 
@@ -7822,7 +7425,7 @@ export class TradingEngine {
       lastTickTimestamp: this.lastTickTimestamp,
       profilerState: this.profilerAgent.snapshot(),
       profilerStates: deepClone(
-        [...this.profilerAgents.entries()].map(
+        [...this.profilerRegistry.entries()].map(
           ([instrumentCode, agent]) => [instrumentCode, agent.snapshot()] as [string, ProfilerState]
         )
       ),
