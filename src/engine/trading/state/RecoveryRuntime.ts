@@ -43,6 +43,22 @@ export interface AdminRecoveryStateResult {
   readonly publishPayload: JsonRecord;
 }
 
+export interface AdminRecoveryStorageInput {
+  readonly engineStateKey: string;
+  readonly state: EngineState;
+  readonly performanceHistoryKey: string;
+  readonly latencyHistory: unknown;
+  readonly processingLatencySamplesKey: string;
+  readonly processingLatencySamples: readonly number[];
+}
+
+export interface AdminRecoveryResponseInput {
+  readonly reason: string;
+  readonly resetInstruments: readonly string[];
+  readonly sourceExchange: string;
+  readonly state: EngineState;
+}
+
 export function stateAfterAdminControlledRecovery(
   input: AdminRecoveryStateInput
 ): AdminRecoveryStateResult {
@@ -145,5 +161,25 @@ export function stateAfterAdminControlledRecovery(
       ...sharedTelemetry,
       prunedProfilerStorageKeyCount: input.prunedProfilerStorageKeys.length
     }
+  };
+}
+
+export function adminRecoveryStorageEntries(
+  input: AdminRecoveryStorageInput
+): Record<string, unknown> {
+  return {
+    [input.engineStateKey]: input.state,
+    [input.performanceHistoryKey]: input.latencyHistory,
+    [input.processingLatencySamplesKey]: input.processingLatencySamples
+  };
+}
+
+export function adminRecoveryResponse(input: AdminRecoveryResponseInput): JsonRecord {
+  return {
+    ok: true,
+    reason: input.reason,
+    resetInstruments: [...input.resetInstruments],
+    source_exchange: input.sourceExchange,
+    state: input.state as unknown as JsonRecord
   };
 }

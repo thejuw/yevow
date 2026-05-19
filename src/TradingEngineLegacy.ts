@@ -284,7 +284,11 @@ import {
   buildHotPathTickSnapshotWrites,
   shouldJournalMarketTick as shouldPersistMarketTick
 } from "./engine/trading/state/TickPersistenceRuntime";
-import { stateAfterAdminControlledRecovery } from "./engine/trading/state/RecoveryRuntime";
+import {
+  adminRecoveryResponse,
+  adminRecoveryStorageEntries,
+  stateAfterAdminControlledRecovery
+} from "./engine/trading/state/RecoveryRuntime";
 import {
   evaluateHotStorageSnapshotDecision,
   resolveHotStorageSnapshotIntervalMs,
@@ -354,7 +358,6 @@ import type {
   InternalOrderBook,
   InventoryState,
   JsonRecord,
-  JsonValue,
   LatencyMetrics,
   LiquidationHeatmapState,
   LiquidityWall,
@@ -2661,11 +2664,14 @@ export class TradingEngine {
     this.engineState = recovery.state;
 
     await this.safeStoragePut(
-      {
-        [ENGINE_STATE_KEY]: this.engineState,
-        [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
-        [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples
-      },
+      adminRecoveryStorageEntries({
+        engineStateKey: ENGINE_STATE_KEY,
+        state: this.engineState,
+        performanceHistoryKey: PERFORMANCE_HISTORY_KEY,
+        latencyHistory: this.latencyHistory,
+        processingLatencySamplesKey: PROCESSING_LATENCY_SAMPLES_KEY,
+        processingLatencySamples: this.processingLatencySamples
+      }),
       "ADMIN_CONTROLLED_RECOVERY"
     );
 
@@ -2678,13 +2684,12 @@ export class TradingEngine {
     });
     this.publish("ADMIN_CONTROLLED_RECOVERY", recovery.publishPayload);
 
-    return {
-      ok: true,
+    return adminRecoveryResponse({
       reason,
       resetInstruments,
-      source_exchange: sourceExchange,
-      state: this.engineState as unknown as JsonValue
-    };
+      sourceExchange,
+      state: this.engineState
+    });
   }
 
   private async applySnapshot(

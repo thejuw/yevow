@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { defaultConfig } from "../../src/ConfigManager";
 import { neutralMacroBias } from "../../src/Governor";
-import { stateAfterAdminControlledRecovery } from "../../src/engine/trading/state/RecoveryRuntime";
+import {
+  adminRecoveryResponse,
+  adminRecoveryStorageEntries,
+  stateAfterAdminControlledRecovery
+} from "../../src/engine/trading/state/RecoveryRuntime";
 import { defaultEngineState, defaultInventoryState } from "../../src/TradingEngineRuntimeHelpers";
 import type { EngineState } from "../../src/types";
 
@@ -147,6 +151,41 @@ describe("RecoveryRuntime", () => {
       clearCitadel: false,
       clearLatency: false,
       clearShadowQueue: false
+    });
+  });
+
+  it("builds recovery storage writes and response payloads", () => {
+    const state = defaultEngineState("recovery-storage");
+    const latencyHistory = [{ totalLatencyMs: 4 }];
+    const processingLatencySamples = [1, 2, 3];
+
+    expect(
+      adminRecoveryStorageEntries({
+        engineStateKey: "engine:state",
+        state,
+        performanceHistoryKey: "latency:history",
+        latencyHistory,
+        processingLatencySamplesKey: "latency:samples",
+        processingLatencySamples
+      })
+    ).toEqual({
+      "engine:state": state,
+      "latency:history": latencyHistory,
+      "latency:samples": processingLatencySamples
+    });
+    expect(
+      adminRecoveryResponse({
+        reason: "manual",
+        resetInstruments: ["btc-usd"],
+        sourceExchange: "hyperliquid",
+        state
+      })
+    ).toMatchObject({
+      ok: true,
+      reason: "manual",
+      resetInstruments: ["btc-usd"],
+      source_exchange: "hyperliquid",
+      state
     });
   });
 });
