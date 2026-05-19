@@ -6,6 +6,7 @@ import {
 import {
   applyExecutionAccounting,
   buildSlippagePoint,
+  executionQualityFromAccounting,
   mapManagedStatusToTradeStatus,
   stateAfterExecutionAccounting
 } from "../../src/engine/ExecutionAccounting";
@@ -76,6 +77,17 @@ describe("execution accounting", () => {
       markPrice: 102
     });
     expect(result.slippagePoint.slippageBps).toBe(100);
+    expect(executionQualityFromAccounting(report, result)).toEqual({
+      clientId: "order-open",
+      instrumentCode: "btc-usd",
+      expectedPrice: 100,
+      achievedPrice: 101,
+      slippageBps: 100,
+      implementationShortfall: 1.05,
+      latencyMs: 12,
+      fees: 0.05,
+      observedAt
+    });
     expect(result.tradeExecution).toMatchObject({
       orderId: "order-open",
       status: "PARTIAL",

@@ -22,6 +22,7 @@ import {
 import { CroupierAgent, type CroupierDecision } from "./agents/CroupierAgent";
 import {
   applyExecutionAccounting,
+  executionQualityFromAccounting,
   stateAfterExecutionAccounting
 } from "./engine/ExecutionAccounting";
 import { evaluateIntentDispatchGate } from "./engine/IntentGeneration";
@@ -4421,17 +4422,7 @@ export class TradingEngine {
       this.engineState.oracle.regime
     );
 
-    this.logger.recordExecutionQuality({
-      clientId: report.clientId,
-      instrumentCode: accounting.order.instrumentCode,
-      expectedPrice: accounting.slippagePoint.expectedPrice,
-      achievedPrice: accounting.slippagePoint.achievedPrice,
-      slippageBps: accounting.slippagePoint.slippageBps,
-      implementationShortfall: accounting.slippagePoint.implementationShortfall,
-      latencyMs: accounting.slippagePoint.latencyMs,
-      fees: report.fees ?? 0,
-      observedAt: report.observedAt
-    });
+    this.logger.recordExecutionQuality(executionQualityFromAccounting(report, accounting));
 
     this.engineState = stateAfterExecutionAccounting({
       state: this.engineState,

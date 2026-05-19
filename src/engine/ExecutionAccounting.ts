@@ -37,6 +37,18 @@ export interface ExecutionAccountingStateInput {
   readonly inventory: EngineState["inventory"];
 }
 
+export interface ExecutionQualityRecord {
+  readonly clientId: string;
+  readonly instrumentCode: string;
+  readonly expectedPrice: number;
+  readonly achievedPrice: number;
+  readonly slippageBps: number;
+  readonly implementationShortfall: number;
+  readonly latencyMs: number;
+  readonly fees: number;
+  readonly observedAt: string;
+}
+
 export function applyExecutionAccounting(
   input: ExecutionAccountingInput
 ): ExecutionAccountingResult {
@@ -138,6 +150,23 @@ export function stateAfterExecutionAccounting(input: ExecutionAccountingStateInp
     slippage: input.accounting.slippage,
     updatedAt: input.accounting.observedAt,
     heartbeatAt: input.accounting.observedAt
+  };
+}
+
+export function executionQualityFromAccounting(
+  report: ExecutionReport,
+  accounting: ExecutionAccountingResult
+): ExecutionQualityRecord {
+  return {
+    clientId: report.clientId,
+    instrumentCode: accounting.order.instrumentCode,
+    expectedPrice: accounting.slippagePoint.expectedPrice,
+    achievedPrice: accounting.slippagePoint.achievedPrice,
+    slippageBps: accounting.slippagePoint.slippageBps,
+    implementationShortfall: accounting.slippagePoint.implementationShortfall,
+    latencyMs: accounting.slippagePoint.latencyMs,
+    fees: report.fees ?? 0,
+    observedAt: report.observedAt
   };
 }
 
