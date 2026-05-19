@@ -50,6 +50,12 @@ import type {
   BookDeltaWithTicker,
   BookSyncState
 } from "./engine/trading/book/BookTypes";
+import {
+  handleHyperliquidRawBatch,
+  hyperliquidIngestConnectionKey,
+  resolveHyperliquidBookTimestamp,
+  type HyperliquidRawIngestPayload
+} from "./engine/trading/ingest/HyperliquidRawIngest";
 import { handleTradingEngineHttpRoute } from "./engine/trading/routes/EngineHttpRoutes";
 import {
   acceptMarketStream as acceptTradingMarketStream,
@@ -61,6 +67,7 @@ import {
   type ReplayScenario,
   type ReplayStatus
 } from "./engine/trading/routes/ReplayAdminRoutes";
+import { markHistoricalReplayTrades, ReplayJournal } from "./engine/trading/replay/ReplayJournal";
 import type {
   GrpcFatalDropPayload,
   TickIngestResult
@@ -197,7 +204,6 @@ import {
   CASCADE_POSITIONS_KEY,
   CASCADE_PAPER_ARMED_AT_KEY,
   CASCADE_LAST_BACKTEST_REPORT_KEY,
-  REPLAY_STATUS_KEY,
   RISK_LIMITS_KEY,
   CONFIG_KEY,
   DEFAULT_MAX_LATENCY_MS,
@@ -408,7 +414,6 @@ import {
   compareQueuedExecutionIntent,
   returns,
   pearson,
-  safeParseJson,
   wait,
   readNumber,
   readPositiveNumber,
@@ -457,20 +462,6 @@ interface TickHandlingOptions {
   shadowReplay?: boolean;
 }
 
-interface HyperliquidRawIngestPayload {
-  streamId?: string;
-  source?: "HYPERLIQUID";
-  source_exchange?: string;
-  transport?: "websocket" | "grpc";
-  exchangeCode?: string;
-  instrumentCode?: string;
-  sourceWeight?: number;
-  connectionId?: string | null;
-  receivedAt?: string;
-  raw?: unknown;
-  messages?: unknown[];
-}
-
 interface EngineReplaySnapshot {
   engineState: EngineState;
   orderBooks: InternalOrderBook[];
@@ -489,21 +480,6 @@ interface EngineReplaySnapshot {
   rateLimits: Record<string, RateLimitBucketSnapshot>;
   signals: AgentSignal[];
   latestAgentSignals: Array<[AgentName, AgentSignal]>;
-}
-
-interface ReplayTickRow {
-  tick_json: string;
-  received_at: string;
-}
-
-interface ReplayTradeRow {
-  trade_id: string;
-  asset: string;
-  side: "BUY" | "SELL";
-  price: number;
-  size: number;
-  executed_at: string;
-  status: string;
 }
 
 interface QueuedExecutionIntent {
@@ -572,6 +548,7 @@ export class TradingEngine {
   private activeIngestConnections = new Map<string, string>();
   private readonly adminSockets = new Set<WebSocket>();
   private readonly telemetryBus: TradingTelemetryBus;
+  private readonly replayJournal: ReplayJournal;
   private signals: AgentSignal[] = [];
   private latestAgentSignals = new Map<AgentName, AgentSignal>();
   private paperExecutionWindowStartedAtMs = Date.now();
@@ -807,6 +784,14 @@ export class TradingEngine {
       structuredConsoleLogsEnabled(env)
     );
     this.notifier = new Notifier(env, (promise) => this.state.waitUntil(promise));
+    this.replayJournal = new ReplayJournal({
+      env,
+      logger: this.logger,
+      readStorage: (key) => this.state.storage.get(key),
+      writeStorage: (key, value, reason) => this.safeStoragePut(key, value, reason),
+      publish: (type, payload, correlationId) => this.publish(type, payload, correlationId),
+      onStorageReadFailure: (reason, error) => this.handleStorageWriteFailure(reason, error)
+    });
     this.orderBookReconstructor = this.createOrderBookReconstructor();
 
     this.initialized = this.state.blockConcurrencyWhile(async () => {
@@ -1530,77 +1515,11 @@ export class TradingEngine {
     payload: HyperliquidRawIngestPayload,
     wakeUpTimeMs: number | null
   ): Promise<TickIngestResult> {
-    if (!this.isActiveIngestConnection(payload)) {
-      return {
-        accepted: false,
-        status: "IGNORED",
-        reason: "STALE_INGEST_CONNECTION",
-        processedCount: 0
-      };
-    }
-
-    const messages = Array.isArray(payload.messages) ? payload.messages : [payload.raw ?? payload];
-    let processedCount = 0;
-    let terminalResult: TickIngestResult | null = null;
-
-    for (const raw of messages.slice(0, 250)) {
-      const result = await this.enqueueHyperliquidRawMessage(raw, payload, wakeUpTimeMs);
-      processedCount += result.processedCount ?? (result.accepted ? 1 : 0);
-      terminalResult = result;
-
-      if (result.status === "DESYNC" || result.status === "STALE") {
-        break;
-      }
-    }
-
-    return {
-      ...(terminalResult ?? { accepted: true, status: "FRESH" as const }),
-      processedCount
-    };
-  }
-
-  private ingestConnectionKey(
-    sourceExchange: string | null | undefined,
-    streamId?: string | null
-  ): string {
-    return `${normalizeSourceExchange(sourceExchange ?? "hyperliquid")}:${streamId ?? "default"}`;
-  }
-
-  private isActiveIngestConnection(payload: HyperliquidRawIngestPayload): boolean {
-    if (!payload.connectionId) {
-      return true;
-    }
-
-    const key = this.ingestConnectionKey(payload.source_exchange, payload.streamId);
-    const fallbackKey = this.ingestConnectionKey(payload.source_exchange, null);
-    const activeConnection = payload.streamId
-      ? this.activeIngestConnections.get(key)
-      : this.activeIngestConnections.get(fallbackKey);
-
-    return !activeConnection || activeConnection === payload.connectionId;
-  }
-
-  private resolveHyperliquidBookTimestamp(
-    rawExchangeTimestamp: string | null,
-    receivedAt: string
-  ): string {
-    if (!rawExchangeTimestamp) {
-      return receivedAt;
-    }
-
-    const rawMs = Date.parse(rawExchangeTimestamp);
-    const receivedMs = Date.parse(receivedAt);
-
-    if (!Number.isFinite(rawMs) || !Number.isFinite(receivedMs)) {
-      return receivedAt;
-    }
-
-    const maxDriftMs = readPositiveNumber(
-      this.env.HL_BOOK_TIMESTAMP_MAX_DRIFT_MS,
-      DEFAULT_HL_BOOK_TIMESTAMP_MAX_DRIFT_MS
-    );
-
-    return receivedMs - rawMs > maxDriftMs ? receivedAt : rawExchangeTimestamp;
+    return handleHyperliquidRawBatch(payload, wakeUpTimeMs, {
+      activeIngestConnections: this.activeIngestConnections,
+      enqueueRawMessage: (raw, rawPayload, wakeUp) =>
+        this.enqueueHyperliquidRawMessage(raw, rawPayload, wakeUp)
+    });
   }
 
   private enqueueHyperliquidRawMessage(
@@ -1682,9 +1601,13 @@ export class TradingEngine {
     const sourceExchange = normalizeSourceExchange(payload.source_exchange ?? "hyperliquid");
     const sourceWeight = normalizeSourceWeight(payload.sourceWeight);
     const rawExchangeTimestamp = nativeExchangeTimestamp(data.time ?? data.timestamp);
-    const exchangeTimestamp = this.resolveHyperliquidBookTimestamp(
+    const exchangeTimestamp = resolveHyperliquidBookTimestamp(
       rawExchangeTimestamp,
-      receivedAt
+      receivedAt,
+      readPositiveNumber(
+        this.env.HL_BOOK_TIMESTAMP_MAX_DRIFT_MS,
+        DEFAULT_HL_BOOK_TIMESTAMP_MAX_DRIFT_MS
+      )
     );
     const explicitSequenceValue = data.sequence ?? data.seq;
     const explicitSequence = Number(explicitSequenceValue);
@@ -3036,13 +2959,13 @@ export class TradingEngine {
     }
 
     this.activeIngestConnections.set(
-      this.ingestConnectionKey(sourceExchange, streamId),
+      hyperliquidIngestConnectionKey(sourceExchange, streamId),
       connectionId
     );
 
     if (!streamId) {
       this.activeIngestConnections.set(
-        this.ingestConnectionKey(sourceExchange, null),
+        hyperliquidIngestConnectionKey(sourceExchange, null),
         connectionId
       );
     }
@@ -3131,12 +3054,12 @@ export class TradingEngine {
       this.resetLatencyBaseline(now, `ORDER_BOOK_RESET:${reason}`);
       if (payload.connectionId) {
         this.activeIngestConnections.set(
-          this.ingestConnectionKey(resetSourceExchange, resetStreamId),
+          hyperliquidIngestConnectionKey(resetSourceExchange, resetStreamId),
           payload.connectionId
         );
         if (!resetStreamId) {
           this.activeIngestConnections.set(
-            this.ingestConnectionKey(resetSourceExchange, null),
+            hyperliquidIngestConnectionKey(resetSourceExchange, null),
             payload.connectionId
           );
         }
@@ -7102,7 +7025,7 @@ export class TradingEngine {
       completedAt: null
     });
     const liveSnapshot = this.captureReplaySnapshot();
-    const sourceTicks = await this.loadReplayTicks(limit, dateFrom, dateTo);
+    const sourceTicks = await this.replayJournal.loadTicks(limit, dateFrom, dateTo);
     const ticks = sourceTicks.map((tick, index) =>
       applyReplayScenarioToTick(tick, replayOptions.scenario, index, sourceTicks.length)
     );
@@ -7132,9 +7055,9 @@ export class TradingEngine {
     });
     const historicalTrades =
       ticks.length > 0
-        ? await this.loadReplayTrades(ticks[0].receivedAt, ticks.at(-1)!.receivedAt)
+        ? await this.replayJournal.loadTrades(ticks[0].receivedAt, ticks.at(-1)!.receivedAt)
         : [];
-    const shadowTrades = this.markHistoricalTrades(historicalTrades, ticks);
+    const shadowTrades = markHistoricalReplayTrades(historicalTrades, ticks);
     const modeledTrades: ReplayResult["shadowTrades"] = [];
     let ticksReplayed = 0;
     let generatedIntentCount = 0;
@@ -7332,7 +7255,7 @@ export class TradingEngine {
       speedMultiplier,
       liveStateRestored: true
     });
-    await this.recordBacktestRun(result, replayOptions, dateFrom, dateTo);
+    await this.replayJournal.recordBacktestRun(result, replayOptions, dateFrom, dateTo);
     await this.writeReplayStatus({
       replayId,
       status: "COMPLETED",
@@ -7380,49 +7303,11 @@ export class TradingEngine {
   }
 
   private async currentReplayStatus(): Promise<ReplayStatus> {
-    let status: ReplayStatus | undefined;
-    try {
-      status = await this.state.storage.get<ReplayStatus>(REPLAY_STATUS_KEY);
-    } catch (error) {
-      this.handleStorageWriteFailure("REPLAY_STATUS_READ", error);
-    }
-
-    return (
-      status ?? {
-        replayId: null,
-        status: "IDLE",
-        ticksTotal: 0,
-        ticksProcessed: 0,
-        progressPct: 0,
-        speedMultiplier: 1,
-        shadowBankroll: 0,
-        dateFrom: null,
-        dateTo: null,
-        scenario: "BASELINE",
-        error: null,
-        startedAt: null,
-        updatedAt: new Date().toISOString(),
-        completedAt: null
-      }
-    );
+    return this.replayJournal.currentStatus();
   }
 
   private async writeReplayStatus(status: ReplayStatus): Promise<void> {
-    await this.safeStoragePut(REPLAY_STATUS_KEY, status, "REPLAY_STATUS");
-    this.publish("REPLAY_PROGRESS", {
-      replayId: status.replayId,
-      status: status.status,
-      ticksTotal: status.ticksTotal,
-      ticksProcessed: status.ticksProcessed,
-      progressPct: status.progressPct,
-      speedMultiplier: status.speedMultiplier,
-      dateFrom: status.dateFrom,
-      dateTo: status.dateTo,
-      scenario: status.scenario ?? "BASELINE",
-      error: status.error,
-      updatedAt: status.updatedAt,
-      completedAt: status.completedAt
-    });
+    await this.replayJournal.writeStatus(status);
   }
 
   private async restoreReplaySnapshot(snapshot: EngineReplaySnapshot): Promise<void> {
@@ -7481,187 +7366,6 @@ export class TradingEngine {
     await this.safeStorageDelete([...persistedBookKeys.keys()], "REPLAY_RESTORE_DELETE_BOOKS");
 
     await this.safeStoragePut(writes, "REPLAY_RESTORE");
-  }
-
-  private async loadReplayTicks(
-    limit: number,
-    dateFrom: string | null,
-    dateTo: string | null
-  ): Promise<MarketTick[]> {
-    try {
-      const where: string[] = [];
-      const binds: Array<string | number> = [];
-
-      if (dateFrom) {
-        where.push("received_at >= ?");
-        binds.push(dateFrom);
-      }
-      if (dateTo) {
-        where.push("received_at <= ?");
-        binds.push(dateTo);
-      }
-
-      binds.push(limit);
-      const rows = await this.env.TRADING_DB.prepare(
-        `SELECT tick_json, received_at
-         FROM market_ticks
-         ${where.length > 0 ? `WHERE ${where.join(" AND ")}` : ""}
-         ORDER BY received_at ASC
-         LIMIT ?`
-      )
-        .bind(...binds)
-        .all<ReplayTickRow>();
-
-      return (rows.results ?? [])
-        .map((row) => safeParseJson<MarketTick>(row.tick_json))
-        .filter((tick): tick is MarketTick => tick?.schemaVersion === "universal-tick.v1");
-    } catch (error) {
-      this.logger.warn(
-        "REPLAY_TICK_JOURNAL_UNAVAILABLE",
-        "Falling back to telemetry logs for replay",
-        {
-          error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
-        }
-      );
-      const where = ["telemetry_json LIKE '%\"tick\"%'"];
-      const binds: Array<string | number> = [];
-
-      if (dateFrom) {
-        where.push("created_at >= ?");
-        binds.push(dateFrom);
-      }
-      if (dateTo) {
-        where.push("created_at <= ?");
-        binds.push(dateTo);
-      }
-
-      binds.push(limit);
-      const rows = await this.env.TRADING_DB.prepare(
-        `SELECT telemetry_json, created_at
-         FROM logs
-         WHERE ${where.join(" AND ")}
-         ORDER BY created_at ASC
-         LIMIT ?`
-      )
-        .bind(...binds)
-        .all<{ telemetry_json: string; created_at: string }>();
-
-      return (rows.results ?? [])
-        .map((row) => safeParseJson<{ tick?: MarketTick }>(row.telemetry_json)?.tick ?? null)
-        .filter((tick): tick is MarketTick => tick?.schemaVersion === "universal-tick.v1");
-    }
-  }
-
-  private async loadReplayTrades(
-    startedAt: string | null,
-    completedAt: string | null
-  ): Promise<ReplayTradeRow[]> {
-    const where = ["status IN ('FILLED', 'PARTIAL')"];
-    const binds: string[] = [];
-
-    if (startedAt) {
-      where.push("executed_at >= ?");
-      binds.push(startedAt);
-    }
-    if (completedAt) {
-      where.push("executed_at <= ?");
-      binds.push(completedAt);
-    }
-
-    const rows = await this.env.TRADING_DB.prepare(
-      `SELECT trade_id, asset, side, price, size, executed_at, status
-       FROM trades
-       WHERE ${where.join(" AND ")}
-       ORDER BY executed_at ASC
-       LIMIT 5000`
-    )
-      .bind(...binds)
-      .all<ReplayTradeRow>();
-
-    return (rows.results ?? []).filter((row) => row.side === "BUY" || row.side === "SELL");
-  }
-
-  private markHistoricalTrades(
-    historicalTrades: ReplayTradeRow[],
-    ticks: MarketTick[]
-  ): ReplayResult["shadowTrades"] {
-    return historicalTrades.map((trade) => {
-      const exitTick = ticks.find(
-        (tick) =>
-          tick.instrumentCode === trade.asset.toLowerCase() &&
-          Date.parse(tick.receivedAt) > Date.parse(trade.executed_at)
-      );
-      const exitPrice = exitTick?.price ?? null;
-      const theoreticalPnl =
-        exitPrice === null
-          ? 0
-          : (trade.side === "BUY" ? 1 : -1) * (exitPrice - trade.price) * trade.size;
-
-      return {
-        tradeId: `shadow:${trade.trade_id}`,
-        instrumentCode: trade.asset.toLowerCase(),
-        side: trade.side,
-        entryPrice: trade.price,
-        exitPrice,
-        size: trade.size,
-        theoreticalPnl,
-        openedAt: trade.executed_at,
-        closedAt: exitTick?.receivedAt ?? null
-      };
-    });
-  }
-
-  private async recordBacktestRun(
-    result: ReplayResult,
-    options: ReplayOptions,
-    dateFrom: string | null,
-    dateTo: string | null
-  ): Promise<void> {
-    try {
-      await this.env.TRADING_DB.prepare(
-        `INSERT INTO backtest_runs (
-           run_id, strategy_version_id, scenario, asset_filter, date_from, date_to,
-           ticks_replayed, generated_intent_count, simulated_trade_count,
-           theoretical_pnl, max_drawdown, sharpe, win_rate,
-           latency_model_json, slippage_model_json, fee_model_json,
-           attribution_json, stress_json, ablation_json, created_by, started_at, completed_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-        .bind(
-          result.replayId,
-          options.strategyVersionId,
-          options.scenario,
-          null,
-          dateFrom,
-          dateTo,
-          result.ticksReplayed,
-          result.generatedIntentCount,
-          result.simulatedTradeCount ?? 0,
-          result.theoreticalPnl,
-          result.maxDrawdown ?? 0,
-          result.sharpe,
-          result.winRate,
-          JSON.stringify(result.latencyModel ?? {}),
-          JSON.stringify(result.slippageModel ?? {}),
-          JSON.stringify(result.feeModel ?? {}),
-          JSON.stringify(result.attribution ?? {}),
-          JSON.stringify(result.stressResults ?? []),
-          JSON.stringify(result.ablation ?? {}),
-          options.actor,
-          result.startedAt,
-          result.completedAt
-        )
-        .run();
-    } catch (error) {
-      this.logger.warn(
-        "BACKTEST_RUN_JOURNAL_FAILED",
-        "Replay completed but D1 backtest journal failed",
-        {
-          replayId: result.replayId,
-          error: error instanceof Error ? error.message : "UNKNOWN_D1_ERROR"
-        }
-      );
-    }
   }
 
   private calculateMicrostructure(
