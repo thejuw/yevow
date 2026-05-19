@@ -3524,6 +3524,66 @@ export class TradingEngine {
     return { oracleResult, oracleLatencyMs };
   }
 
+  private evaluateCroupierForTick(
+    book: InternalOrderBook,
+    oracle: EngineState["oracle"],
+    sentiment: SentimentState,
+    profilerResult: ProfilerEvaluation,
+    inventory: InventoryState,
+    leadLag: EngineState["leadLag"],
+    volatilitySnapshot: MultiScaleVolatilitySnapshot | null,
+    observedAt: string
+  ): { croupierDecision: CroupierDecision; croupierLatencyMs: number } {
+    const croupierStartedAt = highResolutionNow();
+    const bidAdversePenalty = adversePenaltyForQuoteSide(
+      this.adverseSelectionModel,
+      book,
+      "BID",
+      oracle.regime,
+      observedAt
+    );
+    const askAdversePenalty = adversePenaltyForQuoteSide(
+      this.adverseSelectionModel,
+      book,
+      "ASK",
+      oracle.regime,
+      observedAt
+    );
+    const croupierDecision = this.cachedConfig.CROUPIER_ENABLED
+      ? this.croupierAgent.evaluate(
+          buildCroupierEvaluationInput({
+            engineId: this.engineState.engineId,
+            book,
+            oracle,
+            sentiment,
+            toxicityScore: profilerResult.toxicityScore,
+            inventory,
+            leadLag,
+            config: this.cachedConfig,
+            env: this.env,
+            executionCostBufferBps: this.engineState.slippage.executionCostBufferBps,
+            bidAdversePenaltyBps: bidAdversePenalty.penaltyBps,
+            askAdversePenaltyBps: askAdversePenalty.penaltyBps,
+            multiScaleVolatility: volatilitySnapshot,
+            fundingRateHourly: resolveCurrentFundingRate(this.engineState.fundingRates, book),
+            liquidationHeatmap: this.engineState.liquidationHeatmap,
+            profilerToxicityState: profilerResult.state.toxicityState,
+            profilerPressureSide: profilerResult.state.pressureSide,
+            profilerSpreadMultiplier: profilerResult.state.spreadMultiplier,
+            profilerReservationShiftBps: profilerResult.state.reservationShiftBps,
+            sentimentAlphaMode: this.cachedConfig.SENTIMENT_ALPHA_MODE,
+            macroBias: this.macroBias,
+            observedAt
+          })
+        )
+      : disabledCroupierDecision(this.cachedConfig.MIN_EV_THRESHOLD);
+    const croupierLatencyMs = this.cachedConfig.CROUPIER_ENABLED
+      ? roundLatency(highResolutionNow() - croupierStartedAt)
+      : 0;
+
+    return { croupierDecision, croupierLatencyMs };
+  }
+
   private async handleTick(
     tick: MarketTick,
     wakeUpTimeMs: number | null,
@@ -3663,52 +3723,16 @@ export class TradingEngine {
           ...defaultSentimentState(),
           updatedAt: metrics.brainTimestamp
         };
-    const croupierStartedAt = highResolutionNow();
-    const bidAdversePenalty = adversePenaltyForQuoteSide(
-      this.adverseSelectionModel,
+    const { croupierDecision, croupierLatencyMs } = this.evaluateCroupierForTick(
       book,
-      "BID",
-      oracleResult.state.regime,
+      oracleResult.state,
+      sentimentForDecision,
+      profilerResult,
+      inventory,
+      leadLag,
+      volatilitySnapshot,
       metrics.brainTimestamp
     );
-    const askAdversePenalty = adversePenaltyForQuoteSide(
-      this.adverseSelectionModel,
-      book,
-      "ASK",
-      oracleResult.state.regime,
-      metrics.brainTimestamp
-    );
-    const croupierDecision = this.cachedConfig.CROUPIER_ENABLED
-      ? this.croupierAgent.evaluate(
-          buildCroupierEvaluationInput({
-            engineId: this.engineState.engineId,
-            book,
-            oracle: oracleResult.state,
-            sentiment: sentimentForDecision,
-            toxicityScore: profilerResult.toxicityScore,
-            inventory,
-            leadLag,
-            config: this.cachedConfig,
-            env: this.env,
-            executionCostBufferBps: this.engineState.slippage.executionCostBufferBps,
-            bidAdversePenaltyBps: bidAdversePenalty.penaltyBps,
-            askAdversePenaltyBps: askAdversePenalty.penaltyBps,
-            multiScaleVolatility: volatilitySnapshot,
-            fundingRateHourly: resolveCurrentFundingRate(this.engineState.fundingRates, book),
-            liquidationHeatmap: this.engineState.liquidationHeatmap,
-            profilerToxicityState: profilerResult.state.toxicityState,
-            profilerPressureSide: profilerResult.state.pressureSide,
-            profilerSpreadMultiplier: profilerResult.state.spreadMultiplier,
-            profilerReservationShiftBps: profilerResult.state.reservationShiftBps,
-            sentimentAlphaMode: this.cachedConfig.SENTIMENT_ALPHA_MODE,
-            macroBias: this.macroBias,
-            observedAt: metrics.brainTimestamp
-          })
-        )
-      : disabledCroupierDecision(this.cachedConfig.MIN_EV_THRESHOLD);
-    const croupierLatencyMs = this.cachedConfig.CROUPIER_ENABLED
-      ? roundLatency(highResolutionNow() - croupierStartedAt)
-      : 0;
     const ensemble = this.calculateEnsembleState(
       croupierDecision.intent,
       profilerResult.state,
