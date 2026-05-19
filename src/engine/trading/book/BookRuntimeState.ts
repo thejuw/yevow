@@ -52,6 +52,13 @@ export interface InformationalBookNotReadyStateInput {
   readonly observedAt: string;
 }
 
+export interface RejectedBookDeltaStateInput {
+  readonly currentState: EngineState;
+  readonly internalOrderBookDepth: number;
+  readonly maxLatencyMs: number;
+  readonly observedAt: string;
+}
+
 export function stateAfterOrderBookReset(input: BookResetStateInput): EngineState {
   const nextMicrostructure =
     input.resetMarketKey &&
@@ -124,6 +131,17 @@ export function stateAfterInformationalBookNotReady(
       ? aggregateQuoteState(assetQuoteStates, input.currentState.quoteState, input.observedAt)
       : input.currentState.quoteState,
     assetQuoteStates,
+    maxLatencyMs: input.maxLatencyMs,
+    heartbeatAt: input.observedAt,
+    updatedAt: input.observedAt
+  };
+}
+
+export function stateAfterRejectedBookDelta(input: RejectedBookDeltaStateInput): EngineState {
+  return {
+    ...input.currentState,
+    processedTicks: input.currentState.processedTicks + 1,
+    internalOrderBookDepth: input.internalOrderBookDepth,
     maxLatencyMs: input.maxLatencyMs,
     heartbeatAt: input.observedAt,
     updatedAt: input.observedAt

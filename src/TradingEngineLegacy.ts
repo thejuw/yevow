@@ -52,6 +52,7 @@ import {
   stateAfterBookSnapshot,
   stateAfterInformationalBookNotReady,
   stateAfterOrderBookReset,
+  stateAfterRejectedBookDelta,
   stateAfterRebuiltBookSnapshot
 } from "./engine/trading/book/BookRuntimeState";
 import {
@@ -3441,14 +3442,12 @@ export class TradingEngine {
           observedAt: metrics.brainTimestamp
         });
 
-        this.engineState = {
-          ...this.engineState,
-          processedTicks: this.engineState.processedTicks + 1,
+        this.engineState = stateAfterRejectedBookDelta({
+          currentState: this.engineState,
           internalOrderBookDepth: countBookLevels(this.bids, this.asks),
           maxLatencyMs: this.maxLatencyMs,
-          heartbeatAt: metrics.brainTimestamp,
-          updatedAt: metrics.brainTimestamp
-        };
+          observedAt: metrics.brainTimestamp
+        });
 
         await this.persistHotStorageSnapshot(
           {

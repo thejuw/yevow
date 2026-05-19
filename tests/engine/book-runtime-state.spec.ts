@@ -5,6 +5,7 @@ import {
   stateAfterBookSnapshot,
   stateAfterInformationalBookNotReady,
   stateAfterOrderBookReset,
+  stateAfterRejectedBookDelta,
   stateAfterRebuiltBookSnapshot
 } from "../../src/engine/trading/book/BookRuntimeState";
 import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
@@ -207,6 +208,28 @@ describe("BookRuntimeState", () => {
       status: "SUSPENDED",
       reason: "ORDER_BOOK_NOT_READY"
     });
+  });
+
+  it("updates compact state after rejected book deltas", () => {
+    const currentState = defaultEngineState("engine-test");
+    currentState.processedTicks = 8;
+    currentState.internalOrderBookDepth = 12;
+
+    const next = stateAfterRejectedBookDelta({
+      currentState,
+      internalOrderBookDepth: 7,
+      maxLatencyMs: 150,
+      observedAt: OBSERVED_AT
+    });
+
+    expect(next).toMatchObject({
+      processedTicks: 9,
+      internalOrderBookDepth: 7,
+      maxLatencyMs: 150,
+      heartbeatAt: OBSERVED_AT,
+      updatedAt: OBSERVED_AT
+    });
+    expect(next.microstructure).toBe(currentState.microstructure);
   });
 });
 
