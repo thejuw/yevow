@@ -203,6 +203,7 @@ import {
   type ReplayStatus
 } from "./engine/trading/routes/ReplayAdminRoutes";
 import { markHistoricalReplayTrades, ReplayJournal } from "./engine/trading/replay/ReplayJournal";
+import { buildHistoricalReplayResult } from "./engine/trading/replay/ReplayResultRuntime";
 import type {
   GrpcFatalDropPayload,
   TickIngestResult
@@ -504,17 +505,6 @@ import {
   readPositiveNumber,
   applyReplayScenarioToTick,
   modelReplayIntentTrade,
-  findReplayExitTick,
-  inferIntentDriver,
-  buildReplayAttribution,
-  bucketReplayTrades,
-  buildReplayEquityCurve,
-  calculateMaxDrawdown,
-  calculateReplaySharpe,
-  calculateWinRate,
-  buildStressSummary,
-  buildReplayWalkForward,
-  buildReplayAblation,
   readPositiveInteger,
   readBoundedNumber,
   resolveGhostBookConfig,
@@ -5378,81 +5368,28 @@ export class TradingEngine {
       await this.restoreReplaySnapshot(liveSnapshot);
     }
 
-    const theoreticalPnl = modeledTrades.reduce((sum, trade) => sum + trade.theoreticalPnl, 0);
-    const baselinePnl = shadowTrades.reduce((sum, trade) => sum + trade.theoreticalPnl, 0);
-    const attribution = buildReplayAttribution(modeledTrades);
-    const equityCurve = buildReplayEquityCurve(initialShadowBankroll, modeledTrades);
-    const maxDrawdown = calculateMaxDrawdown(equityCurve);
-    const sharpe = calculateReplaySharpe(modeledTrades.map((trade) => trade.theoreticalPnl));
-    const winRate = calculateWinRate(modeledTrades);
-    const stressResults =
-      replayOptions.scenario === "BASELINE"
-        ? buildStressSummary(modeledTrades, generatedIntentCount)
-        : [
-            {
-              scenario: replayOptions.scenario,
-              pnl: roundMetric(theoreticalPnl, 8),
-              maxDrawdown,
-              generatedIntentCount,
-              simulatedTradeCount: modeledTrades.length
-            }
-          ];
-    const walkForward = replayOptions.walkForward ? buildReplayWalkForward(modeledTrades, 4) : [];
-    const ablation = replayOptions.sentimentAblation
-      ? buildReplayAblation(modeledTrades, this.engineState.sentiment)
-      : null;
     const completedAt = new Date().toISOString();
-    const result: ReplayResult = {
+    const replayBuild = buildHistoricalReplayResult({
       replayId,
-      strategyVersionId: replayOptions.strategyVersionId,
-      scenario: replayOptions.scenario,
       ticksReplayed,
-      shadowBankroll: initialShadowBankroll + theoreticalPnl,
-      theoreticalPnl,
-      baselinePnl,
-      actualTradeCount: historicalTrades.length,
+      initialShadowBankroll,
+      historicalTradeCount: historicalTrades.length,
       generatedIntentCount,
-      simulatedTradeCount: modeledTrades.length,
       speedMultiplier,
-      maxDrawdown,
-      sharpe,
-      winRate,
-      latencyModel: {
-        type: replayOptions.scenario === "LATENCY_SHOCK" ? "fixed-plus-shock" : "fixed",
-        latencyMs: replayOptions.latencyMs
-      },
-      slippageModel: {
-        type: "side-aware-bps",
-        slippageBps: replayOptions.slippageBps
-      },
-      feeModel: {
-        type: "round-trip-bps",
-        feeBps: replayOptions.feeBps
-      },
-      attribution,
-      stressResults,
-      walkForward,
-      ablation,
-      shadowTrades: modeledTrades,
+      replayOptions,
+      modeledTrades,
+      shadowTrades,
+      sentiment: this.engineState.sentiment,
       startedAt,
       completedAt
-    };
-
-    this.logger.warn("REPLAY_COMPLETED", "Historical shadow replay completed", {
-      replayId: result.replayId,
-      ticksReplayed,
-      actualTradeCount: historicalTrades.length,
-      generatedIntentCount,
-      theoreticalPnl,
-      baselinePnl,
-      simulatedTradeCount: modeledTrades.length,
-      maxDrawdown,
-      sharpe,
-      winRate,
-      scenario: replayOptions.scenario,
-      speedMultiplier,
-      liveStateRestored: true
     });
+    const result = replayBuild.result;
+
+    this.logger.warn(
+      "REPLAY_COMPLETED",
+      "Historical shadow replay completed",
+      replayBuild.logMetadata
+    );
     await this.replayJournal.recordBacktestRun(result, replayOptions, dateFrom, dateTo);
     await this.writeReplayStatus({
       replayId,

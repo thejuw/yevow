@@ -1,0 +1,132 @@
+import { describe, expect, it } from "vitest";
+import { buildHistoricalReplayResult } from "../../src/engine/trading/replay/ReplayResultRuntime";
+import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
+import type { ReplayOptions } from "../../src/engine/trading/routes/ReplayAdminRoutes";
+import type { ReplayResult } from "../../src/types";
+
+const STARTED_AT = "2026-05-18T10:00:00.000Z";
+const COMPLETED_AT = "2026-05-18T10:05:00.000Z";
+
+describe("ReplayResultRuntime", () => {
+  it("assembles replay result metrics and completion log metadata", () => {
+    const output = buildHistoricalReplayResult({
+      replayId: "replay-1",
+      replayOptions: options({ walkForward: true }),
+      ticksReplayed: 42,
+      initialShadowBankroll: 300,
+      historicalTradeCount: 1,
+      generatedIntentCount: 2,
+      speedMultiplier: 5,
+      modeledTrades: [
+        trade({ tradeId: "sim-1", theoreticalPnl: 3, driver: "CROUPIER" }),
+        trade({ tradeId: "sim-2", theoreticalPnl: -1, instrumentCode: "hype-usd" })
+      ],
+      shadowTrades: [trade({ tradeId: "hist-1", theoreticalPnl: 0.5 })],
+      sentiment: defaultEngineState("replay-result").sentiment,
+      startedAt: STARTED_AT,
+      completedAt: COMPLETED_AT
+    });
+
+    expect(output.result).toMatchObject({
+      replayId: "replay-1",
+      strategyVersionId: "strategy-v1",
+      scenario: "BASELINE",
+      ticksReplayed: 42,
+      shadowBankroll: 302,
+      theoreticalPnl: 2,
+      baselinePnl: 0.5,
+      actualTradeCount: 1,
+      generatedIntentCount: 2,
+      simulatedTradeCount: 2,
+      speedMultiplier: 5,
+      latencyModel: { type: "fixed", latencyMs: 10 },
+      slippageModel: { type: "side-aware-bps", slippageBps: 1 },
+      feeModel: { type: "round-trip-bps", feeBps: 0 },
+      startedAt: STARTED_AT,
+      completedAt: COMPLETED_AT
+    });
+    expect(output.result.attribution?.byAgent[0]).toMatchObject({
+      key: "CROUPIER",
+      tradeCount: 1,
+      pnl: 3
+    });
+    expect(output.result.walkForward).toHaveLength(2);
+    expect(output.logMetadata).toMatchObject({
+      replayId: "replay-1",
+      ticksReplayed: 42,
+      actualTradeCount: 1,
+      generatedIntentCount: 2,
+      theoreticalPnl: 2,
+      baselinePnl: 0.5,
+      simulatedTradeCount: 2,
+      scenario: "BASELINE",
+      speedMultiplier: 5,
+      liveStateRestored: true
+    });
+  });
+
+  it("uses scenario-specific stress summaries outside baseline", () => {
+    const output = buildHistoricalReplayResult({
+      replayId: "replay-2",
+      replayOptions: options({ scenario: "LATENCY_SHOCK", sentimentAblation: false }),
+      ticksReplayed: 10,
+      initialShadowBankroll: 300,
+      historicalTradeCount: 0,
+      generatedIntentCount: 1,
+      speedMultiplier: 1,
+      modeledTrades: [trade({ theoreticalPnl: 1.25 })],
+      shadowTrades: [],
+      sentiment: defaultEngineState("replay-result").sentiment,
+      startedAt: STARTED_AT,
+      completedAt: COMPLETED_AT
+    });
+
+    expect(output.result.stressResults).toEqual([
+      {
+        scenario: "LATENCY_SHOCK",
+        pnl: 1.25,
+        maxDrawdown: 0,
+        generatedIntentCount: 1,
+        simulatedTradeCount: 1
+      }
+    ]);
+    expect(output.result.latencyModel).toMatchObject({ type: "fixed-plus-shock" });
+    expect(output.result.ablation).toBeNull();
+  });
+});
+
+function options(overrides: Partial<ReplayOptions> = {}): ReplayOptions {
+  return {
+    scenario: "BASELINE",
+    latencyMs: 10,
+    slippageBps: 1,
+    feeBps: 0,
+    exitAfterTicks: 10,
+    walkForward: false,
+    sentimentAblation: true,
+    strategyVersionId: "strategy-v1",
+    actor: "admin",
+    ...overrides
+  };
+}
+
+function trade(
+  overrides: Partial<ReplayResult["shadowTrades"][number]> = {}
+): ReplayResult["shadowTrades"][number] {
+  return {
+    tradeId: "trade-1",
+    instrumentCode: "btc-usd",
+    side: "BUY",
+    entryPrice: 100,
+    exitPrice: 101,
+    size: 1,
+    theoreticalPnl: 1,
+    fees: 0,
+    slippageBps: 1,
+    driver: "PROFILER",
+    regime: "RANGE",
+    openedAt: STARTED_AT,
+    closedAt: COMPLETED_AT,
+    ...overrides
+  };
+}
