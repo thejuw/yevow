@@ -138,6 +138,12 @@ import {
   tradeIntentAuthorizedLogMetadata,
   tradeIntentDispatchBlockedLogMetadata
 } from "./engine/trading/execution/ExecutionDispatchRuntime";
+import {
+  buildCroupierEvaluationInput,
+  buildOracleTickInput,
+  buildProfilerContext,
+  disabledOracleTickResult
+} from "./engine/trading/agents/AgentEvaluationRuntime";
 import { applyIntentPaperExecutionBudget } from "./engine/trading/execution/PaperExecutionBudgetRuntime";
 import {
   buildExecutionQueueEnqueuePlan,
@@ -479,13 +485,10 @@ import {
   DEFAULT_MAX_INVENTORY_UNITS,
   DEFAULT_MAX_INVENTORY_DELTA,
   DEFAULT_RISK_AVERSION_FACTOR,
-  DEFAULT_FUNDING_BIAS_THRESHOLD,
-  DEFAULT_FUNDING_INVENTORY_BIAS,
   DEFAULT_AMM_MIN_TICK_CHANGE,
   DEFAULT_HEATMAP_PRICE_BIN_SIZE,
   DEFAULT_HEATMAP_CLUSTER_NOTIONAL_USD,
   DEFAULT_CASCADE_DISTANCE_PCT,
-  DEFAULT_PREDATORY_ORDER_OFFSET_BPS,
   DEFAULT_PAPER_BANKROLL_USD,
   DEFAULT_PAPER_FILL_PARTICIPATION_RATE,
   DEFAULT_PAPER_FILL_ADVERSE_BPS,
@@ -2248,10 +2251,7 @@ export class TradingEngine {
       sizeDecision,
       observedAt
     };
-    this.recordCascadeUiSignal(
-      cascadeEntryAgentSignal(cascadeEntryContext),
-      "TAKEN"
-    );
+    this.recordCascadeUiSignal(cascadeEntryAgentSignal(cascadeEntryContext), "TAKEN");
     this.logger.traceDecision(cascadeEntryDecisionTrace({ ...cascadeEntryContext, currentHeat }));
     this.state.waitUntil(this.dispatchExecution(intent));
     this.state.waitUntil(
@@ -2859,10 +2859,7 @@ export class TradingEngine {
         this.resetLatencyBaseline(hardStale.metrics.brainTimestamp, "HARD_STALE_DROP");
       }
 
-      await this.persistHotStorageSnapshot(
-        this.latencyStorageWrites(),
-        "HARD_STALE_TICK_DROPPED"
-      );
+      await this.persistHotStorageSnapshot(this.latencyStorageWrites(), "HARD_STALE_TICK_DROPPED");
 
       const staleTelemetry = {
         tick,
@@ -2944,10 +2941,7 @@ export class TradingEngine {
       );
 
       this.logPerformance(metrics);
-      this.publish(
-        "STALE_DATA_KILL_SWITCH",
-        staleDataKillSwitchTelemetryPayload(staleKillSwitch)
-      );
+      this.publish("STALE_DATA_KILL_SWITCH", staleDataKillSwitchTelemetryPayload(staleKillSwitch));
       this.notifier.notify(staleDataKillSwitchNotification(staleKillSwitch));
       if (this.cachedConfig.TRADING_ENABLED) {
         this.state.waitUntil(this.cancelAllQuotes(tick.instrumentCode, "STALE_DATA_KILL_SWITCH"));
@@ -3160,19 +3154,17 @@ export class TradingEngine {
     const profilerAgent = this.profilerRegistry.forInstrument(tick.instrumentCode);
     const profilerStartedAt = highResolutionNow();
     const profilerResult: ProfilerEvaluation = this.cachedConfig.PROFILER_ENABLED
-      ? profilerAgent.processTick(tick, {
-          engineId: this.engineState.engineId,
-          observedAt: metrics.brainTimestamp,
-          midPrice: book.midPrice,
-          spreadBps: book.spreadBps,
-          weightedImbalance: book.weightedImbalance,
-          orderBookBids: book.bids,
-          orderBookAsks: book.asks,
-          liquidityWalls: domSnapshot.walls,
-          spoofingAlerts: domSnapshot.pulledWalls,
-          liquidationHeatmap: this.engineState.liquidationHeatmap,
-          jumpDetected: volatilitySnapshot?.jumpDetected ?? false
-        })
+      ? profilerAgent.processTick(
+          tick,
+          buildProfilerContext({
+            engineId: this.engineState.engineId,
+            observedAt: metrics.brainTimestamp,
+            book,
+            dom: domSnapshot,
+            liquidationHeatmap: this.engineState.liquidationHeatmap,
+            jumpDetected: volatilitySnapshot?.jumpDetected ?? false
+          })
+        )
       : disabledProfilerEvaluation(profilerAgent.snapshot(), metrics.brainTimestamp);
     const profilerLatencyMs = this.cachedConfig.PROFILER_ENABLED
       ? roundLatency(highResolutionNow() - profilerStartedAt)
@@ -3188,24 +3180,15 @@ export class TradingEngine {
 
     const oracleStartedAt = highResolutionNow();
     const oracleResult = this.cachedConfig.ORACLE_ENABLED
-      ? this.oracleAgent.processTick({
-          tick,
-          book,
-          observedAt: metrics.brainTimestamp,
-          config: {
-            ORACLE_GOVERNANCE_MODE: this.cachedConfig.ORACLE_GOVERNANCE_MODE,
-            ORACLE_MANUAL_SKEPTICISM: this.cachedConfig.ORACLE_MANUAL_SKEPTICISM,
-            ORACLE_MAX_SKEPTICISM: this.cachedConfig.ORACLE_MAX_SKEPTICISM
-          }
-        })
-      : {
-          state: {
-            ...this.engineState.oracle,
-            updatedAt: metrics.brainTimestamp
-          },
-          bayesianTrace: null,
-          regimeChanged: false
-        };
+      ? this.oracleAgent.processTick(
+          buildOracleTickInput({
+            tick,
+            book,
+            observedAt: metrics.brainTimestamp,
+            config: this.cachedConfig
+          })
+        )
+      : disabledOracleTickResult(this.engineState.oracle, metrics.brainTimestamp);
     const oracleLatencyMs = this.cachedConfig.ORACLE_ENABLED
       ? roundLatency(highResolutionNow() - oracleStartedAt)
       : 0;
@@ -3248,53 +3231,32 @@ export class TradingEngine {
       metrics.brainTimestamp
     );
     const croupierDecision = this.cachedConfig.CROUPIER_ENABLED
-      ? this.croupierAgent.evaluate({
-          engineId: this.engineState.engineId,
-          book,
-          oracle: oracleResult.state,
-          sentiment: sentimentForDecision,
-          toxicityScore: profilerResult.toxicityScore,
-          inventory,
-          leadLag,
-          minEvThreshold: this.cachedConfig.MIN_EV_THRESHOLD,
-          exchangeFeeBps: this.cachedConfig.EXCHANGE_FEE_BPS,
-          executionCostBufferBps: this.engineState.slippage.executionCostBufferBps,
-          adverseSelectionPenaltyBps: Math.max(
-            bidAdversePenalty.penaltyBps,
-            askAdversePenalty.penaltyBps
-          ),
-          multiScaleVolatility: volatilitySnapshot,
-          fundingRateHourly: resolveCurrentFundingRate(this.engineState.fundingRates, book),
-          fundingHorizonHours: readPositiveNumber(this.env.FUNDING_HORIZON_HOURS, 1),
-          riskAversionFactor: this.cachedConfig.RISK_AVERSION_FACTOR,
-          fundingBiasThreshold:
-            this.cachedConfig.FUNDING_BIAS_THRESHOLD > 0
-              ? this.cachedConfig.FUNDING_BIAS_THRESHOLD
-              : readPositiveNumber(this.env.FUNDING_BIAS_THRESHOLD, DEFAULT_FUNDING_BIAS_THRESHOLD),
-          fundingInventoryBias:
-            this.cachedConfig.FUNDING_INVENTORY_BIAS > 0
-              ? this.cachedConfig.FUNDING_INVENTORY_BIAS
-              : readPositiveNumber(this.env.FUNDING_INVENTORY_BIAS, DEFAULT_FUNDING_INVENTORY_BIAS),
-          fundingPreSettlementWindowMs: this.cachedConfig.FUNDING_PRE_SETTLEMENT_WINDOW_MS,
-          fundingPreSettlementBiasMultiplier:
-            this.cachedConfig.FUNDING_PRE_SETTLEMENT_BIAS_MULTIPLIER,
-          liquidationHeatmap: this.engineState.liquidationHeatmap,
-          predatoryOrderOffsetBps: readPositiveNumber(
-            this.env.HL_PREDATORY_ORDER_OFFSET_BPS,
-            DEFAULT_PREDATORY_ORDER_OFFSET_BPS
-          ),
-          profilerToxicityState: profilerResult.state.toxicityState,
-          profilerPressureSide: profilerResult.state.pressureSide,
-          profilerSpreadMultiplier: profilerResult.state.spreadMultiplier,
-          profilerReservationShiftBps: profilerResult.state.reservationShiftBps,
-          layeredQuoteLevels: this.cachedConfig.LAYERED_QUOTE_LEVELS,
-          layeredQuoteSizeDecay: this.cachedConfig.LAYERED_QUOTE_SIZE_DECAY,
-          layeredQuoteSpreadStepBps: this.cachedConfig.LAYERED_QUOTE_SPREAD_STEP_BPS,
-          sentimentAlphaMode: this.cachedConfig.SENTIMENT_ALPHA_MODE,
-          macroBias: this.macroBias,
-          marketMakingMode: this.cachedConfig.MARKET_MAKING_MODE,
-          observedAt: metrics.brainTimestamp
-        })
+      ? this.croupierAgent.evaluate(
+          buildCroupierEvaluationInput({
+            engineId: this.engineState.engineId,
+            book,
+            oracle: oracleResult.state,
+            sentiment: sentimentForDecision,
+            toxicityScore: profilerResult.toxicityScore,
+            inventory,
+            leadLag,
+            config: this.cachedConfig,
+            env: this.env,
+            executionCostBufferBps: this.engineState.slippage.executionCostBufferBps,
+            bidAdversePenaltyBps: bidAdversePenalty.penaltyBps,
+            askAdversePenaltyBps: askAdversePenalty.penaltyBps,
+            multiScaleVolatility: volatilitySnapshot,
+            fundingRateHourly: resolveCurrentFundingRate(this.engineState.fundingRates, book),
+            liquidationHeatmap: this.engineState.liquidationHeatmap,
+            profilerToxicityState: profilerResult.state.toxicityState,
+            profilerPressureSide: profilerResult.state.pressureSide,
+            profilerSpreadMultiplier: profilerResult.state.spreadMultiplier,
+            profilerReservationShiftBps: profilerResult.state.reservationShiftBps,
+            sentimentAlphaMode: this.cachedConfig.SENTIMENT_ALPHA_MODE,
+            macroBias: this.macroBias,
+            observedAt: metrics.brainTimestamp
+          })
+        )
       : disabledCroupierDecision(this.cachedConfig.MIN_EV_THRESHOLD);
     const croupierLatencyMs = this.cachedConfig.CROUPIER_ENABLED
       ? roundLatency(highResolutionNow() - croupierStartedAt)
@@ -3486,7 +3448,9 @@ export class TradingEngine {
     if (croupierQuoteAction.kind === "PULL_ALL_QUOTES") {
       this.publish(croupierQuoteAction.publish.type, croupierQuoteAction.publish.payload);
       if (croupierQuoteAction.cancelReason) {
-        this.state.waitUntil(this.cancelAllQuotes(tick.instrumentCode, croupierQuoteAction.cancelReason));
+        this.state.waitUntil(
+          this.cancelAllQuotes(tick.instrumentCode, croupierQuoteAction.cancelReason)
+        );
       }
     } else if (croupierQuoteAction.kind === "POST_QUOTE") {
       this.publish(
@@ -3498,9 +3462,10 @@ export class TradingEngine {
         const quote = croupierQuoteAction.quote;
         this.state.waitUntil(
           croupierQuoteAction.cascadeShieldCancelReason
-            ? this.cancelAllQuotes(tick.instrumentCode, croupierQuoteAction.cascadeShieldCancelReason).then(() =>
-                this.dispatchQuote(quote)
-              )
+            ? this.cancelAllQuotes(
+                tick.instrumentCode,
+                croupierQuoteAction.cascadeShieldCancelReason
+              ).then(() => this.dispatchQuote(quote))
             : this.dispatchQuote(quote)
         );
       }
