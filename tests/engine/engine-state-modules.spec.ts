@@ -11,6 +11,8 @@ import {
 } from "../../src/engine/trading/state/EngineDiagnostics";
 import {
   evaluateHotStorageSnapshotDecision,
+  resolveHotStorageSnapshotIntervalMs,
+  resolveHotStorageSnapshotTickInterval,
   StorageWriteGuard
 } from "../../src/engine/trading/state/StorageWriteGuard";
 import { TradingTelemetryBus } from "../../src/engine/trading/telemetry/TelemetryBus";
@@ -494,6 +496,15 @@ describe("storage write guard", () => {
       nextSnapshotAtMs: 1_500,
       nextSnapshotTick: 15
     });
+  });
+
+  it("resolves hot snapshot cadence from bounded env input", () => {
+    expect(resolveHotStorageSnapshotIntervalMs("2500")).toBe(2_500);
+    expect(resolveHotStorageSnapshotIntervalMs("10")).toBe(1_000);
+    expect(resolveHotStorageSnapshotIntervalMs("600000")).toBe(300_000);
+    expect(resolveHotStorageSnapshotTickInterval("25")).toBe(25);
+    expect(resolveHotStorageSnapshotTickInterval("0")).toBe(1);
+    expect(resolveHotStorageSnapshotTickInterval("200000")).toBe(100_000);
   });
 });
 

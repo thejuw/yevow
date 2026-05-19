@@ -219,6 +219,8 @@ import {
 } from "./engine/trading/state/TickPersistenceRuntime";
 import {
   evaluateHotStorageSnapshotDecision,
+  resolveHotStorageSnapshotIntervalMs,
+  resolveHotStorageSnapshotTickInterval,
   StorageWriteGuard
 } from "./engine/trading/state/StorageWriteGuard";
 import {
@@ -345,8 +347,6 @@ import {
   SIGNAL_BUFFER_LIMIT,
   ADMIN_STREAM_PULSE_INTERVAL_MS,
   AGENT_SNAPSHOT_TICK_INTERVAL,
-  DEFAULT_HOT_STORAGE_SNAPSHOT_INTERVAL_MS,
-  DEFAULT_HOT_STORAGE_SNAPSHOT_TICK_INTERVAL,
   STORAGE_WRITE_BACKOFF_MS,
   BOOK_SNAPSHOT_TOP_LEVELS,
   TOP_OF_BOOK_CROSS_CHECK_INTERVAL_MS,
@@ -1408,8 +1408,10 @@ export class TradingEngine {
       lastSnapshotTick: this.lastHotStorageSnapshotTick,
       nowMs: Date.now(),
       tickCount: this.engineState.processedTicks,
-      intervalMs: this.hotStorageSnapshotIntervalMs(),
-      tickInterval: this.hotStorageSnapshotTickInterval()
+      intervalMs: resolveHotStorageSnapshotIntervalMs(this.env.HOT_STORAGE_SNAPSHOT_INTERVAL_MS),
+      tickInterval: resolveHotStorageSnapshotTickInterval(
+        this.env.HOT_STORAGE_SNAPSHOT_TICK_INTERVAL
+      )
     });
 
     if (!decision.shouldPersist) {
@@ -1419,24 +1421,6 @@ export class TradingEngine {
     this.lastHotStorageSnapshotAt = decision.nextSnapshotAtMs;
     this.lastHotStorageSnapshotTick = decision.nextSnapshotTick;
     await this.safeStoragePut(entries, reason);
-  }
-
-  private hotStorageSnapshotIntervalMs(): number {
-    return readPositiveInteger(
-      this.env.HOT_STORAGE_SNAPSHOT_INTERVAL_MS,
-      DEFAULT_HOT_STORAGE_SNAPSHOT_INTERVAL_MS,
-      1_000,
-      300_000
-    );
-  }
-
-  private hotStorageSnapshotTickInterval(): number {
-    return readPositiveInteger(
-      this.env.HOT_STORAGE_SNAPSHOT_TICK_INTERVAL,
-      DEFAULT_HOT_STORAGE_SNAPSHOT_TICK_INTERVAL,
-      1,
-      100_000
-    );
   }
 
   private handleStorageWriteFailure(reason: string, error: unknown): void {

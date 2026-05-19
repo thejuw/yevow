@@ -1,3 +1,9 @@
+import {
+  DEFAULT_HOT_STORAGE_SNAPSHOT_INTERVAL_MS,
+  DEFAULT_HOT_STORAGE_SNAPSHOT_TICK_INTERVAL
+} from "../../../TradingEngineConstants";
+import { readPositiveInteger } from "../../../TradingEngineRuntimeHelpers";
+
 export interface HotStorageSnapshotDecisionInput {
   readonly lastSnapshotAtMs: number;
   readonly lastSnapshotTick: number;
@@ -38,6 +44,14 @@ export function evaluateHotStorageSnapshotDecision(
     nextSnapshotAtMs: input.nowMs,
     nextSnapshotTick: input.tickCount
   };
+}
+
+export function resolveHotStorageSnapshotIntervalMs(envValue?: string): number {
+  return readPositiveInteger(envValue, DEFAULT_HOT_STORAGE_SNAPSHOT_INTERVAL_MS, 1_000, 300_000);
+}
+
+export function resolveHotStorageSnapshotTickInterval(envValue?: string): number {
+  return readPositiveInteger(envValue, DEFAULT_HOT_STORAGE_SNAPSHOT_TICK_INTERVAL, 1, 100_000);
 }
 
 export class StorageWriteGuard {
