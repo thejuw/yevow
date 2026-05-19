@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  buildApprovedExecutionPlan,
   buildExecutionPlanArtifacts,
   buildManagedOrders,
   executionAckDeadline,
@@ -11,6 +12,7 @@ import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
 import type { CamouflageResult } from "../../src/utils/Camouflage";
 import type { SorPlan } from "../../src/utils/SOR";
 import type { TradeIntent } from "../../src/types";
+import type { PitBossDecision } from "../../src/agents/PitBossAgent";
 
 const OBSERVED_AT = "2026-05-18T14:00:00.000Z";
 const ACK_DEADLINE_AT = "2026-05-18T14:00:01.500Z";
@@ -141,6 +143,70 @@ describe("ExecutionPlanRuntime", () => {
     });
   });
 
+  it("builds approved execution plans with residual SOR metadata", () => {
+    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const intent = tradeIntent({ requestedSize: 1, approvedSize: 1, expectedPrice: 100 });
+
+    try {
+      const plan = buildApprovedExecutionPlan({
+        pitBossDecision: pitBossDecision({ approved: true, intent }),
+        orderBooks: [
+          {
+            marketKey: "hyperliquid:btc-usd",
+            source_exchange: "hyperliquid",
+            instrumentCode: "btc-usd",
+            exchangeCode: "hl",
+            sourceWeight: 1,
+            bestBid: 99.9,
+            bestAsk: 100,
+            midPrice: 99.95,
+            spread: 0.1,
+            bids: [{ price: 99.9, size: 0.2 }],
+            asks: [{ price: 100, size: 0.4 }],
+            weightedImbalance: 0,
+            imbalance: 0,
+            depth: 2,
+            sequence: 1,
+            exchangeTimestamp: OBSERVED_AT,
+            receivedAt: OBSERVED_AT,
+            updatedAt: OBSERVED_AT
+          }
+        ],
+        observedAt: OBSERVED_AT,
+        ackTimeoutMs: 1_500
+      });
+
+      expect(plan).toMatchObject({
+        intent: { intentId: "intent-1" },
+        sorPlan: {
+          routes: [{ marketKey: "hyperliquid:btc-usd", size: 0.4 }],
+          unfilledSize: 0.6
+        },
+        residualLogMetadata: {
+          intentId: "intent-1",
+          instrumentCode: "btc-usd",
+          approvedSize: 1,
+          unfilledSize: 0.6
+        }
+      });
+      expect(plan?.orders[0]).toMatchObject({
+        clientId: "intent-1:sor:1",
+        size: 0.4,
+        ackDeadlineAt: ACK_DEADLINE_AT
+      });
+      expect(
+        buildApprovedExecutionPlan({
+          pitBossDecision: pitBossDecision({ approved: false }),
+          orderBooks: [],
+          observedAt: OBSERVED_AT,
+          ackTimeoutMs: 1_500
+        })
+      ).toBeNull();
+    } finally {
+      randomSpy.mockRestore();
+    }
+  });
+
   it("gates execution planning on suspended quote state unless explicitly bypassed", () => {
     const state = defaultEngineState("execution-plan-test");
     state.assetQuoteStates["btc-usd"] = {
@@ -189,6 +255,19 @@ describe("ExecutionPlanRuntime", () => {
     });
   });
 });
+
+function pitBossDecision(overrides: Partial<PitBossDecision> = {}): PitBossDecision {
+  return {
+    approved: true,
+    intent: tradeIntent({ approvedSize: 0.4 }),
+    kellyFraction: 0.1,
+    cappedFraction: 0.05,
+    capitalAllocationPct: 1,
+    assetMaxNotional: 100,
+    reason: "approved",
+    ...overrides
+  };
+}
 
 function emptySorPlan(): SorPlan {
   return {

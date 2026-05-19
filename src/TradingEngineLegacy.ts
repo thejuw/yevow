@@ -137,9 +137,9 @@ import {
   evaluateQuoteCancelDispatch
 } from "./engine/trading/quotes/QuoteCancelRuntime";
 import {
-  buildExecutionPlanArtifacts,
+  buildApprovedExecutionPlan,
   shouldSkipExecutionPlanForQuoteSuspension,
-  sorResidualLiquidityShortfallLogMetadata
+  type ApprovedExecutionPlan
 } from "./engine/trading/execution/ExecutionPlanRuntime";
 import {
   buildExecutionDispatchBlockLog,
@@ -380,9 +380,7 @@ import { JanitorAgent } from "./agents/JanitorAgent";
 import { OracleAgent, defaultOracleState } from "./agents/OracleAgent";
 import { PitBossAgent } from "./agents/PitBossAgent";
 import { SentimentAgent, defaultSentimentState } from "./agents/SentimentAgent";
-import { camouflageIntent } from "./utils/Camouflage";
 import { RateLimiter, type RateLimitBucketSnapshot } from "./utils/RateLimiter";
-import { planSmartOrderRoute } from "./utils/SOR";
 import { Notifier } from "./utils/Notifier";
 import { isShadowMode } from "./utils/CitadelProtocol";
 import { GhostBook, type GhostBookConfig, type GhostBookObservation } from "./utils/GhostBook";
@@ -426,7 +424,6 @@ import type {
   MacroBias,
   MarketDataSource,
   MarketTick,
-  ManagedOrder,
   OrderBookDelta,
   OrderBookResetRequest,
   OrderBookSide,
@@ -3863,12 +3860,7 @@ export class TradingEngine {
       stateOverride?: EngineState;
       kellyFractionOverride?: number;
     } = {}
-  ): {
-    intent: NonNullable<EngineState["lastTradeIntent"]>;
-    camouflage: ReturnType<typeof camouflageIntent>;
-    sorPlan: ReturnType<typeof planSmartOrderRoute>;
-    orders: ManagedOrder[];
-  } | null {
+  ): ApprovedExecutionPlan | null {
     if (!intent) {
       return null;
     }
@@ -3898,24 +3890,9 @@ export class TradingEngine {
       return null;
     }
 
-    const camouflage = camouflageIntent(
-      pitBossDecision.intent,
-      pitBossDecision.intent.approvedSize ?? pitBossDecision.intent.requestedSize
-    );
-    const sorPlan = planSmartOrderRoute(camouflage.intent, [...this.orderBook.values()]);
-    if (sorPlan.unfilledSize > 0) {
-      this.logger.warn(
-        "SOR_RESIDUAL_LIQUIDITY_SHORTFALL",
-        "Smart router could not source full approved size",
-        sorResidualLiquidityShortfallLogMetadata({
-          intent: camouflage.intent,
-          unfilledSize: sorPlan.unfilledSize
-        })
-      );
-    }
-    const { camouflage: routedCamouflage, orders } = buildExecutionPlanArtifacts({
-      camouflage,
-      sorPlan,
+    const plan = buildApprovedExecutionPlan({
+      pitBossDecision,
+      orderBooks: this.orderBook.values(),
       observedAt,
       ackTimeoutMs: readPositiveInteger(
         this.env.ORDER_ACK_TIMEOUT_MS,
@@ -3925,7 +3902,19 @@ export class TradingEngine {
       )
     });
 
-    return { intent: camouflage.intent, camouflage: routedCamouflage, sorPlan, orders };
+    if (!plan) {
+      return null;
+    }
+
+    if (plan.residualLogMetadata) {
+      this.logger.warn(
+        "SOR_RESIDUAL_LIQUIDITY_SHORTFALL",
+        "Smart router could not source full approved size",
+        plan.residualLogMetadata
+      );
+    }
+
+    return plan;
   }
 
   private nextQuoteStateForInstrument(

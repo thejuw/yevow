@@ -1,10 +1,17 @@
-import type { CamouflageResult } from "../../../utils/Camouflage";
-import type { SorPlan } from "../../../utils/SOR";
+import { camouflageIntent, type CamouflageResult } from "../../../utils/Camouflage";
+import { planSmartOrderRoute, type SorPlan } from "../../../utils/SOR";
+import type { PitBossDecision } from "../../../agents/PitBossAgent";
 import {
   isQuoteSuspendedAt,
   quoteStateForInstrumentState
 } from "../../../TradingEngineRuntimeHelpers";
-import type { EngineState, JsonRecord, ManagedOrder, TradeIntent } from "../../../types";
+import type {
+  EngineState,
+  InternalOrderBook,
+  JsonRecord,
+  ManagedOrder,
+  TradeIntent
+} from "../../../types";
 
 export interface ExecutionPlanArtifactsInput {
   readonly camouflage: CamouflageResult;
@@ -16,6 +23,21 @@ export interface ExecutionPlanArtifactsInput {
 export interface ExecutionPlanArtifacts {
   readonly camouflage: CamouflageResult;
   readonly orders: ManagedOrder[];
+}
+
+export interface ApprovedExecutionPlanInput {
+  readonly pitBossDecision: PitBossDecision;
+  readonly orderBooks: Iterable<InternalOrderBook>;
+  readonly observedAt: string;
+  readonly ackTimeoutMs: number;
+}
+
+export interface ApprovedExecutionPlan {
+  readonly intent: TradeIntent;
+  readonly camouflage: CamouflageResult;
+  readonly sorPlan: SorPlan;
+  readonly orders: ManagedOrder[];
+  readonly residualLogMetadata: JsonRecord | null;
 }
 
 export interface ExecutionPlanQuoteGateInput {
@@ -48,6 +70,40 @@ export function buildExecutionPlanArtifacts(
       observedAt: input.observedAt,
       ackDeadlineAt
     })
+  };
+}
+
+export function buildApprovedExecutionPlan(
+  input: ApprovedExecutionPlanInput
+): ApprovedExecutionPlan | null {
+  if (!input.pitBossDecision.approved) {
+    return null;
+  }
+
+  const camouflage = camouflageIntent(
+    input.pitBossDecision.intent,
+    input.pitBossDecision.intent.approvedSize ?? input.pitBossDecision.intent.requestedSize
+  );
+  const sorPlan = planSmartOrderRoute(camouflage.intent, [...input.orderBooks]);
+  const { camouflage: routedCamouflage, orders } = buildExecutionPlanArtifacts({
+    camouflage,
+    sorPlan,
+    observedAt: input.observedAt,
+    ackTimeoutMs: input.ackTimeoutMs
+  });
+
+  return {
+    intent: camouflage.intent,
+    camouflage: routedCamouflage,
+    sorPlan,
+    orders,
+    residualLogMetadata:
+      sorPlan.unfilledSize > 0
+        ? sorResidualLiquidityShortfallLogMetadata({
+            intent: camouflage.intent,
+            unfilledSize: sorPlan.unfilledSize
+          })
+        : null
   };
 }
 
