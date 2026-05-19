@@ -167,6 +167,7 @@ import {
   acceptTelemetryStream as acceptTradingTelemetryStream
 } from "./engine/trading/routes/EngineWebSocketStreams";
 import { TradingTelemetryBus } from "./engine/trading/telemetry/TelemetryBus";
+import { buildAgentStateSnapshot } from "./engine/trading/telemetry/AgentSnapshotRuntime";
 import { buildTickTelemetryPayload } from "./engine/trading/telemetry/TickTelemetryRuntime";
 import {
   type ReplayOptions,
@@ -5973,37 +5974,18 @@ export class TradingEngine {
   }
 
   private maybeRecordAgentSnapshot(observedAt: string): void {
-    if (
-      this.engineState.processedTicks === 0 ||
-      this.engineState.processedTicks % AGENT_SNAPSHOT_TICK_INTERVAL !== 0
-    ) {
+    const snapshot = buildAgentStateSnapshot({
+      engineState: this.engineState,
+      latestAgentSignals: this.latestAgentSignals,
+      observedAt,
+      snapshotIntervalTicks: AGENT_SNAPSHOT_TICK_INTERVAL
+    });
+
+    if (!snapshot) {
       return;
     }
 
-    const agents = (Object.keys(this.engineState.agentHealth) as AgentName[]).map((agentName) => {
-      const latestSignal = this.latestAgentSignals.get(agentName);
-
-      return {
-        agentName,
-        health: this.engineState.agentHealth[agentName].status,
-        confidence: latestSignal?.confidence ?? null,
-        bias: latestSignal ? inferSignalBias(latestSignal) : "NEUTRAL",
-        action: latestSignal?.action ?? null,
-        expectedValue: latestSignal?.expectedValue ?? null,
-        lastSignalId: latestSignal?.signalId ?? null,
-        heartbeatAt: this.engineState.agentHealth[agentName].heartbeatAt
-      };
-    });
-
-    this.publish(
-      "AGENT_STATE_SNAPSHOT",
-      {
-        observedAt,
-        processedTicks: this.engineState.processedTicks,
-        agents
-      },
-      `agent-snapshot:${this.engineState.processedTicks}`
-    );
+    this.publish("AGENT_STATE_SNAPSHOT", snapshot.payload, snapshot.correlationId);
   }
 
   private logPerformance(latencyMetrics: LatencyMetrics): void {
