@@ -413,6 +413,7 @@ import type {
   AgentName,
   AgentSignal,
   AssetRuntimeState,
+  BayesianUpdateTrace,
   BookSnapshotResponse,
   ExecutionReport,
   EngineState,
@@ -3186,6 +3187,73 @@ export class TradingEngine {
     return null;
   }
 
+  private scheduleAcceptedTickSnapshot(
+    tick: MarketTick,
+    book: InternalOrderBook,
+    anomalyResult: AnomalyDetectionResult,
+    profilerResult: ProfilerEvaluation
+  ): void {
+    const writes = buildHotPathTickSnapshotWrites({
+      engineState: this.engineState,
+      latencyHistory: this.latencyHistory,
+      processingLatencySamples: this.processingLatencySamples,
+      domWallHistory: this.domWallHistory,
+      anomalyDetectorState: anomalyResult.state,
+      book,
+      tick,
+      profilerProcessed: profilerResult.processed,
+      profilerState: profilerResult.state
+    });
+
+    this.state.waitUntil(this.persistHotStorageSnapshot(writes, "HOT_PATH_TICK_SNAPSHOT"));
+  }
+
+  private journalAcceptedTick(
+    tick: MarketTick,
+    metrics: LatencyMetrics,
+    bayesianTrace: BayesianUpdateTrace | null
+  ): void {
+    if (
+      shouldPersistMarketTick(
+        this.engineState.processedTicks,
+        this.env.MARKET_TICK_JOURNAL_INTERVAL
+      )
+    ) {
+      this.logger.recordMarketTick(tick);
+    }
+
+    if (
+      bayesianTrace &&
+      shouldLogBayesianPosteriorUpdate({
+        trace: bayesianTrace,
+        processedTicks: this.engineState.processedTicks,
+        interval: AGENT_SNAPSHOT_TICK_INTERVAL
+      })
+    ) {
+      this.logger.info(
+        "BAYESIAN_POSTERIOR_UPDATED",
+        "Oracle posterior PDF updated",
+        bayesianPosteriorUpdatedLogMetadata({
+          instrumentCode: tick.instrumentCode,
+          trace: bayesianTrace
+        })
+      );
+    }
+
+    if (shouldLogMarketTickAccepted(this.engineState.processedTicks)) {
+      this.logger.info(
+        "MARKET_TICK_ACCEPTED",
+        "Market tick processed",
+        marketTickAcceptedLogMetadata({
+          tick,
+          metrics,
+          processedTicks: this.engineState.processedTicks,
+          averageLatencyMs: this.engineState.averageLatency
+        })
+      );
+    }
+  }
+
   private async handleTick(
     tick: MarketTick,
     wakeUpTimeMs: number | null,
@@ -3601,46 +3669,8 @@ export class TradingEngine {
       observedAt: metrics.brainTimestamp
     });
 
-    const writes = buildHotPathTickSnapshotWrites({
-      engineState: this.engineState,
-      latencyHistory: this.latencyHistory,
-      processingLatencySamples: this.processingLatencySamples,
-      domWallHistory: this.domWallHistory,
-      anomalyDetectorState: anomalyResult.state,
-      book,
-      tick,
-      profilerProcessed: profilerResult.processed,
-      profilerState: profilerResult.state
-    });
-
-    this.state.waitUntil(this.persistHotStorageSnapshot(writes, "HOT_PATH_TICK_SNAPSHOT"));
-    if (
-      shouldPersistMarketTick(
-        this.engineState.processedTicks,
-        this.env.MARKET_TICK_JOURNAL_INTERVAL
-      )
-    ) {
-      this.logger.recordMarketTick(tick);
-    }
-
-    const bayesianTrace = oracleResult.bayesianTrace;
-    if (
-      bayesianTrace &&
-      shouldLogBayesianPosteriorUpdate({
-        trace: bayesianTrace,
-        processedTicks: this.engineState.processedTicks,
-        interval: AGENT_SNAPSHOT_TICK_INTERVAL
-      })
-    ) {
-      this.logger.info(
-        "BAYESIAN_POSTERIOR_UPDATED",
-        "Oracle posterior PDF updated",
-        bayesianPosteriorUpdatedLogMetadata({
-          instrumentCode: tick.instrumentCode,
-          trace: bayesianTrace
-        })
-      );
-    }
+    this.scheduleAcceptedTickSnapshot(tick, book, anomalyResult, profilerResult);
+    this.journalAcceptedTick(tick, metrics, oracleResult.bayesianTrace);
 
     const croupierQuoteAction = buildCroupierQuoteAction({
       instrumentCode: tick.instrumentCode,
@@ -3672,19 +3702,6 @@ export class TradingEngine {
       options.shadowReplay === true,
       Boolean(croupierDecision.quote)
     );
-
-    if (shouldLogMarketTickAccepted(this.engineState.processedTicks)) {
-      this.logger.info(
-        "MARKET_TICK_ACCEPTED",
-        "Market tick processed",
-        marketTickAcceptedLogMetadata({
-          tick,
-          metrics,
-          processedTicks: this.engineState.processedTicks,
-          averageLatencyMs: this.engineState.averageLatency
-        })
-      );
-    }
 
     this.publishTickTelemetry(tick, metrics, metrics.status, hotPathStartedAt);
     if (profilerResult.closedBuckets > 0) {
