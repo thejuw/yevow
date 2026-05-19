@@ -59,8 +59,7 @@ import {
   stateAfterBookSnapshot,
   stateAfterInformationalBookNotReady,
   stateAfterOrderBookReset,
-  stateAfterRejectedBookDelta,
-  stateAfterRebuiltBookSnapshot
+  stateAfterRejectedBookDelta
 } from "./engine/trading/book/BookRuntimeState";
 import {
   applyOrderBookResetStores,
@@ -1583,7 +1582,12 @@ export class TradingEngine {
           : undefined;
       if (book) {
         if (isCrossedBook(book)) {
-          await this.handleCrossedBookSnapshot(book, sequence, totalLatencyMs, brainTimestamp);
+          await this.orderBookReconstructor.handleCrossedBookSnapshot(
+            book,
+            sequence,
+            totalLatencyMs,
+            brainTimestamp
+          );
         } else {
           const syncState = this.bookSync.get(marketKey);
           if (syncState) {
@@ -1666,7 +1670,12 @@ export class TradingEngine {
     const book = await this.applySnapshot(snapshot, { persist: false });
 
     if (isCrossedBook(book)) {
-      await this.handleCrossedBookSnapshot(book, sequence, totalLatencyMs, brainTimestamp);
+      await this.orderBookReconstructor.handleCrossedBookSnapshot(
+        book,
+        sequence,
+        totalLatencyMs,
+        brainTimestamp
+      );
       return {
         accepted: false,
         status: "DESYNC",
@@ -2934,51 +2943,6 @@ export class TradingEngine {
     }
 
     return applied;
-  }
-
-  private async handleCrossedBookSnapshot(
-    book: InternalOrderBook,
-    sequence: number,
-    timeToBookMs: number | null,
-    observedAt: string
-  ): Promise<void> {
-    await this.orderBookReconstructor.handleCrossedBookSnapshot(
-      book,
-      sequence,
-      timeToBookMs,
-      observedAt
-    );
-  }
-
-  private rebuildBookSnapshot(
-    marketKey: string,
-    instrumentCode: string,
-    exchangeCode: string,
-    sourceExchange: string,
-    source: MarketDataSource,
-    sourceWeight: number,
-    sequence: number,
-    updatedAt: string,
-    timeToBookMs: number | null
-  ): InternalOrderBook {
-    const { book, microstructure } = this.orderBookReconstructor.rebuildBookSnapshot(
-      marketKey,
-      instrumentCode,
-      exchangeCode,
-      sourceExchange,
-      source,
-      sourceWeight,
-      sequence,
-      updatedAt,
-      timeToBookMs
-    );
-    this.engineState = stateAfterRebuiltBookSnapshot({
-      currentState: this.engineState,
-      microstructure,
-      priceDiscovery: calculateOrderBookPriceDiscovery(this.orderBook, instrumentCode, updatedAt)
-    });
-
-    return book;
   }
 
   private currentBookSnapshot(
