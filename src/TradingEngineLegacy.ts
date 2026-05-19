@@ -67,6 +67,7 @@ import {
 } from "./engine/trading/book/DomAnalyzer";
 import {
   buildShadowQueueGhostFillRecord,
+  buildShadowQueueDecisionTrace,
   buildShadowQueueTradeIntent,
   enforceShadowQueueDecisionLatency,
   resolveShadowQueueSizingConfig,
@@ -4186,44 +4187,17 @@ export class TradingEngine {
       tradeIntentId: intent?.intentId ?? null
     };
 
-    this.logger.traceDecision({
-      decisionId: updatedDecision.decisionId,
-      signalId: updatedDecision.fillId,
-      traceId: `${this.engineState.engineId}:shadow-queue:${updatedDecision.fillId}`,
-      agentName: "PROFILER",
-      targetAgent: "EXECUTIONER",
-      instrumentCode: updatedDecision.instrumentCode,
-      action: updatedDecision.action === "GREEN_LIGHT" ? "EXECUTE" : "SUPERVISOR_ACTION",
-      confidence: Math.min(
-        1,
-        Math.max(
-          0,
-          Math.abs(updatedDecision.microDrift) / Math.max(updatedDecision.tickThreshold, 1e-12)
-        )
-      ),
-      expectedValue: intent?.expectedValue ?? 0,
-      maxSlippageBps: intent?.maxSlippageBps ?? 0,
-      reasoning: updatedDecision.reason,
-      featureVector: toJsonValue({
-        schemaVersion: "shadow-queue.decision.v1",
-        light: updatedDecision.action,
-        originalSide: updatedDecision.originalSide,
-        dispatchSide: updatedDecision.dispatchSide,
-        p0MidPrice: updatedDecision.p0MidPrice,
-        pnMidPrice: updatedDecision.pnMidPrice,
-        microDrift: updatedDecision.microDrift,
-        driftTrades: updatedDecision.driftTrades,
-        tradeIntentId: updatedDecision.tradeIntentId
-      }) as JsonRecord,
-      riskSnapshot: toJsonValue({
-        quoteState: this.engineState.quoteState.status,
+    this.logger.traceDecision(
+      buildShadowQueueDecisionTrace({
+        decision: updatedDecision,
+        intent,
+        engineId: this.engineState.engineId,
+        quoteStateStatus: this.engineState.quoteState.status,
         inventory: this.engineState.inventory,
-        cachedConfigVersion: this.cachedConfig.version
-      }) as JsonRecord,
-      rawSignal: updatedDecision as unknown as JsonRecord,
-      latencyMs: updatedDecision.decisionLatencyMs,
-      createdAt: observedAt
-    });
+        cachedConfigVersion: this.cachedConfig.version,
+        observedAt
+      })
+    );
 
     if (!intent) {
       this.publish(

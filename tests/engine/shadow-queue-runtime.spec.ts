@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildShadowQueueDecisionTrace,
   buildShadowQueueGhostFillRecord,
   buildShadowQueueTradeIntent,
   enforceShadowQueueDecisionLatency,
@@ -161,6 +162,63 @@ describe("ShadowQueueRuntime", () => {
     expect(breached.decision).toMatchObject({
       tradeIntentId: null,
       reason: "late Suppressed because drift decision latency exceeded 5ms."
+    });
+  });
+
+  it("builds shadow queue agent decision traces for audit linkage", () => {
+    const intent = buildShadowQueueTradeIntent({
+      decision: decision({ microDrift: 0.5, tickThreshold: 0.25 }),
+      book: book(),
+      observedAt: OBSERVED_AT,
+      engineId: "engine-1",
+      baseSpreadBps: 4,
+      exchangeFeeBps: 1,
+      toxicityScore: 0.3,
+      requestedSize: 0.25,
+      price: 99.5
+    });
+    const trace = buildShadowQueueDecisionTrace({
+      decision: decision({
+        action: "RED_LIGHT",
+        dispatchSide: "SELL",
+        tradeIntentId: intent?.intentId ?? null,
+        microDrift: -0.5,
+        tickThreshold: 0.25
+      }),
+      intent,
+      engineId: "engine-1",
+      quoteStateStatus: "ACTIVE",
+      inventory: inventory({ netDelta: 0.4 }),
+      cachedConfigVersion: "config-v1",
+      observedAt: OBSERVED_AT
+    });
+
+    expect(trace).toMatchObject({
+      decisionId: "decision-1",
+      signalId: "fill-1",
+      traceId: "engine-1:shadow-queue:fill-1",
+      agentName: "PROFILER",
+      targetAgent: "EXECUTIONER",
+      action: "SUPERVISOR_ACTION",
+      confidence: 1,
+      expectedValue: intent?.expectedValue,
+      maxSlippageBps: intent?.maxSlippageBps,
+      featureVector: {
+        schemaVersion: "shadow-queue.decision.v1",
+        light: "RED_LIGHT",
+        dispatchSide: "SELL",
+        tradeIntentId: intent?.intentId
+      },
+      riskSnapshot: {
+        quoteState: "ACTIVE",
+        cachedConfigVersion: "config-v1"
+      },
+      rawSignal: {
+        action: "RED_LIGHT",
+        dispatchSide: "SELL"
+      },
+      latencyMs: 1,
+      createdAt: OBSERVED_AT
     });
   });
 

@@ -1,7 +1,9 @@
 import type {
   GlobalRiskConfig,
+  AgentDecisionTrace,
   InternalOrderBook,
   InventoryState,
+  JsonRecord,
   MarketTick,
   ShadowQueueFill,
   ShadowQueueDecision,
@@ -72,6 +74,16 @@ export interface ShadowQueueNoEdgeThrottleInput {
 export interface ShadowQueueLatencyBudgetResult {
   readonly breached: boolean;
   readonly decision: ShadowQueueDecision;
+}
+
+export interface ShadowQueueDecisionTraceInput {
+  readonly decision: ShadowQueueDecision;
+  readonly intent: TradeIntent | null;
+  readonly engineId: string;
+  readonly quoteStateStatus: string;
+  readonly inventory: InventoryState;
+  readonly cachedConfigVersion: string;
+  readonly observedAt: string;
 }
 
 export function shouldProcessShadowQueueTick(input: ShadowQueueTickGateInput): boolean {
@@ -183,6 +195,49 @@ export function enforceShadowQueueDecisionLatency(
       tradeIntentId: null,
       reason: `${decision.reason} Suppressed because drift decision latency exceeded ${latencyBudgetMs}ms.`
     }
+  };
+}
+
+export function buildShadowQueueDecisionTrace(
+  input: ShadowQueueDecisionTraceInput
+): AgentDecisionTrace {
+  return {
+    decisionId: input.decision.decisionId,
+    signalId: input.decision.fillId,
+    traceId: `${input.engineId}:shadow-queue:${input.decision.fillId}`,
+    agentName: "PROFILER",
+    targetAgent: "EXECUTIONER",
+    instrumentCode: input.decision.instrumentCode,
+    action: input.decision.action === "GREEN_LIGHT" ? "EXECUTE" : "SUPERVISOR_ACTION",
+    confidence: Math.min(
+      1,
+      Math.max(
+        0,
+        Math.abs(input.decision.microDrift) / Math.max(input.decision.tickThreshold, 1e-12)
+      )
+    ),
+    expectedValue: input.intent?.expectedValue ?? 0,
+    maxSlippageBps: input.intent?.maxSlippageBps ?? 0,
+    reasoning: input.decision.reason,
+    featureVector: {
+      schemaVersion: "shadow-queue.decision.v1",
+      light: input.decision.action,
+      originalSide: input.decision.originalSide,
+      dispatchSide: input.decision.dispatchSide,
+      p0MidPrice: input.decision.p0MidPrice,
+      pnMidPrice: input.decision.pnMidPrice,
+      microDrift: input.decision.microDrift,
+      driftTrades: input.decision.driftTrades,
+      tradeIntentId: input.decision.tradeIntentId
+    },
+    riskSnapshot: {
+      quoteState: input.quoteStateStatus,
+      inventory: input.inventory,
+      cachedConfigVersion: input.cachedConfigVersion
+    } as unknown as JsonRecord,
+    rawSignal: input.decision as unknown as JsonRecord,
+    latencyMs: input.decision.decisionLatencyMs,
+    createdAt: input.observedAt
   };
 }
 
