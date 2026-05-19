@@ -43,6 +43,12 @@ export interface JanitorStateUpdateInput {
   readonly observedAt: string;
 }
 
+export interface JanitorCleanupWarningInput {
+  readonly source: "ALARM" | "ADMIN";
+  readonly report: JanitorState;
+  readonly pruneReport: LogPruneReport;
+}
+
 export interface JanitorExecutionerFetcher {
   fetch(request: Request): Promise<Response>;
 }
@@ -260,6 +266,41 @@ export function stateAfterJanitorRun(input: JanitorStateUpdateInput): EngineStat
   };
 }
 
+export function janitorCleanupRequiredLogMetadata(input: JanitorCleanupWarningInput): JsonRecord {
+  return {
+    source: input.source,
+    zombieOrders: input.report.zombieOrders,
+    orphanExchangeOrders: input.report.orphanExchangeOrders,
+    cancelledOrders: input.report.cancelledOrders,
+    dustPositions: input.report.dustPositions,
+    dustCloseIntents: input.report.dustCloseIntents,
+    prunedTelemetryCount: input.report.prunedTelemetryCount,
+    pruneReport: pruneReportToJson(input.pruneReport)
+  };
+}
+
 function hasClientId(order: ExchangeOpenOrder): order is ExchangeOpenOrder & { clientId: string } {
   return typeof order.clientId === "string" && order.clientId.length > 0;
+}
+
+function pruneReportToJson(report: LogPruneReport): JsonRecord {
+  return {
+    policy: {
+      generatedAt: report.policy.generatedAt,
+      telemetryRetentionDays: report.policy.telemetryRetentionDays,
+      lowValueRetentionDays: report.policy.lowValueRetentionDays,
+      marketTickRetentionDays: report.policy.marketTickRetentionDays,
+      maxTelemetryRows: report.policy.maxTelemetryRows,
+      maxOperationalInfoRows: report.policy.maxOperationalInfoRows,
+      maxMarketTickRows: report.policy.maxMarketTickRows,
+      telemetryCutoff: report.policy.telemetryCutoff,
+      lowValueCutoff: report.policy.lowValueCutoff,
+      marketTickCutoff: report.policy.marketTickCutoff
+    },
+    telemetryRows: report.telemetryRows,
+    lowValueOperationalRows: report.lowValueOperationalRows,
+    cappedOperationalInfoRows: report.cappedOperationalInfoRows,
+    marketTickRows: report.marketTickRows,
+    totalRows: report.totalRows
+  };
 }

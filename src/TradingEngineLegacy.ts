@@ -190,6 +190,7 @@ import {
   buildJanitorReport,
   cancelJanitorOrder,
   fetchJanitorExchangeOpenOrders,
+  janitorCleanupRequiredLogMetadata,
   reconcileJanitorOrders,
   recordPostOnlyDustCloseSkip,
   stateAfterJanitorRun
@@ -570,7 +571,6 @@ import {
   defaultInventoryGuardState,
   passiveInventoryGuardStateFromInventory,
   defaultJanitorState,
-  logPruneReportToJson,
   logRetentionPolicyToJson,
   defaultSlippageAnalytics,
   defaultRiskLimits,
@@ -4491,16 +4491,15 @@ export class TradingEngine {
     });
 
     if (janitorResult.shouldWarn) {
-      this.logger.warn("JANITOR_CLEANUP_REQUIRED", "Janitor found state hygiene work", {
-        source,
-        zombieOrders: janitorResult.report.zombieOrders,
-        orphanExchangeOrders: janitorResult.report.orphanExchangeOrders,
-        cancelledOrders: janitorResult.report.cancelledOrders,
-        dustPositions: janitorResult.report.dustPositions,
-        dustCloseIntents: janitorResult.report.dustCloseIntents,
-        prunedTelemetryCount: janitorResult.report.prunedTelemetryCount,
-        pruneReport: logPruneReportToJson(pruneReport)
-      });
+      this.logger.warn(
+        "JANITOR_CLEANUP_REQUIRED",
+        "Janitor found state hygiene work",
+        janitorCleanupRequiredLogMetadata({
+          source,
+          report: janitorResult.report,
+          pruneReport
+        })
+      );
     }
 
     this.engineState = stateAfterJanitorRun({

@@ -3,6 +3,7 @@ import {
   buildJanitorReport,
   cancelJanitorOrder,
   fetchJanitorExchangeOpenOrders,
+  janitorCleanupRequiredLogMetadata,
   type JanitorExecutionLogger,
   reconcileJanitorOrders,
   recordPostOnlyDustCloseSkip,
@@ -148,6 +149,40 @@ describe("JanitorRuntime", () => {
 
     expect(result.shouldWarn).toBe(false);
     expect(result.report.reconciledOrders).toEqual(["client-2"]);
+  });
+
+  it("builds janitor cleanup warning metadata with serialized prune context", () => {
+    expect(
+      janitorCleanupRequiredLogMetadata({
+        source: "ADMIN",
+        report: janitorState({
+          zombieOrders: ["zombie-1"],
+          orphanExchangeOrders: ["orphan-1"],
+          cancelledOrders: ["cancelled-1"],
+          dustPositions: ["dust-1"],
+          dustCloseIntents: ["intent-1"],
+          prunedTelemetryCount: 3
+        }),
+        pruneReport: logPruneReport({ totalRows: 3, telemetryRows: 2, marketTickRows: 1 })
+      })
+    ).toMatchObject({
+      source: "ADMIN",
+      zombieOrders: ["zombie-1"],
+      orphanExchangeOrders: ["orphan-1"],
+      cancelledOrders: ["cancelled-1"],
+      dustPositions: ["dust-1"],
+      dustCloseIntents: ["intent-1"],
+      prunedTelemetryCount: 3,
+      pruneReport: {
+        telemetryRows: 2,
+        marketTickRows: 1,
+        totalRows: 3,
+        policy: {
+          generatedAt: OBSERVED_AT,
+          maxTelemetryRows: 15_000
+        }
+      }
+    });
   });
 
   it("fetches exchange open orders through the executioner binding", async () => {
