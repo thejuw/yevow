@@ -257,6 +257,7 @@ import {
   processHyperliquidTradeBatch,
   registerHyperliquidIngestConnection,
   routeHyperliquidRawMessage,
+  type HyperliquidL2BookHotPathDecision,
   type HyperliquidRawIngestPayload
 } from "./engine/trading/ingest/HyperliquidRawIngest";
 import {
@@ -1608,6 +1609,80 @@ export class TradingEngine {
     };
   }
 
+  private async handleStaleHyperliquidL2Book(
+    l2Decision: Extract<HyperliquidL2BookHotPathDecision, { kind: "STALE" }>,
+    payload: HyperliquidRawIngestPayload,
+    wakeUpTimeMs: number | null,
+    hotPathStartedAt: number
+  ): Promise<TickIngestResult> {
+    const { instrumentCode, sequence, snapshot } = l2Decision.bundle;
+    const { brainTimestamp, totalLatencyMs } = l2Decision;
+    const book =
+      snapshot.bids.length > 0 || snapshot.asks.length > 0
+        ? await this.applySnapshot(snapshot, { telemetry: false, persist: false })
+        : undefined;
+
+    if (book) {
+      if (isCrossedBook(book)) {
+        await this.orderBookReconstructor.handleCrossedBookSnapshot(
+          book,
+          sequence,
+          totalLatencyMs,
+          brainTimestamp
+        );
+      } else {
+        const syncState = this.bookSync.get(l2Decision.bundle.marketKey);
+        markBookSyncDesynced({
+          syncState,
+          reason: "NATIVE_HL_LATENCY",
+          observedAt: brainTimestamp
+        });
+        const staleBook = stateAfterDesyncedBook({
+          currentState: this.engineState,
+          book,
+          reason: "NATIVE_HL_LATENCY"
+        });
+        this.orderBook.set(l2Decision.bundle.marketKey, staleBook.book);
+        this.engineState = staleBook.state;
+      }
+    }
+
+    const metrics = l2Decision.metrics;
+    this.quoteStateStalePull(instrumentCode, sequence, metrics, brainTimestamp);
+    this.observeExecutionProfile(metrics, {
+      wakeUpTimeMs,
+      orderBookUpdateMs: null,
+      agentLogicMs: null,
+      hotPathStartedAt,
+      observedAt: brainTimestamp
+    });
+    if (this.cachedConfig.TRADING_ENABLED) {
+      this.state.waitUntil(this.cancelAllQuotes(instrumentCode, "NATIVE_HL_LATENCY"));
+    }
+    this.publishTickTelemetry(
+      buildHyperliquidL2BookTick({
+        payload,
+        bundle: l2Decision.bundle,
+        price: 0,
+        bestBid: undefined,
+        bestAsk: undefined,
+        rawEventType: "native-l2Book"
+      }),
+      metrics,
+      "STALE",
+      hotPathStartedAt
+    );
+
+    return {
+      accepted: false,
+      status: "STALE",
+      reason: "NATIVE_HL_LATENCY_EXCEEDED",
+      metrics,
+      book,
+      processedCount: 0
+    };
+  }
+
   private async handleHyperliquidL2Book(
     raw: Record<string, unknown>,
     payload: HyperliquidRawIngestPayload,
@@ -1635,7 +1710,7 @@ export class TradingEngine {
       sampleCount: this.engineState.latencySampleCount,
       location: this.engineState.location
     });
-    const { instrumentCode, sequence, marketKey, snapshot } = l2Decision.bundle;
+    const { sequence, marketKey, snapshot } = l2Decision.bundle;
 
     if (l2Decision.kind === "DUPLICATE_OR_OUT_OF_ORDER") {
       return l2Decision.result;
@@ -1655,73 +1730,11 @@ export class TradingEngine {
       return l2Decision.result;
     }
 
-    const { brainTimestamp, totalLatencyMs } = l2Decision;
-
     if (l2Decision.kind === "STALE") {
-      const book =
-        snapshot.bids.length > 0 || snapshot.asks.length > 0
-          ? await this.applySnapshot(snapshot, { telemetry: false, persist: false })
-          : undefined;
-      if (book) {
-        if (isCrossedBook(book)) {
-          await this.orderBookReconstructor.handleCrossedBookSnapshot(
-            book,
-            sequence,
-            totalLatencyMs,
-            brainTimestamp
-          );
-        } else {
-          const syncState = this.bookSync.get(marketKey);
-          markBookSyncDesynced({
-            syncState,
-            reason: "NATIVE_HL_LATENCY",
-            observedAt: brainTimestamp
-          });
-          const staleBook = stateAfterDesyncedBook({
-            currentState: this.engineState,
-            book,
-            reason: "NATIVE_HL_LATENCY"
-          });
-          this.orderBook.set(marketKey, staleBook.book);
-          this.engineState = staleBook.state;
-        }
-      }
-      const metrics = l2Decision.metrics;
-      this.quoteStateStalePull(instrumentCode, sequence, metrics, brainTimestamp);
-      this.observeExecutionProfile(metrics, {
-        wakeUpTimeMs,
-        orderBookUpdateMs: null,
-        agentLogicMs: null,
-        hotPathStartedAt,
-        observedAt: brainTimestamp
-      });
-      if (this.cachedConfig.TRADING_ENABLED) {
-        this.state.waitUntil(this.cancelAllQuotes(instrumentCode, "NATIVE_HL_LATENCY"));
-      }
-      this.publishTickTelemetry(
-        buildHyperliquidL2BookTick({
-          payload,
-          bundle: l2Decision.bundle,
-          price: 0,
-          bestBid: undefined,
-          bestAsk: undefined,
-          rawEventType: "native-l2Book"
-        }),
-        metrics,
-        "STALE",
-        hotPathStartedAt
-      );
-
-      return {
-        accepted: false,
-        status: "STALE",
-        reason: "NATIVE_HL_LATENCY_EXCEEDED",
-        metrics,
-        book,
-        processedCount: 0
-      };
+      return this.handleStaleHyperliquidL2Book(l2Decision, payload, wakeUpTimeMs, hotPathStartedAt);
     }
 
+    const { brainTimestamp, totalLatencyMs } = l2Decision;
     const book = await this.applySnapshot(snapshot, { persist: false });
 
     if (isCrossedBook(book)) {
