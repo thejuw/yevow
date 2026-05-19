@@ -64,6 +64,7 @@ import {
   shadowQueuePostOnlyPrice as calculateShadowQueuePostOnlyPrice
 } from "./engine/trading/shadow/ShadowQueueRuntime";
 import { updateLeadLagMetrics as updateLeadLagRuntimeMetrics } from "./engine/trading/leadlag/LeadLagRuntime";
+import { calculateInventoryState as calculateInventoryRuntimeState } from "./engine/trading/inventory/InventoryRuntime";
 import {
   OrderBookReconstructor,
   type OrderBookStores
@@ -4917,10 +4918,6 @@ export class TradingEngine {
     observedAt: string,
     positions: Record<string, Position> = this.engineState.openPositions
   ): EngineState["inventory"] {
-    const netDelta = Object.values(positions).reduce(
-      (sum, position) => sum + (position.side === "LONG" ? position.quantity : -position.quantity),
-      0
-    );
     const maxInventoryUnits =
       this.cachedConfig.MAX_INVENTORY_UNITS > 0
         ? this.cachedConfig.MAX_INVENTORY_UNITS
@@ -4933,59 +4930,19 @@ export class TradingEngine {
       this.cachedConfig.RISK_AVERSION_FACTOR > 0
         ? this.cachedConfig.RISK_AVERSION_FACTOR
         : readPositiveNumber(this.env.RISK_AVERSION_FACTOR, DEFAULT_RISK_AVERSION_FACTOR);
-    const normalized = this.normalizeInventoryDelta(positions);
-    const inventoryPenalty = Math.abs(normalized.current_inventory_delta) * riskAversionFactor;
-    const stopBid =
-      netDelta >= maxInventoryUnits ||
-      (maxInventoryDelta > 0 && normalized.current_inventory_delta >= maxInventoryDelta);
-    const stopAsk =
-      netDelta <= -maxInventoryUnits ||
-      (maxInventoryDelta > 0 && normalized.current_inventory_delta <= -maxInventoryDelta);
+    const baseAsset = "BTC";
 
-    return {
-      netDelta,
-      current_inventory_delta: normalized.current_inventory_delta,
-      baseAsset: normalized.baseAsset,
-      normalization: normalized.normalization,
+    return calculateInventoryRuntimeState({
+      positions,
+      observedAt,
       maxInventoryUnits,
       maxInventoryDelta,
-      inventoryPenalty,
-      stopBid,
-      stopAsk,
-      updatedAt: observedAt
-    };
-  }
-
-  private normalizeInventoryDelta(
-    positions: Record<string, Position>
-  ): Pick<InventoryState, "current_inventory_delta" | "baseAsset" | "normalization"> {
-    const baseAsset = "BTC";
-    const baseReferencePrice = this.referencePriceForBaseAsset(baseAsset);
-    const configuredWeights = parseDeltaNormalizationWeights(this.env.DELTA_NORMALIZATION_WEIGHTS);
-    const normalization: Record<string, number> = {};
-    let currentInventoryDelta = 0;
-
-    for (const position of Object.values(positions)) {
-      const signedQuantity = position.side === "LONG" ? position.quantity : -position.quantity;
-      const instrumentCode = position.instrumentCode.toLowerCase();
-      const markPrice = this.currentMarkPrice(instrumentCode, position.markPrice);
-      const configuredWeight = configuredWeights[instrumentCode];
-      const inferredWeight =
-        baseReferencePrice > 0 && markPrice > 0 ? markPrice / baseReferencePrice : 1;
-      const weight =
-        typeof configuredWeight === "number" && Number.isFinite(configuredWeight)
-          ? configuredWeight
-          : inferredWeight;
-
-      normalization[instrumentCode] = roundMetric(weight, 8);
-      currentInventoryDelta += signedQuantity * weight;
-    }
-
-    return {
-      current_inventory_delta: roundCrypto(currentInventoryDelta),
+      riskAversionFactor,
       baseAsset,
-      normalization
-    };
+      baseReferencePrice: this.referencePriceForBaseAsset(baseAsset),
+      configuredWeights: parseDeltaNormalizationWeights(this.env.DELTA_NORMALIZATION_WEIGHTS),
+      markPrice: (instrumentCode, fallback) => this.currentMarkPrice(instrumentCode, fallback)
+    });
   }
 
   private referencePriceForBaseAsset(baseAsset: string): number {
