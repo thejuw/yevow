@@ -157,6 +157,7 @@ import {
 } from "./engine/trading/state/EngineDiagnostics";
 import { nextTickAgentHealth } from "./engine/trading/state/AgentHealthRuntime";
 import { stateAfterAcceptedTick } from "./engine/trading/state/TickStateRuntime";
+import { buildHotPathTickSnapshotWrites } from "./engine/trading/state/TickPersistenceRuntime";
 import { StorageWriteGuard } from "./engine/trading/state/StorageWriteGuard";
 import {
   LOW_VALUE_OPERATIONAL_EVENT_TYPES,
@@ -3849,22 +3850,17 @@ export class TradingEngine {
       observedAt: metrics.brainTimestamp
     });
 
-    const writes: Record<string, unknown> = {
-      [ENGINE_STATE_KEY]: this.engineState,
-      [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
-      [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples,
-      [DOM_WALL_HISTORY_KEY]: this.domWallHistory,
-      [ANOMALY_DETECTOR_STORAGE_KEY]: anomalyResult.state,
-      [`${ORDER_BOOK_PREFIX}${book.marketKey}`]: book,
-      [`lastTick:${book.marketKey}`]: tick
-    };
-
-    if (profilerResult.processed) {
-      writes[profilerStorageKey(tick.instrumentCode)] = profilerResult.state;
-      if (tick.instrumentCode === "btc-usd") {
-        writes[PROFILER_STATE_STORAGE_KEY] = profilerResult.state;
-      }
-    }
+    const writes = buildHotPathTickSnapshotWrites({
+      engineState: this.engineState,
+      latencyHistory: this.latencyHistory,
+      processingLatencySamples: this.processingLatencySamples,
+      domWallHistory: this.domWallHistory,
+      anomalyDetectorState: anomalyResult.state,
+      book,
+      tick,
+      profilerProcessed: profilerResult.processed,
+      profilerState: profilerResult.state
+    });
 
     this.state.waitUntil(this.persistHotStorageSnapshot(writes, "HOT_PATH_TICK_SNAPSHOT"));
     if (this.shouldJournalMarketTick()) {
