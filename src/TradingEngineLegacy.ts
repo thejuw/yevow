@@ -2888,6 +2888,67 @@ export class TradingEngine {
     };
   }
 
+  private async handleAnomalyEmergencyPause(
+    tick: MarketTick,
+    book: InternalOrderBook,
+    domSnapshot: DomAnalysisSnapshot,
+    anomalyResult: AnomalyDetectionResult,
+    anomalyLogicStartedAt: number,
+    metrics: LatencyMetrics,
+    wakeUpTimeMs: number | null,
+    orderBookUpdateMs: number,
+    hotPathStartedAt: number
+  ): Promise<TickIngestResult> {
+    const anomalyLogicMs = roundLatency(highResolutionNow() - anomalyLogicStartedAt);
+
+    this.observeExecutionProfile(metrics, {
+      wakeUpTimeMs,
+      orderBookUpdateMs,
+      agentLogicMs: anomalyLogicMs,
+      hotPathStartedAt,
+      observedAt: metrics.brainTimestamp
+    });
+
+    this.engineState = stateAfterAnomalyEmergencyPause({
+      currentState: this.engineState,
+      book,
+      dom: domSnapshot,
+      anomaly: anomalyResult.status,
+      internalOrderBookDepth: countBookLevels(this.bids, this.asks),
+      observedAt: metrics.brainTimestamp
+    });
+
+    await this.safeStoragePut(
+      anomalyEmergencyPauseStorageWrites({
+        engineStateKey: ENGINE_STATE_KEY,
+        state: this.engineState,
+        performanceHistoryKey: PERFORMANCE_HISTORY_KEY,
+        latencyHistory: this.latencyHistory,
+        processingLatencySamplesKey: PROCESSING_LATENCY_SAMPLES_KEY,
+        processingLatencySamples: this.processingLatencySamples,
+        domWallHistoryKey: DOM_WALL_HISTORY_KEY,
+        domWallHistory: this.domWallHistory,
+        anomalyDetectorStorageKey: ANOMALY_DETECTOR_STORAGE_KEY,
+        anomalyResult,
+        orderBookPrefix: ORDER_BOOK_PREFIX,
+        book,
+        tick
+      }),
+      "ANOMALY_EMERGENCY_PAUSE"
+    );
+
+    this.triggerEmergencyPause(tick, book, domSnapshot, anomalyResult, metrics);
+    this.publishTickTelemetry(tick, metrics, "FRESH", hotPathStartedAt);
+
+    return {
+      accepted: false,
+      status: "ANOMALY_PAUSE",
+      reason: anomalyResult.anomalies.map((event) => event.types.join("+")).join(","),
+      metrics,
+      book
+    };
+  }
+
   private async handleTick(
     tick: MarketTick,
     wakeUpTimeMs: number | null,
@@ -3117,54 +3178,17 @@ export class TradingEngine {
       !options.shadowReplay &&
       !isShadowMode(this.env)
     ) {
-      const anomalyLogicMs = roundLatency(highResolutionNow() - anomalyLogicStartedAt);
-
-      this.observeExecutionProfile(metrics, {
+      return this.handleAnomalyEmergencyPause(
+        tick,
+        book,
+        domSnapshot,
+        anomalyResult,
+        anomalyLogicStartedAt,
+        metrics,
         wakeUpTimeMs,
         orderBookUpdateMs,
-        agentLogicMs: anomalyLogicMs,
-        hotPathStartedAt,
-        observedAt: metrics.brainTimestamp
-      });
-
-      this.engineState = stateAfterAnomalyEmergencyPause({
-        currentState: this.engineState,
-        book,
-        dom: domSnapshot,
-        anomaly: anomalyResult.status,
-        internalOrderBookDepth: countBookLevels(this.bids, this.asks),
-        observedAt: metrics.brainTimestamp
-      });
-
-      await this.safeStoragePut(
-        anomalyEmergencyPauseStorageWrites({
-          engineStateKey: ENGINE_STATE_KEY,
-          state: this.engineState,
-          performanceHistoryKey: PERFORMANCE_HISTORY_KEY,
-          latencyHistory: this.latencyHistory,
-          processingLatencySamplesKey: PROCESSING_LATENCY_SAMPLES_KEY,
-          processingLatencySamples: this.processingLatencySamples,
-          domWallHistoryKey: DOM_WALL_HISTORY_KEY,
-          domWallHistory: this.domWallHistory,
-          anomalyDetectorStorageKey: ANOMALY_DETECTOR_STORAGE_KEY,
-          anomalyResult,
-          orderBookPrefix: ORDER_BOOK_PREFIX,
-          book,
-          tick
-        }),
-        "ANOMALY_EMERGENCY_PAUSE"
+        hotPathStartedAt
       );
-
-      this.triggerEmergencyPause(tick, book, domSnapshot, anomalyResult, metrics);
-      this.publishTickTelemetry(tick, metrics, "FRESH", hotPathStartedAt);
-
-      return {
-        accepted: false,
-        status: "ANOMALY_PAUSE",
-        reason: anomalyResult.anomalies.map((event) => event.types.join("+")).join(","),
-        metrics,
-        book
-      };
     }
 
     const profilerAgent = this.profilerRegistry.forInstrument(tick.instrumentCode);
