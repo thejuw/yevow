@@ -90,6 +90,7 @@ import {
   shadowQueueKellySize as calculateShadowQueueKellySize
 } from "./engine/trading/shadow/ShadowQueueRuntime";
 import {
+  anomalyEmergencyPauseStorageWrites,
   buildAnomalyEmergencyPauseTelemetry,
   stateAfterAnomalyEmergencyPause
 } from "./engine/trading/anomaly/AnomalyRuntime";
@@ -3126,16 +3127,21 @@ export class TradingEngine {
       });
 
       await this.safeStoragePut(
-        {
-          [ENGINE_STATE_KEY]: this.engineState,
-          [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
-          [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples,
-          [DOM_WALL_HISTORY_KEY]: this.domWallHistory,
-          [ANOMALY_DETECTOR_STORAGE_KEY]: anomalyResult.state,
-          [`${ORDER_BOOK_PREFIX}${book.marketKey}`]: book,
-          [`lastTick:${book.marketKey}`]: tick,
-          [`anomaly:${book.marketKey}:${tick.sequence}`]: anomalyResult.anomalies
-        },
+        anomalyEmergencyPauseStorageWrites({
+          engineStateKey: ENGINE_STATE_KEY,
+          state: this.engineState,
+          performanceHistoryKey: PERFORMANCE_HISTORY_KEY,
+          latencyHistory: this.latencyHistory,
+          processingLatencySamplesKey: PROCESSING_LATENCY_SAMPLES_KEY,
+          processingLatencySamples: this.processingLatencySamples,
+          domWallHistoryKey: DOM_WALL_HISTORY_KEY,
+          domWallHistory: this.domWallHistory,
+          anomalyDetectorStorageKey: ANOMALY_DETECTOR_STORAGE_KEY,
+          anomalyResult,
+          orderBookPrefix: ORDER_BOOK_PREFIX,
+          book,
+          tick
+        }),
         "ANOMALY_EMERGENCY_PAUSE"
       );
 

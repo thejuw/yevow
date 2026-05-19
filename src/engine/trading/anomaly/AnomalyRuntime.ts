@@ -6,6 +6,7 @@ import type {
   InternalOrderBook,
   JsonRecord,
   LatencyMetrics,
+  LiquidityWall,
   MarketTick
 } from "../../../types";
 import { microstructureFromBook } from "../book/BookReconstruction";
@@ -26,6 +27,22 @@ export interface AnomalyEmergencyPauseTelemetryInput {
   readonly anomalyResult: AnomalyDetectionResult;
   readonly metrics: LatencyMetrics;
   readonly engineState: EngineState;
+}
+
+export interface AnomalyEmergencyPauseStorageInput {
+  readonly engineStateKey: string;
+  readonly state: EngineState;
+  readonly performanceHistoryKey: string;
+  readonly latencyHistory: readonly LatencyMetrics[];
+  readonly processingLatencySamplesKey: string;
+  readonly processingLatencySamples: readonly number[];
+  readonly domWallHistoryKey: string;
+  readonly domWallHistory: readonly LiquidityWall[];
+  readonly anomalyDetectorStorageKey: string;
+  readonly anomalyResult: AnomalyDetectionResult;
+  readonly orderBookPrefix: string;
+  readonly book: InternalOrderBook;
+  readonly tick: MarketTick;
 }
 
 export interface AnomalyEmergencyPauseTelemetry {
@@ -125,5 +142,20 @@ export function buildAnomalyEmergencyPauseTelemetry(
         mode: input.engineState.mode
       }
     }
+  };
+}
+
+export function anomalyEmergencyPauseStorageWrites(
+  input: AnomalyEmergencyPauseStorageInput
+): Record<string, unknown> {
+  return {
+    [input.engineStateKey]: input.state,
+    [input.performanceHistoryKey]: input.latencyHistory,
+    [input.processingLatencySamplesKey]: input.processingLatencySamples,
+    [input.domWallHistoryKey]: input.domWallHistory,
+    [input.anomalyDetectorStorageKey]: input.anomalyResult.state,
+    [`${input.orderBookPrefix}${input.book.marketKey}`]: input.book,
+    [`lastTick:${input.book.marketKey}`]: input.tick,
+    [`anomaly:${input.book.marketKey}:${input.tick.sequence}`]: input.anomalyResult.anomalies
   };
 }

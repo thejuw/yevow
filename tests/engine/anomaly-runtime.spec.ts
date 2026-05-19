@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  anomalyEmergencyPauseStorageWrites,
   buildAnomalyEmergencyPauseTelemetry,
   stateAfterAnomalyEmergencyPause
 } from "../../src/engine/trading/anomaly/AnomalyRuntime";
@@ -97,6 +98,43 @@ describe("AnomalyRuntime", () => {
     expect(event.logMetadata.marketSnapshot).toMatchObject({
       tick: { instrumentCode: "btc-usd" },
       engineState: { engineId: "anomaly-test", processedTicks: 4 }
+    });
+  });
+
+  it("builds emergency pause storage writes", () => {
+    const state = defaultEngineState("anomaly-test");
+    const latencyHistory = [latency()];
+    const processingLatencySamples = [1, 2];
+    const wallHistory = dom().walls;
+    const anomalyDetection = anomalyResult();
+    const currentBook = book();
+    const currentTick = tick();
+
+    expect(
+      anomalyEmergencyPauseStorageWrites({
+        engineStateKey: "engine:state",
+        state,
+        performanceHistoryKey: "latency:history",
+        latencyHistory,
+        processingLatencySamplesKey: "latency:samples",
+        processingLatencySamples,
+        domWallHistoryKey: "dom:walls",
+        domWallHistory: wallHistory,
+        anomalyDetectorStorageKey: "anomaly:state",
+        anomalyResult: anomalyDetection,
+        orderBookPrefix: "book:",
+        book: currentBook,
+        tick: currentTick
+      })
+    ).toEqual({
+      "engine:state": state,
+      "latency:history": latencyHistory,
+      "latency:samples": processingLatencySamples,
+      "dom:walls": wallHistory,
+      "anomaly:state": anomalyDetection.state,
+      "book:hyperliquid:btc-usd": currentBook,
+      "lastTick:hyperliquid:btc-usd": currentTick,
+      "anomaly:hyperliquid:btc-usd:42": anomalyDetection.anomalies
     });
   });
 });
