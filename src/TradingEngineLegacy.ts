@@ -304,7 +304,6 @@ import type {
   OrderBookSnapshot,
   OrderBookSnapshotLevel,
   PriceLevel,
-  PriceDiscoveryMetrics,
   Position,
   ProfilerState,
   ReplayResult,
@@ -1014,7 +1013,11 @@ export class TradingEngine {
         microstructure: baseState.microstructure ?? defaultMicrostructure(),
         priceDiscovery:
           baseState.priceDiscovery ??
-          this.calculatePriceDiscovery(baseState.microstructure?.instrumentCode, now),
+          calculateOrderBookPriceDiscovery(
+            this.orderBook,
+            baseState.microstructure?.instrumentCode,
+            now
+          ),
         oracle: baseState.oracle ?? defaultOracleState(),
         sentiment: baseState.sentiment ?? defaultSentimentState(),
         ensemble: baseState.ensemble ?? defaultEnsembleState(now),
@@ -1269,7 +1272,7 @@ export class TradingEngine {
       bids: this.bids,
       asks: this.asks,
       calculatePriceDiscovery: (instrumentCode, observedAt) =>
-        this.calculatePriceDiscovery(instrumentCode, observedAt),
+        calculateOrderBookPriceDiscovery(this.orderBook, instrumentCode, observedAt),
       calculateAssetMatrix: (
         observedAt,
         latestInstrumentCode,
@@ -2626,7 +2629,7 @@ export class TradingEngine {
       internalOrderBookDepth: countBookLevels(this.bids, this.asks),
       now: reset.now,
       priceDiscovery: reset.resetInstrument
-        ? this.calculatePriceDiscovery(reset.resetInstrument, reset.now)
+        ? calculateOrderBookPriceDiscovery(this.orderBook, reset.resetInstrument, reset.now)
         : null
     });
 
@@ -2866,7 +2869,7 @@ export class TradingEngine {
       currentState: this.engineState,
       book,
       internalOrderBookDepth: countBookLevels(this.bids, this.asks),
-      priceDiscovery: this.calculatePriceDiscovery(applied.instrumentCode, updatedAt),
+      priceDiscovery: calculateOrderBookPriceDiscovery(this.orderBook, applied.instrumentCode, updatedAt),
       dom: domSnapshot,
       updatedAt
     });
@@ -2924,7 +2927,11 @@ export class TradingEngine {
       this.engineState = stateAfterAcceptedBookDelta({
         currentState: this.engineState,
         book: applied.book,
-        priceDiscovery: this.calculatePriceDiscovery(applied.book.instrumentCode, updatedAt)
+        priceDiscovery: calculateOrderBookPriceDiscovery(
+          this.orderBook,
+          applied.book.instrumentCode,
+          updatedAt
+        )
       });
     }
 
@@ -2970,17 +2977,10 @@ export class TradingEngine {
     this.engineState = stateAfterRebuiltBookSnapshot({
       currentState: this.engineState,
       microstructure,
-      priceDiscovery: this.calculatePriceDiscovery(instrumentCode, updatedAt)
+      priceDiscovery: calculateOrderBookPriceDiscovery(this.orderBook, instrumentCode, updatedAt)
     });
 
     return book;
-  }
-
-  private calculatePriceDiscovery(
-    instrumentCode: string | null | undefined,
-    observedAt: string
-  ): PriceDiscoveryMetrics {
-    return calculateOrderBookPriceDiscovery(this.orderBook, instrumentCode, observedAt);
   }
 
   private currentBookSnapshot(
