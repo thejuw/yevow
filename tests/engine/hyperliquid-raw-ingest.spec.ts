@@ -6,6 +6,7 @@ import {
   hyperliquidIngestConnectionKey,
   hyperliquidRawMessages,
   isActiveHyperliquidIngestConnection,
+  registerHyperliquidIngestConnection,
   resolveHyperliquidBookTimestamp
 } from "../../src/engine/trading/ingest/HyperliquidRawIngest";
 import type { BookSyncState } from "../../src/engine/trading/book/BookTypes";
@@ -121,6 +122,56 @@ describe("hyperliquid raw ingest helpers", () => {
     expect(evaluateHyperliquidBookSequence(bookSync(10), 20, false, 5, "now")).toEqual({
       status: "ACCEPTED"
     });
+  });
+
+  it("registers active ingest connections by stream and default fallback", () => {
+    const active = new Map<string, string>();
+    const observedAt = "2026-05-18T13:00:00.000Z";
+
+    const missing = registerHyperliquidIngestConnection(
+      active,
+      { source_exchange: "HyperLiquid", streamId: "book" },
+      observedAt
+    );
+    expect(missing).toEqual({
+      registered: false,
+      reason: "MISSING_CONNECTION_ID",
+      source_exchange: "hyperliquid",
+      streamId: "book",
+      observedAt
+    });
+    expect(active.size).toBe(0);
+
+    const streamRegistration = registerHyperliquidIngestConnection(
+      active,
+      {
+        source_exchange: "HyperLiquid",
+        streamId: "book",
+        connectionId: "conn-book",
+        reason: "STREAM_RECOVERED"
+      },
+      observedAt
+    );
+    expect(streamRegistration).toMatchObject({
+      registered: true,
+      source_exchange: "hyperliquid",
+      streamId: "book",
+      connectionId: "conn-book",
+      reason: "STREAM_RECOVERED"
+    });
+    expect(active.get("hyperliquid:book")).toBe("conn-book");
+
+    const defaultRegistration = registerHyperliquidIngestConnection(
+      active,
+      { source_exchange: "HyperLiquid", connectionId: "conn-default" },
+      observedAt
+    );
+    expect(defaultRegistration).toMatchObject({
+      registered: true,
+      streamId: null,
+      connectionId: "conn-default"
+    });
+    expect(active.get("hyperliquid:default")).toBe("conn-default");
   });
 
   it("drops stale batches and stops processing on terminal statuses", async () => {

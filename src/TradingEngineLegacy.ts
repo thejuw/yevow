@@ -113,6 +113,7 @@ import {
   evaluateHyperliquidBookSequence,
   handleHyperliquidRawBatch,
   hyperliquidIngestConnectionKey,
+  registerHyperliquidIngestConnection,
   type HyperliquidRawIngestPayload
 } from "./engine/trading/ingest/HyperliquidRawIngest";
 import {
@@ -2602,52 +2603,20 @@ export class TradingEngine {
   private registerIngestConnection(
     payload: Partial<OrderBookResetRequest>
   ): Record<string, unknown> {
-    const observedAt = new Date().toISOString();
-    const sourceExchange = normalizeSourceExchange(payload.source_exchange ?? "hyperliquid");
-    const streamId =
-      typeof payload.streamId === "string" && payload.streamId.length > 0 ? payload.streamId : null;
-    const connectionId =
-      typeof payload.connectionId === "string" && payload.connectionId.length > 0
-        ? payload.connectionId
-        : null;
+    const registration = registerHyperliquidIngestConnection(this.activeIngestConnections, payload);
 
-    if (!connectionId) {
-      return {
-        registered: false,
-        reason: "MISSING_CONNECTION_ID",
-        source_exchange: sourceExchange,
-        streamId,
-        observedAt
-      };
-    }
-
-    this.activeIngestConnections.set(
-      hyperliquidIngestConnectionKey(sourceExchange, streamId),
-      connectionId
-    );
-
-    if (!streamId) {
-      this.activeIngestConnections.set(
-        hyperliquidIngestConnectionKey(sourceExchange, null),
-        connectionId
-      );
+    if (!registration.registered) {
+      return registration as unknown as Record<string, unknown>;
     }
 
     this.engineState = {
       ...this.engineState,
-      heartbeatAt: observedAt,
-      updatedAt: observedAt
+      heartbeatAt: registration.observedAt,
+      updatedAt: registration.observedAt
     };
     this.waitUntilStoragePut(ENGINE_STATE_KEY, this.engineState, "INGEST_CONNECTION_REGISTERED");
 
-    return {
-      registered: true,
-      source_exchange: sourceExchange,
-      streamId,
-      connectionId,
-      reason: payload.reason ?? "INGEST_CONNECTION_REGISTERED",
-      observedAt
-    };
+    return registration as unknown as Record<string, unknown>;
   }
 
   private async resetOrderBook(payload: Partial<OrderBookResetRequest>): Promise<void> {

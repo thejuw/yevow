@@ -37,6 +37,23 @@ export interface HyperliquidRawBatchContext {
   ): Promise<TickIngestResult>;
 }
 
+export type HyperliquidIngestConnectionRegistration =
+  | {
+      readonly registered: false;
+      readonly reason: "MISSING_CONNECTION_ID";
+      readonly source_exchange: string;
+      readonly streamId: string | null;
+      readonly observedAt: string;
+    }
+  | {
+      readonly registered: true;
+      readonly source_exchange: string;
+      readonly streamId: string | null;
+      readonly connectionId: string;
+      readonly reason: unknown;
+      readonly observedAt: string;
+    };
+
 export async function handleHyperliquidRawBatch(
   payload: HyperliquidRawIngestPayload,
   wakeUpTimeMs: number | null,
@@ -92,6 +109,53 @@ export function isActiveHyperliquidIngestConnection(
     : activeIngestConnections.get(fallbackKey);
 
   return !activeConnection || activeConnection === payload.connectionId;
+}
+
+export function registerHyperliquidIngestConnection(
+  activeIngestConnections: Map<string, string>,
+  payload: {
+    source_exchange?: string | null;
+    streamId?: string | null;
+    connectionId?: string | null;
+    reason?: unknown;
+  },
+  observedAt = new Date().toISOString()
+): HyperliquidIngestConnectionRegistration {
+  const sourceExchange = normalizeSourceExchange(payload.source_exchange ?? "hyperliquid");
+  const streamId =
+    typeof payload.streamId === "string" && payload.streamId.length > 0 ? payload.streamId : null;
+  const connectionId =
+    typeof payload.connectionId === "string" && payload.connectionId.length > 0
+      ? payload.connectionId
+      : null;
+
+  if (!connectionId) {
+    return {
+      registered: false,
+      reason: "MISSING_CONNECTION_ID",
+      source_exchange: sourceExchange,
+      streamId,
+      observedAt
+    };
+  }
+
+  activeIngestConnections.set(
+    hyperliquidIngestConnectionKey(sourceExchange, streamId),
+    connectionId
+  );
+
+  if (!streamId) {
+    activeIngestConnections.set(hyperliquidIngestConnectionKey(sourceExchange, null), connectionId);
+  }
+
+  return {
+    registered: true,
+    source_exchange: sourceExchange,
+    streamId,
+    connectionId,
+    reason: payload.reason ?? "INGEST_CONNECTION_REGISTERED",
+    observedAt
+  };
 }
 
 export function hyperliquidRawMessages(
