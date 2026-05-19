@@ -310,7 +310,11 @@ import {
   shouldLogMarketTickAccepted
 } from "./engine/trading/telemetry/TickTelemetryRuntime";
 import { type ReplayOptions, type ReplayScenario } from "./engine/trading/routes/ReplayAdminRoutes";
-import { markHistoricalReplayTrades, ReplayJournal } from "./engine/trading/replay/ReplayJournal";
+import {
+  markHistoricalReplayTrades,
+  ReplayJournal,
+  type ReplayTradeRow
+} from "./engine/trading/replay/ReplayJournal";
 import {
   runShadowReplayLoop,
   type ShadowReplayLoopResult
@@ -770,6 +774,23 @@ interface HistoricalReplayStatusInput {
 interface LoadedReplayTicks {
   readonly sourceTicks: MarketTick[];
   readonly ticks: MarketTick[];
+}
+
+interface LoadedReplayShadowTrades {
+  readonly historicalTrades: ReplayTradeRow[];
+  readonly shadowTrades: ReplayResult["shadowTrades"];
+}
+
+interface ShadowReplayWithRestoreInput {
+  readonly replayId: string;
+  readonly ticks: MarketTick[];
+  readonly replayOptions: ReplayOptions;
+  readonly speedMultiplier: number;
+  readonly initialShadowBankroll: number;
+  readonly dateFrom: string | null;
+  readonly dateTo: string | null;
+  readonly startedAt: string;
+  readonly liveSnapshot: EngineReplaySnapshot;
 }
 
 export class TradingEngine {
@@ -5317,6 +5338,46 @@ export class TradingEngine {
     return { sourceTicks, ticks };
   }
 
+  private async loadReplayShadowTrades(ticks: MarketTick[]): Promise<LoadedReplayShadowTrades> {
+    const historicalTrades =
+      ticks.length > 0
+        ? await this.replayJournal.loadTrades(ticks[0].receivedAt, ticks.at(-1)!.receivedAt)
+        : [];
+    const shadowTrades = markHistoricalReplayTrades(historicalTrades, ticks);
+
+    return { historicalTrades, shadowTrades };
+  }
+
+  private async runShadowReplayWithRestore(
+    input: ShadowReplayWithRestoreInput
+  ): Promise<ShadowReplayLoopResult> {
+    let replayLoop: ShadowReplayLoopResult | null = null;
+    try {
+      replayLoop = await runShadowReplayLoop({
+        replayId: input.replayId,
+        ticks: input.ticks,
+        replayOptions: input.replayOptions,
+        speedMultiplier: input.speedMultiplier,
+        initialShadowBankroll: input.initialShadowBankroll,
+        dateFrom: input.dateFrom,
+        dateTo: input.dateTo,
+        startedAt: input.startedAt,
+        enqueueShadowReplayTick: (tick) => this.enqueueTick(tick, null, { shadowReplay: true }),
+        lastTradeIntent: () => this.engineState.lastTradeIntent,
+        oracleRegime: () => this.engineState.oracle.regime,
+        writeStatus: (status) => this.replayJournal.writeStatus(status)
+      });
+    } finally {
+      await this.restoreReplaySnapshot(input.liveSnapshot);
+    }
+
+    if (!replayLoop) {
+      throw new Error("REPLAY_LOOP_DID_NOT_COMPLETE");
+    }
+
+    return replayLoop;
+  }
+
   private async runHistoricalReplay(
     limit: number,
     shadowBankroll: number,
@@ -5372,37 +5433,21 @@ export class TradingEngine {
       startedAt,
       updatedAt: new Date().toISOString()
     });
-    const historicalTrades =
-      ticks.length > 0
-        ? await this.replayJournal.loadTrades(ticks[0].receivedAt, ticks.at(-1)!.receivedAt)
-        : [];
-    const shadowTrades = markHistoricalReplayTrades(historicalTrades, ticks);
+    const { historicalTrades, shadowTrades } = await this.loadReplayShadowTrades(ticks);
 
     this.prepareShadowReplayState(initialShadowBankroll, startedAt, replayId);
 
-    let replayLoop: ShadowReplayLoopResult | null = null;
-    try {
-      replayLoop = await runShadowReplayLoop({
-        replayId,
-        ticks,
-        replayOptions,
-        speedMultiplier,
-        initialShadowBankroll,
-        dateFrom,
-        dateTo,
-        startedAt,
-        enqueueShadowReplayTick: (tick) => this.enqueueTick(tick, null, { shadowReplay: true }),
-        lastTradeIntent: () => this.engineState.lastTradeIntent,
-        oracleRegime: () => this.engineState.oracle.regime,
-        writeStatus: (status) => this.replayJournal.writeStatus(status)
-      });
-    } finally {
-      await this.restoreReplaySnapshot(liveSnapshot);
-    }
-
-    if (!replayLoop) {
-      throw new Error("REPLAY_LOOP_DID_NOT_COMPLETE");
-    }
+    const replayLoop = await this.runShadowReplayWithRestore({
+      replayId,
+      ticks,
+      replayOptions,
+      speedMultiplier,
+      initialShadowBankroll,
+      dateFrom,
+      dateTo,
+      startedAt,
+      liveSnapshot
+    });
 
     return this.recordCompletedHistoricalReplay({
       replayId,
