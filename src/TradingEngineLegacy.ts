@@ -145,6 +145,7 @@ import {
   engineDiagnostics as buildEngineDiagnostics,
   syncStateMicrostructureFromBook as syncEngineStateMicrostructure
 } from "./engine/trading/state/EngineDiagnostics";
+import { nextTickAgentHealth } from "./engine/trading/state/AgentHealthRuntime";
 import { StorageWriteGuard } from "./engine/trading/state/StorageWriteGuard";
 import {
   LOW_VALUE_OPERATIONAL_EVENT_TYPES,
@@ -3856,53 +3857,21 @@ export class TradingEngine {
       profilerStates,
       assetQuoteStates
     );
-    let agentHealth = this.engineState.agentHealth;
-    agentHealth = touchAgentHealth(
-      agentHealth,
-      "ORACLE",
-      this.cachedConfig.ORACLE_ENABLED ? "GREEN" : "DISABLED",
-      metrics.brainTimestamp,
-      oracleLatencyMs
-    );
-    agentHealth = touchAgentHealth(
-      agentHealth,
-      "SENTIMENT",
-      this.cachedConfig.SENTIMENT_ENABLED ? "GREEN" : "DISABLED",
-      metrics.brainTimestamp,
-      this.cachedConfig.SENTIMENT_ENABLED ? agentHealth.SENTIMENT.latencyMs : 0
-    );
-    agentHealth = touchAgentHealth(
-      agentHealth,
-      "PROFILER",
-      this.cachedConfig.PROFILER_ENABLED
-        ? profilerResult.toxicityScore > profilerResult.state.alertThreshold
-          ? "YELLOW"
-          : "GREEN"
-        : "DISABLED",
-      metrics.brainTimestamp,
+    const agentHealth = nextTickAgentHealth({
+      previous: this.engineState.agentHealth,
+      config: this.cachedConfig,
+      observedAt: metrics.brainTimestamp,
+      oracleLatencyMs,
+      sentimentLatencyMs: this.engineState.agentHealth.SENTIMENT.latencyMs,
+      profilerToxicityScore: profilerResult.toxicityScore,
+      profilerAlertThreshold: profilerResult.state.alertThreshold,
       profilerLatencyMs,
-      profilerResult.signal?.signalId ?? undefined
-    );
-    agentHealth = touchAgentHealth(
-      agentHealth,
-      "CROUPIER",
-      this.cachedConfig.CROUPIER_ENABLED && this.cachedConfig.MARKET_MAKING_MODE !== "OFF"
-        ? croupierDecision.intent || croupierDecision.quote
-          ? "GREEN"
-          : "YELLOW"
-        : "DISABLED",
-      metrics.brainTimestamp,
+      profilerSignalId: profilerResult.signal?.signalId ?? undefined,
       croupierLatencyMs,
-      croupierDecision.quote?.signalId ?? croupierDecision.intent?.intentId
-    );
-    agentHealth = touchAgentHealth(
-      agentHealth,
-      "PIT_BOSS",
-      this.cachedConfig.PIT_BOSS_ENABLED ? (executionPlan ? "GREEN" : "YELLOW") : "DISABLED",
-      metrics.brainTimestamp,
-      0,
-      executionPlan?.intent.intentId
-    );
+      croupierHasOutput: Boolean(croupierDecision.intent || croupierDecision.quote),
+      croupierSignalId: croupierDecision.quote?.signalId ?? croupierDecision.intent?.intentId,
+      pitBossIntentId: executionPlan?.intent.intentId
+    });
 
     this.engineState = {
       ...this.engineState,
