@@ -3760,7 +3760,7 @@ export class TradingEngine {
       croupierDecision.pullAllQuotes,
       metrics.brainTimestamp
     );
-    const strategyQuoteDisableReason = this.strategyQuoteDisabledReason();
+    const strategyQuoteDisableReason = runtimeStrategyQuoteDisabledReason(this.cachedConfig);
     if (
       strategyQuoteDisableReason &&
       previousQuoteState.reason !== strategyQuoteDisableReason &&
@@ -3927,8 +3927,7 @@ export class TradingEngine {
       if (
         !options.shadowReplay &&
         this.cachedConfig.TRADING_ENABLED &&
-        !isProfilerQuoteHalt &&
-        this.canDispatchStrategyOrders()
+        !isProfilerQuoteHalt
       ) {
         const quote = croupierDecision.quote;
         this.state.waitUntil(
@@ -4527,20 +4526,12 @@ export class TradingEngine {
       ),
       quote,
       tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-      strategyDisabledReason: this.strategyQuoteDisabledReason(),
+      strategyDisabledReason: runtimeStrategyQuoteDisabledReason(this.cachedConfig),
       instrumentSelected: isInstrumentSelectedByMoltworker(instrumentCode, this.macroBias),
       pullAllQuotes,
       quoteHibernateMs: resolveQuoteHibernateMs(this.cachedConfig, this.env.QUOTE_HIBERNATE_MS),
       observedAt
     });
-  }
-
-  private strategyQuoteDisabledReason(): string | null {
-    return runtimeStrategyQuoteDisabledReason(this.cachedConfig);
-  }
-
-  private canDispatchStrategyOrders(): boolean {
-    return this.strategyQuoteDisabledReason() === null;
   }
 
   private maybeResumeQuotes(observedAt: string): void {
