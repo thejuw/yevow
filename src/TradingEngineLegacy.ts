@@ -168,6 +168,7 @@ import {
   acceptTelemetryStream as acceptTradingTelemetryStream
 } from "./engine/trading/routes/EngineWebSocketStreams";
 import { TradingTelemetryBus } from "./engine/trading/telemetry/TelemetryBus";
+import { stateAfterAcceptedAgentSignal } from "./engine/trading/telemetry/AgentSignalRuntime";
 import { buildAgentStateSnapshot } from "./engine/trading/telemetry/AgentSnapshotRuntime";
 import { buildCascadeSignalTelemetry } from "./engine/trading/telemetry/CascadeSignalTelemetryRuntime";
 import {
@@ -252,7 +253,6 @@ import type {
   EngineLocation,
   EngineStabilityStatus,
   ExecutionProfile,
-  AgentHealth,
   AgentName,
   AgentSignal,
   AssetRuntimeState,
@@ -422,8 +422,6 @@ import {
   defaultEnsembleState,
   normalizePaperBankroll,
   parseDeltaNormalizationWeights,
-  inferSignalBias,
-  hawkesEvacuationSignal,
   touchAgentHealth,
   disabledProfilerEvaluation,
   disabledCroupierDecision,
@@ -6290,45 +6288,12 @@ export class TradingEngine {
     }
 
     this.latestAgentSignals.set(signal.sourceAgent, signal);
-    const hawkesEvacuation = hawkesEvacuationSignal(signal);
-    const assetQuoteStates = hawkesEvacuation
-      ? suspendAssetQuoteStates(
-          this.engineState.assetQuoteStates,
-          "HAWKES_FLOW_CLUSTER",
-          signal.createdAt,
-          {
-            instrumentCode: signal.instrumentCode,
-            suspendedUntil: new Date(
-              Date.parse(signal.createdAt) + Math.max(1_000, signal.horizonMs)
-            ).toISOString(),
-            lastQuote: this.engineState.quoteState.lastQuote
-          }
-        )
-      : this.engineState.assetQuoteStates;
-    const quoteState = hawkesEvacuation
-      ? aggregateQuoteState(assetQuoteStates, this.engineState.quoteState, signal.createdAt)
-      : this.engineState.quoteState;
-
-    const agentHealth = {
-      ...this.engineState.agentHealth,
-      [signal.sourceAgent]: {
-        status: "GREEN",
-        heartbeatAt: signal.createdAt,
-        latencyMs,
-        lastSignalId: signal.signalId,
-        failures24h: this.engineState.agentHealth[signal.sourceAgent].failures24h
-      }
-    } satisfies Record<AgentName, AgentHealth>;
-
-    this.engineState = {
-      ...this.engineState,
-      acceptedSignals: this.engineState.acceptedSignals + 1,
-      agentHealth,
-      quoteState,
-      assetQuoteStates,
-      heartbeatAt: signal.createdAt,
-      updatedAt: signal.createdAt
-    };
+    const acceptedSignal = stateAfterAcceptedAgentSignal({
+      engineState: this.engineState,
+      signal,
+      latencyMs
+    });
+    this.engineState = acceptedSignal.state;
 
     await this.safeStoragePut(
       {
@@ -6340,25 +6305,13 @@ export class TradingEngine {
 
     this.logger.agentDecision(signal, latencyMs);
     this.publish(
-      "AGENT_SIGNAL",
-      {
-        signalId: signal.signalId,
-        traceId: signal.traceId,
-        sourceAgent: signal.sourceAgent,
-        targetAgent: signal.targetAgent,
-        instrumentCode: signal.instrumentCode,
-        action: signal.action,
-        confidence: signal.confidence,
-        bias: inferSignalBias(signal),
-        expectedValue: signal.expectedValue,
-        latencyMs,
-        createdAt: signal.createdAt
-      },
-      signal.signalId
+      acceptedSignal.telemetry.telemetryType,
+      acceptedSignal.telemetry.payload,
+      acceptedSignal.telemetry.correlationId
     );
 
-    if (hawkesEvacuation) {
-      this.publish("SUSPEND_QUOTES", quoteStateTelemetry(quoteState), signal.signalId);
+    if (acceptedSignal.hawkesEvacuation) {
+      this.publish("SUSPEND_QUOTES", quoteStateTelemetry(this.engineState.quoteState), signal.signalId);
       if (this.cachedConfig.TRADING_ENABLED) {
         this.state.waitUntil(
           this.cancelAllQuotes(signal.instrumentCode || "ALL", "HAWKES_FLOW_CLUSTER")
