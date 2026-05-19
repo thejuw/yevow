@@ -2830,6 +2830,64 @@ export class TradingEngine {
     };
   }
 
+  private async handleRejectedBookDelta(
+    tick: MarketTick,
+    metrics: LatencyMetrics,
+    applied: AppliedBookUpdate,
+    wakeUpTimeMs: number | null,
+    orderBookUpdateMs: number,
+    hotPathStartedAt: number
+  ): Promise<TickIngestResult> {
+    this.observeExecutionProfile(metrics, {
+      wakeUpTimeMs,
+      orderBookUpdateMs,
+      agentLogicMs: null,
+      hotPathStartedAt,
+      observedAt: metrics.brainTimestamp
+    });
+
+    if (applied.reason === "DUPLICATE_OR_OUT_OF_ORDER") {
+      return {
+        accepted: false,
+        status: "DUPLICATE_OR_OUT_OF_ORDER",
+        reason: applied.reason,
+        metrics
+      };
+    }
+
+    this.engineState = stateAfterRejectedBookDelta({
+      currentState: this.engineState,
+      internalOrderBookDepth: countBookLevels(this.bids, this.asks),
+      maxLatencyMs: this.maxLatencyMs,
+      observedAt: metrics.brainTimestamp
+    });
+
+    await this.persistHotStorageSnapshot(
+      this.latencyStorageWrites(
+        bookDesyncStorageExtra({
+          tick,
+          metrics,
+          reason: applied.reason ?? "BOOK_UPDATE_REJECTED",
+          expectedSequence: applied.expectedSequence,
+          actualSequence: applied.actualSequence
+        })
+      ),
+      "BOOK_DESYNC"
+    );
+
+    this.publishTickTelemetry(tick, metrics, "FRESH", hotPathStartedAt);
+
+    return {
+      accepted: false,
+      status:
+        applied.reason === "SEQUENCE_GAP" || applied.reason === "CROSSED_BOOK"
+          ? "DESYNC"
+          : "DUPLICATE_OR_OUT_OF_ORDER",
+      reason: applied.reason,
+      metrics
+    };
+  }
+
   private async handleTick(
     tick: MarketTick,
     wakeUpTimeMs: number | null,
@@ -3012,62 +3070,14 @@ export class TradingEngine {
       metrics.timeToBookMs = applied.timeToBookMs;
 
       if (!applied.accepted) {
-        if (applied.reason === "DUPLICATE_OR_OUT_OF_ORDER") {
-          this.observeExecutionProfile(metrics, {
-            wakeUpTimeMs,
-            orderBookUpdateMs,
-            agentLogicMs: null,
-            hotPathStartedAt,
-            observedAt: metrics.brainTimestamp
-          });
-
-          return {
-            accepted: false,
-            status: "DUPLICATE_OR_OUT_OF_ORDER",
-            reason: applied.reason,
-            metrics
-          };
-        }
-
-        this.observeExecutionProfile(metrics, {
+        return this.handleRejectedBookDelta(
+          tick,
+          metrics,
+          applied,
           wakeUpTimeMs,
           orderBookUpdateMs,
-          agentLogicMs: null,
-          hotPathStartedAt,
-          observedAt: metrics.brainTimestamp
-        });
-
-        this.engineState = stateAfterRejectedBookDelta({
-          currentState: this.engineState,
-          internalOrderBookDepth: countBookLevels(this.bids, this.asks),
-          maxLatencyMs: this.maxLatencyMs,
-          observedAt: metrics.brainTimestamp
-        });
-
-        await this.persistHotStorageSnapshot(
-          this.latencyStorageWrites(
-            bookDesyncStorageExtra({
-              tick,
-              metrics,
-              reason: applied.reason ?? "BOOK_UPDATE_REJECTED",
-              expectedSequence: applied.expectedSequence,
-              actualSequence: applied.actualSequence
-            })
-          ),
-          "BOOK_DESYNC"
+          hotPathStartedAt
         );
-
-        this.publishTickTelemetry(tick, metrics, "FRESH", hotPathStartedAt);
-
-        return {
-          accepted: false,
-          status:
-            applied.reason === "SEQUENCE_GAP" || applied.reason === "CROSSED_BOOK"
-              ? "DESYNC"
-              : "DUPLICATE_OR_OUT_OF_ORDER",
-          reason: applied.reason,
-          metrics
-        };
       }
 
       book = applied.book;
