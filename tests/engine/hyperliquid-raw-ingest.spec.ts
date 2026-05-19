@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   buildHyperliquidL2BookSnapshotBundle,
+  buildHyperliquidL2BookLatencyMetrics,
+  buildHyperliquidL2BookTick,
+  buildHyperliquidL2BookTickFromBook,
+  calculateHyperliquidBookTotalLatencyMs,
   evaluateHyperliquidBookSequence,
   handleHyperliquidRawBatch,
   hyperliquidIngestConnectionKey,
@@ -12,6 +16,7 @@ import {
 } from "../../src/engine/trading/ingest/HyperliquidRawIngest";
 import type { BookSyncState } from "../../src/engine/trading/book/BookTypes";
 import type { TickIngestResult } from "../../src/engine/trading/TradingEngineRouteTypes";
+import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
 
 describe("hyperliquid raw ingest helpers", () => {
   it("normalizes connection keys and active connection checks", () => {
@@ -125,6 +130,84 @@ describe("hyperliquid raw ingest helpers", () => {
       marketKey: "hyperliquid:btc-usd",
       bids: [{ price: 100, size: 1.25 }],
       asks: [{ price: 101, size: 2.5 }]
+    });
+  });
+
+  it("builds native L2 latency metrics and representative book ticks from snapshot bundles", () => {
+    const bundle = buildHyperliquidL2BookSnapshotBundle(
+      {
+        data: {
+          coin: "BTC",
+          time: 1_767_000_000_000,
+          sequence: 99,
+          levels: [[{ px: "100", sz: "1" }], [{ px: "101", sz: "2" }]]
+        }
+      },
+      {
+        transport: "grpc",
+        streamId: "dwellir-book",
+        connectionId: "conn-1",
+        source_exchange: "hyperliquid",
+        receivedAt: "2026-01-01T00:00:00.050Z"
+      },
+      5_000,
+      "2026-01-01T00:00:00.050Z"
+    );
+    const brainTimestamp = "2026-01-01T00:00:00.125Z";
+
+    expect(calculateHyperliquidBookTotalLatencyMs(bundle.exchangeTimestamp, brainTimestamp)).toBe(
+      75
+    );
+    expect(
+      buildHyperliquidL2BookLatencyMetrics({
+        bundle,
+        brainTimestamp,
+        totalLatencyMs: 75,
+        maxLatencyMs: 150,
+        averageLatencyMs: 40,
+        sampleCount: 10,
+        location: defaultEngineState("test").location
+      })
+    ).toMatchObject({
+      instrumentCode: "btc-usd",
+      sequence: 99,
+      totalLatencyMs: 75,
+      maxLatencyMs: 150,
+      averageLatencyMs: 40,
+      sampleCount: 10,
+      status: "FRESH"
+    });
+
+    expect(
+      buildHyperliquidL2BookTick({
+        payload: { transport: "grpc", streamId: "dwellir-book", connectionId: "conn-1" },
+        bundle,
+        price: 0
+      })
+    ).toMatchObject({
+      source: "HYPERLIQUID",
+      transport: "grpc",
+      streamId: "dwellir-book",
+      connectionId: "conn-1",
+      instrumentCode: "btc-usd",
+      price: 0,
+      sequence: 99
+    });
+
+    expect(
+      buildHyperliquidL2BookTickFromBook({
+        payload: { transport: "grpc" },
+        bundle,
+        book: {
+          midPrice: 100.5,
+          bestBid: 100,
+          bestAsk: 101
+        }
+      })
+    ).toMatchObject({
+      price: 100.5,
+      bestBid: 100,
+      bestAsk: 101
     });
   });
 

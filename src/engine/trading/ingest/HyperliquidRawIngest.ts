@@ -1,12 +1,15 @@
 import {
   buildMarketKey,
+  createNativeHyperliquidBookTick,
   hyperliquidNativeInstrumentCode,
   isNativeRecord,
+  nativeHyperliquidLatencyMetrics,
   nativeExchangeTimestamp,
   nativeIso,
   nativeObject,
   nativeSequence,
   nativeString,
+  parseTimestampMs,
   normalizeSourceExchange,
   normalizeSourceWeight,
   parseHyperliquidNativeLevels,
@@ -14,7 +17,13 @@ import {
 } from "../../../TradingEngineRuntimeHelpers";
 import type { TickIngestResult } from "../TradingEngineRouteTypes";
 import type { BookSyncState } from "../book/BookTypes";
-import type { OrderBookSnapshot } from "../../../types";
+import type {
+  EngineLocation,
+  InternalOrderBook,
+  LatencyMetrics,
+  MarketTick,
+  OrderBookSnapshot
+} from "../../../types";
 
 export interface HyperliquidRawIngestPayload {
   streamId?: string;
@@ -319,6 +328,90 @@ export function buildHyperliquidL2BookSnapshotBundle(
     marketKey,
     snapshot
   };
+}
+
+export interface HyperliquidL2BookLatencyMetricsInput {
+  readonly bundle: HyperliquidL2BookSnapshotBundle;
+  readonly brainTimestamp: string;
+  readonly totalLatencyMs: number;
+  readonly maxLatencyMs: number;
+  readonly averageLatencyMs: number;
+  readonly sampleCount: number;
+  readonly location: EngineLocation;
+}
+
+export interface HyperliquidL2BookTickInput {
+  readonly payload: HyperliquidRawIngestPayload;
+  readonly bundle: HyperliquidL2BookSnapshotBundle;
+  readonly price: number;
+  readonly bestBid?: number;
+  readonly bestAsk?: number;
+  readonly rawEventType?: string;
+}
+
+export function calculateHyperliquidBookTotalLatencyMs(
+  exchangeTimestamp: string,
+  brainTimestamp: string
+): number {
+  return Math.max(
+    0,
+    parseTimestampMs(brainTimestamp, "brain_timestamp") -
+      parseTimestampMs(exchangeTimestamp, "exchange_timestamp")
+  );
+}
+
+export function buildHyperliquidL2BookLatencyMetrics(
+  input: HyperliquidL2BookLatencyMetricsInput
+): LatencyMetrics {
+  return nativeHyperliquidLatencyMetrics({
+    instrumentCode: input.bundle.instrumentCode,
+    exchangeCode: input.bundle.exchangeCode,
+    sourceExchange: input.bundle.sourceExchange,
+    sourceWeight: input.bundle.sourceWeight,
+    sequence: input.bundle.sequence,
+    exchangeTimestamp: input.bundle.exchangeTimestamp,
+    receivedAt: input.bundle.receivedAt,
+    brainTimestamp: input.brainTimestamp,
+    totalLatencyMs: input.totalLatencyMs,
+    maxLatencyMs: input.maxLatencyMs,
+    averageLatencyMs: input.averageLatencyMs,
+    sampleCount: input.sampleCount,
+    location: input.location
+  });
+}
+
+export function buildHyperliquidL2BookTick(input: HyperliquidL2BookTickInput): MarketTick {
+  return createNativeHyperliquidBookTick({
+    payload: input.payload,
+    coin: input.bundle.coin,
+    instrumentCode: input.bundle.instrumentCode,
+    exchangeCode: input.bundle.exchangeCode,
+    sourceExchange: input.bundle.sourceExchange,
+    sourceWeight: input.bundle.sourceWeight,
+    sequence: input.bundle.sequence,
+    exchangeTimestamp: input.bundle.exchangeTimestamp,
+    receivedAt: input.bundle.receivedAt,
+    price: input.price,
+    bestBid: input.bestBid,
+    bestAsk: input.bestAsk,
+    rawEventType: input.rawEventType ?? "native-l2Book"
+  });
+}
+
+export function buildHyperliquidL2BookTickFromBook(input: {
+  readonly payload: HyperliquidRawIngestPayload;
+  readonly bundle: HyperliquidL2BookSnapshotBundle;
+  readonly book: Pick<InternalOrderBook, "midPrice" | "bestBid" | "bestAsk">;
+  readonly rawEventType?: string;
+}): MarketTick {
+  return buildHyperliquidL2BookTick({
+    payload: input.payload,
+    bundle: input.bundle,
+    price: input.book.midPrice ?? input.book.bestBid ?? input.book.bestAsk ?? 0,
+    bestBid: input.book.bestBid ?? undefined,
+    bestAsk: input.book.bestAsk ?? undefined,
+    rawEventType: input.rawEventType
+  });
 }
 
 export type HyperliquidBookSequenceDecision =

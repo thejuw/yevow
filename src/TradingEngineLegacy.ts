@@ -179,6 +179,10 @@ import type {
 } from "./engine/trading/book/BookTypes";
 import {
   buildHyperliquidL2BookSnapshotBundle,
+  buildHyperliquidL2BookLatencyMetrics,
+  buildHyperliquidL2BookTick,
+  buildHyperliquidL2BookTickFromBook,
+  calculateHyperliquidBookTotalLatencyMs,
   evaluateHyperliquidBookSequence,
   handleHyperliquidRawBatch,
   hyperliquidIngestConnectionKey,
@@ -448,10 +452,8 @@ import {
   nativeBookSideLevels,
   nativeNumber,
   nativeSide,
-  createNativeHyperliquidBookTick,
   createNativeHyperliquidTradeTick,
   createNativeHyperliquidFundingTick,
-  nativeHyperliquidLatencyMetrics,
   hasRuntimeConfigUpdate,
   defaultEngineState,
   defaultEnsembleState,
@@ -487,7 +489,6 @@ import {
   finiteMetric,
   nullableFiniteMetric,
   highResolutionNow,
-  parseTimestampMs,
   roundLatency,
   resolveBookSide,
   resolveCurrentInstrument,
@@ -1481,19 +1482,7 @@ export class TradingEngine {
     wakeUpTimeMs: number | null
   ): Promise<TickIngestResult> {
     const hotPathStartedAt = highResolutionNow();
-    const {
-      coin,
-      instrumentCode,
-      exchangeCode,
-      sourceExchange,
-      sourceWeight,
-      exchangeTimestamp,
-      receivedAt,
-      hasExplicitSequence,
-      sequence,
-      marketKey,
-      snapshot
-    } = buildHyperliquidL2BookSnapshotBundle(
+    const snapshotBundle = buildHyperliquidL2BookSnapshotBundle(
       raw,
       payload,
       readPositiveNumber(
@@ -1501,6 +1490,17 @@ export class TradingEngine {
         DEFAULT_HL_BOOK_TIMESTAMP_MAX_DRIFT_MS
       )
     );
+    const {
+      instrumentCode,
+      exchangeCode,
+      sourceExchange,
+      exchangeTimestamp,
+      receivedAt,
+      hasExplicitSequence,
+      sequence,
+      marketKey,
+      snapshot
+    } = snapshotBundle;
     const existingSync = this.bookSync.get(marketKey);
     const sequenceDecision = evaluateHyperliquidBookSequence(
       existingSync,
@@ -1543,10 +1543,9 @@ export class TradingEngine {
     }
 
     const brainTimestamp = new Date().toISOString();
-    const totalLatencyMs = Math.max(
-      0,
-      parseTimestampMs(brainTimestamp, "brain_timestamp") -
-        parseTimestampMs(exchangeTimestamp, "exchange_timestamp")
+    const totalLatencyMs = calculateHyperliquidBookTotalLatencyMs(
+      exchangeTimestamp,
+      brainTimestamp
     );
     const nativeMaxLatencyMs = resolveNativeHyperliquidMaxLatencyMs({
       transport: payload.transport,
@@ -1591,14 +1590,8 @@ export class TradingEngine {
           };
         }
       }
-      const metrics = nativeHyperliquidLatencyMetrics({
-        instrumentCode,
-        exchangeCode,
-        sourceExchange,
-        sourceWeight,
-        sequence,
-        exchangeTimestamp,
-        receivedAt,
+      const metrics = buildHyperliquidL2BookLatencyMetrics({
+        bundle: snapshotBundle,
         brainTimestamp,
         totalLatencyMs,
         maxLatencyMs: nativeMaxLatencyMs,
@@ -1618,16 +1611,9 @@ export class TradingEngine {
         this.state.waitUntil(this.cancelAllQuotes(instrumentCode, "NATIVE_HL_LATENCY"));
       }
       this.publishTickTelemetry(
-        createNativeHyperliquidBookTick({
+        buildHyperliquidL2BookTick({
           payload,
-          coin,
-          instrumentCode,
-          exchangeCode,
-          sourceExchange,
-          sourceWeight,
-          sequence,
-          exchangeTimestamp,
-          receivedAt,
+          bundle: snapshotBundle,
           price: 0,
           bestBid: undefined,
           bestAsk: undefined,
@@ -1666,19 +1652,10 @@ export class TradingEngine {
       };
     }
 
-    const representativeTick = createNativeHyperliquidBookTick({
+    const representativeTick = buildHyperliquidL2BookTickFromBook({
       payload,
-      coin,
-      instrumentCode,
-      exchangeCode,
-      sourceExchange,
-      sourceWeight,
-      sequence,
-      exchangeTimestamp,
-      receivedAt,
-      price: book.midPrice ?? book.bestBid ?? book.bestAsk ?? 0,
-      bestBid: book.bestBid ?? undefined,
-      bestAsk: book.bestAsk ?? undefined,
+      bundle: snapshotBundle,
+      book,
       rawEventType: "native-l2Book"
     });
     const result = await this.handleTick(representativeTick, wakeUpTimeMs);
