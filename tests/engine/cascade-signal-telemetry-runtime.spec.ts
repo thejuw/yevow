@@ -2,10 +2,15 @@ import { describe, expect, it } from "vitest";
 import {
   buildCascadeOperationalAlertTelemetry,
   buildCascadeSignalTelemetry,
+  cascadeCloseOperationalAlert,
   cascadeEntryAgentSignal,
   cascadeEntryDecisionTrace,
   cascadeHeatCapAlertMetadata,
+  cascadeManualCloseLogMetadata,
+  cascadeManualCloseTelemetryPayload,
   cascadePositionOpenedAlertMetadata,
+  cascadeSignalRejectionAgentSignal,
+  cascadeSignalRejectionLogMetadata,
   cascadeSignalEmittedAlertMetadata,
   cascadeSizeRejectedLogMetadata
 } from "../../src/engine/trading/telemetry/CascadeSignalTelemetryRuntime";
@@ -13,6 +18,8 @@ import type { AgentSignal, TradeIntent } from "../../src/types";
 import type { CascadeAssetProfile } from "../../src/strategy/cascade/AssetProfiles";
 import type {
   CascadeOpenPosition,
+  CascadePositionIntent,
+  CascadeRecoverySignalRejection,
   CascadeRecoverySignal,
   PositionSizeDecision
 } from "../../src/strategy/cascade/types";
@@ -178,6 +185,81 @@ describe("CascadeSignalTelemetryRuntime", () => {
       observedAt: "2026-05-19T12:00:30.000Z"
     });
   });
+
+  it("builds cascade rejection telemetry artifacts", () => {
+    const rejection = cascadeRejection();
+
+    expect(cascadeSignalRejectionLogMetadata(rejection)).toEqual({
+      cascadeId: "cascade-1",
+      instrumentCode: "hype-usd",
+      reasons: "news_blackout,volatility_cap"
+    });
+    expect(
+      cascadeSignalRejectionAgentSignal({
+        rejection,
+        engineId: "engine-1",
+        observedAt: "2026-05-19T12:00:30.000Z",
+        entryWindowMs: 300_000
+      })
+    ).toMatchObject({
+      signalId: "cascade-reject-cascade-1-1779192030000",
+      traceId: "engine-1:cascade-reject:cascade-1",
+      sourceAgent: "PIT_BOSS",
+      targetAgent: "SYSTEM",
+      action: "HOLD",
+      horizonMs: 300_000,
+      riskContext: {
+        outcome: "SKIPPED",
+        cascadeId: "cascade-1",
+        reasons: ["news_blackout", "volatility_cap"]
+      }
+    });
+  });
+
+  it("builds cascade manual close and stop alert metadata", () => {
+    const position = cascadePosition();
+    const manualClose = {
+      position,
+      actor: "operator@example.com",
+      reason: "risk review",
+      markPrice: 21,
+      observedAt: "2026-05-19T12:05:00.000Z"
+    };
+
+    expect(cascadeManualCloseLogMetadata(manualClose)).toEqual({
+      positionId: "position-1",
+      actor: "operator@example.com",
+      reason: "risk review",
+      instrumentCode: "hype-usd",
+      markPrice: 21,
+      remainingSize: 5
+    });
+    expect(cascadeManualCloseTelemetryPayload(manualClose)).toMatchObject({
+      positionId: "position-1",
+      observedAt: "2026-05-19T12:05:00.000Z"
+    });
+    expect(cascadeCloseOperationalAlert(cascadeCloseIntent(), manualClose.observedAt)).toEqual({
+      eventType: "STOP_HIT",
+      title: "Cascade stop hit",
+      message: "hype-usd cascade position position-1 triggered STOP_LOSS.",
+      metadata: {
+        positionId: "position-1",
+        signalId: "cascade-signal-1",
+        instrumentCode: "hype-usd",
+        closeReason: "STOP_LOSS",
+        size: 5,
+        referencePrice: 18,
+        observedAt: "2026-05-19T12:05:00.000Z"
+      },
+      dedupeKey: "position-1"
+    });
+    expect(
+      cascadeCloseOperationalAlert(
+        cascadeCloseIntent({ closeReason: "FIRST_TARGET" }),
+        manualClose.observedAt
+      )
+    ).toBeNull();
+  });
 });
 
 function signal(overrides: Partial<AgentSignal> = {}): AgentSignal {
@@ -226,6 +308,17 @@ function cascadeRecoverySignal(
   };
 }
 
+function cascadeRejection(): CascadeRecoverySignalRejection {
+  return {
+    schemaVersion: "cascade.recovery-signal-rejection.v1",
+    cascadeId: "cascade-1",
+    instrumentCode: "hype-usd",
+    rejectedAt: "2026-05-19T12:00:30.000Z",
+    reasons: ["news_blackout", "volatility_cap"],
+    context: { regime: "CRISIS" }
+  };
+}
+
 function tradeIntent(overrides: Partial<TradeIntent> = {}): TradeIntent {
   return {
     schemaVersion: "trade-intent.v1",
@@ -255,6 +348,24 @@ function tradeIntent(overrides: Partial<TradeIntent> = {}): TradeIntent {
     confidence: 0.72,
     rationale: "cascade entry",
     createdAt: "2026-05-19T12:00:30.000Z",
+    ...overrides
+  };
+}
+
+function cascadeCloseIntent(overrides: Partial<CascadePositionIntent> = {}): CascadePositionIntent {
+  return {
+    intentId: "close-intent-1",
+    positionId: "position-1",
+    signalId: "cascade-signal-1",
+    instrumentCode: "hype-usd",
+    kind: "CLOSE",
+    closeReason: "STOP_LOSS",
+    action: "SELL",
+    orderType: "IOC",
+    executionStyle: "TAKER_MARKET",
+    size: 5,
+    referencePrice: 18,
+    createdAt: "2026-05-19T12:05:00.000Z",
     ...overrides
   };
 }
@@ -298,7 +409,7 @@ function cascadePosition(): CascadeOpenPosition {
     cascadeId: "cascade-1",
     instrumentCode: "hype-usd",
     direction: "LONG",
-    status: "OPEN",
+    status: "ENTERED",
     entryPrice: 20,
     currentStopPrice: 18,
     initialStopPrice: 18,
@@ -308,10 +419,9 @@ function cascadePosition(): CascadeOpenPosition {
     rDistance: 2,
     targets: cascadeRecoverySignal().targets,
     timeStopAt: "2026-05-19T14:00:00.000Z",
-    openedAt: "2026-05-19T12:00:30.000Z",
-    updatedAt: "2026-05-19T12:00:30.000Z",
-    closedAt: null,
-    realizedPnl: 0,
-    partialsTaken: []
+    firstTargetTaken: false,
+    secondTargetTaken: false,
+    enteredAt: "2026-05-19T12:00:30.000Z",
+    updatedAt: "2026-05-19T12:00:30.000Z"
   };
 }

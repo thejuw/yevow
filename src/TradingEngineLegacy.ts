@@ -260,10 +260,15 @@ import { buildAgentStateSnapshot } from "./engine/trading/telemetry/AgentSnapsho
 import {
   buildCascadeOperationalAlertTelemetry,
   buildCascadeSignalTelemetry,
+  cascadeCloseOperationalAlert,
   cascadeEntryAgentSignal,
   cascadeEntryDecisionTrace,
   cascadeHeatCapAlertMetadata,
+  cascadeManualCloseLogMetadata,
+  cascadeManualCloseTelemetryPayload,
   cascadePositionOpenedAlertMetadata,
+  cascadeSignalRejectionAgentSignal,
+  cascadeSignalRejectionLogMetadata,
   cascadeSignalEmittedAlertMetadata,
   cascadeSizeRejectedLogMetadata
 } from "./engine/trading/telemetry/CascadeSignalTelemetryRuntime";
@@ -1918,25 +1923,26 @@ export class TradingEngine {
       }
     }
 
-    this.logger.warn("CASCADE_POSITION_MANUAL_CLOSE", "Operator requested cascade position close", {
-      positionId,
-      actor,
-      reason,
-      instrumentCode: position.instrumentCode,
-      markPrice,
-      remainingSize: position.remainingSize
-    });
-    this.publish(
+    this.logger.warn(
       "CASCADE_POSITION_MANUAL_CLOSE",
-      {
-        positionId,
+      "Operator requested cascade position close",
+      cascadeManualCloseLogMetadata({
+        position,
         actor,
         reason,
-        instrumentCode: position.instrumentCode,
         markPrice,
-        remainingSize: position.remainingSize,
         observedAt
-      },
+      })
+    );
+    this.publish(
+      "CASCADE_POSITION_MANUAL_CLOSE",
+      cascadeManualCloseTelemetryPayload({
+        position,
+        actor,
+        reason,
+        markPrice,
+        observedAt
+      }),
       positionId
     );
     this.state.waitUntil(
@@ -2116,33 +2122,15 @@ export class TradingEngine {
         this.logger.info(
           "CASCADE_SIGNAL_REJECTED",
           "Cascade recovery signal gates rejected entry",
-          {
-            cascadeId: signalResult.rejection.cascadeId,
-            instrumentCode: signalResult.rejection.instrumentCode,
-            reasons: signalResult.rejection.reasons.join(",")
-          }
+          cascadeSignalRejectionLogMetadata(signalResult.rejection)
         );
         this.recordCascadeUiSignal(
-          {
-            signalId: `cascade-reject-${signalResult.rejection.cascadeId}-${Date.parse(observedAt)}`,
-            traceId: `${this.engineState.engineId}:cascade-reject:${signalResult.rejection.cascadeId}`,
-            sourceAgent: "PIT_BOSS",
-            targetAgent: "SYSTEM",
-            instrumentCode: signalResult.rejection.instrumentCode,
-            action: "HOLD",
-            confidence: 0,
-            horizonMs: this.cachedConfig.ENTRY_WINDOW_SECONDS * 1_000,
-            expectedValue: 0,
-            maxSlippageBps: 0,
-            rationale: `Cascade recovery skipped: ${signalResult.rejection.reasons.join(", ")}`,
-            featureVector: signalResult.rejection.context,
-            riskContext: {
-              outcome: "SKIPPED",
-              cascadeId: signalResult.rejection.cascadeId,
-              reasons: signalResult.rejection.reasons
-            },
-            createdAt: observedAt
-          },
+          cascadeSignalRejectionAgentSignal({
+            rejection: signalResult.rejection,
+            engineId: this.engineState.engineId,
+            observedAt,
+            entryWindowMs: this.cachedConfig.ENTRY_WINDOW_SECONDS * 1_000
+          }),
           "SKIPPED"
         );
         continue;
@@ -2170,21 +2158,14 @@ export class TradingEngine {
         }
         const tradeIntent = this.tradeIntentFromCascadePositionIntent(intent, observedAt);
         this.state.waitUntil(this.dispatchExecution(tradeIntent));
-        if (intent.closeReason === "STOP_LOSS" || intent.closeReason === "TIME_STOP") {
+        const closeAlert = cascadeCloseOperationalAlert(intent, observedAt);
+        if (closeAlert) {
           this.emitCascadeOperationalAlert(
-            intent.closeReason === "STOP_LOSS" ? "STOP_HIT" : "TIME_STOP_HIT",
-            intent.closeReason === "STOP_LOSS" ? "Cascade stop hit" : "Cascade time stop hit",
-            `${intent.instrumentCode} cascade position ${intent.positionId} triggered ${intent.closeReason}.`,
-            {
-              positionId: intent.positionId,
-              signalId: intent.signalId,
-              instrumentCode: intent.instrumentCode,
-              closeReason: intent.closeReason,
-              size: intent.size,
-              referencePrice: intent.referencePrice,
-              observedAt
-            },
-            intent.positionId
+            closeAlert.eventType,
+            closeAlert.title,
+            closeAlert.message,
+            closeAlert.metadata,
+            closeAlert.dedupeKey
           );
         }
       }

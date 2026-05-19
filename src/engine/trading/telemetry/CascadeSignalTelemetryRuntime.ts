@@ -5,6 +5,8 @@ import type { NotifierEvent } from "../../../utils/Notifier";
 import type { CascadeAssetProfile } from "../../../strategy/cascade/AssetProfiles";
 import type {
   CascadeOpenPosition,
+  CascadePositionIntent,
+  CascadeRecoverySignalRejection,
   CascadeRecoverySignal,
   PositionSizeDecision
 } from "../../../strategy/cascade/types";
@@ -38,6 +40,29 @@ export interface CascadeEntryDecisionTraceInput extends CascadeEntrySignalInput 
   readonly currentHeat: number;
 }
 
+export interface CascadeSignalRejectionInput {
+  readonly rejection: CascadeRecoverySignalRejection;
+  readonly engineId: string;
+  readonly observedAt: string;
+  readonly entryWindowMs: number;
+}
+
+export interface CascadeManualCloseMetadataInput {
+  readonly position: CascadeOpenPosition;
+  readonly actor: string;
+  readonly reason: string;
+  readonly markPrice: number;
+  readonly observedAt: string;
+}
+
+export interface CascadeCloseOperationalAlert {
+  readonly eventType: Extract<CascadeAlertEventType, "STOP_HIT" | "TIME_STOP_HIT">;
+  readonly title: string;
+  readonly message: string;
+  readonly metadata: JsonRecord;
+  readonly dedupeKey: string;
+}
+
 export function buildCascadeSignalTelemetry(
   signal: AgentSignal,
   outcome: CascadeSignalOutcome
@@ -58,6 +83,39 @@ export function buildCascadeSignalTelemetry(
       createdAt: signal.createdAt
     },
     correlationId: signal.signalId
+  };
+}
+
+export function cascadeSignalRejectionLogMetadata(
+  rejection: CascadeRecoverySignalRejection
+): JsonRecord {
+  return {
+    cascadeId: rejection.cascadeId,
+    instrumentCode: rejection.instrumentCode,
+    reasons: rejection.reasons.join(",")
+  };
+}
+
+export function cascadeSignalRejectionAgentSignal(input: CascadeSignalRejectionInput): AgentSignal {
+  return {
+    signalId: `cascade-reject-${input.rejection.cascadeId}-${Date.parse(input.observedAt)}`,
+    traceId: `${input.engineId}:cascade-reject:${input.rejection.cascadeId}`,
+    sourceAgent: "PIT_BOSS",
+    targetAgent: "SYSTEM",
+    instrumentCode: input.rejection.instrumentCode,
+    action: "HOLD",
+    confidence: 0,
+    horizonMs: input.entryWindowMs,
+    expectedValue: 0,
+    maxSlippageBps: 0,
+    rationale: `Cascade recovery skipped: ${input.rejection.reasons.join(", ")}`,
+    featureVector: input.rejection.context,
+    riskContext: {
+      outcome: "SKIPPED",
+      cascadeId: input.rejection.cascadeId,
+      reasons: input.rejection.reasons
+    },
+    createdAt: input.observedAt
   };
 }
 
@@ -167,6 +225,52 @@ export function cascadePositionOpenedAlertMetadata(input: CascadeEntrySignalInpu
     riskPct: input.sizeDecision.riskPct,
     heatAfterPct: input.sizeDecision.heatAfterPct,
     observedAt: input.observedAt
+  };
+}
+
+export function cascadeManualCloseLogMetadata(input: CascadeManualCloseMetadataInput): JsonRecord {
+  return {
+    positionId: input.position.positionId,
+    actor: input.actor,
+    reason: input.reason,
+    instrumentCode: input.position.instrumentCode,
+    markPrice: input.markPrice,
+    remainingSize: input.position.remainingSize
+  };
+}
+
+export function cascadeManualCloseTelemetryPayload(
+  input: CascadeManualCloseMetadataInput
+): JsonRecord {
+  return {
+    ...cascadeManualCloseLogMetadata(input),
+    observedAt: input.observedAt
+  };
+}
+
+export function cascadeCloseOperationalAlert(
+  intent: CascadePositionIntent,
+  observedAt: string
+): CascadeCloseOperationalAlert | null {
+  if (intent.closeReason !== "STOP_LOSS" && intent.closeReason !== "TIME_STOP") {
+    return null;
+  }
+
+  const isStopLoss = intent.closeReason === "STOP_LOSS";
+  return {
+    eventType: isStopLoss ? "STOP_HIT" : "TIME_STOP_HIT",
+    title: isStopLoss ? "Cascade stop hit" : "Cascade time stop hit",
+    message: `${intent.instrumentCode} cascade position ${intent.positionId} triggered ${intent.closeReason}.`,
+    metadata: {
+      positionId: intent.positionId,
+      signalId: intent.signalId,
+      instrumentCode: intent.instrumentCode,
+      closeReason: intent.closeReason,
+      size: intent.size,
+      referencePrice: intent.referencePrice,
+      observedAt
+    },
+    dedupeKey: intent.positionId
   };
 }
 
