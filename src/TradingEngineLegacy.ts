@@ -82,6 +82,7 @@ import {
   recordProcessingLatencySample,
   type ExecutionTraceInput
 } from "./engine/trading/performance/LatencyRuntime";
+import { reconcileJanitorOrders } from "./engine/trading/janitor/JanitorRuntime";
 import {
   OrderBookReconstructor,
   type OrderBookStores
@@ -5778,74 +5779,16 @@ export class TradingEngine {
       dustThreshold: 0.000001
     });
     const exchangeOpenOrders = await this.fetchExchangeOpenOrders();
-    const exchangeByClientId = new Map(
-      exchangeOpenOrders
-        .filter((order) => order.clientId)
-        .map((order) => [order.clientId as string, order])
-    );
-    const exchangeIds = new Set(exchangeOpenOrders.map((order) => order.exchangeOrderId));
-    const reconciledOrders: string[] = [];
-    const orphanExchangeOrders: string[] = [];
-    const cancelledOrders: string[] = [];
-    const nextOrderMap = { ...this.engineState.orderMap };
+    const reconciliation = reconcileJanitorOrders({
+      orderMap: this.engineState.orderMap,
+      exchangeOpenOrders,
+      zombieOrders: baseReport.zombieOrders,
+      observedAt
+    });
+    const nextOrderMap = reconciliation.orderMap;
 
-    for (const [clientId, localOrder] of Object.entries(nextOrderMap)) {
-      const remote = exchangeByClientId.get(clientId);
-
-      if (remote) {
-        nextOrderMap[clientId] = {
-          ...localOrder,
-          exchangeOrderId: remote.exchangeOrderId,
-          filledSize: remote.filledSize,
-          status: remote.status,
-          updatedAt: observedAt
-        };
-        reconciledOrders.push(clientId);
-        continue;
-      }
-
-      if (
-        localOrder.exchangeOrderId &&
-        !exchangeIds.has(localOrder.exchangeOrderId) &&
-        (localOrder.status === "PENDING" || localOrder.status === "OPEN")
-      ) {
-        nextOrderMap[clientId] = {
-          ...localOrder,
-          status: "CANCELLED",
-          updatedAt: observedAt
-        };
-        cancelledOrders.push(clientId);
-      }
-    }
-
-    for (const remote of exchangeOpenOrders) {
-      if (remote.clientId && nextOrderMap[remote.clientId]) {
-        continue;
-      }
-
-      orphanExchangeOrders.push(remote.exchangeOrderId);
-      await this.cancelOrder(
-        remote.exchangeOrderId,
-        "JANITOR_ORPHAN_EXCHANGE_ORDER",
-        remote.instrumentCode
-      );
-      cancelledOrders.push(remote.exchangeOrderId);
-    }
-
-    for (const clientId of baseReport.zombieOrders) {
-      await this.cancelOrder(
-        clientId,
-        "JANITOR_ZOMBIE_LOCAL_ORDER",
-        nextOrderMap[clientId]?.instrumentCode
-      );
-      cancelledOrders.push(clientId);
-      if (nextOrderMap[clientId]) {
-        nextOrderMap[clientId] = {
-          ...nextOrderMap[clientId],
-          status: "CANCELLED",
-          updatedAt: observedAt
-        };
-      }
+    for (const request of reconciliation.cancellationRequests) {
+      await this.cancelOrder(request.orderId, request.reason, request.instrumentCode);
     }
 
     const dustCloseIntents: string[] = [];
@@ -5859,9 +5802,9 @@ export class TradingEngine {
     const pruneReport = await this.pruneOperationalLogs();
     const report = {
       ...baseReport,
-      orphanExchangeOrders,
-      reconciledOrders,
-      cancelledOrders: [...new Set(cancelledOrders)],
+      orphanExchangeOrders: reconciliation.orphanExchangeOrders,
+      reconciledOrders: reconciliation.reconciledOrders,
+      cancelledOrders: [...new Set(reconciliation.cancelledOrders)],
       dustCloseIntents,
       prunedTelemetryCount: pruneReport.totalRows
     };
