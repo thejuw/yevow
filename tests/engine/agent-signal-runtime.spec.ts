@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  acceptedAgentSignalStorageEntries,
+  agentSignalStorageKey,
   buildHawkesEvacuationDispatch,
   recordAgentSignalInBuffers,
   stateAfterAcceptedAgentSignal
@@ -111,6 +113,23 @@ describe("AgentSignalRuntime", () => {
 
     expect(signals.map((item) => item.signalId)).toEqual(["old-2", "new-1"]);
     expect(latestAgentSignals.get("ORACLE")?.signalId).toBe("new-1");
+  });
+
+  it("builds stable storage keys and entries for accepted signals", () => {
+    const state = defaultEngineState("agent-signal-storage");
+    const acceptedSignal = signal({ signalId: "signal-storage-1" });
+
+    expect(agentSignalStorageKey(acceptedSignal)).toBe("signal:signal-storage-1");
+    expect(
+      acceptedAgentSignalStorageEntries({
+        engineStateKey: "engine:state",
+        state,
+        signal: acceptedSignal
+      })
+    ).toEqual({
+      "engine:state": state,
+      "signal:signal-storage-1": acceptedSignal
+    });
   });
 });
 

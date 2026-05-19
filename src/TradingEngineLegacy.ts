@@ -231,6 +231,8 @@ import {
 } from "./engine/trading/routes/EngineWebSocketStreams";
 import { TradingTelemetryBus } from "./engine/trading/telemetry/TelemetryBus";
 import {
+  acceptedAgentSignalStorageEntries,
+  agentSignalStorageKey,
   buildHawkesEvacuationDispatch,
   recordAgentSignalInBuffers,
   stateAfterAcceptedAgentSignal
@@ -5469,10 +5471,11 @@ export class TradingEngine {
     this.engineState = acceptedSignal.state;
 
     await this.safeStoragePut(
-      {
-        [ENGINE_STATE_KEY]: this.engineState,
-        [`signal:${signal.signalId}`]: signal
-      },
+      acceptedAgentSignalStorageEntries({
+        engineStateKey: ENGINE_STATE_KEY,
+        state: this.engineState,
+        signal
+      }),
       "AGENT_SIGNAL"
     );
 
@@ -5547,7 +5550,7 @@ export class TradingEngine {
       signalBufferLimit: SIGNAL_BUFFER_LIMIT
     });
     this.state.waitUntil(
-      this.safeStoragePut(`signal:${signal.signalId}`, signal, "CASCADE_SIGNAL")
+      this.safeStoragePut(agentSignalStorageKey(signal), signal, "CASCADE_SIGNAL")
     );
     const event = buildCascadeSignalTelemetry(signal, outcome);
     this.publish(event.telemetryType, event.payload, event.correlationId);

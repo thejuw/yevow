@@ -39,6 +39,12 @@ export interface AgentSignalBufferInput {
   readonly signalBufferLimit: number;
 }
 
+export interface AcceptedAgentSignalStorageInput {
+  readonly engineStateKey: string;
+  readonly state: EngineState;
+  readonly signal: AgentSignal;
+}
+
 export function recordAgentSignalInBuffers(input: AgentSignalBufferInput): void {
   input.signals.push(input.signal);
 
@@ -47,6 +53,19 @@ export function recordAgentSignalInBuffers(input: AgentSignalBufferInput): void 
   }
 
   input.latestAgentSignals.set(input.signal.sourceAgent, input.signal);
+}
+
+export function agentSignalStorageKey(signal: AgentSignal): string {
+  return `signal:${signal.signalId}`;
+}
+
+export function acceptedAgentSignalStorageEntries(
+  input: AcceptedAgentSignalStorageInput
+): Record<string, unknown> {
+  return {
+    [input.engineStateKey]: input.state,
+    [agentSignalStorageKey(input.signal)]: input.signal
+  };
 }
 
 export function stateAfterAcceptedAgentSignal(
