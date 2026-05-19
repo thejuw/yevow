@@ -179,6 +179,7 @@ import {
   handleHyperliquidRawBatch,
   hyperliquidIngestConnectionKey,
   registerHyperliquidIngestConnection,
+  routeHyperliquidRawMessage,
   type HyperliquidRawIngestPayload
 } from "./engine/trading/ingest/HyperliquidRawIngest";
 import {
@@ -416,7 +417,6 @@ import {
 import {
   isNativeRecord,
   nativeObject,
-  nativeString,
   nativeIso,
   epochMillis,
   nativeHashSequence,
@@ -1451,41 +1451,32 @@ export class TradingEngine {
     payload: HyperliquidRawIngestPayload,
     wakeUpTimeMs: number | null
   ): Promise<TickIngestResult> {
-    if (!isNativeRecord(raw)) {
-      throw new Error("INVALID_HYPERLIQUID_RAW_MESSAGE");
-    }
+    const route = routeHyperliquidRawMessage(raw);
 
-    const channel = nativeString(raw.channel)?.toLowerCase();
-
-    if (channel === "subscriptionresponse" || channel === "pong") {
+    if (route.kind === "CONTROL") {
       return { accepted: true, status: "FRESH", processedCount: 0 };
     }
 
-    if (channel === "l2book") {
-      return this.handleHyperliquidL2Book(raw, payload, wakeUpTimeMs);
+    if (route.kind === "L2_BOOK") {
+      return this.handleHyperliquidL2Book(route.raw, payload, wakeUpTimeMs);
     }
 
-    if (channel === "trades") {
-      return this.handleHyperliquidTrades(raw, payload, wakeUpTimeMs);
+    if (route.kind === "TRADES") {
+      return this.handleHyperliquidTrades(route.raw, payload, wakeUpTimeMs);
     }
 
-    if (channel === "activeassetctx" || channel === "alldexsassetctxs") {
-      return this.handleHyperliquidAssetContext(raw, payload, wakeUpTimeMs);
+    if (route.kind === "ASSET_CONTEXT") {
+      return this.handleHyperliquidAssetContext(route.raw, payload, wakeUpTimeMs);
     }
 
-    if (
-      channel === "userevents" ||
-      channel === "usernonfundingledgerupdates" ||
-      channel === "events" ||
-      channel === "liquidation"
-    ) {
-      return this.handleHyperliquidLiquidationEvents(raw, payload);
+    if (route.kind === "LIQUIDATION_EVENTS") {
+      return this.handleHyperliquidLiquidationEvents(route.raw, payload);
     }
 
     return {
       accepted: false,
       status: "BOOK_NOT_READY",
-      reason: `IGNORED_HYPERLIQUID_CHANNEL_${channel ?? "UNKNOWN"}`,
+      reason: route.reason,
       processedCount: 0
     };
   }

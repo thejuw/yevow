@@ -1,10 +1,12 @@
 import {
   buildMarketKey,
   hyperliquidNativeInstrumentCode,
+  isNativeRecord,
   nativeExchangeTimestamp,
   nativeIso,
   nativeObject,
   nativeSequence,
+  nativeString,
   normalizeSourceExchange,
   normalizeSourceWeight,
   parseHyperliquidNativeLevels,
@@ -54,6 +56,18 @@ export type HyperliquidIngestConnectionRegistration =
       readonly observedAt: string;
     };
 
+export type HyperliquidRawMessageRoute =
+  | {
+      readonly kind: "CONTROL";
+      readonly raw: Record<string, unknown>;
+      readonly channel: string | null;
+    }
+  | { readonly kind: "L2_BOOK"; readonly raw: Record<string, unknown> }
+  | { readonly kind: "TRADES"; readonly raw: Record<string, unknown> }
+  | { readonly kind: "ASSET_CONTEXT"; readonly raw: Record<string, unknown> }
+  | { readonly kind: "LIQUIDATION_EVENTS"; readonly raw: Record<string, unknown> }
+  | { readonly kind: "IGNORED"; readonly raw: Record<string, unknown>; readonly reason: string };
+
 export async function handleHyperliquidRawBatch(
   payload: HyperliquidRawIngestPayload,
   wakeUpTimeMs: number | null,
@@ -84,6 +98,45 @@ export async function handleHyperliquidRawBatch(
   return {
     ...(terminalResult ?? { accepted: true, status: "FRESH" as const }),
     processedCount
+  };
+}
+
+export function routeHyperliquidRawMessage(raw: unknown): HyperliquidRawMessageRoute {
+  if (!isNativeRecord(raw)) {
+    throw new Error("INVALID_HYPERLIQUID_RAW_MESSAGE");
+  }
+
+  const channel = nativeString(raw.channel)?.toLowerCase() ?? null;
+
+  if (channel === "subscriptionresponse" || channel === "pong") {
+    return { kind: "CONTROL", raw, channel };
+  }
+
+  if (channel === "l2book") {
+    return { kind: "L2_BOOK", raw };
+  }
+
+  if (channel === "trades") {
+    return { kind: "TRADES", raw };
+  }
+
+  if (channel === "activeassetctx" || channel === "alldexsassetctxs") {
+    return { kind: "ASSET_CONTEXT", raw };
+  }
+
+  if (
+    channel === "userevents" ||
+    channel === "usernonfundingledgerupdates" ||
+    channel === "events" ||
+    channel === "liquidation"
+  ) {
+    return { kind: "LIQUIDATION_EVENTS", raw };
+  }
+
+  return {
+    kind: "IGNORED",
+    raw,
+    reason: `IGNORED_HYPERLIQUID_CHANNEL_${channel ?? "UNKNOWN"}`
   };
 }
 

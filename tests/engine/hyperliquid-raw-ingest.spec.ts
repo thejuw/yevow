@@ -7,7 +7,8 @@ import {
   hyperliquidRawMessages,
   isActiveHyperliquidIngestConnection,
   registerHyperliquidIngestConnection,
-  resolveHyperliquidBookTimestamp
+  resolveHyperliquidBookTimestamp,
+  routeHyperliquidRawMessage
 } from "../../src/engine/trading/ingest/HyperliquidRawIngest";
 import type { BookSyncState } from "../../src/engine/trading/book/BookTypes";
 import type { TickIngestResult } from "../../src/engine/trading/TradingEngineRouteTypes";
@@ -48,6 +49,30 @@ describe("hyperliquid raw ingest helpers", () => {
       { channel: "trades" }
     ]);
     expect(hyperliquidRawMessages({ source: "HYPERLIQUID" }, 0)).toEqual([]);
+  });
+
+  it("routes raw Hyperliquid channels into engine dispatch categories", () => {
+    expect(routeHyperliquidRawMessage({ channel: "pong" })).toMatchObject({
+      kind: "CONTROL",
+      channel: "pong"
+    });
+    expect(routeHyperliquidRawMessage({ channel: "l2Book" })).toMatchObject({
+      kind: "L2_BOOK"
+    });
+    expect(routeHyperliquidRawMessage({ channel: "trades" })).toMatchObject({
+      kind: "TRADES"
+    });
+    expect(routeHyperliquidRawMessage({ channel: "activeAssetCtx" })).toMatchObject({
+      kind: "ASSET_CONTEXT"
+    });
+    expect(routeHyperliquidRawMessage({ channel: "userEvents" })).toMatchObject({
+      kind: "LIQUIDATION_EVENTS"
+    });
+    expect(routeHyperliquidRawMessage({ channel: "unknownThing" })).toMatchObject({
+      kind: "IGNORED",
+      reason: "IGNORED_HYPERLIQUID_CHANNEL_unknownthing"
+    });
+    expect(() => routeHyperliquidRawMessage("bad")).toThrow("INVALID_HYPERLIQUID_RAW_MESSAGE");
   });
 
   it("resolves book timestamps with drift and invalid timestamp guards", () => {
