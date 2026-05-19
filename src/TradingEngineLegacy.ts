@@ -169,6 +169,10 @@ import {
 } from "./engine/trading/routes/EngineWebSocketStreams";
 import { TradingTelemetryBus } from "./engine/trading/telemetry/TelemetryBus";
 import { buildAgentStateSnapshot } from "./engine/trading/telemetry/AgentSnapshotRuntime";
+import {
+  buildAmVpinTelemetry,
+  buildProfilerAlertTelemetry
+} from "./engine/trading/telemetry/ProfilerTelemetryRuntime";
 import { buildTickTelemetryPayload } from "./engine/trading/telemetry/TickTelemetryRuntime";
 import {
   type ReplayOptions,
@@ -6045,35 +6049,8 @@ export class TradingEngine {
   }
 
   private publishProfilerAlert(signal: AgentSignal, profilerState: ProfilerState): void {
-    this.publish(
-      "PROFILER_ALERT",
-      {
-        signalId: signal.signalId,
-        traceId: signal.traceId,
-        instrumentCode: signal.instrumentCode,
-        toxicityScore: profilerState.toxicityScore,
-        amVpin: profilerState.amVpinScore,
-        obi: profilerState.obi,
-        obiDepth: profilerState.obiDepth,
-        toxicityState: profilerState.toxicityState,
-        pressureSide: profilerState.pressureSide,
-        spreadMultiplier: profilerState.spreadMultiplier,
-        reservationShiftBps: profilerState.reservationShiftBps,
-        quoteHaltUntil: profilerState.quoteHaltUntil,
-        alertThreshold: profilerState.alertThreshold,
-        bucketSize: profilerState.bucketSize,
-        rollingWindow: profilerState.rollingWindow,
-        completedBuckets: profilerState.buckets.length,
-        totalBucketsClosed: profilerState.totalBucketsClosed,
-        action: signal.action,
-        targetAgent: signal.targetAgent,
-        suggestedSpreadWidenBps: signal.maxSlippageBps,
-        rationale: signal.rationale,
-        featureVector: signal.featureVector,
-        riskContext: signal.riskContext
-      },
-      signal.signalId
-    );
+    const event = buildProfilerAlertTelemetry(signal, profilerState);
+    this.publish(event.telemetryType, event.payload, event.correlationId);
   }
 
   private publishAmVpinTelemetry(
@@ -6081,30 +6058,8 @@ export class TradingEngine {
     instrumentCode: string,
     observedAt: string
   ): void {
-    this.publish(
-      "AM_VPIN_TELEMETRY",
-      {
-        instrumentCode,
-        observedAt,
-        am_vpin: profilerState.amVpinScore,
-        obi: profilerState.obi,
-        obiDepth: profilerState.obiDepth,
-        toxicity_state: profilerState.toxicityState,
-        pressureSide: profilerState.pressureSide,
-        spreadMultiplier: profilerState.spreadMultiplier,
-        reservationShiftBps: profilerState.reservationShiftBps,
-        quoteHaltUntil: profilerState.quoteHaltUntil,
-        latestSignedImbalance: profilerState.latestSignedImbalance,
-        latestDirectionalImbalance: profilerState.latestDirectionalImbalance,
-        directionalDecay: profilerState.directionalDecay,
-        bucketSize: profilerState.bucketSize,
-        rollingWindow: profilerState.rollingWindow,
-        completedBuckets: profilerState.amVpinBucketCompletions,
-        amVpinMean: profilerState.amVpinMean,
-        amVpinVariance: profilerState.amVpinVariance
-      },
-      `am-vpin:${instrumentCode}:${profilerState.amVpinBucketCompletions}`
-    );
+    const event = buildAmVpinTelemetry(profilerState, instrumentCode, observedAt);
+    this.publish(event.telemetryType, event.payload, event.correlationId);
   }
 
   private publish(type: string, payload: Record<string, unknown>, correlationId?: string): void {
