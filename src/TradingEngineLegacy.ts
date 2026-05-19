@@ -167,6 +167,7 @@ import {
   acceptTelemetryStream as acceptTradingTelemetryStream
 } from "./engine/trading/routes/EngineWebSocketStreams";
 import { TradingTelemetryBus } from "./engine/trading/telemetry/TelemetryBus";
+import { buildTickTelemetryPayload } from "./engine/trading/telemetry/TickTelemetryRuntime";
 import {
   type ReplayOptions,
   type ReplayScenario,
@@ -5956,62 +5957,19 @@ export class TradingEngine {
     hotPathStartedAt: number
   ): void {
     const cpuTimeMs = roundLatency(Math.max(0, highResolutionNow() - hotPathStartedAt));
+    const telemetry = buildTickTelemetryPayload({
+      tick,
+      metrics,
+      status,
+      cpuTimeMs,
+      engineState: this.engineState,
+      macroBias: this.macroBias,
+      temporaryOverride: this.activeTemporaryOverride,
+      connectedAdminStreams: this.adminSockets.size,
+      signals: this.signals
+    });
 
-    this.publish(
-      "TICK_TELEMETRY",
-      {
-        instrumentCode: tick.instrumentCode,
-        exchangeCode: tick.exchangeCode,
-        sequence: tick.sequence,
-        status,
-        cpuTimeMs,
-        websocketLatencyMs: metrics.networkLatencyMs,
-        processingLatencyMs: metrics.processingLatencyMs,
-        totalLatencyMs: metrics.totalLatencyMs,
-        timeToBookMs: metrics.timeToBookMs ?? null,
-        orderBookDepth: this.engineState.internalOrderBookDepth,
-        averageLatencyMs: this.engineState.averageLatency,
-        staleTickCount: this.engineState.staleTickCount,
-        toxicityScore: this.engineState.toxicityScore,
-        jitterMs: this.engineState.executionProfile.jitterMs,
-        executionStatus: this.engineState.executionProfile.status,
-        wakeUpTimeMs: this.engineState.executionProfile.wakeUpTimeMs,
-        orderBookUpdateMs: this.engineState.executionProfile.orderBookUpdateMs,
-        agentLogicMs: this.engineState.executionProfile.agentLogicMs,
-        liquidityWallCount: this.engineState.dom?.walls.length ?? 0,
-        pulledWallCount: this.engineState.dom?.pulledWalls.length ?? 0,
-        filledWallCount: this.engineState.dom?.filledWalls.length ?? 0,
-        heatmapCells: this.engineState.dom?.heatmap.cells.length ?? 0,
-        anomalyStatus: this.engineState.anomaly.status,
-        priceZScore: this.engineState.anomaly.priceZScore,
-        volumeZScore: this.engineState.anomaly.volumeZScore,
-        cancellationToExecutionRatio: this.engineState.anomaly.cancellationToExecutionRatio,
-        colo: this.engineState.location.colo,
-        placement: this.engineState.location.placement,
-        isGoldenRegion: this.engineState.location.isGoldenRegion,
-        latencyRiskMultiplier: this.engineState.location.latencyRiskMultiplier,
-        positionSizeMultiplier: this.engineState.location.positionSizeMultiplier,
-        netDelta: this.engineState.inventory.netDelta,
-        maxInventoryUnits: this.engineState.inventory.maxInventoryUnits,
-        inventoryPenalty: this.engineState.inventory.inventoryPenalty,
-        stopBid: this.engineState.inventory.stopBid,
-        stopAsk: this.engineState.inventory.stopAsk,
-        weightedImbalance: this.engineState.microstructure.weightedImbalance,
-        midPrice: this.engineState.microstructure.midPrice,
-        macroBias: this.macroBias,
-        temporaryOverride: this.activeTemporaryOverride,
-        connectedAdminStreams: this.adminSockets.size,
-        RegimeCoefficient: this.engineState.oracle.skepticismMultiplier,
-        AgentLogicTrace: this.signals.slice(-5).map((signal) => ({
-          agent: signal.sourceAgent,
-          action: signal.action,
-          confidence: signal.confidence,
-          rationale: signal.rationale,
-          createdAt: signal.createdAt
-        }))
-      },
-      `${tick.instrumentCode}:${tick.sequence}`
-    );
+    this.publish("TICK_TELEMETRY", telemetry.payload, telemetry.correlationId);
   }
 
   private maybeRecordAgentSnapshot(observedAt: string): void {
