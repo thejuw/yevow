@@ -93,6 +93,7 @@ import {
 } from "./engine/trading/funding/FundingRuntime";
 import {
   nextQuoteStateForInstrument as nextRuntimeQuoteStateForInstrument,
+  resumeExpiredQuoteStates,
   strategyQuoteDisabledReason as runtimeStrategyQuoteDisabledReason
 } from "./engine/trading/quotes/QuoteStateRuntime";
 import { buildQuoteDispatchIntents } from "./engine/trading/quotes/QuoteDispatchRuntime";
@@ -449,7 +450,6 @@ import {
   quoteStateForInstrumentState,
   isQuoteSuspendedAt,
   suspendAssetQuoteStates,
-  resumeExpiredAssetQuoteStates,
   aggregateQuoteState,
   quotePriceMovedTicks,
   adverseAdjustedPaperFillPrice,
@@ -4556,38 +4556,17 @@ export class TradingEngine {
   }
 
   private maybeResumeQuotes(observedAt: string): void {
-    const nextAssetQuoteStates = resumeExpiredAssetQuoteStates(
-      this.engineState.assetQuoteStates,
+    const next = resumeExpiredQuoteStates({
+      assetQuoteStates: this.engineState.assetQuoteStates,
+      quoteState: this.engineState.quoteState,
       observedAt
-    );
-    const nextAggregate = aggregateQuoteState(
-      nextAssetQuoteStates,
-      this.engineState.quoteState,
-      observedAt
-    );
-    const suspendedUntil = this.engineState.quoteState.suspendedUntil;
-    const assetStatesChanged = TARGET_ASSET_MATRIX.some((asset) => {
-      const previous = this.engineState.assetQuoteStates[asset.instrumentCode];
-      const next = nextAssetQuoteStates[asset.instrumentCode];
-      return (
-        previous?.status !== next?.status ||
-        previous?.reason !== next?.reason ||
-        previous?.suspendedUntil !== next?.suspendedUntil
-      );
     });
 
-    if (
-      assetStatesChanged ||
-      nextAggregate.status !== this.engineState.quoteState.status ||
-      nextAggregate.reason !== this.engineState.quoteState.reason ||
-      (this.engineState.quoteState.status === "SUSPENDED" &&
-        suspendedUntil &&
-        Date.parse(suspendedUntil) <= Date.parse(observedAt))
-    ) {
+    if (next.changed) {
       this.engineState = {
         ...this.engineState,
-        quoteState: nextAggregate,
-        assetQuoteStates: nextAssetQuoteStates
+        quoteState: next.quoteState,
+        assetQuoteStates: next.assetQuoteStates
       };
       this.publish("RESUME_QUOTES", { observedAt });
     }

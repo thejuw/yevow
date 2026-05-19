@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { defaultConfig } from "../../src/ConfigManager";
 import {
   nextQuoteStateForInstrument,
+  resumeExpiredQuoteStates,
   strategyQuoteDisabledReason
 } from "../../src/engine/trading/quotes/QuoteStateRuntime";
 import type { EngineState, QuoteSignal } from "../../src/types";
@@ -124,6 +125,41 @@ describe("QuoteStateRuntime", () => {
       "PIT_BOSS_DISABLED"
     );
     expect(strategyQuoteDisabledReason(defaultConfig)).toBeNull();
+  });
+
+  it("resumes expired asset quote suspensions and reports whether state changed", () => {
+    const result = resumeExpiredQuoteStates({
+      assetQuoteStates: {
+        "btc-usd": quoteState({
+          status: "SUSPENDED",
+          reason: "BTC_LEAD_MOVE",
+          suspendedUntil: "2026-05-18T12:59:59.000Z"
+        }),
+        "hype-usd": quoteState({ status: "ACTIVE" })
+      },
+      quoteState: quoteState({
+        status: "SUSPENDED",
+        reason: "BTC_LEAD_MOVE",
+        suspendedUntil: "2026-05-18T12:59:59.000Z"
+      }),
+      observedAt: OBSERVED_AT
+    });
+
+    expect(result.changed).toBe(true);
+    expect(result.assetQuoteStates["btc-usd"]).toMatchObject({
+      status: "ACTIVE",
+      reason: null,
+      suspendedUntil: null,
+      updatedAt: OBSERVED_AT
+    });
+    expect(result.quoteState.status).toBe("ACTIVE");
+
+    const unchanged = resumeExpiredQuoteStates({
+      assetQuoteStates: result.assetQuoteStates,
+      quoteState: result.quoteState,
+      observedAt: OBSERVED_AT
+    });
+    expect(unchanged.changed).toBe(false);
   });
 });
 
