@@ -40,7 +40,6 @@ import {
   SortedBookSide
 } from "./engine/trading/book/SortedBookSide";
 import {
-  buildMicrostructureSnapshot,
   countBookLevels,
   isCrossedBook,
   microstructureFromBook
@@ -295,13 +294,11 @@ import type {
   MarketDataSource,
   MarketTick,
   ManagedOrder,
-  MicrostructureMetrics,
   OrderBookDelta,
   OrderBookResetRequest,
   OrderBookSide,
   OrderBookSnapshot,
   OrderBookSnapshotLevel,
-  PriceLevel,
   Position,
   ProfilerState,
   ReplayResult,
@@ -1352,10 +1349,6 @@ export class TradingEngine {
 
   private waitUntilStoragePut(key: string, value: unknown, reason: string): void {
     this.state.waitUntil(this.safeStoragePut(key, value, reason));
-  }
-
-  private waitUntilStoragePutEntries(entries: Record<string, unknown>, reason: string): void {
-    this.state.waitUntil(this.safeStoragePut(entries, reason));
   }
 
   private async safeStorageDelete(keys: string[], reason: string): Promise<void> {
@@ -5568,34 +5561,6 @@ export class TradingEngine {
     await this.safeStorageDelete([...persistedBookKeys.keys()], "REPLAY_RESTORE_DELETE_BOOKS");
 
     await this.safeStoragePut(writes, "REPLAY_RESTORE");
-  }
-
-  private calculateMicrostructure(
-    marketKey: string,
-    instrumentCode: string,
-    exchangeCode: string,
-    sourceExchange: string,
-    sourceWeight: number,
-    bids: PriceLevel[],
-    asks: PriceLevel[],
-    updatedAt: string,
-    lastSequence: number | null,
-    timeToBookMs: number | null,
-    isSynced: boolean
-  ): MicrostructureMetrics {
-    return buildMicrostructureSnapshot(
-      marketKey,
-      instrumentCode,
-      exchangeCode,
-      sourceExchange,
-      sourceWeight,
-      bids,
-      asks,
-      updatedAt,
-      lastSequence,
-      timeToBookMs,
-      isSynced
-    );
   }
 
   private calculateLatency(tick: MarketTick): LatencyMetrics {
