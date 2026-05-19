@@ -458,7 +458,8 @@ import type {
   CascadeRecoverySignal,
   CascadeRecoverySignalRejection,
   CascadeRecoverySignalResult,
-  LiquidationEvent
+  LiquidationEvent,
+  PositionSizeDecision
 } from "./strategy/cascade/types";
 
 import {
@@ -2294,53 +2295,39 @@ export class TradingEngine {
     }
   }
 
-  private async processCascadeSignal(
+  private handleRejectedCascadeSize(
     signal: CascadeRecoverySignal,
-    observedAt: string
-  ): Promise<void> {
-    const assetProfile = this.cascadeAssetProfile(signal.instrumentCode);
-    const currentHeat = this.cascadeHeatManager.currentHeat(this.cascadePositionManager.snapshot());
-    this.emitCascadeOperationalAlert(
-      "SIGNAL_EMITTED",
-      "Cascade signal emitted",
-      `${signal.instrumentCode} ${signal.direction} cascade recovery signal emitted.`,
-      cascadeSignalEmittedAlertMetadata(signal),
-      signal.signalId
+    sizeDecision: PositionSizeDecision,
+    currentHeat: number
+  ): void {
+    this.logger.warn(
+      "CASCADE_SIZE_REJECTED",
+      "Cascade recovery position sizing rejected entry",
+      cascadeSizeRejectedLogMetadata(signal, sizeDecision)
     );
-    const sizeDecision = calculatePositionSize({
-      equity: this.engineState.bankroll.equity,
-      riskPerTradePct: this.cachedConfig.RISK_PER_TRADE_PCT,
-      entryPrice: signal.entryPrice,
-      stopPrice: signal.stopPrice,
-      maxPositionNotionalPct: assetProfile.maxPositionNotionalPct,
-      assetLiquidityCap: assetProfile.assetLiquidityCapUsd,
-      currentHeat,
-      heatCapPct: this.cachedConfig.HEAT_CAP_PCT
-    });
-
-    if (!sizeDecision.approved) {
-      this.logger.warn(
-        "CASCADE_SIZE_REJECTED",
-        "Cascade recovery position sizing rejected entry",
-        cascadeSizeRejectedLogMetadata(signal, sizeDecision)
+    if (sizeDecision.limitingFactor === "HEAT") {
+      this.emitCascadeOperationalAlert(
+        "HEAT_CAP_EXCEEDED",
+        "Cascade heat cap blocked entry",
+        `${signal.instrumentCode} cascade entry was rejected by the heat cap.`,
+        cascadeHeatCapAlertMetadata(
+          signal,
+          sizeDecision,
+          currentHeat,
+          this.cachedConfig.HEAT_CAP_PCT
+        ),
+        signal.signalId
       );
-      if (sizeDecision.limitingFactor === "HEAT") {
-        this.emitCascadeOperationalAlert(
-          "HEAT_CAP_EXCEEDED",
-          "Cascade heat cap blocked entry",
-          `${signal.instrumentCode} cascade entry was rejected by the heat cap.`,
-          cascadeHeatCapAlertMetadata(
-            signal,
-            sizeDecision,
-            currentHeat,
-            this.cachedConfig.HEAT_CAP_PCT
-          ),
-          signal.signalId
-        );
-      }
-      return;
     }
+  }
 
+  private openCascadePosition(
+    signal: CascadeRecoverySignal,
+    sizeDecision: PositionSizeDecision,
+    assetProfile: CascadeAssetProfile,
+    currentHeat: number,
+    observedAt: string
+  ): void {
     const position = this.cascadePositionManager.registerFromSignal(
       signal,
       sizeDecision,
@@ -2373,6 +2360,38 @@ export class TradingEngine {
       cascadePositionOpenedAlertMetadata(cascadeEntryContext),
       position.positionId
     );
+  }
+
+  private async processCascadeSignal(
+    signal: CascadeRecoverySignal,
+    observedAt: string
+  ): Promise<void> {
+    const assetProfile = this.cascadeAssetProfile(signal.instrumentCode);
+    const currentHeat = this.cascadeHeatManager.currentHeat(this.cascadePositionManager.snapshot());
+    this.emitCascadeOperationalAlert(
+      "SIGNAL_EMITTED",
+      "Cascade signal emitted",
+      `${signal.instrumentCode} ${signal.direction} cascade recovery signal emitted.`,
+      cascadeSignalEmittedAlertMetadata(signal),
+      signal.signalId
+    );
+    const sizeDecision = calculatePositionSize({
+      equity: this.engineState.bankroll.equity,
+      riskPerTradePct: this.cachedConfig.RISK_PER_TRADE_PCT,
+      entryPrice: signal.entryPrice,
+      stopPrice: signal.stopPrice,
+      maxPositionNotionalPct: assetProfile.maxPositionNotionalPct,
+      assetLiquidityCap: assetProfile.assetLiquidityCapUsd,
+      currentHeat,
+      heatCapPct: this.cachedConfig.HEAT_CAP_PCT
+    });
+
+    if (!sizeDecision.approved) {
+      this.handleRejectedCascadeSize(signal, sizeDecision, currentHeat);
+      return;
+    }
+
+    this.openCascadePosition(signal, sizeDecision, assetProfile, currentHeat, observedAt);
   }
 
   private cascadeSignalEngineWithConfig(): CascadeRecoverySignalEngine {
