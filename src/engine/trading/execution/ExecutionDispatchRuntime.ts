@@ -47,6 +47,20 @@ export interface DispatchTradeIntentInput {
   readonly intent: TradeIntent;
 }
 
+export interface ExecutionPlanDispatchLogInput {
+  readonly intent: TradeIntent;
+  readonly sorSavings: number;
+  readonly intendedSize: number;
+  readonly camouflagedSize: number;
+  readonly icebergChildCount: number;
+  readonly timingJitterMs: number;
+}
+
+export interface ExecutionPlanDispatchBlockedLogInput {
+  readonly intent: TradeIntent;
+  readonly reason: string | null;
+}
+
 export function evaluateExecutionDispatchGate(
   input: ExecutionDispatchGateInput
 ): ExecutionDispatchGateDecision {
@@ -104,6 +118,42 @@ export function buildExecutionDispatchBlockLog(
   }
 
   return null;
+}
+
+export function tradeIntentAuthorizedLogMetadata(input: ExecutionPlanDispatchLogInput): JsonRecord {
+  return {
+    intentId: input.intent.intentId,
+    instrumentCode: input.intent.instrumentCode,
+    expectedValue: input.intent.expectedValue,
+    approvedSize: input.intent.approvedSize,
+    sorSavings: input.sorSavings,
+    intendedSize: input.intendedSize,
+    camouflagedSize: input.camouflagedSize,
+    icebergChildCount: input.icebergChildCount,
+    timingJitterMs: input.timingJitterMs
+  };
+}
+
+export function tradeIntentDispatchBlockedLogMetadata(
+  input: ExecutionPlanDispatchBlockedLogInput
+): JsonRecord {
+  return {
+    intentId: input.intent.intentId,
+    instrumentCode: input.intent.instrumentCode,
+    reason: input.reason
+  };
+}
+
+export function shadowTradeIntentAuthorizedLogMetadata(
+  input: Pick<ExecutionPlanDispatchLogInput, "intent" | "icebergChildCount">
+): JsonRecord {
+  return {
+    intentId: input.intent.intentId,
+    instrumentCode: input.intent.instrumentCode,
+    expectedValue: input.intent.expectedValue,
+    approvedSize: input.intent.approvedSize,
+    icebergChildCount: input.icebergChildCount
+  };
 }
 
 export async function dispatchTradeIntentToExecutioner(

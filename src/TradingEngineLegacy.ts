@@ -131,7 +131,10 @@ import { buildExecutionPlanArtifacts } from "./engine/trading/execution/Executio
 import {
   buildExecutionDispatchBlockLog,
   dispatchTradeIntentToExecutioner,
-  evaluateExecutionDispatchGate
+  evaluateExecutionDispatchGate,
+  shadowTradeIntentAuthorizedLogMetadata,
+  tradeIntentAuthorizedLogMetadata,
+  tradeIntentDispatchBlockedLogMetadata
 } from "./engine/trading/execution/ExecutionDispatchRuntime";
 import { applyIntentPaperExecutionBudget } from "./engine/trading/execution/PaperExecutionBudgetRuntime";
 import {
@@ -3629,17 +3632,18 @@ export class TradingEngine {
     for (const plan of executionPlans) {
       const dispatchGate = evaluateIntentDispatchGate(this.engineState, plan.intent);
       if (!options.shadowReplay && dispatchGate.allowed) {
-        this.logger.info("TRADE_INTENT_AUTHORIZED", "PitBoss authorized executable intent", {
-          intentId: plan.intent.intentId,
-          instrumentCode: plan.intent.instrumentCode,
-          expectedValue: plan.intent.expectedValue,
-          approvedSize: plan.intent.approvedSize,
-          sorSavings: plan.sorPlan.sorSavings,
-          intendedSize: plan.camouflage.intendedSize,
-          camouflagedSize: plan.camouflage.camouflagedSize,
-          icebergChildCount: plan.camouflage.icebergChunks.length,
-          timingJitterMs: plan.camouflage.timingJitterMs
-        });
+        this.logger.info(
+          "TRADE_INTENT_AUTHORIZED",
+          "PitBoss authorized executable intent",
+          tradeIntentAuthorizedLogMetadata({
+            intent: plan.intent,
+            sorSavings: plan.sorPlan.sorSavings,
+            intendedSize: plan.camouflage.intendedSize,
+            camouflagedSize: plan.camouflage.camouflagedSize,
+            icebergChildCount: plan.camouflage.icebergChunks.length,
+            timingJitterMs: plan.camouflage.timingJitterMs
+          })
+        );
         for (const childIntent of plan.camouflage.icebergChunks) {
           this.state.waitUntil(this.dispatchExecution(childIntent, plan.camouflage.timingJitterMs));
         }
@@ -3647,20 +3651,20 @@ export class TradingEngine {
         this.logger.warn(
           "TRADE_INTENT_DISPATCH_BLOCKED",
           "Intent dispatch gate blocked execution",
-          {
-            intentId: plan.intent.intentId,
-            instrumentCode: plan.intent.instrumentCode,
+          tradeIntentDispatchBlockedLogMetadata({
+            intent: plan.intent,
             reason: dispatchGate.reason
-          }
+          })
         );
       } else if (options.shadowReplay) {
-        this.logger.info("SHADOW_TRADE_INTENT_AUTHORIZED", "Replay generated shadow trade intent", {
-          intentId: plan.intent.intentId,
-          instrumentCode: plan.intent.instrumentCode,
-          expectedValue: plan.intent.expectedValue,
-          approvedSize: plan.intent.approvedSize,
-          icebergChildCount: plan.camouflage.icebergChunks.length
-        });
+        this.logger.info(
+          "SHADOW_TRADE_INTENT_AUTHORIZED",
+          "Replay generated shadow trade intent",
+          shadowTradeIntentAuthorizedLogMetadata({
+            intent: plan.intent,
+            icebergChildCount: plan.camouflage.icebergChunks.length
+          })
+        );
       }
     }
 

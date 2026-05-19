@@ -3,7 +3,10 @@ import {
   buildExecutionDispatchBlockLog,
   dispatchTradeIntentToExecutioner,
   type ExecutionDispatchLogger,
-  evaluateExecutionDispatchGate
+  evaluateExecutionDispatchGate,
+  shadowTradeIntentAuthorizedLogMetadata,
+  tradeIntentAuthorizedLogMetadata,
+  tradeIntentDispatchBlockedLogMetadata
 } from "../../src/engine/trading/execution/ExecutionDispatchRuntime";
 import type { TradeIntent } from "../../src/types";
 
@@ -143,6 +146,53 @@ describe("ExecutionDispatchRuntime", () => {
         selectedInstruments: ["btc-usd"]
       })
     ).toBeNull();
+  });
+
+  it("builds execution plan dispatch log metadata", () => {
+    const intent = tradeIntent({ expectedValue: 0.42, approvedSize: 0.3 });
+
+    expect(
+      tradeIntentAuthorizedLogMetadata({
+        intent,
+        sorSavings: 0.12,
+        intendedSize: 0.4,
+        camouflagedSize: 0.3,
+        icebergChildCount: 3,
+        timingJitterMs: 25
+      })
+    ).toEqual({
+      intentId: "intent-1",
+      instrumentCode: "btc-usd",
+      expectedValue: 0.42,
+      approvedSize: 0.3,
+      sorSavings: 0.12,
+      intendedSize: 0.4,
+      camouflagedSize: 0.3,
+      icebergChildCount: 3,
+      timingJitterMs: 25
+    });
+    expect(
+      tradeIntentDispatchBlockedLogMetadata({
+        intent,
+        reason: "RISK_LIMIT"
+      })
+    ).toEqual({
+      intentId: "intent-1",
+      instrumentCode: "btc-usd",
+      reason: "RISK_LIMIT"
+    });
+    expect(
+      shadowTradeIntentAuthorizedLogMetadata({
+        intent,
+        icebergChildCount: 2
+      })
+    ).toEqual({
+      intentId: "intent-1",
+      instrumentCode: "btc-usd",
+      expectedValue: 0.42,
+      approvedSize: 0.3,
+      icebergChildCount: 2
+    });
   });
 
   it("dispatches trade intents to the executioner binding", async () => {
