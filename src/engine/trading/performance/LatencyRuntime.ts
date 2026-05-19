@@ -341,6 +341,16 @@ export interface NativeHyperliquidLatencyPullStorageInput {
   readonly processingLatencySamples: readonly number[];
 }
 
+export interface LatencySnapshotStorageInput {
+  readonly engineStateKey: string;
+  readonly state: EngineState;
+  readonly performanceHistoryKey: string;
+  readonly latencyHistory: readonly LatencyMetrics[];
+  readonly processingLatencySamplesKey: string;
+  readonly processingLatencySamples: readonly number[];
+  readonly extra?: Record<string, unknown>;
+}
+
 export function stateAfterNativeHyperliquidLatencyPull(
   input: NativeHyperliquidLatencyPullInput
 ): NativeHyperliquidLatencyPullResult {
@@ -390,10 +400,17 @@ export function stateAfterNativeHyperliquidLatencyPull(
 export function nativeHyperliquidLatencyPullStorageWrites(
   input: NativeHyperliquidLatencyPullStorageInput
 ): Record<string, unknown> {
+  return latencySnapshotStorageWrites(input);
+}
+
+export function latencySnapshotStorageWrites(
+  input: LatencySnapshotStorageInput
+): Record<string, unknown> {
   return {
     [input.engineStateKey]: input.state,
     [input.performanceHistoryKey]: input.latencyHistory,
-    [input.processingLatencySamplesKey]: input.processingLatencySamples
+    [input.processingLatencySamplesKey]: input.processingLatencySamples,
+    ...(input.extra ?? {})
   };
 }
 

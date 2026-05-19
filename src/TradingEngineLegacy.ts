@@ -148,6 +148,7 @@ import {
   calculateTickLatency,
   hardStalePullTelemetryPayload,
   hardStaleTickDropLogMetadata,
+  latencySnapshotStorageWrites,
   nativeHyperliquidLatencyPullStorageWrites,
   nextExecutionProfile,
   nextLatencyAverage,
@@ -2975,11 +2976,7 @@ export class TradingEngine {
       }
 
       await this.persistHotStorageSnapshot(
-        {
-          [ENGINE_STATE_KEY]: this.engineState,
-          [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
-          [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples
-        },
+        this.latencyStorageWrites(),
         "HARD_STALE_TICK_DROPPED"
       );
 
@@ -3053,15 +3050,12 @@ export class TradingEngine {
       this.engineState = staleState.state;
 
       await this.persistHotStorageSnapshot(
-        {
-          [ENGINE_STATE_KEY]: this.engineState,
-          [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
-          [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples,
+        this.latencyStorageWrites({
           [`staleTick:${tick.source_exchange}:${tick.instrumentCode}:${tick.sequence}`]: {
             tick,
             metrics
           }
-        },
+        }),
         "STALE_DATA_KILL_SWITCH"
       );
 
@@ -3130,11 +3124,7 @@ export class TradingEngine {
         });
 
         await this.persistHotStorageSnapshot(
-          {
-            [ENGINE_STATE_KEY]: this.engineState,
-            [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
-            [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples
-          },
+          this.latencyStorageWrites(),
           "INFORMATIONAL_TICK_BOOK_NOT_READY"
         );
 
@@ -3187,10 +3177,7 @@ export class TradingEngine {
         });
 
         await this.persistHotStorageSnapshot(
-          {
-            [ENGINE_STATE_KEY]: this.engineState,
-            [PERFORMANCE_HISTORY_KEY]: this.latencyHistory,
-            [PROCESSING_LATENCY_SAMPLES_KEY]: this.processingLatencySamples,
+          this.latencyStorageWrites({
             [`bookDesync:${tick.source_exchange}:${tick.instrumentCode}:${tick.sequence}`]: {
               tick,
               metrics,
@@ -3198,7 +3185,7 @@ export class TradingEngine {
               expectedSequence: applied.expectedSequence,
               actualSequence: applied.actualSequence
             }
-          },
+          }),
           "BOOK_DESYNC"
         );
 
@@ -5028,6 +5015,18 @@ export class TradingEngine {
     this.logger.info("LATENCY_BASELINE_RESET", "Reset stale latency baseline", {
       reason,
       observedAt
+    });
+  }
+
+  private latencyStorageWrites(extra?: Record<string, unknown>): Record<string, unknown> {
+    return latencySnapshotStorageWrites({
+      engineStateKey: ENGINE_STATE_KEY,
+      state: this.engineState,
+      performanceHistoryKey: PERFORMANCE_HISTORY_KEY,
+      latencyHistory: this.latencyHistory,
+      processingLatencySamplesKey: PROCESSING_LATENCY_SAMPLES_KEY,
+      processingLatencySamples: this.processingLatencySamples,
+      extra
     });
   }
 

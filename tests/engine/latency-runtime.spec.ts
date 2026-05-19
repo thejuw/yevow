@@ -6,6 +6,7 @@ import {
   calculateTickLatency,
   hardStalePullTelemetryPayload,
   hardStaleTickDropLogMetadata,
+  latencySnapshotStorageWrites,
   nativeHyperliquidLatencyPullStorageWrites,
   nextExecutionProfile,
   nextLatencyAverage,
@@ -371,6 +372,31 @@ describe("LatencyRuntime", () => {
       "engine:state": state,
       "latency:history": latencyHistory,
       "latency:samples": processingLatencySamples
+    });
+  });
+
+  it("builds generic latency snapshot storage writes with optional extra entries", () => {
+    const state = defaultEngineState("latency-storage");
+    const latencyHistory = [latencyMetrics({ totalLatencyMs: 90 })];
+    const processingLatencySamples = [1, 2];
+
+    expect(
+      latencySnapshotStorageWrites({
+        engineStateKey: "engine:state",
+        state,
+        performanceHistoryKey: "latency:history",
+        latencyHistory,
+        processingLatencySamplesKey: "latency:samples",
+        processingLatencySamples,
+        extra: {
+          "staleTick:hyperliquid:btc-usd:1": { reason: "STALE" }
+        }
+      })
+    ).toEqual({
+      "engine:state": state,
+      "latency:history": latencyHistory,
+      "latency:samples": processingLatencySamples,
+      "staleTick:hyperliquid:btc-usd:1": { reason: "STALE" }
     });
   });
 
