@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildHistoricalReplayResult } from "../../src/engine/trading/replay/ReplayResultRuntime";
+import {
+  buildHistoricalReplayResult,
+  buildShadowReplayConfig,
+  buildShadowReplayEngineState,
+  resolveInitialShadowBankroll
+} from "../../src/engine/trading/replay/ReplayResultRuntime";
 import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
 import type { ReplayOptions } from "../../src/engine/trading/routes/ReplayAdminRoutes";
 import type { ReplayResult } from "../../src/types";
@@ -92,6 +97,56 @@ describe("ReplayResultRuntime", () => {
     ]);
     expect(output.result.latencyModel).toMatchObject({ type: "fixed-plus-shock" });
     expect(output.result.ablation).toBeNull();
+  });
+
+  it("resolves and bootstraps isolated paper replay state", () => {
+    const liveState = defaultEngineState("engine-live");
+    const initialShadowBankroll = resolveInitialShadowBankroll({
+      requestedShadowBankroll: 0,
+      liveEquity: 250,
+      liveCash: 310,
+      fallbackBankroll: 300
+    });
+    const cachedConfig = buildShadowReplayConfig({
+      currentConfig: liveState.cachedConfig,
+      initialShadowBankroll,
+      defaultMaxPositionPct: 0.05,
+      defaultMaxInventoryUnits: 1,
+      startedAt: STARTED_AT,
+      replayId: "replay-1"
+    });
+
+    const shadowState = buildShadowReplayEngineState({
+      liveState,
+      cachedConfig,
+      initialShadowBankroll,
+      startedAt: STARTED_AT,
+      replayId: "replay-1"
+    });
+
+    expect(initialShadowBankroll).toBe(310);
+    expect(cachedConfig).toMatchObject({
+      TRADING_ENABLED: true,
+      MAX_POSITION_SIZE: 310,
+      MAX_POSITION_PCT: 0.05,
+      MAX_INVENTORY_UNITS: 1,
+      updatedBy: "shadow-replay",
+      updatedAt: STARTED_AT
+    });
+    expect(cachedConfig.version).toContain(":shadow-replay:replay-1");
+    expect(shadowState).toMatchObject({
+      engineId: "engine-live:shadow:replay-1",
+      mode: "PAPER",
+      cachedConfig,
+      heartbeatAt: STARTED_AT,
+      updatedAt: STARTED_AT,
+      bankroll: {
+        cash: 310,
+        equity: 310,
+        realizedPnl: 0,
+        updatedAt: STARTED_AT
+      }
+    });
   });
 });
 

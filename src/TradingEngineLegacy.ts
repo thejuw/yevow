@@ -203,12 +203,14 @@ import {
   buildProfilerAlertTelemetry
 } from "./engine/trading/telemetry/ProfilerTelemetryRuntime";
 import { buildTickTelemetryPayload } from "./engine/trading/telemetry/TickTelemetryRuntime";
-import {
-  type ReplayOptions,
-  type ReplayScenario
-} from "./engine/trading/routes/ReplayAdminRoutes";
+import { type ReplayOptions, type ReplayScenario } from "./engine/trading/routes/ReplayAdminRoutes";
 import { markHistoricalReplayTrades, ReplayJournal } from "./engine/trading/replay/ReplayJournal";
-import { buildHistoricalReplayResult } from "./engine/trading/replay/ReplayResultRuntime";
+import {
+  buildHistoricalReplayResult,
+  buildShadowReplayConfig,
+  buildShadowReplayEngineState,
+  resolveInitialShadowBankroll
+} from "./engine/trading/replay/ReplayResultRuntime";
 import type {
   GrpcFatalDropPayload,
   TickIngestResult
@@ -1319,7 +1321,8 @@ export class TradingEngine {
       macroBias: this.macroBias,
       equity: this.engineState.bankroll.equity,
       maxPositionPct,
-      findBestAssetBook: (instrumentCode) => findBestOrderBookForAsset(this.orderBook, instrumentCode),
+      findBestAssetBook: (instrumentCode) =>
+        findBestOrderBookForAsset(this.orderBook, instrumentCode),
       profilerStateForInstrument: (instrumentCode) =>
         this.profilerRegistry.forInstrument(instrumentCode).snapshot()
     });
@@ -2864,7 +2867,11 @@ export class TradingEngine {
       currentState: this.engineState,
       book,
       internalOrderBookDepth: countBookLevels(this.bids, this.asks),
-      priceDiscovery: calculateOrderBookPriceDiscovery(this.orderBook, applied.instrumentCode, updatedAt),
+      priceDiscovery: calculateOrderBookPriceDiscovery(
+        this.orderBook,
+        applied.instrumentCode,
+        updatedAt
+      ),
       dom: domSnapshot,
       updatedAt
     });
@@ -3536,7 +3543,10 @@ export class TradingEngine {
     const leadLag = this.engineState.leadLag;
     const inventory = this.calculateInventoryState(metrics.brainTimestamp);
     const riskMetrics = this.updatePortfolioRisk(oracleResult.state, metrics.brainTimestamp);
-    const profilerStates = this.profilerRegistry.snapshot(tick.instrumentCode, profilerResult.state);
+    const profilerStates = this.profilerRegistry.snapshot(
+      tick.instrumentCode,
+      profilerResult.state
+    );
     const assetMatrix = this.calculateAssetMatrix(
       metrics.brainTimestamp,
       tick.instrumentCode,
@@ -3817,11 +3827,7 @@ export class TradingEngine {
         quoteToTelemetry(croupierDecision.quote),
         croupierDecision.quote.signalId
       );
-      if (
-        !options.shadowReplay &&
-        this.cachedConfig.TRADING_ENABLED &&
-        !isProfilerQuoteHalt
-      ) {
+      if (!options.shadowReplay && this.cachedConfig.TRADING_ENABLED && !isProfilerQuoteHalt) {
         const quote = croupierDecision.quote;
         this.state.waitUntil(
           isCascadeShield
@@ -5091,14 +5097,12 @@ export class TradingEngine {
     const ticks = sourceTicks.map((tick, index) =>
       applyReplayScenarioToTick(tick, replayOptions.scenario, index, sourceTicks.length)
     );
-    const initialShadowBankroll =
-      shadowBankroll > 0
-        ? shadowBankroll
-        : Math.max(
-            this.engineState.bankroll.equity,
-            this.engineState.bankroll.cash,
-            DEFAULT_PAPER_BANKROLL_USD
-          );
+    const initialShadowBankroll = resolveInitialShadowBankroll({
+      requestedShadowBankroll: shadowBankroll,
+      liveEquity: this.engineState.bankroll.equity,
+      liveCash: this.engineState.bankroll.cash,
+      fallbackBankroll: DEFAULT_PAPER_BANKROLL_USD
+    });
     await this.replayJournal.writeStatus({
       replayId,
       status: "RUNNING",
@@ -5124,16 +5128,14 @@ export class TradingEngine {
     let ticksReplayed = 0;
     let generatedIntentCount = 0;
 
-    this.cachedConfig = {
-      ...this.cachedConfig,
-      TRADING_ENABLED: true,
-      MAX_POSITION_SIZE: this.cachedConfig.MAX_POSITION_SIZE || initialShadowBankroll,
-      MAX_POSITION_PCT: this.cachedConfig.MAX_POSITION_PCT || DEFAULT_MAX_POSITION_PCT,
-      MAX_INVENTORY_UNITS: this.cachedConfig.MAX_INVENTORY_UNITS || DEFAULT_MAX_INVENTORY_UNITS,
-      updatedAt: startedAt,
-      updatedBy: "shadow-replay",
-      version: `${this.cachedConfig.version}:shadow-replay:${replayId}`
-    };
+    this.cachedConfig = buildShadowReplayConfig({
+      currentConfig: this.cachedConfig,
+      initialShadowBankroll,
+      defaultMaxPositionPct: DEFAULT_MAX_POSITION_PCT,
+      defaultMaxInventoryUnits: DEFAULT_MAX_INVENTORY_UNITS,
+      startedAt,
+      replayId
+    });
     this.orderBook.clear();
     this.bids.clear();
     this.asks.clear();
@@ -5142,20 +5144,13 @@ export class TradingEngine {
     this.processingLatencySamples = [];
     this.domWallHistory = [];
     this.leadLagSamples = new Map();
-    this.engineState = {
-      ...defaultEngineState(`${this.engineState.engineId}:shadow:${replayId}`),
-      bankroll: {
-        ...this.engineState.bankroll,
-        cash: initialShadowBankroll,
-        equity: initialShadowBankroll,
-        realizedPnl: 0,
-        updatedAt: startedAt
-      },
-      mode: "PAPER",
+    this.engineState = buildShadowReplayEngineState({
+      liveState: this.engineState,
       cachedConfig: this.cachedConfig,
-      heartbeatAt: startedAt,
-      updatedAt: startedAt
-    };
+      initialShadowBankroll,
+      startedAt,
+      replayId
+    });
     this.profilerRegistry.reset();
     this.anomalyDetector.hydrate(null);
     this.oracleAgent.hydrate(null);
@@ -5759,7 +5754,11 @@ export class TradingEngine {
     );
 
     if (acceptedSignal.hawkesEvacuation) {
-      this.publish("SUSPEND_QUOTES", quoteStateTelemetry(this.engineState.quoteState), signal.signalId);
+      this.publish(
+        "SUSPEND_QUOTES",
+        quoteStateTelemetry(this.engineState.quoteState),
+        signal.signalId
+      );
       if (this.cachedConfig.TRADING_ENABLED) {
         this.state.waitUntil(
           this.cancelAllQuotes(signal.instrumentCode || "ALL", "HAWKES_FLOW_CLUSTER")

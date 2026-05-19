@@ -1,5 +1,11 @@
 import type { ReplayOptions } from "../routes/ReplayAdminRoutes";
-import type { JsonRecord, ReplayResult, SentimentState } from "../../../types";
+import type {
+  EngineState,
+  GlobalRiskConfig,
+  JsonRecord,
+  ReplayResult,
+  SentimentState
+} from "../../../types";
 import {
   buildReplayAblation,
   buildReplayAttribution,
@@ -8,8 +14,33 @@ import {
   buildStressSummary,
   calculateMaxDrawdown,
   calculateReplaySharpe,
-  calculateWinRate
+  calculateWinRate,
+  defaultEngineState
 } from "../../../TradingEngineRuntimeHelpers";
+
+export interface ResolveInitialShadowBankrollInput {
+  readonly requestedShadowBankroll: number;
+  readonly liveEquity: number;
+  readonly liveCash: number;
+  readonly fallbackBankroll: number;
+}
+
+export interface BuildShadowReplayConfigInput {
+  readonly currentConfig: GlobalRiskConfig;
+  readonly initialShadowBankroll: number;
+  readonly defaultMaxPositionPct: number;
+  readonly defaultMaxInventoryUnits: number;
+  readonly startedAt: string;
+  readonly replayId: string;
+}
+
+export interface BuildShadowReplayEngineStateInput {
+  readonly liveState: EngineState;
+  readonly cachedConfig: GlobalRiskConfig;
+  readonly initialShadowBankroll: number;
+  readonly startedAt: string;
+  readonly replayId: string;
+}
 
 export interface BuildReplayResultInput {
   readonly replayId: string;
@@ -29,6 +60,46 @@ export interface BuildReplayResultInput {
 export interface BuildReplayResultOutput {
   readonly result: ReplayResult;
   readonly logMetadata: JsonRecord;
+}
+
+export function resolveInitialShadowBankroll(input: ResolveInitialShadowBankrollInput): number {
+  if (input.requestedShadowBankroll > 0) {
+    return input.requestedShadowBankroll;
+  }
+
+  return Math.max(input.liveEquity, input.liveCash, input.fallbackBankroll);
+}
+
+export function buildShadowReplayConfig(input: BuildShadowReplayConfigInput): GlobalRiskConfig {
+  return {
+    ...input.currentConfig,
+    TRADING_ENABLED: true,
+    MAX_POSITION_SIZE: input.currentConfig.MAX_POSITION_SIZE || input.initialShadowBankroll,
+    MAX_POSITION_PCT: input.currentConfig.MAX_POSITION_PCT || input.defaultMaxPositionPct,
+    MAX_INVENTORY_UNITS: input.currentConfig.MAX_INVENTORY_UNITS || input.defaultMaxInventoryUnits,
+    updatedAt: input.startedAt,
+    updatedBy: "shadow-replay",
+    version: `${input.currentConfig.version}:shadow-replay:${input.replayId}`
+  };
+}
+
+export function buildShadowReplayEngineState(
+  input: BuildShadowReplayEngineStateInput
+): EngineState {
+  return {
+    ...defaultEngineState(`${input.liveState.engineId}:shadow:${input.replayId}`),
+    bankroll: {
+      ...input.liveState.bankroll,
+      cash: input.initialShadowBankroll,
+      equity: input.initialShadowBankroll,
+      realizedPnl: 0,
+      updatedAt: input.startedAt
+    },
+    mode: "PAPER",
+    cachedConfig: input.cachedConfig,
+    heartbeatAt: input.startedAt,
+    updatedAt: input.startedAt
+  };
 }
 
 export function buildHistoricalReplayResult(
