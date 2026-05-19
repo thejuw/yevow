@@ -58,6 +58,12 @@ import {
   currentDomHeatmapSnapshot
 } from "./engine/trading/book/DomAnalyzer";
 import {
+  buildShadowQueueTradeIntent,
+  resolveShadowQueueSizingConfig,
+  shadowQueueKellySize as calculateShadowQueueKellySize,
+  shadowQueuePostOnlyPrice as calculateShadowQueuePostOnlyPrice
+} from "./engine/trading/shadow/ShadowQueueRuntime";
+import {
   OrderBookReconstructor,
   type OrderBookStores
 } from "./engine/trading/book/OrderBookReconstructor";
@@ -290,7 +296,6 @@ import {
   DEFAULT_SHADOW_VLO_QUEUE_DEPTH_MULTIPLIER,
   DEFAULT_SHADOW_VLO_BASE_SPREAD_BPS,
   DEFAULT_SHADOW_VLO_LATENCY_BUDGET_MS,
-  DEFAULT_SHADOW_VLO_MIN_SIZE,
   DEFAULT_SHADOW_QUEUE_NO_EDGE_LOG_INTERVAL_MS,
   DEFAULT_VAR_CONFIDENCE_Z,
   TARGET_ASSET_MATRIX,
@@ -4841,50 +4846,17 @@ export class TradingEngine {
     const price = this.shadowQueuePostOnlyPrice(action, book, decision.pnMidPrice);
     const requestedSize = this.shadowQueueKellySize(action, price, book);
 
-    if (requestedSize <= 0) {
-      return null;
-    }
-
-    const expectedDriftValue = Math.abs(decision.microDrift) * requestedSize;
-    const feeCost =
-      (price * requestedSize * Math.max(0, this.cachedConfig.EXCHANGE_FEE_BPS)) / 10_000;
-    const expectedValue = roundCrypto(expectedDriftValue - feeCost);
-
-    return {
-      schemaVersion: "trade-intent.v1",
-      intentId: `vlo-intent:${decision.decisionId}`,
-      traceId: `${this.engineState.engineId}:shadow-queue:${decision.fillId}`,
-      instrumentCode: book.instrumentCode,
-      marketKey: book.marketKey,
-      source_exchange: book.source_exchange,
-      direction: action === "BUY" ? "LONG" : "SHORT",
-      action,
-      orderType: "LIMIT",
-      postOnly: true,
-      timeInForce: "ALO",
-      intendedPrice: price,
-      expectedPrice: price,
+    return buildShadowQueueTradeIntent({
+      decision,
+      book,
+      observedAt,
+      engineId: this.engineState.engineId,
+      baseSpreadBps: this.engineState.shadowQueue.baseSpreadBps,
+      exchangeFeeBps: this.cachedConfig.EXCHANGE_FEE_BPS,
+      toxicityScore: this.engineState.toxicityScore,
       requestedSize,
-      approvedSize: requestedSize,
-      probabilityWin: decision.action === "GREEN_LIGHT" ? 0.56 : 0.53,
-      probabilityLoss: decision.action === "GREEN_LIGHT" ? 0.44 : 0.47,
-      profit: expectedDriftValue,
-      loss: Math.max(expectedDriftValue, (book.spread ?? book.tickSize) * requestedSize),
-      executionCosts: feeCost,
-      adverseSelectionCost: decision.action === "RED_LIGHT" ? 0 : this.engineState.toxicityScore,
-      expectedValue,
-      minEvThreshold: Number.NEGATIVE_INFINITY,
-      maxSlippageBps: Math.max(1, book.spreadBps ?? this.engineState.shadowQueue.baseSpreadBps),
-      confidence: Math.min(
-        1,
-        Math.max(0.01, Math.abs(decision.microDrift) / Math.max(book.tickSize, 1e-12))
-      ),
-      rationale:
-        decision.action === "GREEN_LIGHT"
-          ? `VLO Green Light: post-fill drift confirmed ${decision.originalSide}; fractional Kelly post-only deployment.`
-          : `VLO Red Light: adverse post-fill drift inverted ${decision.originalSide}; AS skew bypassed for signal inversion.`,
-      createdAt: observedAt
-    };
+      price
+    });
   }
 
   private shadowQueuePostOnlyPrice(
@@ -4892,23 +4864,12 @@ export class TradingEngine {
     book: InternalOrderBook,
     pnMidPrice: number
   ): number {
-    const tickSize = Math.max(book.tickSize, DEFAULT_ORDER_BOOK_TICK_SIZE);
-    const baseSpread = Math.max(
-      book.spread ?? 0,
-      (pnMidPrice * this.engineState.shadowQueue.baseSpreadBps) / 10_000,
-      tickSize
+    return calculateShadowQueuePostOnlyPrice(
+      action,
+      book,
+      pnMidPrice,
+      this.engineState.shadowQueue.baseSpreadBps
     );
-
-    if (action === "BUY") {
-      const raw = Math.max(tickSize, pnMidPrice - baseSpread);
-      const bounded =
-        book.bestAsk !== null ? Math.min(raw, Math.max(tickSize, book.bestAsk - tickSize)) : raw;
-      return normalizePriceToTick(bounded, tickSize, "FLOOR");
-    }
-
-    const raw = pnMidPrice + baseSpread;
-    const bounded = book.bestBid !== null ? Math.max(raw, book.bestBid + tickSize) : raw;
-    return normalizePriceToTick(bounded, tickSize, "CEIL");
   }
 
   private shadowQueueKellySize(
@@ -4916,37 +4877,22 @@ export class TradingEngine {
     price: number,
     book: InternalOrderBook
   ): number {
-    if (!Number.isFinite(price) || price <= 0) {
-      return 0;
-    }
+    const sizing = resolveShadowQueueSizingConfig({
+      cachedConfig: this.cachedConfig,
+      envMaxPositionPct: readPositiveNumber(this.env.MAX_POSITION_PCT, DEFAULT_MAX_POSITION_PCT),
+      envKellyFraction: readPositiveNumber(this.env.KELLY_FRACTION, 0.5)
+    });
 
-    const equity = Math.max(0, this.engineState.bankroll.equity);
-    const maxPositionPct =
-      this.cachedConfig.MAX_POSITION_PCT > 0
-        ? this.cachedConfig.MAX_POSITION_PCT
-        : readPositiveNumber(this.env.MAX_POSITION_PCT, DEFAULT_MAX_POSITION_PCT);
-    const kellyFraction = Math.min(
-      1,
-      Math.max(
-        0,
-        this.cachedConfig.KELLY_FRACTION > 0
-          ? this.cachedConfig.KELLY_FRACTION
-          : readPositiveNumber(this.env.KELLY_FRACTION, 0.5)
-      )
-    );
-    const inventory = this.engineState.inventory;
-    const inventoryRoom =
-      action === "BUY"
-        ? Math.max(0, inventory.maxInventoryUnits - inventory.netDelta)
-        : Math.max(0, inventory.maxInventoryUnits + inventory.netDelta);
-    const levels = action === "BUY" ? book.bids : book.asks;
-    const depthCap = Math.max(DEFAULT_SHADOW_VLO_MIN_SIZE, (levels[0]?.size ?? 0) * 0.02);
-    const riskBudgetUsd =
-      equity * maxPositionPct * kellyFraction * this.engineState.location.positionSizeMultiplier;
-    const budgetSize = riskBudgetUsd > 0 ? riskBudgetUsd / price : 0;
-    const bounded = Math.min(Math.max(0, budgetSize), Math.max(0, inventoryRoom), depthCap);
-
-    return bounded > 0 ? roundCrypto(Math.max(DEFAULT_SHADOW_VLO_MIN_SIZE, bounded)) : 0;
+    return calculateShadowQueueKellySize({
+      action,
+      price,
+      book,
+      equity: this.engineState.bankroll.equity,
+      maxPositionPct: sizing.maxPositionPct,
+      kellyFraction: sizing.kellyFraction,
+      inventory: this.engineState.inventory,
+      positionSizeMultiplier: this.engineState.location.positionSizeMultiplier
+    });
   }
 
   private updateLeadLagMetrics(
