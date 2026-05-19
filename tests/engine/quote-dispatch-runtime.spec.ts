@@ -3,8 +3,11 @@ import {
   buildCroupierQuoteAction,
   buildQuoteDispatchIntents,
   dispatchedQuoteSnapshot,
-  evaluateQuoteRefreshThrottle
+  evaluateQuoteRefreshThrottle,
+  quoteDispatchBlockedLogMetadata,
+  quoteRefreshThrottleLogMetadata
 } from "../../src/engine/trading/quotes/QuoteDispatchRuntime";
+import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
 import type { QuoteSignal } from "../../src/types";
 
 describe("QuoteDispatchRuntime", () => {
@@ -84,6 +87,39 @@ describe("QuoteDispatchRuntime", () => {
         maxOrderNotional: 0
       }
     ]);
+  });
+
+  it("builds blocked quote dispatch metadata from asset runtime state", () => {
+    const assetRuntimeState = defaultEngineState("quote-dispatch-test").assetMatrix["btc-usd"];
+
+    if (!assetRuntimeState) {
+      throw new Error("missing btc-usd asset runtime fixture");
+    }
+
+    expect(
+      quoteDispatchBlockedLogMetadata({
+        quote: quoteSignal(),
+        assetRuntimeState: {
+          ...assetRuntimeState,
+          selectedByMoltworker: false,
+          quoteEligible: false,
+          quoteReason: "MOLTWORKER_NOT_SELECTED"
+        }
+      })
+    ).toEqual({
+      quoteSignalId: "quote-1",
+      instrumentCode: "btc-usd",
+      selectedByMoltworker: false,
+      quoteEligible: false,
+      reason: "MOLTWORKER_NOT_SELECTED"
+    });
+    expect(
+      quoteDispatchBlockedLogMetadata({ quote: quoteSignal(), assetRuntimeState: undefined })
+    ).toMatchObject({
+      selectedByMoltworker: null,
+      quoteEligible: null,
+      reason: "MOLTWORKER_NOT_SELECTED"
+    });
   });
 
   it("preserves liquidation absorption rationale and fallback source exchange", () => {
@@ -261,6 +297,37 @@ describe("QuoteDispatchRuntime", () => {
         logThrottleMs: 10_000
       })
     ).toMatchObject({ shouldThrottle: true, shouldLog: false });
+  });
+
+  it("builds quote refresh throttle log metadata", () => {
+    const quote = quoteSignal({ createdAt: "2026-05-18T17:00:00.750Z" });
+    const throttle = evaluateQuoteRefreshThrottle({
+      previousQuote: { bid: 100, ask: 101, updatedAtMs: Date.parse(quoteSignal().createdAt) },
+      quote,
+      advice: { shouldRefresh: false, reason: "HOLD_FRONT_OF_QUEUE", queuePressure: 0.23456 },
+      minIntervalMs: 750,
+      minPriceTicks: 1,
+      nowMs: Date.parse(quote.createdAt),
+      lastLogAtMs: 0,
+      logThrottleMs: 10_000
+    });
+
+    expect(
+      quoteRefreshThrottleLogMetadata({
+        quote,
+        throttle,
+        minIntervalMs: 750,
+        minPriceTicks: 1
+      })
+    ).toEqual({
+      instrumentCode: "btc-usd",
+      elapsedMs: 750,
+      minIntervalMs: 750,
+      minPriceTicks: 1,
+      signalId: "quote-1",
+      queuePressure: 0.2346,
+      queueReason: "HOLD_FRONT_OF_QUEUE"
+    });
   });
 
   it("captures dispatched quote snapshots with parsed and fallback timestamps", () => {

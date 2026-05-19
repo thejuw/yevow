@@ -38,7 +38,6 @@ import {
 import {
   DEFAULT_ORDER_BOOK_TICK_SIZE,
   priceKey,
-  roundMetric,
   SortedBookSide
 } from "./engine/trading/book/SortedBookSide";
 import {
@@ -128,7 +127,9 @@ import {
   buildCroupierQuoteAction,
   buildQuoteDispatchIntents,
   dispatchedQuoteSnapshot,
-  evaluateQuoteRefreshThrottle
+  evaluateQuoteRefreshThrottle,
+  quoteDispatchBlockedLogMetadata,
+  quoteRefreshThrottleLogMetadata
 } from "./engine/trading/quotes/QuoteDispatchRuntime";
 import {
   dispatchQuoteCancelAll,
@@ -4060,13 +4061,11 @@ export class TradingEngine {
       !isInstrumentSelectedByMoltworker(quote.instrumentCode, this.macroBias) ||
       assetRuntimeState?.quoteEligible === false
     ) {
-      this.logger.info("QUOTE_DISPATCH_BLOCKED", "Skipped quote for inactive Moltworker asset", {
-        quoteSignalId: quote.signalId,
-        instrumentCode: quote.instrumentCode,
-        selectedByMoltworker: assetRuntimeState?.selectedByMoltworker ?? null,
-        quoteEligible: assetRuntimeState?.quoteEligible ?? null,
-        reason: assetRuntimeState?.quoteReason ?? "MOLTWORKER_NOT_SELECTED"
-      });
+      this.logger.info(
+        "QUOTE_DISPATCH_BLOCKED",
+        "Skipped quote for inactive Moltworker asset",
+        quoteDispatchBlockedLogMetadata({ quote, assetRuntimeState })
+      );
       return;
     }
 
@@ -4175,15 +4174,7 @@ export class TradingEngine {
       this.logger.info(
         "QUOTE_REFRESH_THROTTLED",
         "Skipped quote refresh inside minimum cadence window",
-        {
-          instrumentCode: quote.instrumentCode,
-          elapsedMs: throttle.elapsedMs,
-          minIntervalMs,
-          minPriceTicks,
-          signalId: quote.signalId,
-          queuePressure: roundMetric(throttle.queuePressure, 4),
-          queueReason: throttle.queueReason
-        }
+        quoteRefreshThrottleLogMetadata({ quote, throttle, minIntervalMs, minPriceTicks })
       );
     }
 

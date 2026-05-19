@@ -1,4 +1,4 @@
-import type { QuoteOrder, QuoteSignal, TradeIntent } from "../../../types";
+import type { EngineState, JsonRecord, QuoteOrder, QuoteSignal, TradeIntent } from "../../../types";
 import type { QueueRefreshAdvice } from "../../QueuePositionModel";
 import { roundCrypto, roundMetric } from "../book/SortedBookSide";
 import { quoteToTelemetry } from "../../../TradingEngineRuntimeHelpers";
@@ -32,6 +32,11 @@ export interface QuoteDispatchIntentResult {
   readonly maxOrderNotional: number;
 }
 
+export interface QuoteDispatchBlockedLogInput {
+  readonly quote: QuoteSignal;
+  readonly assetRuntimeState: EngineState["assetMatrix"][string] | undefined;
+}
+
 export interface DispatchedQuoteSnapshot {
   readonly bid: number | null;
   readonly ask: number | null;
@@ -56,6 +61,13 @@ export interface QuoteRefreshThrottleDecision {
   readonly elapsedMs: number;
   readonly queuePressure: number;
   readonly queueReason: QueueRefreshAdvice["reason"];
+}
+
+export interface QuoteRefreshThrottleLogInput {
+  readonly quote: QuoteSignal;
+  readonly throttle: QuoteRefreshThrottleDecision;
+  readonly minIntervalMs: number;
+  readonly minPriceTicks: number;
 }
 
 export interface CroupierQuoteActionInput {
@@ -166,6 +178,16 @@ export function buildQuoteDispatchIntents(
   return { intents, skippedOrders, maxOrderNotional };
 }
 
+export function quoteDispatchBlockedLogMetadata(input: QuoteDispatchBlockedLogInput): JsonRecord {
+  return {
+    quoteSignalId: input.quote.signalId,
+    instrumentCode: input.quote.instrumentCode,
+    selectedByMoltworker: input.assetRuntimeState?.selectedByMoltworker ?? null,
+    quoteEligible: input.assetRuntimeState?.quoteEligible ?? null,
+    reason: input.assetRuntimeState?.quoteReason ?? "MOLTWORKER_NOT_SELECTED"
+  };
+}
+
 export function buildCroupierQuoteAction(input: CroupierQuoteActionInput): CroupierQuoteAction {
   if (input.pullAllQuotes) {
     return {
@@ -227,6 +249,18 @@ export function evaluateQuoteRefreshThrottle(
     elapsedMs,
     queuePressure: input.advice.queuePressure,
     queueReason: input.advice.reason
+  };
+}
+
+export function quoteRefreshThrottleLogMetadata(input: QuoteRefreshThrottleLogInput): JsonRecord {
+  return {
+    instrumentCode: input.quote.instrumentCode,
+    elapsedMs: input.throttle.elapsedMs,
+    minIntervalMs: input.minIntervalMs,
+    minPriceTicks: input.minPriceTicks,
+    signalId: input.quote.signalId,
+    queuePressure: roundMetric(input.throttle.queuePressure, 4),
+    queueReason: input.throttle.queueReason
   };
 }
 
