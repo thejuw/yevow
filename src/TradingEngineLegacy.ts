@@ -3406,7 +3406,7 @@ export class TradingEngine {
 
     if (isInformationalTick(tick)) {
       metrics.timeToBookMs = null;
-      book = this.currentBookForTick(tick);
+      book = currentBookForMarketTick(this.orderBook, tick);
 
       if (!book) {
         this.observeExecutionProfile(metrics, {
@@ -4038,10 +4038,6 @@ export class TradingEngine {
       metrics,
       book
     };
-  }
-
-  private currentBookForTick(tick: MarketTick): InternalOrderBook | undefined {
-    return currentBookForMarketTick(this.orderBook, tick);
   }
 
   private processShadowQueueTick(
