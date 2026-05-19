@@ -673,6 +673,12 @@ interface AcceptedTickStateCommitInput {
   readonly observedAt: string;
 }
 
+interface PostBookTickContext {
+  readonly volatilitySnapshot: MultiScaleVolatilitySnapshot | null;
+  readonly shadowQueueState: ShadowQueueState;
+  readonly domSnapshot: DomAnalysisSnapshot;
+}
+
 export class TradingEngine {
   private readonly startedAt = Date.now();
   private readonly initialized: Promise<void>;
@@ -3487,6 +3493,31 @@ export class TradingEngine {
     return { kind: "BOOK", book, orderBookUpdateMs };
   }
 
+  private async preparePostBookTickContext(
+    tick: MarketTick,
+    book: InternalOrderBook,
+    observedAt: string,
+    options: TickHandlingOptions
+  ): Promise<PostBookTickContext> {
+    await this.evaluateCascadeStrategy(tick, observedAt);
+
+    const volatilitySnapshot = this.multiScaleVolatility.update(
+      tick.instrumentCode,
+      book.midPrice,
+      observedAt
+    );
+    this.maybeCancelLaggingHypeQuotes(tick, volatilitySnapshot, observedAt, options);
+
+    const shadowQueueState = this.processShadowQueueTick(tick, book, observedAt, options);
+    const domSnapshot = this.getLiquidityWalls(tick.instrumentCode, observedAt, tick);
+
+    return {
+      volatilitySnapshot,
+      shadowQueueState,
+      domSnapshot
+    };
+  }
+
   private evaluateProfilerForTick(
     tick: MarketTick,
     book: InternalOrderBook,
@@ -3734,22 +3765,8 @@ export class TradingEngine {
     }
     const { book, orderBookUpdateMs } = bookResolution;
 
-    await this.evaluateCascadeStrategy(tick, metrics.brainTimestamp);
-
-    const volatilitySnapshot = this.multiScaleVolatility.update(
-      tick.instrumentCode,
-      book.midPrice,
-      metrics.brainTimestamp
-    );
-    this.maybeCancelLaggingHypeQuotes(tick, volatilitySnapshot, metrics.brainTimestamp, options);
-
-    const shadowQueueState = this.processShadowQueueTick(
-      tick,
-      book,
-      metrics.brainTimestamp,
-      options
-    );
-    const domSnapshot = this.getLiquidityWalls(tick.instrumentCode, metrics.brainTimestamp, tick);
+    const { volatilitySnapshot, shadowQueueState, domSnapshot } =
+      await this.preparePostBookTickContext(tick, book, metrics.brainTimestamp, options);
     const anomalyLogicStartedAt = highResolutionNow();
     const anomalyResult = this.anomalyDetector.evaluate({
       tick,
