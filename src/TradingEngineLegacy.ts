@@ -80,6 +80,7 @@ import {
   nextQuoteStateForInstrument as nextRuntimeQuoteStateForInstrument,
   strategyQuoteDisabledReason as runtimeStrategyQuoteDisabledReason
 } from "./engine/trading/quotes/QuoteStateRuntime";
+import { buildQuoteDispatchIntents } from "./engine/trading/quotes/QuoteDispatchRuntime";
 import { buildExecutionPlanArtifacts } from "./engine/trading/execution/ExecutionPlanRuntime";
 import { calculateAssetMatrix as calculateRuntimeAssetMatrix } from "./engine/trading/state/AssetMatrixRuntime";
 import {
@@ -4863,90 +4864,39 @@ export class TradingEngine {
       return;
     }
 
-    const intents: TradeIntent[] = [];
-    const bankroll = Math.max(0, this.engineState.bankroll.equity, this.engineState.bankroll.cash);
     const maxPositionPct =
       this.cachedConfig.MAX_POSITION_PCT > 0
         ? this.cachedConfig.MAX_POSITION_PCT
         : readPositiveNumber(this.env.MAX_POSITION_PCT, DEFAULT_MAX_POSITION_PCT);
     const assetAllocation =
       this.engineState.assetMatrix?.[quote.instrumentCode]?.capitalAllocationPct ?? 1;
-    const maxBudgetFromPct =
-      bankroll *
-      Math.max(0, maxPositionPct) *
-      Math.min(1, Math.max(0, assetAllocation)) *
-      Math.max(0, this.engineState.location.positionSizeMultiplier);
-    const maxBudgetFromConfig =
-      this.cachedConfig.MAX_POSITION_SIZE > 0
-        ? this.cachedConfig.MAX_POSITION_SIZE *
-          Math.max(0, this.engineState.location.positionSizeMultiplier)
-        : Number.POSITIVE_INFINITY;
-    const maxOrderNotional = Math.min(maxBudgetFromConfig, maxBudgetFromPct);
+    const quoteDispatch = buildQuoteDispatchIntents({
+      quote,
+      engineId: this.engineState.engineId,
+      bankrollEquity: this.engineState.bankroll.equity,
+      bankrollCash: this.engineState.bankroll.cash,
+      maxPositionPct,
+      maxPositionSize: this.cachedConfig.MAX_POSITION_SIZE,
+      assetAllocationPct: assetAllocation,
+      positionSizeMultiplier: this.engineState.location.positionSizeMultiplier,
+      fallbackSourceExchange: this.engineState.microstructure.source_exchange,
+      spreadBps: this.engineState.microstructure.spreadBps,
+      toxicityScore: this.engineState.toxicityScore
+    });
 
-    for (const order of quote.orders) {
-      const action = order.side === "BID" ? "BUY" : "SELL";
-      const maxSize =
-        Number.isFinite(maxOrderNotional) && order.price > 0
-          ? maxOrderNotional / order.price
-          : order.size;
-      const approvedSize = roundCrypto(Math.min(order.size, Math.max(0, maxSize)));
-
-      if (approvedSize <= 0) {
-        this.logger.warn(
-          "QUOTE_ORDER_RISK_CAP_ZERO",
-          "Skipped quote order with no remaining risk budget",
-          {
-            quoteSignalId: quote.signalId,
-            instrumentCode: quote.instrumentCode,
-            side: action,
-            requestedSize: order.size,
-            price: order.price,
-            maxOrderNotional
-          }
-        );
-        continue;
-      }
-
-      intents.push({
-        schemaVersion: "trade-intent.v1",
-        intentId: order.clientOrderId,
-        traceId: `${this.engineState.engineId}:quote:${quote.signalId}:${order.clientOrderId}`,
-        instrumentCode: quote.instrumentCode,
-        marketKey: quote.marketKey,
-        source_exchange:
-          quote.marketKey?.split(":")[0] ?? this.engineState.microstructure.source_exchange,
-        direction: action === "BUY" ? "LONG" : "SHORT",
-        action,
-        orderType: "LIMIT",
-        postOnly: order.postOnly,
-        timeInForce: "ALO",
-        intendedPrice: order.price,
-        expectedPrice: order.price,
-        requestedSize: order.size,
-        approvedSize,
-        probabilityWin: 0.5,
-        probabilityLoss: 0.5,
-        profit: 0,
-        loss: 0,
-        executionCosts: 0,
-        adverseSelectionCost: 0,
-        expectedValue: 0,
-        minEvThreshold: Number.NEGATIVE_INFINITY,
-        maxSlippageBps: Math.max(1, this.engineState.microstructure.spreadBps ?? 1),
-        confidence: Math.max(0, 1 - this.engineState.toxicityScore),
-        rationale:
-          order.strategy === "LIQUIDATION_ABSORPTION"
-            ? `Post-only liquidation absorption quote from signal ${quote.signalId}; cluster ${order.clusterId ?? "unknown"}`
-            : `AMM quote child order from signal ${quote.signalId}; risk-capped notional=${roundMetric(approvedSize * order.price, 8)}`,
-        createdAt: quote.createdAt
-      });
+    for (const skipped of quoteDispatch.skippedOrders) {
+      this.logger.warn(
+        "QUOTE_ORDER_RISK_CAP_ZERO",
+        "Skipped quote order with no remaining risk budget",
+        { ...skipped }
+      );
     }
 
-    for (const intent of intents) {
+    for (const intent of quoteDispatch.intents) {
       await this.dispatchExecution(intent);
     }
 
-    if (intents.length > 0) {
+    if (quoteDispatch.intents.length > 0) {
       this.rememberDispatchedQuote(quote);
     }
   }
