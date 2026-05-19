@@ -694,6 +694,21 @@ interface TickDecisionContext {
   readonly sentimentForDecision: SentimentState;
 }
 
+interface QuotePolicyResult {
+  readonly executionPlans: ApprovedExecutionPlan[];
+  readonly assetQuoteState: EngineState["quoteState"];
+  readonly strategyQuoteDisableReason: string | null;
+  readonly isCascadeShield: boolean;
+  readonly isProfilerQuoteHalt: boolean;
+}
+
+interface AcceptedExecutionContext {
+  readonly ensemble: EngineState["ensemble"];
+  readonly executionPlan: ApprovedExecutionPlan | null;
+  readonly executionPlans: ApprovedExecutionPlan[];
+  readonly quotePolicy: QuotePolicyResult;
+}
+
 interface AcceptedTickSideEffectsInput {
   readonly tick: MarketTick;
   readonly metrics: LatencyMetrics;
@@ -3439,13 +3454,7 @@ export class TradingEngine {
     shadowReplay: boolean,
     ensembleAnomalyCircuitBreaker: boolean,
     ensembleRationale: string
-  ): {
-    executionPlans: ApprovedExecutionPlan[];
-    assetQuoteState: EngineState["quoteState"];
-    strategyQuoteDisableReason: string | null;
-    isCascadeShield: boolean;
-    isProfilerQuoteHalt: boolean;
-  } {
+  ): QuotePolicyResult {
     const previousQuoteState = quoteStateForInstrumentState(
       this.engineState.assetQuoteStates,
       instrumentCode,
@@ -3878,6 +3887,53 @@ export class TradingEngine {
     });
   }
 
+  private prepareAcceptedExecutionContext(
+    input: AcceptedDecisionPipelineInput,
+    profilerResult: ProfilerEvaluation,
+    oracleState: EngineState["oracle"],
+    croupierDecision: CroupierDecision,
+    decisionContext: TickDecisionContext
+  ): AcceptedExecutionContext {
+    const ensemble = this.calculateEnsembleState(
+      croupierDecision.intent,
+      profilerResult.state,
+      oracleState,
+      decisionContext.sentimentForDecision,
+      input.anomalyResult.status,
+      input.metrics.brainTimestamp
+    );
+    const executionPlan = this.cachedConfig.PIT_BOSS_ENABLED
+      ? this.prepareExecutionPlan(croupierDecision.intent, input.metrics.brainTimestamp, {
+          stateOverride: {
+            ...this.engineState,
+            assetMatrix: decisionContext.assetMatrix,
+            ensemble
+          },
+          kellyFractionOverride: this.cachedConfig.KELLY_FRACTION * ensemble.kellyMultiplier
+        })
+      : null;
+    const executionPlans = [executionPlan].filter(
+      (plan): plan is NonNullable<typeof executionPlan> => plan !== null
+    );
+    const quotePolicy = this.applyQuoteSuppression(
+      input.tick.instrumentCode,
+      croupierDecision,
+      profilerResult,
+      executionPlans,
+      input.metrics.brainTimestamp,
+      input.shadowReplay,
+      ensemble.anomalyCircuitBreaker,
+      ensemble.rationale
+    );
+
+    return {
+      ensemble,
+      executionPlan,
+      executionPlans: quotePolicy.executionPlans,
+      quotePolicy
+    };
+  }
+
   private async finalizeAcceptedTick(input: AcceptedTickSideEffectsInput): Promise<void> {
     this.scheduleAcceptedTickSnapshot(
       input.tick,
@@ -3970,38 +4026,13 @@ export class TradingEngine {
       input.volatilitySnapshot,
       input.metrics.brainTimestamp
     );
-    const ensemble = this.calculateEnsembleState(
-      croupierDecision.intent,
-      profilerResult.state,
-      oracleResult.state,
-      decisionContext.sentimentForDecision,
-      input.anomalyResult.status,
-      input.metrics.brainTimestamp
-    );
-    const executionPlan = this.cachedConfig.PIT_BOSS_ENABLED
-      ? this.prepareExecutionPlan(croupierDecision.intent, input.metrics.brainTimestamp, {
-          stateOverride: {
-            ...this.engineState,
-            assetMatrix: decisionContext.assetMatrix,
-            ensemble
-          },
-          kellyFractionOverride: this.cachedConfig.KELLY_FRACTION * ensemble.kellyMultiplier
-        })
-      : null;
-    let executionPlans = [executionPlan].filter(
-      (plan): plan is NonNullable<typeof executionPlan> => plan !== null
-    );
-    const quotePolicy = this.applyQuoteSuppression(
-      input.tick.instrumentCode,
-      croupierDecision,
+    const executionContext = this.prepareAcceptedExecutionContext(
+      input,
       profilerResult,
-      executionPlans,
-      input.metrics.brainTimestamp,
-      input.shadowReplay,
-      ensemble.anomalyCircuitBreaker,
-      ensemble.rationale
+      oracleResult.state,
+      croupierDecision,
+      decisionContext
     );
-    executionPlans = quotePolicy.executionPlans;
 
     this.commitAcceptedTickState({
       tick: input.tick,
@@ -4009,15 +4040,15 @@ export class TradingEngine {
       book: input.book,
       oracle: oracleResult.state,
       sentiment: decisionContext.sentimentForDecision,
-      ensemble,
+      ensemble: executionContext.ensemble,
       leadLag: decisionContext.leadLag,
       inventory: decisionContext.inventory,
       riskMetrics: decisionContext.riskMetrics,
-      assetQuoteState: quotePolicy.assetQuoteState,
+      assetQuoteState: executionContext.quotePolicy.assetQuoteState,
       shadowQueueState: input.shadowQueueState,
-      executionPlan,
+      executionPlan: executionContext.executionPlan,
       croupierDecision,
-      executionPlans,
+      executionPlans: executionContext.executionPlans,
       inventoryGuard: decisionContext.inventoryGuard,
       domSnapshot: input.domSnapshot,
       anomalyResult: input.anomalyResult,
@@ -4038,11 +4069,11 @@ export class TradingEngine {
       profilerResult,
       profilerLatencyMs,
       croupierDecision,
-      executionPlans,
+      executionPlans: executionContext.executionPlans,
       inventory: decisionContext.inventory,
-      strategyQuoteDisableReason: quotePolicy.strategyQuoteDisableReason,
-      isCascadeShield: quotePolicy.isCascadeShield,
-      isProfilerQuoteHalt: quotePolicy.isProfilerQuoteHalt,
+      strategyQuoteDisableReason: executionContext.quotePolicy.strategyQuoteDisableReason,
+      isCascadeShield: executionContext.quotePolicy.isCascadeShield,
+      isProfilerQuoteHalt: executionContext.quotePolicy.isProfilerQuoteHalt,
       oracleBayesianTrace: oracleResult.bayesianTrace,
       hotPathStartedAt: input.hotPathStartedAt,
       shadowReplay: input.shadowReplay
