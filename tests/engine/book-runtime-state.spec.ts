@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  bookSnapshotTelemetry,
   shouldEmitBookSnapshotTelemetry,
   stateAfterAcceptedBookDelta,
   stateAfterBookSnapshot,
@@ -149,6 +150,28 @@ describe("BookRuntimeState", () => {
         interval: 1000
       })
     ).toBe(false);
+  });
+
+  it("builds compact snapshot telemetry payloads", () => {
+    expect(
+      bookSnapshotTelemetry({
+        instrumentCode: "btc-usd",
+        exchangeCode: "hyperliquid",
+        sequence: 42,
+        bidLevels: 20,
+        askLevels: 19,
+        tickSize: 0.5,
+        timeToBookMs: 3
+      })
+    ).toEqual({
+      instrumentCode: "btc-usd",
+      exchangeCode: "hyperliquid",
+      sequence: 42,
+      bidLevels: 20,
+      askLevels: 19,
+      tickSize: 0.5,
+      timeToBookMs: 3
+    });
   });
 
   it("marks informational ticks as book-not-ready without mutating quote state when disabled", () => {

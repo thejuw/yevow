@@ -58,7 +58,8 @@ import {
   stateAfterBookSnapshot,
   stateAfterInformationalBookNotReady,
   stateAfterOrderBookReset,
-  stateAfterRejectedBookDelta
+  stateAfterRejectedBookDelta,
+  bookSnapshotTelemetry
 } from "./engine/trading/book/BookRuntimeState";
 import {
   applyOrderBookResetStores,
@@ -2751,24 +2752,13 @@ export class TradingEngine {
     });
 
     if (shouldEmitTelemetry) {
-      this.logger.info("ORDER_BOOK_SNAPSHOT_APPLIED", "Full order book snapshot applied", {
-        instrumentCode: applied.instrumentCode,
-        exchangeCode: applied.exchangeCode,
-        sequence: applied.sequence,
-        bidLevels: applied.bidLevels,
-        askLevels: applied.askLevels,
-        tickSize: applied.tickSize,
-        timeToBookMs: applied.timeToBookMs
-      });
-      this.publish("ORDER_BOOK_SNAPSHOT_APPLIED", {
-        instrumentCode: applied.instrumentCode,
-        exchangeCode: applied.exchangeCode,
-        sequence: applied.sequence,
-        bidLevels: applied.bidLevels,
-        askLevels: applied.askLevels,
-        tickSize: applied.tickSize,
-        timeToBookMs: applied.timeToBookMs
-      });
+      const telemetry = bookSnapshotTelemetry(applied);
+      this.logger.info(
+        "ORDER_BOOK_SNAPSHOT_APPLIED",
+        "Full order book snapshot applied",
+        telemetry
+      );
+      this.publish("ORDER_BOOK_SNAPSHOT_APPLIED", telemetry);
     }
 
     return book;

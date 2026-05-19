@@ -2,6 +2,7 @@ import type {
   DomAnalysisSnapshot,
   EngineState,
   InternalOrderBook,
+  JsonRecord,
   MicrostructureMetrics,
   PriceDiscoveryMetrics
 } from "../../../types";
@@ -12,6 +13,7 @@ import {
   suspendAssetQuoteStates
 } from "../../../TradingEngineRuntimeHelpers";
 import { microstructureFromBook } from "./BookReconstruction";
+import type { AppliedBookSnapshot } from "./OrderBookReconstructor";
 
 export interface BookResetStateInput {
   readonly currentState: EngineState;
@@ -164,4 +166,27 @@ export function shouldEmitBookSnapshotTelemetry(input: {
     input.processedTicks <= input.earlyTickLimit ||
     input.processedTicks % input.interval === 0
   );
+}
+
+export function bookSnapshotTelemetry(
+  applied: Pick<
+    AppliedBookSnapshot,
+    | "instrumentCode"
+    | "exchangeCode"
+    | "sequence"
+    | "bidLevels"
+    | "askLevels"
+    | "tickSize"
+    | "timeToBookMs"
+  >
+): JsonRecord {
+  return {
+    instrumentCode: applied.instrumentCode,
+    exchangeCode: applied.exchangeCode,
+    sequence: applied.sequence,
+    bidLevels: applied.bidLevels,
+    askLevels: applied.askLevels,
+    tickSize: applied.tickSize,
+    timeToBookMs: applied.timeToBookMs
+  };
 }
