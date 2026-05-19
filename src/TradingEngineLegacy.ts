@@ -132,12 +132,16 @@ import {
   dispatchQuoteCancelAll,
   evaluateQuoteCancelDispatch
 } from "./engine/trading/quotes/QuoteCancelRuntime";
-import { buildExecutionPlanArtifacts } from "./engine/trading/execution/ExecutionPlanRuntime";
+import {
+  buildExecutionPlanArtifacts,
+  shouldSkipExecutionPlanForQuoteSuspension,
+  sorResidualLiquidityShortfallLogMetadata
+} from "./engine/trading/execution/ExecutionPlanRuntime";
 import {
   buildExecutionDispatchBlockLog,
   buildExecutionPlanDispatchAction,
   dispatchTradeIntentToExecutioner,
-  evaluateExecutionDispatchGate,
+  evaluateExecutionDispatchGate
 } from "./engine/trading/execution/ExecutionDispatchRuntime";
 import {
   buildCroupierEvaluationInput,
@@ -3901,15 +3905,12 @@ export class TradingEngine {
 
     const riskState = options.stateOverride ?? this.engineState;
     if (
-      !options.bypassQuoteSuspension &&
-      isQuoteSuspendedAt(
-        quoteStateForInstrumentState(
-          riskState.assetQuoteStates,
-          intent.instrumentCode,
-          riskState.quoteState
-        ),
-        observedAt
-      )
+      shouldSkipExecutionPlanForQuoteSuspension({
+        intent,
+        riskState,
+        observedAt,
+        bypassQuoteSuspension: options.bypassQuoteSuspension
+      })
     ) {
       return null;
     }
@@ -3936,12 +3937,10 @@ export class TradingEngine {
       this.logger.warn(
         "SOR_RESIDUAL_LIQUIDITY_SHORTFALL",
         "Smart router could not source full approved size",
-        {
-          intentId: camouflage.intent.intentId,
-          instrumentCode: camouflage.intent.instrumentCode,
-          approvedSize: camouflage.intent.approvedSize ?? camouflage.intent.requestedSize,
+        sorResidualLiquidityShortfallLogMetadata({
+          intent: camouflage.intent,
           unfilledSize: sorPlan.unfilledSize
-        }
+        })
       );
     }
     const { camouflage: routedCamouflage, orders } = buildExecutionPlanArtifacts({

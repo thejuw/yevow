@@ -3,8 +3,11 @@ import {
   buildExecutionPlanArtifacts,
   buildManagedOrders,
   executionAckDeadline,
-  executionChildrenFromRoutePlan
+  executionChildrenFromRoutePlan,
+  shouldSkipExecutionPlanForQuoteSuspension,
+  sorResidualLiquidityShortfallLogMetadata
 } from "../../src/engine/trading/execution/ExecutionPlanRuntime";
+import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
 import type { CamouflageResult } from "../../src/utils/Camouflage";
 import type { SorPlan } from "../../src/utils/SOR";
 import type { TradeIntent } from "../../src/types";
@@ -135,6 +138,54 @@ describe("ExecutionPlanRuntime", () => {
       clientId: "intent-1:iceberg:1",
       intentId: "intent-1",
       ackDeadlineAt: ACK_DEADLINE_AT
+    });
+  });
+
+  it("gates execution planning on suspended quote state unless explicitly bypassed", () => {
+    const state = defaultEngineState("execution-plan-test");
+    state.assetQuoteStates["btc-usd"] = {
+      status: "SUSPENDED",
+      reason: "PROFILER_ALERT",
+      suspendedUntil: "2026-05-18T14:01:00.000Z",
+      lastQuote: null,
+      updatedAt: OBSERVED_AT
+    };
+
+    expect(
+      shouldSkipExecutionPlanForQuoteSuspension({
+        intent: tradeIntent(),
+        riskState: state,
+        observedAt: OBSERVED_AT
+      })
+    ).toBe(true);
+    expect(
+      shouldSkipExecutionPlanForQuoteSuspension({
+        intent: tradeIntent(),
+        riskState: state,
+        observedAt: OBSERVED_AT,
+        bypassQuoteSuspension: true
+      })
+    ).toBe(false);
+    expect(
+      shouldSkipExecutionPlanForQuoteSuspension({
+        intent: null,
+        riskState: state,
+        observedAt: OBSERVED_AT
+      })
+    ).toBe(false);
+  });
+
+  it("builds SOR residual liquidity shortfall metadata", () => {
+    expect(
+      sorResidualLiquidityShortfallLogMetadata({
+        intent: tradeIntent({ approvedSize: null, requestedSize: 0.4 }),
+        unfilledSize: 0.1
+      })
+    ).toEqual({
+      intentId: "intent-1",
+      instrumentCode: "btc-usd",
+      approvedSize: 0.4,
+      unfilledSize: 0.1
     });
   });
 });

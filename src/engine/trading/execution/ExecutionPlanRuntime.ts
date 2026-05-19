@@ -1,6 +1,10 @@
 import type { CamouflageResult } from "../../../utils/Camouflage";
 import type { SorPlan } from "../../../utils/SOR";
-import type { ManagedOrder, TradeIntent } from "../../../types";
+import {
+  isQuoteSuspendedAt,
+  quoteStateForInstrumentState
+} from "../../../TradingEngineRuntimeHelpers";
+import type { EngineState, JsonRecord, ManagedOrder, TradeIntent } from "../../../types";
 
 export interface ExecutionPlanArtifactsInput {
   readonly camouflage: CamouflageResult;
@@ -12,6 +16,18 @@ export interface ExecutionPlanArtifactsInput {
 export interface ExecutionPlanArtifacts {
   readonly camouflage: CamouflageResult;
   readonly orders: ManagedOrder[];
+}
+
+export interface ExecutionPlanQuoteGateInput {
+  readonly intent: TradeIntent | null;
+  readonly riskState: EngineState;
+  readonly observedAt: string;
+  readonly bypassQuoteSuspension?: boolean;
+}
+
+export interface SorResidualLogInput {
+  readonly intent: TradeIntent;
+  readonly unfilledSize: number;
 }
 
 export function buildExecutionPlanArtifacts(
@@ -32,6 +48,32 @@ export function buildExecutionPlanArtifacts(
       observedAt: input.observedAt,
       ackDeadlineAt
     })
+  };
+}
+
+export function shouldSkipExecutionPlanForQuoteSuspension(
+  input: ExecutionPlanQuoteGateInput
+): boolean {
+  if (!input.intent || input.bypassQuoteSuspension) {
+    return false;
+  }
+
+  return isQuoteSuspendedAt(
+    quoteStateForInstrumentState(
+      input.riskState.assetQuoteStates,
+      input.intent.instrumentCode,
+      input.riskState.quoteState
+    ),
+    input.observedAt
+  );
+}
+
+export function sorResidualLiquidityShortfallLogMetadata(input: SorResidualLogInput): JsonRecord {
+  return {
+    intentId: input.intent.intentId,
+    instrumentCode: input.intent.instrumentCode,
+    approvedSize: input.intent.approvedSize ?? input.intent.requestedSize,
+    unfilledSize: input.unfilledSize
   };
 }
 
