@@ -5663,6 +5663,58 @@ export class TradingEngine {
     this.state.waitUntil(warmUp);
   }
 
+  private applyRefreshedConfigState(nextConfig: GlobalRiskConfig, observedAt: string): void {
+    const nextAssetQuoteStates = reconcileAssetQuoteStatesForConfig(
+      this.engineState.assetQuoteStates,
+      nextConfig,
+      this.macroBias,
+      observedAt
+    );
+    const nextQuoteState = aggregateQuoteState(
+      nextAssetQuoteStates,
+      this.engineState.quoteState,
+      observedAt
+    );
+    const profilerStates = this.profilerRegistry.snapshot();
+    const refreshedLocation = resolveEngineLocation(
+      {
+        colo: this.engineState.location.colo,
+        placement: this.engineState.location.placement,
+        country: this.engineState.location.country,
+        city: this.engineState.location.city,
+        region: this.engineState.location.region,
+        timezone: this.engineState.location.timezone,
+        latitude: this.engineState.location.latitude,
+        longitude: this.engineState.location.longitude,
+        requestId: crypto.randomUUID(),
+        observedAt
+      },
+      this.engineState.location,
+      this.env,
+      nextConfig,
+      this.engineState.location.observedLatencyMs
+    );
+
+    this.engineState = stateAfterConfigRefresh({
+      currentState: this.engineState,
+      nextConfig,
+      macroBias: this.macroBias,
+      temporaryOverride: this.activeTemporaryOverride,
+      nextAssetQuoteStates,
+      nextQuoteState,
+      assetMatrix: this.calculateAssetMatrix(
+        observedAt,
+        this.engineState.microstructure.instrumentCode ?? undefined,
+        this.engineState.oracle,
+        profilerStates,
+        nextAssetQuoteStates
+      ),
+      profilerStates,
+      refreshedLocation,
+      observedAt
+    });
+  }
+
   private async refreshConfig(
     source: "ALARM" | "ADMIN_SIGNAL",
     configSnapshot?: GlobalRiskConfig
@@ -5682,56 +5734,7 @@ export class TradingEngine {
     if (nextConfig.TRADING_ENABLED) {
       this.killSwitchLogged = false;
     }
-    const nextAssetQuoteStates = reconcileAssetQuoteStatesForConfig(
-      this.engineState.assetQuoteStates,
-      nextConfig,
-      this.macroBias,
-      now
-    );
-    const nextQuoteState = aggregateQuoteState(
-      nextAssetQuoteStates,
-      this.engineState.quoteState,
-      now
-    );
-    const profilerStates = this.profilerRegistry.snapshot();
-
-    const refreshedLocation = resolveEngineLocation(
-      {
-        colo: this.engineState.location.colo,
-        placement: this.engineState.location.placement,
-        country: this.engineState.location.country,
-        city: this.engineState.location.city,
-        region: this.engineState.location.region,
-        timezone: this.engineState.location.timezone,
-        latitude: this.engineState.location.latitude,
-        longitude: this.engineState.location.longitude,
-        requestId: crypto.randomUUID(),
-        observedAt: now
-      },
-      this.engineState.location,
-      this.env,
-      nextConfig,
-      this.engineState.location.observedLatencyMs
-    );
-
-    this.engineState = stateAfterConfigRefresh({
-      currentState: this.engineState,
-      nextConfig,
-      macroBias: this.macroBias,
-      temporaryOverride: this.activeTemporaryOverride,
-      nextAssetQuoteStates,
-      nextQuoteState,
-      assetMatrix: this.calculateAssetMatrix(
-        now,
-        this.engineState.microstructure.instrumentCode ?? undefined,
-        this.engineState.oracle,
-        profilerStates,
-        nextAssetQuoteStates
-      ),
-      profilerStates,
-      refreshedLocation,
-      observedAt: now
-    });
+    this.applyRefreshedConfigState(nextConfig, now);
 
     await this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "CONFIG_REFRESH");
 
