@@ -3026,6 +3026,43 @@ export class TradingEngine {
     }
   }
 
+  private dispatchInventoryHedgeIfNeeded(
+    book: InternalOrderBook,
+    inventory: InventoryState,
+    observedAt: string,
+    shadowReplay: boolean
+  ): void {
+    const hedge = buildInventoryHedgeIntent({
+      book,
+      inventory,
+      observedAt,
+      engineId: this.engineState.engineId,
+      config: this.cachedConfig,
+      lastHedgeAtMs: this.lastHedgeDispatchedAt.get(book.instrumentCode) ?? 0,
+      fallbackNowMs: Date.now()
+    });
+    const hedgeIntent = hedge?.intent ?? null;
+
+    if (hedge) {
+      this.lastHedgeDispatchedAt.set(book.instrumentCode, hedge.dispatchedAtMs);
+    }
+
+    if (!hedgeIntent || shadowReplay) {
+      return;
+    }
+
+    this.logger.warn(
+      "INVENTORY_HEDGE_AUTHORIZED",
+      "Inventory hedge IOC path authorized",
+      inventoryHedgeAuthorizedLogMetadata({
+        intent: hedgeIntent,
+        inventory,
+        triggerPct: this.cachedConfig.HEDGE_TRIGGER_INVENTORY_PCT
+      })
+    );
+    this.state.waitUntil(this.dispatchExecution(hedgeIntent));
+  }
+
   private async handleTick(
     tick: MarketTick,
     wakeUpTimeMs: number | null,
@@ -3573,32 +3610,12 @@ export class TradingEngine {
 
     this.handleCroupierQuoteAction(tick.instrumentCode, croupierQuoteAction);
     this.dispatchExecutionPlans(executionPlans, options.shadowReplay === true);
-
-    const hedge = buildInventoryHedgeIntent({
+    this.dispatchInventoryHedgeIfNeeded(
       book,
       inventory,
-      observedAt: metrics.brainTimestamp,
-      engineId: this.engineState.engineId,
-      config: this.cachedConfig,
-      lastHedgeAtMs: this.lastHedgeDispatchedAt.get(book.instrumentCode) ?? 0,
-      fallbackNowMs: Date.now()
-    });
-    const hedgeIntent = hedge?.intent ?? null;
-    if (hedge) {
-      this.lastHedgeDispatchedAt.set(book.instrumentCode, hedge.dispatchedAtMs);
-    }
-    if (hedgeIntent && !options.shadowReplay) {
-      this.logger.warn(
-        "INVENTORY_HEDGE_AUTHORIZED",
-        "Inventory hedge IOC path authorized",
-        inventoryHedgeAuthorizedLogMetadata({
-          intent: hedgeIntent,
-          inventory,
-          triggerPct: this.cachedConfig.HEDGE_TRIGGER_INVENTORY_PCT
-        })
-      );
-      this.state.waitUntil(this.dispatchExecution(hedgeIntent));
-    }
+      metrics.brainTimestamp,
+      options.shadowReplay === true
+    );
 
     if (profilerResult.signal) {
       this.publishProfilerAlert(profilerResult.signal, profilerResult.state);
