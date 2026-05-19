@@ -259,6 +259,7 @@ import {
   buildHotPathTickSnapshotWrites,
   shouldJournalMarketTick as shouldPersistMarketTick
 } from "./engine/trading/state/TickPersistenceRuntime";
+import { stateAfterAdminControlledRecovery } from "./engine/trading/state/RecoveryRuntime";
 import {
   evaluateHotStorageSnapshotDecision,
   resolveHotStorageSnapshotIntervalMs,
@@ -2657,83 +2658,26 @@ export class TradingEngine {
     }
 
     const prunedProfilerStorageKeys = await this.deleteRetiredProfilerStorage();
-    const nextAssetQuoteStates =
-      payload.clearQuoteState === false
-        ? this.engineState.assetQuoteStates
-        : defaultAssetQuoteStates(this.cachedConfig, this.macroBias, observedAt);
-    const nextQuoteState =
-      payload.clearQuoteState === false
-        ? this.engineState.quoteState
-        : aggregateQuoteState(nextAssetQuoteStates, this.engineState.quoteState, observedAt);
-    const nextCitadel =
-      payload.clearCitadel === false
-        ? this.engineState.citadel
-        : {
-            ...defaultCitadelState(observedAt),
-            shadowMode: isShadowMode(this.env)
-          };
-    const riskTradingEnabled =
-      this.cachedConfig.TRADING_ENABLED &&
-      (payload.resetPaperPortfolio ||
-        this.engineState.riskMetrics.rollingDrawdownPct <= this.cachedConfig.MAX_DRAWDOWN_PCT);
     const paperBankroll = readPositiveNumber(
       this.env.PAPER_BANKROLL_USD,
       DEFAULT_PAPER_BANKROLL_USD
     );
-    const nextBankroll = payload.resetPaperPortfolio
-      ? {
-          ...this.engineState.bankroll,
-          cash: paperBankroll,
-          equity: paperBankroll,
-          realizedPnl: 0,
-          updatedAt: observedAt
-        }
-      : this.engineState.bankroll;
-    const nextOpenPositions = payload.resetPaperPortfolio ? {} : this.engineState.openPositions;
-    const nextInventory = payload.resetPaperPortfolio
-      ? {
-          ...defaultInventoryState(
-            this.cachedConfig.MAX_INVENTORY_UNITS,
-            this.cachedConfig.MAX_INVENTORY_DELTA
-          ),
-          updatedAt: observedAt
-        }
-      : this.engineState.inventory;
-    const nextRiskMetrics = {
-      ...(payload.resetPaperPortfolio
-        ? defaultRiskMetrics(nextBankroll.equity, observedAt)
-        : this.engineState.riskMetrics),
-      isTradingEnabled: riskTradingEnabled,
-      updatedAt: observedAt
-    };
-    const nextRisk = {
-      ...this.engineState.risk,
-      killSwitch: !riskTradingEnabled,
-      maxDrawdownPct: this.cachedConfig.MAX_DRAWDOWN_PCT,
-      updatedAt: observedAt
-    };
-
-    this.engineState = {
-      ...this.engineState,
-      bankroll: nextBankroll,
-      openPositions: nextOpenPositions,
-      inventory: nextInventory,
-      current_inventory_delta: nextInventory.current_inventory_delta,
-      staleTickCount: 0,
-      quoteState: nextQuoteState,
-      assetQuoteStates: nextAssetQuoteStates,
+    const recovery = stateAfterAdminControlledRecovery({
+      currentState: this.engineState,
+      payload,
+      cachedConfig: this.cachedConfig,
+      macroBias: this.macroBias,
+      observedAt,
+      shadowMode: isShadowMode(this.env),
+      paperBankroll,
       shadowQueue: this.ghostBook.snapshot(observedAt),
-      citadel: nextCitadel,
-      riskMetrics: nextRiskMetrics,
-      risk: nextRisk,
-      executionProfile: {
-        ...this.engineState.executionProfile,
-        status: "STABLE",
-        updatedAt: observedAt
-      },
-      heartbeatAt: observedAt,
-      updatedAt: observedAt
-    };
+      reason,
+      resetInstruments,
+      sourceExchange,
+      prunedProfilerStorageKeys
+    });
+
+    this.engineState = recovery.state;
 
     await this.safeStoragePut(
       {
@@ -2749,31 +2693,9 @@ export class TradingEngine {
     }
 
     this.logger.warn("ADMIN_CONTROLLED_RECOVERY", "Admin controlled recovery applied", {
-      reason,
-      resetInstruments,
-      source_exchange: sourceExchange,
-      clearCitadel: payload.clearCitadel !== false,
-      clearQuoteState: payload.clearQuoteState !== false,
-      clearLatency: payload.clearLatency !== false,
-      resetPaperPortfolio: payload.resetPaperPortfolio === true,
-      clearShadowQueue: shouldClearShadowQueue,
-      prunedProfilerStorageKeys,
-      tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-      observedAt
+      ...recovery.logMetadata
     });
-    this.publish("ADMIN_CONTROLLED_RECOVERY", {
-      reason,
-      resetInstruments,
-      source_exchange: sourceExchange,
-      clearCitadel: payload.clearCitadel !== false,
-      clearQuoteState: payload.clearQuoteState !== false,
-      clearLatency: payload.clearLatency !== false,
-      resetPaperPortfolio: payload.resetPaperPortfolio === true,
-      clearShadowQueue: shouldClearShadowQueue,
-      prunedProfilerStorageKeyCount: prunedProfilerStorageKeys.length,
-      tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-      observedAt
-    });
+    this.publish("ADMIN_CONTROLLED_RECOVERY", recovery.publishPayload);
 
     return {
       ok: true,
