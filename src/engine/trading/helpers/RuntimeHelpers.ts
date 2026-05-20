@@ -182,16 +182,12 @@ export {
 } from "./RuntimeParsing";
 export {
   baseAssetFromInstrument,
-  cascadeInstrumentSet,
   createNativeHyperliquidBookTick,
   createNativeHyperliquidFundingTick,
   createNativeHyperliquidTradeTick,
   epochMillis,
   hyperliquidNativeInstrumentCode,
-  isOpenCascadePosition,
   isNativeRecord,
-  latestAbsorptionForInstrument,
-  latestCascadeAtForInstrument,
   nativeBookSideLevels,
   nativeExchangeTimestamp,
   nativeHashSequence,
@@ -208,11 +204,17 @@ export {
   normalizeSourceExchange,
   normalizeSourceWeight,
   parseHyperliquidNativeLevels,
-  recentSwingHigh,
-  recentSwingLow,
   requireNativeString,
   splitNativeInstrument
 } from "./NativeHyperliquidRuntime";
+export {
+  cascadeInstrumentSet,
+  isOpenCascadePosition,
+  latestAbsorptionForInstrument,
+  latestCascadeAtForInstrument,
+  recentSwingHigh,
+  recentSwingLow
+} from "../cascade/CascadeSelectionRuntime";
 export { deepClone, toJsonValue } from "./RuntimeSerialization";
 
 
