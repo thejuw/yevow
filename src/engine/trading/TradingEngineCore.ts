@@ -18,12 +18,12 @@ import {
 import { CroupierAgent, type CroupierDecision } from "../../agents/CroupierAgent";
 import { AdverseSelectionModel } from "../AdverseSelectionModel";
 import {
-  applyTopologyWarmUpRuntime,
   applyTopologyObservationSideEffects,
   defaultEngineLocation,
   stateAfterLocationLatency,
   stateAfterTopologyObservation
 } from "./helpers/PlacementResolver";
+import { applyTopologyWarmUpRuntime } from "./helpers/TopologyWarmUpRuntime";
 import { priceKey, SortedBookSide } from "./book/SortedBookSide";
 import { countBookLevels, microstructureFromBook } from "./book/BookReconstruction";
 import {
