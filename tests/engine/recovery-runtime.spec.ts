@@ -4,8 +4,10 @@ import { neutralMacroBias } from "../../src/Governor";
 import {
   adminRecoveryCompletionArtifacts,
   adminRecoveryPlan,
+  adminRecoveryRuntimeArtifacts,
   adminRecoveryResponse,
   adminRecoveryStorageEntries,
+  resolveAdminRecoveryPaperBankroll,
   stateAfterAdminControlledRecovery
 } from "../../src/engine/trading/state/RecoveryRuntime";
 import {
@@ -50,6 +52,11 @@ describe("RecoveryRuntime", () => {
       shouldClearShadowQueue: true,
       shouldResetPaperPortfolio: false
     });
+  });
+
+  it("resolves the admin recovery paper bankroll from environment input", () => {
+    expect(resolveAdminRecoveryPaperBankroll("450")).toBe(450);
+    expect(resolveAdminRecoveryPaperBankroll("0")).toBe(5_000);
   });
 
   it("resets paper portfolio, quote state, citadel, and risk gates for admin recovery", () => {
@@ -272,6 +279,42 @@ describe("RecoveryRuntime", () => {
       resetInstruments: ["btc-usd"],
       source_exchange: "hyperliquid",
       state: recovery.state
+    });
+  });
+
+  it("assembles full recovery runtime artifacts from state inputs and storage keys", () => {
+    const state = defaultEngineState("recovery-runtime-artifacts");
+    const plan = adminRecoveryPlan(
+      { resetPaperPortfolio: true, instrumentCode: "btc-usd" },
+      OBSERVED_AT
+    );
+    const artifacts = adminRecoveryRuntimeArtifacts({
+      plan,
+      currentState: state,
+      payload: { resetPaperPortfolio: true, instrumentCode: "btc-usd" },
+      cachedConfig: defaultConfig,
+      macroBias: neutralMacroBias(),
+      shadowMode: true,
+      paperBankroll: 450,
+      shadowQueue: state.shadowQueue,
+      prunedProfilerStorageKeys: ["old-profiler"],
+      engineStateKey: "engine:state",
+      performanceHistoryKey: "latency:history",
+      latencyHistory: [{ totalLatencyMs: 4 }],
+      processingLatencySamplesKey: "latency:samples",
+      processingLatencySamples: [1, 2]
+    });
+
+    expect(artifacts.recovery.state.bankroll.equity).toBe(450);
+    expect(artifacts.completion.storageEntries).toMatchObject({
+      "engine:state": artifacts.recovery.state,
+      "latency:history": [{ totalLatencyMs: 4 }],
+      "latency:samples": [1, 2]
+    });
+    expect(artifacts.completion.paperSessionStartedAt).toBe(OBSERVED_AT);
+    expect(artifacts.completion.publishPayload).toMatchObject({
+      prunedProfilerStorageKeyCount: 1,
+      resetPaperPortfolio: true
     });
   });
 });

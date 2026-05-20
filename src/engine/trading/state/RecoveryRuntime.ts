@@ -5,7 +5,9 @@ import type {
   MacroBias,
   ShadowQueueState
 } from "../../../types";
+import { DEFAULT_PAPER_BANKROLL_USD } from "../../../TradingEngineConstants";
 import { normalizeSourceExchange } from "../helpers/NativeHyperliquidRuntime";
+import { readPositiveNumber } from "../helpers/RuntimeParsing";
 import { aggregateQuoteState, defaultAssetQuoteStates } from "./AssetStateRuntime";
 import {
   defaultCitadelState,
@@ -90,6 +92,29 @@ export interface AdminRecoveryCompletionArtifacts {
   readonly logMetadata: JsonRecord;
   readonly publishPayload: JsonRecord;
   readonly response: JsonRecord;
+}
+
+export interface AdminRecoveryRuntimeArtifactsInput extends Omit<
+  AdminRecoveryCompletionArtifactsInput,
+  "recovery"
+> {
+  readonly currentState: EngineState;
+  readonly payload: AdminRecoveryRuntimePayload;
+  readonly cachedConfig: GlobalRiskConfig;
+  readonly macroBias: MacroBias;
+  readonly shadowMode: boolean;
+  readonly paperBankroll: number;
+  readonly shadowQueue: ShadowQueueState;
+  readonly prunedProfilerStorageKeys: readonly string[];
+}
+
+export interface AdminRecoveryRuntimeArtifacts {
+  readonly recovery: AdminRecoveryStateResult;
+  readonly completion: AdminRecoveryCompletionArtifacts;
+}
+
+export function resolveAdminRecoveryPaperBankroll(envValue?: string): number {
+  return readPositiveNumber(envValue, DEFAULT_PAPER_BANKROLL_USD);
 }
 
 export function adminRecoveryPlan(
@@ -260,6 +285,38 @@ export function adminRecoveryCompletionArtifacts(
       resetInstruments: input.plan.resetInstruments,
       sourceExchange: input.plan.sourceExchange,
       state: input.recovery.state
+    })
+  };
+}
+
+export function adminRecoveryRuntimeArtifacts(
+  input: AdminRecoveryRuntimeArtifactsInput
+): AdminRecoveryRuntimeArtifacts {
+  const recovery = stateAfterAdminControlledRecovery({
+    currentState: input.currentState,
+    payload: input.payload,
+    cachedConfig: input.cachedConfig,
+    macroBias: input.macroBias,
+    observedAt: input.plan.observedAt,
+    shadowMode: input.shadowMode,
+    paperBankroll: input.paperBankroll,
+    shadowQueue: input.shadowQueue,
+    reason: input.plan.reason,
+    resetInstruments: input.plan.resetInstruments,
+    sourceExchange: input.plan.sourceExchange,
+    prunedProfilerStorageKeys: input.prunedProfilerStorageKeys
+  });
+
+  return {
+    recovery,
+    completion: adminRecoveryCompletionArtifacts({
+      plan: input.plan,
+      recovery,
+      engineStateKey: input.engineStateKey,
+      performanceHistoryKey: input.performanceHistoryKey,
+      latencyHistory: input.latencyHistory,
+      processingLatencySamplesKey: input.processingLatencySamplesKey,
+      processingLatencySamples: input.processingLatencySamples
     })
   };
 }

@@ -316,9 +316,9 @@ import {
   shouldJournalMarketTick as shouldPersistMarketTick
 } from "./state/TickPersistenceRuntime";
 import {
-  adminRecoveryCompletionArtifacts,
   adminRecoveryPlan,
-  stateAfterAdminControlledRecovery
+  adminRecoveryRuntimeArtifacts,
+  resolveAdminRecoveryPaperBankroll
 } from "./state/RecoveryRuntime";
 import {
   evaluateHotStorageSnapshotDecision,
@@ -2166,50 +2166,39 @@ export class TradingEngine {
     }
 
     const prunedProfilerStorageKeys = await this.deleteRetiredProfilerStorage();
-    const paperBankroll = readPositiveNumber(
-      this.env.PAPER_BANKROLL_USD,
-      DEFAULT_PAPER_BANKROLL_USD
-    );
-    const recovery = stateAfterAdminControlledRecovery({
+    const recoveryArtifacts = adminRecoveryRuntimeArtifacts({
       currentState: this.engineState,
       payload,
       cachedConfig: this.cachedConfig,
       macroBias: this.macroBias,
-      observedAt: recoveryPlan.observedAt,
-      shadowMode: isShadowMode(this.env),
-      paperBankroll,
-      shadowQueue: this.ghostBook.snapshot(recoveryPlan.observedAt),
-      reason: recoveryPlan.reason,
-      resetInstruments: recoveryPlan.resetInstruments,
-      sourceExchange: recoveryPlan.sourceExchange,
-      prunedProfilerStorageKeys
-    });
-
-    this.engineState = recovery.state;
-    const artifacts = adminRecoveryCompletionArtifacts({
       plan: recoveryPlan,
-      recovery,
+      shadowMode: isShadowMode(this.env),
+      paperBankroll: resolveAdminRecoveryPaperBankroll(this.env.PAPER_BANKROLL_USD),
+      shadowQueue: this.ghostBook.snapshot(recoveryPlan.observedAt),
+      prunedProfilerStorageKeys,
       engineStateKey: ENGINE_STATE_KEY,
       performanceHistoryKey: PERFORMANCE_HISTORY_KEY,
       latencyHistory: this.latencyHistory,
       processingLatencySamplesKey: PROCESSING_LATENCY_SAMPLES_KEY,
       processingLatencySamples: this.processingLatencySamples
     });
+    this.engineState = recoveryArtifacts.recovery.state;
+    const completion = recoveryArtifacts.completion;
 
-    await this.safeStoragePut(artifacts.storageEntries, "ADMIN_CONTROLLED_RECOVERY");
+    await this.safeStoragePut(completion.storageEntries, "ADMIN_CONTROLLED_RECOVERY");
 
-    if (artifacts.paperSessionStartedAt) {
+    if (completion.paperSessionStartedAt) {
       this.state.waitUntil(
-        this.env.CONFIG_STORE.put(PAPER_SESSION_STARTED_AT_KEY, artifacts.paperSessionStartedAt)
+        this.env.CONFIG_STORE.put(PAPER_SESSION_STARTED_AT_KEY, completion.paperSessionStartedAt)
       );
     }
 
     this.logger.warn("ADMIN_CONTROLLED_RECOVERY", "Admin controlled recovery applied", {
-      ...artifacts.logMetadata
+      ...completion.logMetadata
     });
-    this.publish("ADMIN_CONTROLLED_RECOVERY", artifacts.publishPayload);
+    this.publish("ADMIN_CONTROLLED_RECOVERY", completion.publishPayload);
 
-    return artifacts.response;
+    return completion.response;
   }
 
   private async applySnapshot(
