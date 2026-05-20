@@ -1,4 +1,5 @@
-import type { JsonRecord, TradeIntent } from "../../../types";
+import { evaluateIntentDispatchGate } from "../../IntentGeneration";
+import type { EngineState, JsonRecord, TradeIntent } from "../../../types";
 
 export type ExecutionDispatchBlockReason =
   | "NO_EXECUTIONER"
@@ -96,6 +97,25 @@ export interface ExecutionPlanDispatchActionInput {
   };
   readonly shadowReplay: boolean;
   readonly tradingEnabled: boolean;
+}
+
+export interface ExecutionPlanDispatchLogger {
+  info(eventType: string, message: string, telemetry?: JsonRecord): void;
+  warn(eventType: string, message: string, telemetry?: JsonRecord): void;
+}
+
+export interface ExecutionPlanDispatchSideEffectHandlers {
+  readonly logger: ExecutionPlanDispatchLogger;
+  readonly schedule: (work: Promise<void>) => void;
+  readonly dispatchExecution: (intent: TradeIntent, timingJitterMs: number) => Promise<void>;
+}
+
+export interface ExecutionPlanSideEffectsInput {
+  readonly executionPlans: readonly ExecutionPlanDispatchRuntimePlan[];
+  readonly riskState: Pick<EngineState, "mode" | "cachedConfig" | "citadel" | "quoteState">;
+  readonly shadowReplay: boolean;
+  readonly tradingEnabled: boolean;
+  readonly handlers: ExecutionPlanDispatchSideEffectHandlers;
 }
 
 export type ExecutionPlanDispatchAction =
@@ -278,6 +298,49 @@ export function buildExecutionPlanDispatchAction(
   }
 
   return { kind: "NONE" };
+}
+
+export function dispatchExecutionPlanSideEffects(input: ExecutionPlanSideEffectsInput): void {
+  for (const plan of input.executionPlans) {
+    const dispatchGate = evaluateIntentDispatchGate(input.riskState, plan.intent);
+    const dispatchAction = buildExecutionPlanDispatchAction({
+      plan,
+      dispatchGate,
+      shadowReplay: input.shadowReplay,
+      tradingEnabled: input.tradingEnabled
+    });
+
+    if (dispatchAction.kind === "AUTHORIZED") {
+      input.handlers.logger.info(
+        "TRADE_INTENT_AUTHORIZED",
+        "PitBoss authorized executable intent",
+        dispatchAction.metadata
+      );
+      for (const childIntent of dispatchAction.childIntents) {
+        input.handlers.schedule(
+          input.handlers.dispatchExecution(childIntent, dispatchAction.timingJitterMs)
+        );
+      }
+      continue;
+    }
+
+    if (dispatchAction.kind === "BLOCKED") {
+      input.handlers.logger.warn(
+        "TRADE_INTENT_DISPATCH_BLOCKED",
+        "Intent dispatch gate blocked execution",
+        dispatchAction.metadata
+      );
+      continue;
+    }
+
+    if (dispatchAction.kind === "SHADOW") {
+      input.handlers.logger.info(
+        "SHADOW_TRADE_INTENT_AUTHORIZED",
+        "Replay generated shadow trade intent",
+        dispatchAction.metadata
+      );
+    }
+  }
 }
 
 export async function dispatchTradeIntentToExecutioner(

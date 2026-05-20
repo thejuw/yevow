@@ -3,6 +3,7 @@ import {
   buildExecutionDispatchBlockLog,
   buildExecutionDispatchRuntimeDecision,
   buildExecutionPlanDispatchAction,
+  dispatchExecutionPlanSideEffects,
   dispatchTradeIntentToExecutioner,
   emitExecutionDispatchBlockLog,
   type ExecutionDispatchBlockLogger,
@@ -12,6 +13,7 @@ import {
   tradeIntentAuthorizedLogMetadata,
   tradeIntentDispatchBlockedLogMetadata
 } from "../../src/engine/trading/execution/ExecutionDispatchRuntime";
+import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { TradeIntent } from "../../src/types";
 
 describe("ExecutionDispatchRuntime", () => {
@@ -314,6 +316,54 @@ describe("ExecutionDispatchRuntime", () => {
         tradingEnabled: false
       })
     ).toEqual({ kind: "NONE" });
+  });
+
+  it("dispatches execution plan side effects through supplied handlers", async () => {
+    const riskState = defaultEngineState("execution-dispatch-runtime-test");
+    riskState.cachedConfig.TRADING_ENABLED = true;
+    const scheduled: Promise<void>[] = [];
+    const dispatched: string[] = [];
+    const logs: {
+      level: "INFO" | "WARN";
+      eventType: string;
+      telemetry?: Record<string, unknown>;
+    }[] = [];
+
+    dispatchExecutionPlanSideEffects({
+      executionPlans: [executionPlan()],
+      riskState,
+      shadowReplay: false,
+      tradingEnabled: true,
+      handlers: {
+        logger: {
+          info(eventType, _message, telemetry) {
+            logs.push({ level: "INFO", eventType, telemetry });
+          },
+          warn(eventType, _message, telemetry) {
+            logs.push({ level: "WARN", eventType, telemetry });
+          }
+        },
+        schedule(work) {
+          scheduled.push(work);
+        },
+        async dispatchExecution(intent, timingJitterMs) {
+          dispatched.push(`${intent.intentId}:${timingJitterMs}`);
+        }
+      }
+    });
+
+    await Promise.all(scheduled);
+
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatchObject({
+      level: "INFO",
+      eventType: "TRADE_INTENT_AUTHORIZED"
+    });
+    expect(logs[0]?.telemetry).toMatchObject({
+      intentId: "intent-1",
+      timingJitterMs: 25
+    });
+    expect(dispatched).toEqual(["intent-child-1:25", "intent-child-2:25"]);
   });
 
   it("dispatches trade intents to the executioner binding", async () => {
