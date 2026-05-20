@@ -597,6 +597,11 @@ export interface AcceptedHyperliquidL2BookSideEffectHandlers {
   readonly handleTick: (tick: MarketTick, wakeUpTimeMs: number | null) => Promise<TickIngestResult>;
 }
 
+export interface HyperliquidL2BookDesyncSideEffectHandlers {
+  readonly markBookDesynced: (marketKey: string, reason: string, observedAt: string) => void;
+  readonly warnDesync: (metadata: JsonRecord) => void;
+}
+
 export interface HyperliquidL2BookHotPathInput {
   readonly raw: Record<string, unknown>;
   readonly payload: HyperliquidRawIngestPayload;
@@ -967,4 +972,18 @@ export function hyperliquidBookDesyncLogMetadata(
     gapMs: decision.gapMs,
     maxGapMs: decision.maxGapMs
   };
+}
+
+export function applyHyperliquidL2BookDesyncSideEffects(
+  decision: Extract<HyperliquidL2BookHotPathDecision, { kind: "DESYNC" }>,
+  handlers: HyperliquidL2BookDesyncSideEffectHandlers
+): TickIngestResult {
+  handlers.markBookDesynced(
+    decision.bundle.marketKey,
+    decision.sequenceDecision.reason,
+    decision.sequenceDecision.lastDesyncAt
+  );
+  handlers.warnDesync(hyperliquidBookDesyncLogMetadata(decision.bundle, decision.sequenceDecision));
+
+  return decision.result;
 }

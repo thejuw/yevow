@@ -225,13 +225,13 @@ import { OrderBookReconstructor, type OrderBookStores } from "./book/OrderBookRe
 import type { AppliedBookUpdate, BookDeltaWithTicker, BookSyncState } from "./book/BookTypes";
 import {
   applyAcceptedHyperliquidL2BookSideEffects,
+  applyHyperliquidL2BookDesyncSideEffects,
   applyHyperliquidIngestConnectionSideEffects,
   applyStaleHyperliquidL2BookSideEffects,
   dispatchHyperliquidL2BookDecision,
   dispatchHyperliquidRawMessageRoute,
   evaluateHyperliquidL2BookRuntime,
   handleHyperliquidRawBatch,
-  hyperliquidBookDesyncLogMetadata,
   processHyperliquidAssetContext,
   processHyperliquidTradeBatch,
   registerHyperliquidIngestConnection,
@@ -1310,23 +1310,23 @@ export class TradingEngine {
       sampleCount: this.engineState.latencySampleCount,
       location: this.engineState.location
     });
-    const { marketKey } = l2Decision.bundle;
-
     return dispatchHyperliquidL2BookDecision(l2Decision, {
       handleDuplicateOrOutOfOrder: (decision) => decision.result,
-      handleDesync: (decision) => {
-        markBookSyncDesynced({
-          syncState: this.bookSync.get(marketKey),
-          reason: decision.sequenceDecision.reason,
-          observedAt: decision.sequenceDecision.lastDesyncAt
-        });
-        this.logger.warn(
-          "ORDER_BOOK_DESYNC",
-          "Hyperliquid native book sequence gap detected",
-          hyperliquidBookDesyncLogMetadata(decision.bundle, decision.sequenceDecision)
-        );
-        return decision.result;
-      },
+      handleDesync: (decision) =>
+        applyHyperliquidL2BookDesyncSideEffects(decision, {
+          markBookDesynced: (marketKey, reason, observedAt) =>
+            markBookSyncDesynced({
+              syncState: this.bookSync.get(marketKey),
+              reason,
+              observedAt
+            }),
+          warnDesync: (metadata) =>
+            this.logger.warn(
+              "ORDER_BOOK_DESYNC",
+              "Hyperliquid native book sequence gap detected",
+              metadata
+            )
+        }),
       handleStale: (decision) =>
         this.handleStaleHyperliquidL2Book(decision, payload, wakeUpTimeMs, hotPathStartedAt),
       handleAccepted: (decision) =>

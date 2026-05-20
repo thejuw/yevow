@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyAcceptedHyperliquidL2BookSideEffects,
+  applyHyperliquidL2BookDesyncSideEffects,
   applyHyperliquidIngestConnectionSideEffects,
   applyStaleHyperliquidL2BookSideEffects,
   buildHyperliquidL2BookSnapshotBundle,
@@ -689,6 +690,53 @@ describe("hyperliquid raw ingest helpers", () => {
     );
 
     expect(calls).toEqual(["duplicate", "desync", "stale", "accepted"]);
+  });
+
+  it("applies native L2 desync side effects and returns the terminal result", () => {
+    const decision = evaluateHyperliquidL2BookHotPath({
+      raw: {
+        data: {
+          coin: "BTC",
+          time: Date.parse("2026-01-01T00:00:00.000Z"),
+          sequence: 20,
+          levels: [[{ px: "100", sz: "1" }], [{ px: "101", sz: "1" }]]
+        }
+      },
+      payload: {
+        source_exchange: "hyperliquid",
+        exchangeCode: "HL",
+        instrumentCode: "btc-usd",
+        receivedAt: "2026-01-01T00:00:00.050Z"
+      },
+      resolveExistingSync: () => bookSync(10),
+      maxTimestampDriftMs: 5_000,
+      sequenceGapMs: 5,
+      nativeMaxLatencyMs: 150,
+      averageLatencyMs: 40,
+      sampleCount: 10,
+      location: defaultEngineState("test").location,
+      brainTimestamp: "2026-01-01T00:00:00.100Z"
+    });
+
+    if (decision.kind !== "DESYNC") {
+      throw new Error("expected desync decision");
+    }
+
+    const events: string[] = [];
+    const result = applyHyperliquidL2BookDesyncSideEffects(decision, {
+      markBookDesynced: (marketKey, reason, observedAt) => {
+        events.push(`mark:${marketKey}:${reason}:${observedAt}`);
+      },
+      warnDesync: (metadata) => {
+        events.push(`warn:${String(metadata.instrumentCode)}:${String(metadata.gapMs)}`);
+      }
+    });
+
+    expect(result).toEqual(decision.result);
+    expect(events).toEqual([
+      "mark:hyperliquid:btc-usd:HYPERLIQUID_SEQUENCE_GAP:2026-01-01T00:00:00.050Z",
+      "warn:btc-usd:10"
+    ]);
   });
 
   it("processes bounded native trade batches without allocating sliced trade arrays", async () => {
