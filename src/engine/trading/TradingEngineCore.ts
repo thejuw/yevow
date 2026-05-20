@@ -562,6 +562,7 @@ import {
   buildAcceptedTickStateTransition,
   finalizeAcceptedTickFlow
 } from "./pipelines/AcceptedTickRuntime";
+import { preparePostBookTickRuntime } from "./pipelines/PostBookTickRuntime";
 import { handleTickRuntime } from "./pipelines/TickHandlingRuntime";
 import type {
   AcceptedDecisionPipelineInput,
@@ -2633,23 +2634,36 @@ export class TradingEngine {
     observedAt: string,
     options: TickHandlingOptions
   ): Promise<PostBookTickContext> {
-    await this.evaluateCascadeStrategy(tick, observedAt);
-
-    const volatilitySnapshot = this.multiScaleVolatility.update(
-      tick.instrumentCode,
-      book.midPrice,
-      observedAt
+    return preparePostBookTickRuntime(
+      {
+        tick,
+        book,
+        observedAt,
+        options
+      },
+      {
+        evaluateCascadeStrategy: (currentTick, currentObservedAt) =>
+          this.evaluateCascadeStrategy(currentTick, currentObservedAt),
+        updateVolatility: (instrumentCode, midPrice, currentObservedAt) =>
+          this.multiScaleVolatility.update(instrumentCode, midPrice, currentObservedAt),
+        maybeCancelLaggingHypeQuotes: (
+          currentTick,
+          volatilitySnapshot,
+          currentObservedAt,
+          tickOptions
+        ) =>
+          this.maybeCancelLaggingHypeQuotes(
+            currentTick,
+            volatilitySnapshot,
+            currentObservedAt,
+            tickOptions
+          ),
+        processShadowQueueTick: (currentTick, currentBook, currentObservedAt, tickOptions) =>
+          this.processShadowQueueTick(currentTick, currentBook, currentObservedAt, tickOptions),
+        getLiquidityWalls: (instrumentCode, currentObservedAt, currentTick) =>
+          this.getLiquidityWalls(instrumentCode, currentObservedAt, currentTick)
+      }
     );
-    this.maybeCancelLaggingHypeQuotes(tick, volatilitySnapshot, observedAt, options);
-
-    const shadowQueueState = this.processShadowQueueTick(tick, book, observedAt, options);
-    const domSnapshot = this.getLiquidityWalls(tick.instrumentCode, observedAt, tick);
-
-    return {
-      volatilitySnapshot,
-      shadowQueueState,
-      domSnapshot
-    };
   }
 
   private evaluateProfilerForTick(
