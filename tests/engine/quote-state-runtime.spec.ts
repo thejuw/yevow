@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { defaultConfig } from "../../src/ConfigManager";
 import {
+  applyQuoteSuppressionPolicy,
   isCascadeShieldSignal,
   isProfilerQuoteHaltSignal,
   nextQuoteStateForInstrument,
@@ -266,6 +267,63 @@ describe("QuoteStateRuntime", () => {
       isProfilerQuoteHalt: false,
       cancelReason: null,
       suspendTelemetry: null
+    });
+  });
+
+  it("applies quote suppression policy and reports side-effect reasons", () => {
+    const plan = { id: "plan-1" };
+    const result = applyQuoteSuppressionPolicy({
+      previousQuoteState: quoteState({ reason: "OLD_REASON" }),
+      assetQuoteState: quoteState(),
+      strategyQuoteDisableReason: "MARKET_MAKING_OFF",
+      tradingEnabled: true,
+      shadowReplay: false,
+      executionPlans: [plan],
+      profilerSignalType: "AM_VPIN_CRITICAL",
+      amVpinQuoteHaltMs: 45_000,
+      quoteHibernateMs: 30_000,
+      ensembleAnomalyCircuitBreaker: false,
+      ensembleRationale: "",
+      observedAt: OBSERVED_AT
+    });
+
+    expect(result).toMatchObject({
+      executionPlans: [],
+      strategyQuoteDisableReason: "MARKET_MAKING_OFF",
+      strategyCancelReason: "MARKET_MAKING_OFF",
+      suppressionCancelReason: null,
+      isCascadeShield: false,
+      isProfilerQuoteHalt: true,
+      assetQuoteState: {
+        status: "SUSPENDED",
+        reason: "AM_VPIN_CRITICAL",
+        suspendedUntil: "2026-05-18T13:00:45.000Z"
+      }
+    });
+  });
+
+  it("suppresses execution plans and cancel side effects for shadow replay", () => {
+    const plan = { id: "plan-1" };
+    const result = applyQuoteSuppressionPolicy({
+      previousQuoteState: quoteState({ reason: "OLD_REASON" }),
+      assetQuoteState: quoteState(),
+      strategyQuoteDisableReason: "MARKET_MAKING_OFF",
+      tradingEnabled: true,
+      shadowReplay: true,
+      executionPlans: [plan],
+      profilerSignalType: undefined,
+      amVpinQuoteHaltMs: 45_000,
+      quoteHibernateMs: 30_000,
+      ensembleAnomalyCircuitBreaker: true,
+      ensembleRationale: "jump-risk",
+      observedAt: OBSERVED_AT
+    });
+
+    expect(result.executionPlans).toEqual([]);
+    expect(result.strategyCancelReason).toBeNull();
+    expect(result.suppressionCancelReason).toBeNull();
+    expect(result.suspendTelemetry).toMatchObject({
+      reason: "ENSEMBLE_ANOMALY_CIRCUIT_BREAKER"
     });
   });
 });

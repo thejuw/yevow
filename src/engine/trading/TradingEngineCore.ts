@@ -109,7 +109,7 @@ import {
 } from "./funding/FundingRuntime";
 import {
   nextQuoteStateForInstrument as nextRuntimeQuoteStateForInstrument,
-  quoteSuppressionDecision,
+  applyQuoteSuppressionPolicy,
   resolveQuoteHibernateMs,
   resumeExpiredQuoteStates,
   strategyQuoteDisabledReason as runtimeStrategyQuoteDisabledReason
@@ -3074,7 +3074,7 @@ export class TradingEngine {
       instrumentCode,
       this.engineState.quoteState
     );
-    let assetQuoteState = this.nextQuoteStateForInstrument(
+    const assetQuoteState = this.nextQuoteStateForInstrument(
       instrumentCode,
       croupierDecision.quote,
       croupierDecision.pullAllQuotes,
@@ -3082,18 +3082,14 @@ export class TradingEngine {
     );
     const strategyQuoteDisableReason = runtimeStrategyQuoteDisabledReason(this.cachedConfig);
 
-    if (
-      strategyQuoteDisableReason &&
-      previousQuoteState.reason !== strategyQuoteDisableReason &&
-      !shadowReplay &&
-      this.cachedConfig.TRADING_ENABLED
-    ) {
-      this.state.waitUntil(this.cancelAllQuotes(instrumentCode, strategyQuoteDisableReason));
-    }
-
     const profilerSignalType = profilerResult.signal?.featureVector.signalType;
-    const quoteSuppression = quoteSuppressionDecision({
-      previous: assetQuoteState,
+    const quotePolicy = applyQuoteSuppressionPolicy({
+      previousQuoteState,
+      assetQuoteState,
+      strategyQuoteDisableReason,
+      tradingEnabled: this.cachedConfig.TRADING_ENABLED,
+      shadowReplay,
+      executionPlans,
       profilerSignalType,
       profilerSuspendedUntil:
         typeof profilerResult.signal?.featureVector.suspendedUntil === "string"
@@ -3107,29 +3103,29 @@ export class TradingEngine {
       observedAt
     });
 
-    let allowedExecutionPlans = executionPlans;
-    if (!quoteSuppression.executionPlansAllowed) {
-      allowedExecutionPlans = [];
-      assetQuoteState = quoteSuppression.quoteState;
+    if (quotePolicy.strategyCancelReason) {
+      this.state.waitUntil(this.cancelAllQuotes(instrumentCode, quotePolicy.strategyCancelReason));
     }
 
-    if (quoteSuppression.suspendTelemetry) {
+    if (quotePolicy.suspendTelemetry) {
       this.publish("SUSPEND_QUOTES", {
         instrumentCode,
-        ...quoteSuppression.suspendTelemetry
+        ...quotePolicy.suspendTelemetry
       });
     }
 
-    if (quoteSuppression.cancelReason && !shadowReplay && this.cachedConfig.TRADING_ENABLED) {
-      this.state.waitUntil(this.cancelAllQuotes(instrumentCode, quoteSuppression.cancelReason));
+    if (quotePolicy.suppressionCancelReason) {
+      this.state.waitUntil(
+        this.cancelAllQuotes(instrumentCode, quotePolicy.suppressionCancelReason)
+      );
     }
 
     return {
-      executionPlans: allowedExecutionPlans,
-      assetQuoteState,
-      strategyQuoteDisableReason,
-      isCascadeShield: quoteSuppression.isCascadeShield,
-      isProfilerQuoteHalt: quoteSuppression.isProfilerQuoteHalt
+      executionPlans: quotePolicy.executionPlans,
+      assetQuoteState: quotePolicy.assetQuoteState,
+      strategyQuoteDisableReason: quotePolicy.strategyQuoteDisableReason,
+      isCascadeShield: quotePolicy.isCascadeShield,
+      isProfilerQuoteHalt: quotePolicy.isProfilerQuoteHalt
     };
   }
 

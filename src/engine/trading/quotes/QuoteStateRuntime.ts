@@ -47,6 +47,34 @@ export interface QuoteSuppressionDecisionResult {
   readonly suspendTelemetry: Record<string, unknown> | null;
 }
 
+export interface QuoteSuppressionPolicyInput<TExecutionPlan> {
+  readonly previousQuoteState: EngineState["quoteState"];
+  readonly assetQuoteState: EngineState["quoteState"];
+  readonly strategyQuoteDisableReason: string | null;
+  readonly tradingEnabled: boolean;
+  readonly shadowReplay: boolean;
+  readonly executionPlans: readonly TExecutionPlan[];
+  readonly profilerSignalType: unknown;
+  readonly profilerSuspendedUntil?: string;
+  readonly profilerQuoteHaltUntil?: string | null;
+  readonly amVpinQuoteHaltMs: number;
+  readonly quoteHibernateMs: number;
+  readonly ensembleAnomalyCircuitBreaker: boolean;
+  readonly ensembleRationale: string;
+  readonly observedAt: string;
+}
+
+export interface QuoteSuppressionPolicyResult<TExecutionPlan> {
+  readonly executionPlans: TExecutionPlan[];
+  readonly assetQuoteState: EngineState["quoteState"];
+  readonly strategyQuoteDisableReason: string | null;
+  readonly strategyCancelReason: string | null;
+  readonly suppressionCancelReason: string | null;
+  readonly suspendTelemetry: Record<string, unknown> | null;
+  readonly isCascadeShield: boolean;
+  readonly isProfilerQuoteHalt: boolean;
+}
+
 export function nextQuoteStateForInstrument(input: NextQuoteStateInput): EngineState["quoteState"] {
   if (!input.tradingEnabled) {
     return suspendedQuoteState(input.previous, "TRADING_DISABLED", null, input.observedAt);
@@ -151,6 +179,45 @@ export function quoteSuppressionDecision(
     isProfilerQuoteHalt,
     cancelReason: null,
     suspendTelemetry: null
+  };
+}
+
+export function applyQuoteSuppressionPolicy<TExecutionPlan>(
+  input: QuoteSuppressionPolicyInput<TExecutionPlan>
+): QuoteSuppressionPolicyResult<TExecutionPlan> {
+  const strategyCancelReason =
+    input.strategyQuoteDisableReason &&
+    input.previousQuoteState.reason !== input.strategyQuoteDisableReason &&
+    !input.shadowReplay &&
+    input.tradingEnabled
+      ? input.strategyQuoteDisableReason
+      : null;
+  const suppression = quoteSuppressionDecision({
+    previous: input.assetQuoteState,
+    profilerSignalType: input.profilerSignalType,
+    profilerSuspendedUntil: input.profilerSuspendedUntil,
+    profilerQuoteHaltUntil: input.profilerQuoteHaltUntil,
+    amVpinQuoteHaltMs: input.amVpinQuoteHaltMs,
+    quoteHibernateMs: input.quoteHibernateMs,
+    ensembleAnomalyCircuitBreaker: input.ensembleAnomalyCircuitBreaker,
+    ensembleRationale: input.ensembleRationale,
+    observedAt: input.observedAt
+  });
+
+  return {
+    executionPlans: suppression.executionPlansAllowed ? [...input.executionPlans] : [],
+    assetQuoteState: suppression.executionPlansAllowed
+      ? input.assetQuoteState
+      : suppression.quoteState,
+    strategyQuoteDisableReason: input.strategyQuoteDisableReason,
+    strategyCancelReason,
+    suppressionCancelReason:
+      suppression.cancelReason && !input.shadowReplay && input.tradingEnabled
+        ? suppression.cancelReason
+        : null,
+    suspendTelemetry: suppression.suspendTelemetry,
+    isCascadeShield: suppression.isCascadeShield,
+    isProfilerQuoteHalt: suppression.isProfilerQuoteHalt
   };
 }
 
