@@ -403,6 +403,21 @@ export interface HardStaleTickDropSideEffectHandlers {
   readonly cancelAllQuotes: (instrumentCode: string, reason: "HARD_STALE_DROP") => Promise<unknown>;
 }
 
+export interface HardStaleTickDropFlowInput {
+  readonly currentState: EngineState;
+  readonly tick: MarketTick;
+  readonly metrics: LatencyMetrics;
+  readonly streamId: string | null;
+  readonly hardStaleDropMs: number;
+  readonly tradingEnabled: boolean;
+}
+
+export interface HardStaleTickDropFlowHandlers extends HardStaleTickDropSideEffectHandlers {
+  readonly applyState: (state: EngineState) => void;
+  readonly resetLatencyBaseline: (observedAt: string, reason: "HARD_STALE_DROP") => void;
+  readonly persistLatencySnapshot: (reason: "HARD_STALE_TICK_DROPPED") => Promise<void>;
+}
+
 export function stateAfterHardStaleTickDrop(
   input: HardStaleTickDropInput
 ): HardStaleTickDropResult {
@@ -507,6 +522,44 @@ export function applyHardStaleTickDropSideEffects(
   }
 }
 
+export async function applyHardStaleTickDropFlow(
+  input: HardStaleTickDropFlowInput,
+  handlers: HardStaleTickDropFlowHandlers
+): Promise<TickIngestResult> {
+  const hardStale = stateAfterHardStaleTickDrop({
+    currentState: input.currentState,
+    metrics: input.metrics,
+    hardStaleDropMs: input.hardStaleDropMs
+  });
+  handlers.applyState(hardStale.state);
+
+  if (hardStale.shouldResetLatencyBaseline) {
+    handlers.resetLatencyBaseline(hardStale.metrics.brainTimestamp, "HARD_STALE_DROP");
+  }
+
+  await handlers.persistLatencySnapshot("HARD_STALE_TICK_DROPPED");
+
+  const artifacts = buildHardStaleTickDropArtifacts({
+    tick: input.tick,
+    metrics: hardStale.metrics,
+    streamId: input.streamId,
+    hardStaleDropMs: input.hardStaleDropMs,
+    nextStaleTickCount: hardStale.nextStaleTickCount
+  });
+
+  applyHardStaleTickDropSideEffects(
+    {
+      tick: input.tick,
+      metrics: hardStale.metrics,
+      artifacts,
+      tradingEnabled: input.tradingEnabled
+    },
+    handlers
+  );
+
+  return artifacts.ingestResult;
+}
+
 export interface StaleDataKillSwitchInput {
   readonly currentState: EngineState;
   readonly metrics: LatencyMetrics;
@@ -549,6 +602,32 @@ export interface StaleDataKillSwitchSideEffectHandlers {
     instrumentCode: string,
     reason: "STALE_DATA_KILL_SWITCH"
   ) => Promise<unknown>;
+}
+
+export interface SoftStaleTickFlowInput {
+  readonly tick: MarketTick;
+  readonly metrics: LatencyMetrics;
+  readonly maxLatencyMs: number;
+  readonly quoteHibernateMs: number;
+  readonly tradingEnabled: boolean;
+  readonly trace: ExecutionTraceInput;
+}
+
+export interface SoftStaleTickFlowHandlers extends StaleDataKillSwitchSideEffectHandlers {
+  readonly readCurrentState: () => EngineState;
+  readonly observeExecutionProfile: (metrics: LatencyMetrics, trace: ExecutionTraceInput) => void;
+  readonly applyState: (state: EngineState) => void;
+  readonly persistLatencySnapshot: (
+    extra: Record<string, unknown>,
+    reason: "STALE_DATA_KILL_SWITCH"
+  ) => Promise<void>;
+  readonly publishTickTelemetry: (
+    tick: MarketTick,
+    metrics: LatencyMetrics,
+    status: "STALE",
+    hotPathStartedAt: number
+  ) => void;
+  readonly recordAgentSnapshot: (observedAt: string) => void;
 }
 
 export function stateAfterStaleDataKillSwitch(
@@ -658,6 +737,44 @@ export function applyStaleDataKillSwitchSideEffects(
       handlers.cancelAllQuotes(input.tick.instrumentCode, "STALE_DATA_KILL_SWITCH")
     );
   }
+}
+
+export async function applySoftStaleTickFlow(
+  input: SoftStaleTickFlowInput,
+  handlers: SoftStaleTickFlowHandlers
+): Promise<TickIngestResult> {
+  handlers.observeExecutionProfile(input.metrics, input.trace);
+
+  const staleState = stateAfterStaleDataKillSwitch({
+    currentState: handlers.readCurrentState(),
+    metrics: input.metrics,
+    instrumentCode: input.tick.instrumentCode,
+    maxLatencyMs: input.maxLatencyMs,
+    quoteHibernateMs: input.quoteHibernateMs
+  });
+  handlers.applyState(staleState.state);
+
+  const artifacts = buildStaleDataKillSwitchArtifacts({
+    tick: input.tick,
+    metrics: input.metrics,
+    maxLatencyMs: input.maxLatencyMs
+  });
+
+  await handlers.persistLatencySnapshot(artifacts.storageExtra, "STALE_DATA_KILL_SWITCH");
+
+  applyStaleDataKillSwitchSideEffects(
+    {
+      tick: input.tick,
+      metrics: input.metrics,
+      artifacts,
+      tradingEnabled: input.tradingEnabled
+    },
+    handlers
+  );
+  handlers.publishTickTelemetry(input.tick, input.metrics, "STALE", input.trace.hotPathStartedAt);
+  handlers.recordAgentSnapshot(input.metrics.brainTimestamp);
+
+  return artifacts.ingestResult;
 }
 
 export interface NativeHyperliquidLatencyPullInput {

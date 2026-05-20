@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   applyExecutionProfileSideEffects,
+  applyHardStaleTickDropFlow,
   applyHardStaleTickDropSideEffects,
   applyLatencyBaselineResetSideEffects,
   applyNativeHyperliquidLatencyPullSideEffects,
   applyPerformanceSpikeLogSideEffect,
   applyPreparedTickLatencySideEffects,
+  applySoftStaleTickFlow,
   applyStaleDataKillSwitchSideEffects,
   appendLatencyHistory,
   buildHardStaleTickDropArtifacts,
@@ -36,10 +38,12 @@ import {
   stateAfterStaleDataKillSwitch,
   stateAfterHardStaleTickDrop,
   type ExecutionProfileSideEffectHandlers,
+  type HardStaleTickDropFlowHandlers,
   type HardStaleTickDropSideEffectHandlers,
   type LatencyBaselineResetSideEffectHandlers,
   type NativeHyperliquidLatencyPullSideEffectHandlers,
   type PerformanceSpikeLogSideEffectHandlers,
+  type SoftStaleTickFlowHandlers,
   type StaleDataKillSwitchSideEffectHandlers
 } from "../../src/engine/trading/performance/LatencyRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
@@ -625,6 +629,84 @@ describe("LatencyRuntime", () => {
     await Promise.all(sideEffects.scheduled);
   });
 
+  it("orchestrates hard stale tick drops through state, persistence, and quote pulls", async () => {
+    const currentState = defaultEngineState("hard-stale-flow");
+    currentState.averageLatency = 300;
+    currentState.latencySampleCount = 8;
+    currentState.staleTickCount = 4;
+    const flow = hardStaleTickDropFlowSpy();
+
+    const result = await applyHardStaleTickDropFlow(
+      {
+        currentState,
+        tick: tick({ sequence: 501 }),
+        metrics: latencyMetrics({ totalLatencyMs: 900 }),
+        streamId: "dwellir-btc",
+        hardStaleDropMs: 150,
+        tradingEnabled: true
+      },
+      flow.handlers
+    );
+
+    expect(result).toMatchObject({
+      accepted: false,
+      status: "STALE_DROPPED",
+      reason: "TICK_EXCEEDED_HARD_STALE_THRESHOLD"
+    });
+    expect(flow.events).toEqual([
+      "state:5",
+      "reset:HARD_STALE_DROP",
+      "persist:HARD_STALE_TICK_DROPPED",
+      "warn:btc-usd:501",
+      "performance:btc-usd:STALE",
+      "publish:PULL_ALL_QUOTES",
+      "cancel:btc-usd:HARD_STALE_DROP",
+      "schedule"
+    ]);
+    await Promise.all(flow.scheduled);
+  });
+
+  it("orchestrates soft stale ticks after execution profiling has updated state", async () => {
+    const currentState = defaultEngineState("soft-stale-flow");
+    const flow = softStaleTickFlowSpy(currentState);
+
+    const result = await applySoftStaleTickFlow(
+      {
+        tick: tick({ sequence: 777 }),
+        metrics: latencyMetrics({ status: "STALE", totalLatencyMs: 650 }),
+        maxLatencyMs: 250,
+        quoteHibernateMs: 60_000,
+        tradingEnabled: true,
+        trace: {
+          wakeUpTimeMs: 2,
+          orderBookUpdateMs: null,
+          agentLogicMs: null,
+          hotPathStartedAt: 123,
+          observedAt: "2026-05-18T15:00:00.250Z"
+        }
+      },
+      flow.handlers
+    );
+
+    expect(result).toMatchObject({
+      accepted: false,
+      status: "STALE"
+    });
+    expect(flow.events).toEqual([
+      "observe:650",
+      "state:1:STALE_DATA_KILL_SWITCH:UNSTABLE",
+      "persist:STALE_DATA_KILL_SWITCH:1",
+      "performance:btc-usd:STALE",
+      "publish:PULL_CURRENT_QUOTES",
+      "notify:HIGH",
+      "cancel:btc-usd:STALE_DATA_KILL_SWITCH",
+      "schedule",
+      "telemetry:STALE:123",
+      "snapshot:2026-05-18T15:00:00.250Z"
+    ]);
+    await Promise.all(flow.scheduled);
+  });
+
   it("pulls native Hyperliquid quotes when latency exceeds the hot-path threshold", () => {
     const currentState = defaultEngineState("native-latency-test");
     currentState.averageLatency = 151;
@@ -1011,6 +1093,49 @@ function hardStaleTickDropSideEffectSpy(): {
   };
 }
 
+function hardStaleTickDropFlowSpy(): {
+  events: string[];
+  scheduled: Promise<unknown>[];
+  handlers: HardStaleTickDropFlowHandlers;
+} {
+  const events: string[] = [];
+  const scheduled: Promise<unknown>[] = [];
+
+  return {
+    events,
+    scheduled,
+    handlers: {
+      applyState(state) {
+        events.push(`state:${state.staleTickCount}`);
+      },
+      resetLatencyBaseline(_observedAt, reason) {
+        events.push(`reset:${reason}`);
+      },
+      persistLatencySnapshot(reason) {
+        events.push(`persist:${reason}`);
+        return Promise.resolve();
+      },
+      warnHardStale(metadata) {
+        events.push(`warn:${metadata.instrumentCode}:${metadata.sequence}`);
+      },
+      logPerformance(metrics) {
+        events.push(`performance:${metrics.instrumentCode}:${metrics.status}`);
+      },
+      publishPull(payload) {
+        events.push(`publish:${payload.action}`);
+      },
+      schedule(work) {
+        events.push("schedule");
+        scheduled.push(work);
+      },
+      cancelAllQuotes(instrumentCode, reason) {
+        events.push(`cancel:${instrumentCode}:${reason}`);
+        return Promise.resolve();
+      }
+    }
+  };
+}
+
 function staleDataKillSwitchSideEffectSpy(): {
   events: string[];
   scheduled: Promise<unknown>[];
@@ -1039,6 +1164,69 @@ function staleDataKillSwitchSideEffectSpy(): {
       cancelAllQuotes(instrumentCode, reason) {
         events.push(`cancel:${instrumentCode}:${reason}`);
         return Promise.resolve();
+      }
+    }
+  };
+}
+
+function softStaleTickFlowSpy(initialState: EngineState): {
+  events: string[];
+  scheduled: Promise<unknown>[];
+  handlers: SoftStaleTickFlowHandlers;
+} {
+  const events: string[] = [];
+  const scheduled: Promise<unknown>[] = [];
+  let currentState = initialState;
+
+  return {
+    events,
+    scheduled,
+    handlers: {
+      readCurrentState() {
+        return currentState;
+      },
+      observeExecutionProfile(metrics) {
+        events.push(`observe:${metrics.totalLatencyMs}`);
+        currentState = {
+          ...currentState,
+          executionProfile: {
+            ...currentState.executionProfile,
+            status: "UNSTABLE"
+          }
+        };
+      },
+      applyState(state) {
+        currentState = state;
+        events.push(
+          `state:${state.staleTickCount}:${state.assetQuoteStates["btc-usd"]?.reason}:${state.executionProfile.status}`
+        );
+      },
+      persistLatencySnapshot(extra, reason) {
+        events.push(`persist:${reason}:${Object.keys(extra).length}`);
+        return Promise.resolve();
+      },
+      logPerformance(metrics) {
+        events.push(`performance:${metrics.instrumentCode}:${metrics.status}`);
+      },
+      publishKillSwitch(payload) {
+        events.push(`publish:${payload.action}`);
+      },
+      notify(notification) {
+        events.push(`notify:${notification.priority}`);
+      },
+      schedule(work) {
+        events.push("schedule");
+        scheduled.push(work);
+      },
+      cancelAllQuotes(instrumentCode, reason) {
+        events.push(`cancel:${instrumentCode}:${reason}`);
+        return Promise.resolve();
+      },
+      publishTickTelemetry(_tick, _metrics, status, hotPathStartedAt) {
+        events.push(`telemetry:${status}:${hotPathStartedAt}`);
+      },
+      recordAgentSnapshot(observedAt) {
+        events.push(`snapshot:${observedAt}`);
       }
     }
   };

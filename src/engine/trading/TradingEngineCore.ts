@@ -148,15 +148,13 @@ import {
 import { calculateAssetMatrix as calculateRuntimeAssetMatrix } from "./state/AssetMatrixRuntime";
 import {
   applyExecutionProfileSideEffects,
-  applyHardStaleTickDropSideEffects,
+  applyHardStaleTickDropFlow,
   applyLatencyBaselineResetSideEffects,
   applyNativeHyperliquidLatencyPullSideEffects,
   applyPerformanceSpikeLogSideEffect,
   applyPreparedTickLatencySideEffects,
-  applyStaleDataKillSwitchSideEffects,
-  buildHardStaleTickDropArtifacts,
+  applySoftStaleTickFlow,
   buildPerformanceMetricsText,
-  buildStaleDataKillSwitchArtifacts,
   latencySnapshotStorageWrites,
   latencyBaselineResetArtifacts,
   nativeHyperliquidLatencyPullArtifacts,
@@ -164,8 +162,6 @@ import {
   nextLatencyAverage,
   prepareTickLatencyRuntime,
   recordProcessingLatencySample,
-  stateAfterHardStaleTickDrop,
-  stateAfterStaleDataKillSwitch,
   type ExecutionTraceInput
 } from "./performance/LatencyRuntime";
 import {
@@ -2205,35 +2201,22 @@ export class TradingEngine {
     streamId: string | null,
     hardStaleDropMs: number
   ): Promise<TickIngestResult> {
-    const hardStale = stateAfterHardStaleTickDrop({
-      currentState: this.engineState,
-      metrics,
-      hardStaleDropMs
-    });
-    this.engineState = hardStale.state;
-
-    if (hardStale.shouldResetLatencyBaseline) {
-      this.resetLatencyBaseline(hardStale.metrics.brainTimestamp, "HARD_STALE_DROP");
-    }
-
-    await this.persistHotStorageSnapshot(this.latencyStorageWrites(), "HARD_STALE_TICK_DROPPED");
-
-    const staleArtifacts = buildHardStaleTickDropArtifacts({
-      tick,
-      metrics: hardStale.metrics,
-      streamId,
-      hardStaleDropMs,
-      nextStaleTickCount: hardStale.nextStaleTickCount
-    });
-
-    applyHardStaleTickDropSideEffects(
+    return applyHardStaleTickDropFlow(
       {
+        currentState: this.engineState,
         tick,
-        metrics: hardStale.metrics,
-        artifacts: staleArtifacts,
+        metrics,
+        streamId,
+        hardStaleDropMs,
         tradingEnabled: this.cachedConfig.TRADING_ENABLED
       },
       {
+        applyState: (state) => {
+          this.engineState = state;
+        },
+        resetLatencyBaseline: (observedAt, reason) => this.resetLatencyBaseline(observedAt, reason),
+        persistLatencySnapshot: (reason) =>
+          this.persistHotStorageSnapshot(this.latencyStorageWrites(), reason),
         warnHardStale: (metadata) =>
           this.logger.warn("HARD_STALE_TICK_DROPPED", "Dropped tick beyond hard stale threshold", {
             ...metadata
@@ -2244,8 +2227,6 @@ export class TradingEngine {
         cancelAllQuotes: (instrumentCode, reason) => this.cancelAllQuotes(instrumentCode, reason)
       }
     );
-
-    return staleArtifacts.ingestResult;
   }
 
   private async handleSoftStaleTick(
@@ -2254,52 +2235,40 @@ export class TradingEngine {
     wakeUpTimeMs: number | null,
     hotPathStartedAt: number
   ): Promise<TickIngestResult> {
-    this.observeExecutionProfile(metrics, {
-      wakeUpTimeMs,
-      orderBookUpdateMs: null,
-      agentLogicMs: null,
-      hotPathStartedAt,
-      observedAt: metrics.brainTimestamp
-    });
-
-    const staleState = stateAfterStaleDataKillSwitch({
-      currentState: this.engineState,
-      metrics,
-      instrumentCode: tick.instrumentCode,
-      maxLatencyMs: this.maxLatencyMs,
-      quoteHibernateMs: resolveQuoteHibernateMs(this.cachedConfig, this.env.QUOTE_HIBERNATE_MS)
-    });
-    this.engineState = staleState.state;
-    const staleKillSwitch = buildStaleDataKillSwitchArtifacts({
-      tick,
-      metrics,
-      maxLatencyMs: this.maxLatencyMs
-    });
-
-    await this.persistHotStorageSnapshot(
-      this.latencyStorageWrites(staleKillSwitch.storageExtra),
-      "STALE_DATA_KILL_SWITCH"
-    );
-
-    applyStaleDataKillSwitchSideEffects(
+    return applySoftStaleTickFlow(
       {
         tick,
         metrics,
-        artifacts: staleKillSwitch,
-        tradingEnabled: this.cachedConfig.TRADING_ENABLED
+        maxLatencyMs: this.maxLatencyMs,
+        quoteHibernateMs: resolveQuoteHibernateMs(this.cachedConfig, this.env.QUOTE_HIBERNATE_MS),
+        tradingEnabled: this.cachedConfig.TRADING_ENABLED,
+        trace: {
+          wakeUpTimeMs,
+          orderBookUpdateMs: null,
+          agentLogicMs: null,
+          hotPathStartedAt,
+          observedAt: metrics.brainTimestamp
+        }
       },
       {
+        readCurrentState: () => this.engineState,
+        observeExecutionProfile: (profileMetrics, trace) =>
+          this.observeExecutionProfile(profileMetrics, trace),
+        applyState: (state) => {
+          this.engineState = state;
+        },
+        persistLatencySnapshot: (extra, reason) =>
+          this.persistHotStorageSnapshot(this.latencyStorageWrites(extra), reason),
         logPerformance: (staleMetrics) => this.logPerformance(staleMetrics),
         publishKillSwitch: (payload) => this.publish("STALE_DATA_KILL_SWITCH", payload),
         notify: (notification) => this.notifier.notify(notification),
         schedule: (work) => this.state.waitUntil(work),
-        cancelAllQuotes: (instrumentCode, reason) => this.cancelAllQuotes(instrumentCode, reason)
+        cancelAllQuotes: (instrumentCode, reason) => this.cancelAllQuotes(instrumentCode, reason),
+        publishTickTelemetry: (telemetryTick, telemetryMetrics, status, telemetryStartedAt) =>
+          this.publishTickTelemetry(telemetryTick, telemetryMetrics, status, telemetryStartedAt),
+        recordAgentSnapshot: (observedAt) => this.maybeRecordAgentSnapshot(observedAt)
       }
     );
-    this.publishTickTelemetry(tick, metrics, "STALE", hotPathStartedAt);
-    this.maybeRecordAgentSnapshot(metrics.brainTimestamp);
-
-    return staleKillSwitch.ingestResult;
   }
 
   private async handleInformationalBookNotReady(
