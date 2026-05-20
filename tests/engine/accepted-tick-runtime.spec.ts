@@ -8,7 +8,8 @@ import {
   buildAcceptedTickFinalizationArtifacts,
   buildAcceptedTickLifecycleArtifacts,
   buildAcceptedTickStateTransition,
-  finalizeAcceptedTickFlow
+  finalizeAcceptedTickFlow,
+  prepareAcceptedExecutionContextFlow
 } from "../../src/engine/trading/pipelines/AcceptedTickRuntime";
 import type {
   AcceptedDecisionPipelineInput,
@@ -215,6 +216,124 @@ describe("AcceptedTickRuntime", () => {
     });
     expect(transition.agentHealth.PROFILER.latencyMs).toBe(2.5);
     expect(transition.agentHealth.CROUPIER.latencyMs).toBe(3.5);
+  });
+
+  it("prepares accepted execution context from ensemble, Pit Boss, and quote policy", () => {
+    const state = defaultEngineState("accepted-execution-context-runtime");
+    const profilerResult: ProfilerEvaluation = {
+      processed: true,
+      skippedReason: null,
+      closedBuckets: 0,
+      toxicityScore: 0.2,
+      state: { toxicityState: "NORMAL" } as ProfilerEvaluation["state"],
+      signal: null
+    };
+    const croupierDecision: CroupierDecision = {
+      intent: null,
+      quote: null,
+      pullAllQuotes: false,
+      adverseSelectionCost: 0.01,
+      minEvThreshold: 0.02
+    };
+    const pipeline = {
+      tick: { instrumentCode: "btc-usd" },
+      metrics: { brainTimestamp: OBSERVED_AT },
+      anomalyResult: { status: state.anomaly },
+      shadowReplay: false
+    } as unknown as AcceptedDecisionPipelineInput;
+    const decisionContext = {
+      leadLag: state.leadLag,
+      inventory: state.inventory,
+      riskMetrics: state.riskMetrics,
+      profilerStates: state.profilerStates,
+      assetMatrix: state.assetMatrix,
+      inventoryGuard: state.inventoryGuard,
+      sentimentForDecision: state.sentiment
+    } satisfies TickDecisionContext;
+    const ensemble = {
+      ...state.ensemble,
+      kellyMultiplier: 0.25,
+      anomalyCircuitBreaker: false,
+      rationale: "unit-test ensemble"
+    };
+    const executionPlan = {
+      intent: { intentId: "intent-1" },
+      orders: []
+    } as unknown as NonNullable<AcceptedExecutionContext["executionPlan"]>;
+    const events: string[] = [];
+
+    const context = prepareAcceptedExecutionContextFlow(
+      {
+        pipeline,
+        profilerResult,
+        oracleState: state.oracle,
+        croupierDecision,
+        decisionContext,
+        currentState: state,
+        pitBossEnabled: true,
+        kellyFraction: 0.5
+      },
+      {
+        calculateEnsembleState(
+          intent,
+          profilerState,
+          oracleState,
+          sentimentState,
+          anomalyStatus,
+          observedAt
+        ) {
+          events.push(
+            `ensemble:${intent === null}:${profilerState.toxicityState}:${oracleState.updatedAt}:${sentimentState.updatedAt}:${anomalyStatus.status}:${observedAt}`
+          );
+          return ensemble;
+        },
+        prepareExecutionPlan(intent, observedAt, options) {
+          events.push(
+            `plan:${intent === null}:${observedAt}:${options.stateOverride.assetMatrix === state.assetMatrix}:${options.stateOverride.ensemble === ensemble}:${options.kellyFractionOverride}`
+          );
+          return executionPlan;
+        },
+        applyQuoteSuppression(
+          instrumentCode,
+          _croupierDecision,
+          _profilerResult,
+          executionPlans,
+          observedAt,
+          shadowReplay,
+          anomalyCircuitBreaker,
+          rationale
+        ) {
+          events.push(
+            `quote:${instrumentCode}:${executionPlans.length}:${observedAt}:${shadowReplay}:${anomalyCircuitBreaker}:${rationale}`
+          );
+          return {
+            executionPlans,
+            assetQuoteState: state.quoteState,
+            strategyQuoteDisableReason: null,
+            isCascadeShield: false,
+            isProfilerQuoteHalt: false
+          };
+        }
+      }
+    );
+
+    expect(context).toEqual({
+      ensemble,
+      executionPlan,
+      executionPlans: [executionPlan],
+      quotePolicy: {
+        executionPlans: [executionPlan],
+        assetQuoteState: state.quoteState,
+        strategyQuoteDisableReason: null,
+        isCascadeShield: false,
+        isProfilerQuoteHalt: false
+      }
+    });
+    expect(events).toEqual([
+      `ensemble:true:NORMAL:${state.oracle.updatedAt}:${state.sentiment.updatedAt}:${state.anomaly.status}:${OBSERVED_AT}`,
+      `plan:true:${OBSERVED_AT}:true:true:0.125`,
+      `quote:btc-usd:1:${OBSERVED_AT}:false:false:unit-test ensemble`
+    ]);
   });
 
   it("finalizes accepted tick side effects in deterministic order", async () => {

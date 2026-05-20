@@ -561,7 +561,8 @@ import { isTradeTick } from "./state/TickClassification";
 import {
   applyAcceptedDecisionPipelineFlow,
   buildAcceptedTickStateTransition,
-  finalizeAcceptedTickFlow
+  finalizeAcceptedTickFlow,
+  prepareAcceptedExecutionContextFlow
 } from "./pipelines/AcceptedTickRuntime";
 import { preparePostBookTickRuntime } from "./pipelines/PostBookTickRuntime";
 import { handleTickRuntime } from "./pipelines/TickHandlingRuntime";
@@ -2807,44 +2808,58 @@ export class TradingEngine {
     croupierDecision: CroupierDecision,
     decisionContext: TickDecisionContext
   ): AcceptedExecutionContext {
-    const ensemble = this.calculateEnsembleState(
-      croupierDecision.intent,
-      profilerResult.state,
-      oracleState,
-      decisionContext.sentimentForDecision,
-      input.anomalyResult.status,
-      input.metrics.brainTimestamp
+    return prepareAcceptedExecutionContextFlow(
+      {
+        pipeline: input,
+        profilerResult,
+        oracleState,
+        croupierDecision,
+        decisionContext,
+        currentState: this.engineState,
+        pitBossEnabled: this.cachedConfig.PIT_BOSS_ENABLED,
+        kellyFraction: this.cachedConfig.KELLY_FRACTION
+      },
+      {
+        calculateEnsembleState: (
+          intent,
+          profilerState,
+          currentOracleState,
+          sentimentState,
+          anomalyStatus,
+          observedAt
+        ) =>
+          this.calculateEnsembleState(
+            intent,
+            profilerState,
+            currentOracleState,
+            sentimentState,
+            anomalyStatus,
+            observedAt
+          ),
+        prepareExecutionPlan: (intent, observedAt, options) =>
+          this.prepareExecutionPlan(intent, observedAt, options),
+        applyQuoteSuppression: (
+          instrumentCode,
+          currentCroupierDecision,
+          currentProfilerResult,
+          executionPlans,
+          observedAt,
+          shadowReplay,
+          ensembleAnomalyCircuitBreaker,
+          ensembleRationale
+        ) =>
+          this.applyQuoteSuppression(
+            instrumentCode,
+            currentCroupierDecision,
+            currentProfilerResult,
+            executionPlans,
+            observedAt,
+            shadowReplay,
+            ensembleAnomalyCircuitBreaker,
+            ensembleRationale
+          )
+      }
     );
-    const executionPlan = this.cachedConfig.PIT_BOSS_ENABLED
-      ? this.prepareExecutionPlan(croupierDecision.intent, input.metrics.brainTimestamp, {
-          stateOverride: {
-            ...this.engineState,
-            assetMatrix: decisionContext.assetMatrix,
-            ensemble
-          },
-          kellyFractionOverride: this.cachedConfig.KELLY_FRACTION * ensemble.kellyMultiplier
-        })
-      : null;
-    const executionPlans = [executionPlan].filter(
-      (plan): plan is NonNullable<typeof executionPlan> => plan !== null
-    );
-    const quotePolicy = this.applyQuoteSuppression(
-      input.tick.instrumentCode,
-      croupierDecision,
-      profilerResult,
-      executionPlans,
-      input.metrics.brainTimestamp,
-      input.shadowReplay,
-      ensemble.anomalyCircuitBreaker,
-      ensemble.rationale
-    );
-
-    return {
-      ensemble,
-      executionPlan,
-      executionPlans: quotePolicy.executionPlans,
-      quotePolicy
-    };
   }
 
   private async finalizeAcceptedTick(input: AcceptedTickSideEffectsInput): Promise<void> {
