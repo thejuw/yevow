@@ -11,6 +11,7 @@ import {
   liquidationEventProcessingResult,
   liquidationEventTelemetry,
   persistCascadeLiquidationEvents,
+  persistCascadeLiquidationEventsSafely,
   processLiquidationIngestRuntime,
   recordCascadeLiquidationDetections,
   resolveLiquidationEventContext,
@@ -437,6 +438,27 @@ describe("CascadeLiquidationRuntime", () => {
 
     expect(db.batches).toHaveLength(1);
     expect(db.batches[0]).toHaveLength(1);
+  });
+
+  it("captures cascade liquidation journal failures without throwing", async () => {
+    const errors: string[] = [];
+    const prepareDb = mockCascadeDb();
+    const db = {
+      prepare(query: string): D1PreparedStatement {
+        return prepareDb.prepare(query);
+      },
+      async batch(): Promise<D1Result[]> {
+        throw new Error("d1 unavailable");
+      }
+    };
+
+    await persistCascadeLiquidationEventsSafely(db, [liquidationEvent()], {
+      handleFailure(reason, error) {
+        errors.push(`${reason}:${error instanceof Error ? error.message : "unknown"}`);
+      }
+    });
+
+    expect(errors).toEqual(["CASCADE_LIQUIDATION_JOURNAL:d1 unavailable"]);
   });
 });
 

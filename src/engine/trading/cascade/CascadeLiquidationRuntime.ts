@@ -133,6 +133,10 @@ export interface CascadeLiquidationJournalDb {
   batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]>;
 }
 
+export interface CascadeLiquidationJournalFailureHandlers {
+  readonly handleFailure: (reason: "CASCADE_LIQUIDATION_JOURNAL", error: unknown) => void;
+}
+
 export function resolveLiquidationEventContext(
   input: LiquidationEventContextInput
 ): LiquidationEventContext {
@@ -347,6 +351,18 @@ export async function persistCascadeLiquidationEvents(
   }
 
   await db.batch(cascadeLiquidationInsertStatements(db, events));
+}
+
+export async function persistCascadeLiquidationEventsSafely(
+  db: CascadeLiquidationJournalDb,
+  events: readonly LiquidationEvent[],
+  handlers: CascadeLiquidationJournalFailureHandlers
+): Promise<void> {
+  try {
+    await persistCascadeLiquidationEvents(db, events);
+  } catch (error) {
+    handlers.handleFailure("CASCADE_LIQUIDATION_JOURNAL", error);
+  }
 }
 
 export function cascadeDetectedLogMetadata(cascade: CascadeEvent): JsonRecord {

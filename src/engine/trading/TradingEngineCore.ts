@@ -186,7 +186,7 @@ import {
 import {
   buildCascadeDetectedArtifacts,
   liquidationEventProcessingResult,
-  persistCascadeLiquidationEvents,
+  persistCascadeLiquidationEventsSafely,
   processLiquidationIngestRuntime,
   recordCascadeLiquidationDetections,
   resolveLiquidationEventContext
@@ -1421,7 +1421,11 @@ export class TradingEngine {
         recordCascadeLiquidations: (events, observedAt) =>
           this.recordCascadeLiquidations(events, observedAt),
         scheduleCascadeLiquidationJournal: (events) =>
-          this.state.waitUntil(this.persistCascadeLiquidations(events)),
+          this.state.waitUntil(
+            persistCascadeLiquidationEventsSafely(this.env.TRADING_DB, events, {
+              handleFailure: (reason, error) => this.handleStorageWriteFailure(reason, error)
+            })
+          ),
         scheduleStorageWrites: (storageWrites) =>
           this.state.waitUntil(this.safeStoragePut(storageWrites, "LIQUIDATION_EVENT")),
         publish: (type, publishPayload) => this.publish(type, publishPayload)
@@ -1462,14 +1466,6 @@ export class TradingEngine {
           cascade.cascadeId
         )
     });
-  }
-
-  private async persistCascadeLiquidations(events: LiquidationEvent[]): Promise<void> {
-    try {
-      await persistCascadeLiquidationEvents(this.env.TRADING_DB, events);
-    } catch (error) {
-      this.handleStorageWriteFailure("CASCADE_LIQUIDATION_JOURNAL", error);
-    }
   }
 
   private isCascadeInstrumentEnabled(instrumentCode: string): boolean {
