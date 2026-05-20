@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { defaultConfig } from "../../src/ConfigManager";
 import { neutralMacroBias } from "../../src/Governor";
 import {
+  adminRecoveryCompletionArtifacts,
   adminRecoveryPlan,
   adminRecoveryResponse,
   adminRecoveryStorageEntries,
@@ -225,6 +226,52 @@ describe("RecoveryRuntime", () => {
       resetInstruments: ["btc-usd"],
       source_exchange: "hyperliquid",
       state
+    });
+  });
+
+  it("assembles recovery completion artifacts for the durable object", () => {
+    const state = defaultEngineState("recovery-artifacts");
+    const recovery = stateAfterAdminControlledRecovery({
+      currentState: state,
+      payload: { resetPaperPortfolio: true },
+      cachedConfig: defaultConfig,
+      macroBias: neutralMacroBias(),
+      observedAt: OBSERVED_AT,
+      shadowMode: true,
+      paperBankroll: 300,
+      shadowQueue: state.shadowQueue,
+      reason: "manual-reset",
+      resetInstruments: ["btc-usd"],
+      sourceExchange: "hyperliquid",
+      prunedProfilerStorageKeys: []
+    });
+    const artifacts = adminRecoveryCompletionArtifacts({
+      plan: adminRecoveryPlan(
+        { resetPaperPortfolio: true, instrumentCode: "btc-usd" },
+        OBSERVED_AT
+      ),
+      recovery,
+      engineStateKey: "engine:state",
+      performanceHistoryKey: "latency:history",
+      latencyHistory: [],
+      processingLatencySamplesKey: "latency:samples",
+      processingLatencySamples: [1, 2]
+    });
+
+    expect(artifacts.storageEntries).toMatchObject({
+      "engine:state": recovery.state,
+      "latency:history": [],
+      "latency:samples": [1, 2]
+    });
+    expect(artifacts.paperSessionStartedAt).toBe(OBSERVED_AT);
+    expect(artifacts.logMetadata).toBe(recovery.logMetadata);
+    expect(artifacts.publishPayload).toBe(recovery.publishPayload);
+    expect(artifacts.response).toMatchObject({
+      ok: true,
+      reason: "ADMIN_CONTROLLED_RECOVERY",
+      resetInstruments: ["btc-usd"],
+      source_exchange: "hyperliquid",
+      state: recovery.state
     });
   });
 });

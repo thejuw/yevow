@@ -74,6 +74,24 @@ export interface AdminRecoveryResponseInput {
   readonly state: EngineState;
 }
 
+export interface AdminRecoveryCompletionArtifactsInput {
+  readonly plan: AdminRecoveryPlan;
+  readonly recovery: AdminRecoveryStateResult;
+  readonly engineStateKey: string;
+  readonly performanceHistoryKey: string;
+  readonly latencyHistory: unknown;
+  readonly processingLatencySamplesKey: string;
+  readonly processingLatencySamples: readonly number[];
+}
+
+export interface AdminRecoveryCompletionArtifacts {
+  readonly storageEntries: Record<string, unknown>;
+  readonly paperSessionStartedAt: string | null;
+  readonly logMetadata: JsonRecord;
+  readonly publishPayload: JsonRecord;
+  readonly response: JsonRecord;
+}
+
 export function adminRecoveryPlan(
   payload: AdminRecoveryRuntimePayload,
   observedAt = new Date().toISOString()
@@ -219,5 +237,29 @@ export function adminRecoveryResponse(input: AdminRecoveryResponseInput): JsonRe
     resetInstruments: [...input.resetInstruments],
     source_exchange: input.sourceExchange,
     state: input.state as unknown as JsonRecord
+  };
+}
+
+export function adminRecoveryCompletionArtifacts(
+  input: AdminRecoveryCompletionArtifactsInput
+): AdminRecoveryCompletionArtifacts {
+  return {
+    storageEntries: adminRecoveryStorageEntries({
+      engineStateKey: input.engineStateKey,
+      state: input.recovery.state,
+      performanceHistoryKey: input.performanceHistoryKey,
+      latencyHistory: input.latencyHistory,
+      processingLatencySamplesKey: input.processingLatencySamplesKey,
+      processingLatencySamples: input.processingLatencySamples
+    }),
+    paperSessionStartedAt: input.plan.shouldResetPaperPortfolio ? input.plan.observedAt : null,
+    logMetadata: input.recovery.logMetadata,
+    publishPayload: input.recovery.publishPayload,
+    response: adminRecoveryResponse({
+      reason: input.plan.reason,
+      resetInstruments: input.plan.resetInstruments,
+      sourceExchange: input.plan.sourceExchange,
+      state: input.recovery.state
+    })
   };
 }

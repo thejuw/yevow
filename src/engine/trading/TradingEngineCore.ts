@@ -343,8 +343,7 @@ import {
   shouldJournalMarketTick as shouldPersistMarketTick
 } from "./state/TickPersistenceRuntime";
 import {
-  adminRecoveryResponse,
-  adminRecoveryStorageEntries,
+  adminRecoveryCompletionArtifacts,
   adminRecoveryPlan,
   stateAfterAdminControlledRecovery
 } from "./state/RecoveryRuntime";
@@ -2292,36 +2291,30 @@ export class TradingEngine {
     });
 
     this.engineState = recovery.state;
+    const artifacts = adminRecoveryCompletionArtifacts({
+      plan: recoveryPlan,
+      recovery,
+      engineStateKey: ENGINE_STATE_KEY,
+      performanceHistoryKey: PERFORMANCE_HISTORY_KEY,
+      latencyHistory: this.latencyHistory,
+      processingLatencySamplesKey: PROCESSING_LATENCY_SAMPLES_KEY,
+      processingLatencySamples: this.processingLatencySamples
+    });
 
-    await this.safeStoragePut(
-      adminRecoveryStorageEntries({
-        engineStateKey: ENGINE_STATE_KEY,
-        state: this.engineState,
-        performanceHistoryKey: PERFORMANCE_HISTORY_KEY,
-        latencyHistory: this.latencyHistory,
-        processingLatencySamplesKey: PROCESSING_LATENCY_SAMPLES_KEY,
-        processingLatencySamples: this.processingLatencySamples
-      }),
-      "ADMIN_CONTROLLED_RECOVERY"
-    );
+    await this.safeStoragePut(artifacts.storageEntries, "ADMIN_CONTROLLED_RECOVERY");
 
-    if (recoveryPlan.shouldResetPaperPortfolio) {
+    if (artifacts.paperSessionStartedAt) {
       this.state.waitUntil(
-        this.env.CONFIG_STORE.put(PAPER_SESSION_STARTED_AT_KEY, recoveryPlan.observedAt)
+        this.env.CONFIG_STORE.put(PAPER_SESSION_STARTED_AT_KEY, artifacts.paperSessionStartedAt)
       );
     }
 
     this.logger.warn("ADMIN_CONTROLLED_RECOVERY", "Admin controlled recovery applied", {
-      ...recovery.logMetadata
+      ...artifacts.logMetadata
     });
-    this.publish("ADMIN_CONTROLLED_RECOVERY", recovery.publishPayload);
+    this.publish("ADMIN_CONTROLLED_RECOVERY", artifacts.publishPayload);
 
-    return adminRecoveryResponse({
-      reason: recoveryPlan.reason,
-      resetInstruments: recoveryPlan.resetInstruments,
-      sourceExchange: recoveryPlan.sourceExchange,
-      state: this.engineState
-    });
+    return artifacts.response;
   }
 
   private async applySnapshot(
