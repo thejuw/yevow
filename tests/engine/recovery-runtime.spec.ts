@@ -7,6 +7,7 @@ import {
   adminRecoveryRuntimeArtifacts,
   adminRecoveryResponse,
   adminRecoveryStorageEntries,
+  dispatchAdminRecoveryOrderBookResets,
   resolveAdminRecoveryPaperBankroll,
   stateAfterAdminControlledRecovery
 } from "../../src/engine/trading/state/RecoveryRuntime";
@@ -57,6 +58,41 @@ describe("RecoveryRuntime", () => {
   it("resolves the admin recovery paper bankroll from environment input", () => {
     expect(resolveAdminRecoveryPaperBankroll("450")).toBe(450);
     expect(resolveAdminRecoveryPaperBankroll("0")).toBe(5_000);
+  });
+
+  it("dispatches admin recovery order-book resets for each requested instrument", async () => {
+    const payloads: unknown[] = [];
+
+    await dispatchAdminRecoveryOrderBookResets({
+      resetInstruments: ["btc-usd", "hype-usd"],
+      reason: "manual-reset",
+      sourceExchange: "hyperliquid",
+      observedAt: OBSERVED_AT,
+      async resetOrderBook(payload) {
+        payloads.push(payload);
+      }
+    });
+
+    expect(payloads).toEqual([
+      {
+        source: "ADMIN",
+        reason: "manual-reset",
+        instrumentCode: "btc-usd",
+        source_exchange: "hyperliquid",
+        connectionId: null,
+        blackoutDurationMs: null,
+        recoveredAt: OBSERVED_AT
+      },
+      {
+        source: "ADMIN",
+        reason: "manual-reset",
+        instrumentCode: "hype-usd",
+        source_exchange: "hyperliquid",
+        connectionId: null,
+        blackoutDurationMs: null,
+        recoveredAt: OBSERVED_AT
+      }
+    ]);
   });
 
   it("resets paper portfolio, quote state, citadel, and risk gates for admin recovery", () => {

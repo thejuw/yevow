@@ -321,6 +321,7 @@ import {
 import {
   adminRecoveryPlan,
   adminRecoveryRuntimeArtifacts,
+  dispatchAdminRecoveryOrderBookResets,
   resolveAdminRecoveryPaperBankroll
 } from "./state/RecoveryRuntime";
 import {
@@ -2103,25 +2104,6 @@ export class TradingEngine {
     this.publish("ORDER_BOOK_RESET", artifacts.telemetry);
   }
 
-  private async resetRecoveryOrderBooks(
-    resetInstruments: readonly string[],
-    reason: string,
-    sourceExchange: string,
-    observedAt: string
-  ): Promise<void> {
-    for (const instrumentCode of resetInstruments) {
-      await this.resetOrderBook({
-        source: "ADMIN",
-        reason,
-        instrumentCode,
-        source_exchange: sourceExchange,
-        connectionId: null,
-        blackoutDurationMs: null,
-        recoveredAt: observedAt
-      });
-    }
-  }
-
   private clearRecoveryShadowQueue(): void {
     this.ghostBook.reset();
     this.shadowQueueNoEdgeLogAt.clear();
@@ -2140,12 +2122,13 @@ export class TradingEngine {
   }): Promise<JsonRecord> {
     const recoveryPlan = adminRecoveryPlan(payload);
 
-    await this.resetRecoveryOrderBooks(
-      recoveryPlan.resetInstruments,
-      recoveryPlan.reason,
-      recoveryPlan.sourceExchange,
-      recoveryPlan.observedAt
-    );
+    await dispatchAdminRecoveryOrderBookResets({
+      resetInstruments: recoveryPlan.resetInstruments,
+      reason: recoveryPlan.reason,
+      sourceExchange: recoveryPlan.sourceExchange,
+      observedAt: recoveryPlan.observedAt,
+      resetOrderBook: (resetPayload) => this.resetOrderBook(resetPayload)
+    });
 
     if (recoveryPlan.shouldClearLatency) {
       this.resetLatencyBaseline(recoveryPlan.observedAt, recoveryPlan.reason);

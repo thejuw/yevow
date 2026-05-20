@@ -3,6 +3,7 @@ import type {
   GlobalRiskConfig,
   JsonRecord,
   MacroBias,
+  OrderBookResetRequest,
   ShadowQueueState
 } from "../../../types";
 import { DEFAULT_PAPER_BANKROLL_USD } from "../../../TradingEngineConstants";
@@ -113,8 +114,32 @@ export interface AdminRecoveryRuntimeArtifacts {
   readonly completion: AdminRecoveryCompletionArtifacts;
 }
 
+export interface AdminRecoveryOrderBookResetDispatcherInput {
+  readonly resetInstruments: readonly string[];
+  readonly reason: string;
+  readonly sourceExchange: string;
+  readonly observedAt: string;
+  readonly resetOrderBook: (payload: Partial<OrderBookResetRequest>) => Promise<void>;
+}
+
 export function resolveAdminRecoveryPaperBankroll(envValue?: string): number {
   return readPositiveNumber(envValue, DEFAULT_PAPER_BANKROLL_USD);
+}
+
+export async function dispatchAdminRecoveryOrderBookResets(
+  input: AdminRecoveryOrderBookResetDispatcherInput
+): Promise<void> {
+  for (const instrumentCode of input.resetInstruments) {
+    await input.resetOrderBook({
+      source: "ADMIN",
+      reason: input.reason,
+      instrumentCode,
+      source_exchange: input.sourceExchange,
+      connectionId: null,
+      blackoutDurationMs: null,
+      recoveredAt: input.observedAt
+    });
+  }
 }
 
 export function adminRecoveryPlan(
