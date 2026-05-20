@@ -143,11 +143,13 @@ import {
   latencySnapshotStorageWrites,
   latencyBaselineResetArtifacts,
   nativeHyperliquidLatencyPullArtifacts,
-  hydrateLatencyMetricsFromState,
-  nextLatencyAverage,
-  prepareTickLatencyFlow,
   type ExecutionTraceInput
 } from "./performance/LatencyRuntime";
+import {
+  hydrateLatencyMetricsFromState,
+  nextLatencyAverage,
+  prepareTickLatencyFlow
+} from "./performance/LatencyTickRuntime";
 import {
   applyCancelJanitorOrderSideEffects,
   cancelJanitorOrder,

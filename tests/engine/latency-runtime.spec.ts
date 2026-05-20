@@ -7,29 +7,21 @@ import {
   applyLatencyBaselineResetSideEffects,
   applyNativeHyperliquidLatencyPullSideEffects,
   applyPerformanceSpikeLogSideEffect,
-  applyPreparedTickLatencySideEffects,
   applySoftStaleTickFlow,
   applyStaleDataKillSwitchSideEffects,
-  appendLatencyHistory,
   buildHardStaleTickDropArtifacts,
   buildExecutionPerformanceTransition,
   buildPerformanceMetricsText,
   buildPerformanceSnapshot,
   buildStaleDataKillSwitchArtifacts,
-  calculateTickLatency,
   hardStalePullTelemetryPayload,
   hardStaleTickDropLogMetadata,
-  hydrateLatencyMetricsFromState,
   latencyBaselineResetArtifacts,
   latencySnapshotStorageWrites,
   nativeHyperliquidLatencyPullArtifacts,
   nativeHyperliquidLatencyPullStorageWrites,
   nextExecutionProfile,
-  nextLatencyAverage,
-  prepareTickLatencyFlow,
-  prepareTickLatencyRuntime,
   recordProcessingLatencySample,
-  resolveNativeHyperliquidMaxLatencyMs,
   shouldLogHardStaleTickDrop,
   shouldLogPerformanceSpikeEvent,
   staleDataKillSwitchNotification,
@@ -48,6 +40,16 @@ import {
   type SoftStaleTickFlowHandlers,
   type StaleDataKillSwitchSideEffectHandlers
 } from "../../src/engine/trading/performance/LatencyRuntime";
+import {
+  applyPreparedTickLatencySideEffects,
+  appendLatencyHistory,
+  calculateTickLatency,
+  hydrateLatencyMetricsFromState,
+  nextLatencyAverage,
+  prepareTickLatencyFlow,
+  prepareTickLatencyRuntime,
+  resolveNativeHyperliquidMaxLatencyMs
+} from "../../src/engine/trading/performance/LatencyTickRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { EngineState, ExecutionProfile, LatencyMetrics, MarketTick } from "../../src/types";
 

@@ -18,7 +18,7 @@ import {
 } from "../helpers/NativeHyperliquidRuntime";
 import { parseTimestampMs } from "../helpers/RuntimeClock";
 import { readPositiveNumber } from "../helpers/RuntimeParsing";
-import { resolveNativeHyperliquidMaxLatencyMs } from "../performance/LatencyRuntime";
+import { resolveNativeHyperliquidMaxLatencyMs } from "../performance/LatencyTickRuntime";
 import type { TickIngestResult } from "../TradingEngineRouteTypes";
 import type { BookSyncState } from "../book/BookTypes";
 import { isCrossedBook } from "../book/BookReconstruction";
