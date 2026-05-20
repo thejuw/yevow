@@ -134,14 +134,16 @@ import {
 import { calculateAssetMatrix as calculateRuntimeAssetMatrix } from "./state/AssetMatrixRuntime";
 import {
   applyExecutionProfileFlow,
+  buildPerformanceMetricsText,
+  type ExecutionTraceInput
+} from "./performance/LatencyRuntime";
+import {
   applyHardStaleTickDropFlow,
   applyNativeHyperliquidLatencyPullSideEffects,
   applySoftStaleTickFlow,
-  buildPerformanceMetricsText,
   latencySnapshotStorageWrites,
-  nativeHyperliquidLatencyPullArtifacts,
-  type ExecutionTraceInput
-} from "./performance/LatencyRuntime";
+  nativeHyperliquidLatencyPullArtifacts
+} from "./performance/StaleLatencyGuardRuntime";
 import {
   applyLatencyBaselineResetSideEffects,
   latencyBaselineResetArtifacts

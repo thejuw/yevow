@@ -2,37 +2,39 @@ import { describe, expect, it } from "vitest";
 import {
   applyExecutionProfileFlow,
   applyExecutionProfileSideEffects,
+  buildExecutionPerformanceTransition,
+  buildPerformanceMetricsText,
+  buildPerformanceSnapshot,
+  nextExecutionProfile,
+  recordProcessingLatencySample,
+  type ExecutionProfileSideEffectHandlers
+} from "../../src/engine/trading/performance/LatencyRuntime";
+import {
   applyHardStaleTickDropFlow,
   applyHardStaleTickDropSideEffects,
   applyNativeHyperliquidLatencyPullSideEffects,
   applySoftStaleTickFlow,
   applyStaleDataKillSwitchSideEffects,
   buildHardStaleTickDropArtifacts,
-  buildExecutionPerformanceTransition,
-  buildPerformanceMetricsText,
-  buildPerformanceSnapshot,
   buildStaleDataKillSwitchArtifacts,
   hardStalePullTelemetryPayload,
   hardStaleTickDropLogMetadata,
   latencySnapshotStorageWrites,
   nativeHyperliquidLatencyPullArtifacts,
   nativeHyperliquidLatencyPullStorageWrites,
-  nextExecutionProfile,
-  recordProcessingLatencySample,
   shouldLogHardStaleTickDrop,
   staleDataKillSwitchNotification,
   staleDataKillSwitchStorageExtra,
   staleDataKillSwitchTelemetryPayload,
+  stateAfterHardStaleTickDrop,
   stateAfterNativeHyperliquidLatencyPull,
   stateAfterStaleDataKillSwitch,
-  stateAfterHardStaleTickDrop,
-  type ExecutionProfileSideEffectHandlers,
   type HardStaleTickDropFlowHandlers,
   type HardStaleTickDropSideEffectHandlers,
   type NativeHyperliquidLatencyPullSideEffectHandlers,
   type SoftStaleTickFlowHandlers,
   type StaleDataKillSwitchSideEffectHandlers
-} from "../../src/engine/trading/performance/LatencyRuntime";
+} from "../../src/engine/trading/performance/StaleLatencyGuardRuntime";
 import {
   applyLatencyBaselineResetSideEffects,
   latencyBaselineResetArtifacts,
