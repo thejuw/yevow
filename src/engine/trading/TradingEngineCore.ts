@@ -109,12 +109,12 @@ import {
 } from "./quotes/QuoteStateRuntime";
 import {
   applyQuoteDispatchSideEffects,
+  applyQuoteRefreshThrottleSideEffects,
   buildQuoteDispatchIntents,
   buildQuoteRefreshRuntimeDecision,
   dispatchCroupierQuoteActionSideEffects,
   dispatchedQuoteSnapshot,
   quoteDispatchBlockedLogMetadata,
-  quoteRefreshThrottleLogMetadata,
   type CroupierQuoteAction
 } from "./quotes/QuoteDispatchRuntime";
 import {
@@ -3815,23 +3815,15 @@ export class TradingEngine {
       minPriceTicksValue: this.env.QUOTE_REFRESH_MIN_PRICE_TICKS,
       adviseRefresh: (input) => this.queuePositionModel.adviseRefresh(input)
     });
-    const throttle = refresh.throttle;
+    applyQuoteRefreshThrottleSideEffects(
+      { quote, logKey, refresh },
+      {
+        markLogAt: (key, loggedAtMs) => this.quoteRefreshThrottleLogAt.set(key, loggedAtMs),
+        logInfo: (event, message, metadata) => this.logger.info(event, message, metadata)
+      }
+    );
 
-    if (throttle.shouldLog) {
-      this.quoteRefreshThrottleLogAt.set(logKey, throttle.nextLogAtMs);
-      this.logger.info(
-        "QUOTE_REFRESH_THROTTLED",
-        "Skipped quote refresh inside minimum cadence window",
-        quoteRefreshThrottleLogMetadata({
-          quote,
-          throttle,
-          minIntervalMs: refresh.minIntervalMs,
-          minPriceTicks: refresh.minPriceTicks
-        })
-      );
-    }
-
-    return throttle.shouldThrottle;
+    return refresh.throttle.shouldThrottle;
   }
 
   private rememberDispatchedQuote(

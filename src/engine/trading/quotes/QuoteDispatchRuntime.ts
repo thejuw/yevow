@@ -113,6 +113,17 @@ export interface QuoteRefreshRuntimeResult {
   readonly minPriceTicks: number;
 }
 
+export interface QuoteRefreshThrottleSideEffectInput {
+  readonly quote: QuoteSignal;
+  readonly logKey: string;
+  readonly refresh: QuoteRefreshRuntimeResult;
+}
+
+export interface QuoteRefreshThrottleSideEffectHandlers {
+  readonly markLogAt: (logKey: string, loggedAtMs: number) => void;
+  readonly logInfo: (event: string, message: string, metadata: JsonRecord) => void;
+}
+
 export interface CroupierQuoteActionInput {
   readonly instrumentCode: string;
   readonly pullAllQuotes: boolean;
@@ -414,6 +425,28 @@ export function quoteRefreshThrottleLogMetadata(input: QuoteRefreshThrottleLogIn
     queuePressure: roundMetric(input.throttle.queuePressure, 4),
     queueReason: input.throttle.queueReason
   };
+}
+
+export function applyQuoteRefreshThrottleSideEffects(
+  input: QuoteRefreshThrottleSideEffectInput,
+  handlers: QuoteRefreshThrottleSideEffectHandlers
+): void {
+  const throttle = input.refresh.throttle;
+  if (!throttle.shouldLog) {
+    return;
+  }
+
+  handlers.markLogAt(input.logKey, throttle.nextLogAtMs);
+  handlers.logInfo(
+    "QUOTE_REFRESH_THROTTLED",
+    "Skipped quote refresh inside minimum cadence window",
+    quoteRefreshThrottleLogMetadata({
+      quote: input.quote,
+      throttle,
+      minIntervalMs: input.refresh.minIntervalMs,
+      minPriceTicks: input.refresh.minPriceTicks
+    })
+  );
 }
 
 export function dispatchedQuoteSnapshot(

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyQuoteDispatchSideEffects,
+  applyQuoteRefreshThrottleSideEffects,
   buildCroupierQuoteAction,
   buildQuoteDispatchIntents,
   buildQuoteRefreshRuntimeDecision,
@@ -9,7 +10,8 @@ import {
   evaluateQuoteRefreshThrottle,
   quoteDispatchBlockedLogMetadata,
   quoteRefreshThrottleLogMetadata,
-  type QuoteDispatchSideEffectHandlers
+  type QuoteDispatchSideEffectHandlers,
+  type QuoteRefreshThrottleSideEffectHandlers
 } from "../../src/engine/trading/quotes/QuoteDispatchRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { InternalOrderBook, QuoteSignal } from "../../src/types";
@@ -412,6 +414,47 @@ describe("QuoteDispatchRuntime", () => {
     });
   });
 
+  it("emits quote refresh throttle side effects only when logging is due", () => {
+    const quote = quoteSignal({ createdAt: "2026-05-18T17:00:00.750Z" });
+    const throttle = evaluateQuoteRefreshThrottle({
+      previousQuote: { bid: 100, ask: 101, updatedAtMs: Date.parse(quoteSignal().createdAt) },
+      quote,
+      advice: { shouldRefresh: false, reason: "HOLD_FRONT_OF_QUEUE", queuePressure: 0.23456 },
+      minIntervalMs: 750,
+      minPriceTicks: 1,
+      nowMs: Date.parse(quote.createdAt),
+      lastLogAtMs: 0,
+      logThrottleMs: 10_000
+    });
+    const sideEffects = quoteRefreshThrottleSideEffectSpy();
+
+    applyQuoteRefreshThrottleSideEffects(
+      {
+        quote,
+        logKey: "btc-usd",
+        refresh: { throttle, minIntervalMs: 750, minPriceTicks: 1 }
+      },
+      sideEffects.handlers
+    );
+    applyQuoteRefreshThrottleSideEffects(
+      {
+        quote,
+        logKey: "btc-usd",
+        refresh: {
+          throttle: { ...throttle, shouldLog: false },
+          minIntervalMs: 750,
+          minPriceTicks: 1
+        }
+      },
+      sideEffects.handlers
+    );
+
+    expect(sideEffects.events).toEqual([
+      "mark:btc-usd:1779123600750",
+      "log:QUOTE_REFRESH_THROTTLED:quote-1:HOLD_FRONT_OF_QUEUE"
+    ]);
+  });
+
   it("builds quote refresh runtime decisions from queue-position advice", () => {
     const previousQuote = { bid: 100, ask: 101, updatedAtMs: Date.parse(quoteSignal().createdAt) };
     const quote = quoteSignal({ createdAt: "2026-05-18T17:00:00.500Z" });
@@ -480,6 +523,25 @@ function quoteDispatchSideEffectSpy(): {
       },
       rememberDispatchedQuote(quote) {
         events.push(`remember:${quote.signalId}`);
+      }
+    }
+  };
+}
+
+function quoteRefreshThrottleSideEffectSpy(): {
+  events: string[];
+  handlers: QuoteRefreshThrottleSideEffectHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      markLogAt(logKey, loggedAtMs) {
+        events.push(`mark:${logKey}:${loggedAtMs}`);
+      },
+      logInfo(event, _message, metadata) {
+        events.push(`log:${event}:${metadata.signalId}:${metadata.queueReason}`);
       }
     }
   };
