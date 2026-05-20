@@ -114,6 +114,13 @@ export interface AdminRecoveryRuntimeArtifacts {
   readonly completion: AdminRecoveryCompletionArtifacts;
 }
 
+export interface AdminRecoveryFlowInput extends Omit<
+  AdminRecoveryRuntimeArtifactsInput,
+  "plan" | "prunedProfilerStorageKeys" | "shadowQueue"
+> {
+  readonly payload: AdminRecoveryRuntimePayload;
+}
+
 export interface AdminRecoveryCompletionSideEffectHandlers {
   readonly persistStorageEntries: (entries: Record<string, unknown>) => Promise<void>;
   readonly putPaperSessionStartedAt: (observedAt: string) => void;
@@ -133,6 +140,13 @@ export interface AdminRecoveryPlanSideEffectHandlers {
   readonly resetOrderBook: (payload: Partial<OrderBookResetRequest>) => Promise<void>;
   readonly resetLatencyBaseline: (observedAt: string, reason: string) => void;
   readonly clearShadowQueue: () => void;
+}
+
+export interface AdminRecoveryFlowHandlers
+  extends AdminRecoveryPlanSideEffectHandlers, AdminRecoveryCompletionSideEffectHandlers {
+  readonly deleteRetiredProfilerStorage: () => Promise<string[]>;
+  readonly shadowQueueSnapshot: (observedAt: string) => ShadowQueueState;
+  readonly applyState: (state: EngineState) => void;
 }
 
 export function resolveAdminRecoveryPaperBankroll(envValue?: string): number {
@@ -392,4 +406,26 @@ export async function applyAdminRecoveryCompletionSideEffects(
 
   handlers.logRecovery(completion.logMetadata);
   handlers.publishRecovery(completion.publishPayload);
+}
+
+export async function applyAdminRecoveryFlow(
+  input: AdminRecoveryFlowInput,
+  handlers: AdminRecoveryFlowHandlers
+): Promise<JsonRecord> {
+  const plan = adminRecoveryPlan(input.payload);
+
+  await applyAdminRecoveryPlanSideEffects(plan, handlers);
+
+  const prunedProfilerStorageKeys = await handlers.deleteRetiredProfilerStorage();
+  const artifacts = adminRecoveryRuntimeArtifacts({
+    ...input,
+    plan,
+    shadowQueue: handlers.shadowQueueSnapshot(plan.observedAt),
+    prunedProfilerStorageKeys
+  });
+  handlers.applyState(artifacts.recovery.state);
+
+  await applyAdminRecoveryCompletionSideEffects(artifacts.completion, handlers);
+
+  return artifacts.completion.response;
 }

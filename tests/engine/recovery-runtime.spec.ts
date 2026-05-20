@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { defaultConfig } from "../../src/ConfigManager";
 import { neutralMacroBias } from "../../src/Governor";
 import {
@@ -8,6 +8,7 @@ import {
   adminRecoveryResponse,
   adminRecoveryStorageEntries,
   applyAdminRecoveryCompletionSideEffects,
+  applyAdminRecoveryFlow,
   applyAdminRecoveryPlanSideEffects,
   dispatchAdminRecoveryOrderBookResets,
   resolveAdminRecoveryPaperBankroll,
@@ -434,6 +435,88 @@ describe("RecoveryRuntime", () => {
       "log:manual-reset",
       "publish:manual-reset"
     ]);
+  });
+
+  it("orchestrates the full admin recovery flow", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(OBSERVED_AT));
+    const state = defaultEngineState("recovery-flow");
+    const calls: string[] = [];
+
+    try {
+      const response = await applyAdminRecoveryFlow(
+        {
+          currentState: state,
+          payload: {
+            instrumentCode: "btc-usd",
+            resetPaperPortfolio: true
+          },
+          cachedConfig: defaultConfig,
+          macroBias: neutralMacroBias(),
+          shadowMode: true,
+          paperBankroll: 500,
+          engineStateKey: "engine:state",
+          performanceHistoryKey: "latency:history",
+          latencyHistory: [{ totalLatencyMs: 4 }],
+          processingLatencySamplesKey: "latency:samples",
+          processingLatencySamples: [1, 2]
+        },
+        {
+          async resetOrderBook(payload) {
+            calls.push(`reset-book:${payload.instrumentCode}:${payload.reason}`);
+          },
+          resetLatencyBaseline(observedAt, reason) {
+            calls.push(`latency:${observedAt}:${reason}`);
+          },
+          clearShadowQueue() {
+            calls.push("shadow-clear");
+          },
+          async deleteRetiredProfilerStorage() {
+            calls.push("prune-profilers");
+            return ["old-profiler"];
+          },
+          shadowQueueSnapshot(observedAt) {
+            calls.push(`shadow-snapshot:${observedAt}`);
+            return state.shadowQueue;
+          },
+          applyState(nextState) {
+            calls.push(`state:${nextState.bankroll.equity}`);
+          },
+          async persistStorageEntries(entries) {
+            calls.push(`persist:${Object.keys(entries).join(",")}`);
+          },
+          putPaperSessionStartedAt(observedAt) {
+            calls.push(`paper-session:${observedAt}`);
+          },
+          logRecovery(metadata) {
+            calls.push(`log:${metadata.prunedProfilerStorageKeys as string[]}`);
+          },
+          publishRecovery(payload) {
+            calls.push(`publish:${String(payload.prunedProfilerStorageKeyCount)}`);
+          }
+        }
+      );
+
+      expect(response).toMatchObject({
+        ok: true,
+        resetInstruments: ["btc-usd"],
+        source_exchange: "hyperliquid"
+      });
+      expect(calls).toEqual([
+        "reset-book:btc-usd:ADMIN_CONTROLLED_RECOVERY",
+        `latency:${OBSERVED_AT}:ADMIN_CONTROLLED_RECOVERY`,
+        "shadow-clear",
+        "prune-profilers",
+        `shadow-snapshot:${OBSERVED_AT}`,
+        "state:500",
+        "persist:engine:state,latency:history,latency:samples",
+        `paper-session:${OBSERVED_AT}`,
+        "log:old-profiler",
+        "publish:1"
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

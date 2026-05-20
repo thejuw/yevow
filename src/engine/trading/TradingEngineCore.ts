@@ -293,13 +293,7 @@ import {
   recordAcceptedTickJournalSideEffects,
   scheduleHotPathTickSnapshotSideEffects
 } from "./state/TickPersistenceRuntime";
-import {
-  adminRecoveryPlan,
-  adminRecoveryRuntimeArtifacts,
-  applyAdminRecoveryCompletionSideEffects,
-  applyAdminRecoveryPlanSideEffects,
-  resolveAdminRecoveryPaperBankroll
-} from "./state/RecoveryRuntime";
+import { applyAdminRecoveryFlow, resolveAdminRecoveryPaperBankroll } from "./state/RecoveryRuntime";
 import {
   applyHotStorageSnapshotSideEffects,
   resolveHotStorageSnapshotIntervalMs,
@@ -1915,46 +1909,41 @@ export class TradingEngine {
     resetPaperPortfolio?: boolean;
     clearShadowQueue?: boolean;
   }): Promise<JsonRecord> {
-    const recoveryPlan = adminRecoveryPlan(payload);
-
-    await applyAdminRecoveryPlanSideEffects(recoveryPlan, {
-      resetOrderBook: (resetPayload) => this.resetOrderBook(resetPayload),
-      resetLatencyBaseline: (observedAt, reason) => this.resetLatencyBaseline(observedAt, reason),
-      clearShadowQueue: () => this.clearRecoveryShadowQueue()
-    });
-
-    const prunedProfilerStorageKeys = await this.deleteRetiredProfilerStorage();
-    const recoveryArtifacts = adminRecoveryRuntimeArtifacts({
-      currentState: this.engineState,
-      payload,
-      cachedConfig: this.cachedConfig,
-      macroBias: this.macroBias,
-      plan: recoveryPlan,
-      shadowMode: isShadowMode(this.env),
-      paperBankroll: resolveAdminRecoveryPaperBankroll(this.env.PAPER_BANKROLL_USD),
-      shadowQueue: this.ghostBook.snapshot(recoveryPlan.observedAt),
-      prunedProfilerStorageKeys,
-      engineStateKey: ENGINE_STATE_KEY,
-      performanceHistoryKey: PERFORMANCE_HISTORY_KEY,
-      latencyHistory: this.latencyHistory,
-      processingLatencySamplesKey: PROCESSING_LATENCY_SAMPLES_KEY,
-      processingLatencySamples: this.processingLatencySamples
-    });
-    this.engineState = recoveryArtifacts.recovery.state;
-    const completion = recoveryArtifacts.completion;
-
-    await applyAdminRecoveryCompletionSideEffects(completion, {
-      persistStorageEntries: (entries) => this.safeStoragePut(entries, "ADMIN_CONTROLLED_RECOVERY"),
-      putPaperSessionStartedAt: (observedAt) =>
-        this.state.waitUntil(this.env.CONFIG_STORE.put(PAPER_SESSION_STARTED_AT_KEY, observedAt)),
-      logRecovery: (metadata) =>
-        this.logger.warn("ADMIN_CONTROLLED_RECOVERY", "Admin controlled recovery applied", {
-          ...metadata
-        }),
-      publishRecovery: (publishPayload) => this.publish("ADMIN_CONTROLLED_RECOVERY", publishPayload)
-    });
-
-    return completion.response;
+    return applyAdminRecoveryFlow(
+      {
+        currentState: this.engineState,
+        payload,
+        cachedConfig: this.cachedConfig,
+        macroBias: this.macroBias,
+        shadowMode: isShadowMode(this.env),
+        paperBankroll: resolveAdminRecoveryPaperBankroll(this.env.PAPER_BANKROLL_USD),
+        engineStateKey: ENGINE_STATE_KEY,
+        performanceHistoryKey: PERFORMANCE_HISTORY_KEY,
+        latencyHistory: this.latencyHistory,
+        processingLatencySamplesKey: PROCESSING_LATENCY_SAMPLES_KEY,
+        processingLatencySamples: this.processingLatencySamples
+      },
+      {
+        resetOrderBook: (resetPayload) => this.resetOrderBook(resetPayload),
+        resetLatencyBaseline: (observedAt, reason) => this.resetLatencyBaseline(observedAt, reason),
+        clearShadowQueue: () => this.clearRecoveryShadowQueue(),
+        deleteRetiredProfilerStorage: () => this.deleteRetiredProfilerStorage(),
+        shadowQueueSnapshot: (observedAt) => this.ghostBook.snapshot(observedAt),
+        applyState: (state) => {
+          this.engineState = state;
+        },
+        persistStorageEntries: (entries) =>
+          this.safeStoragePut(entries, "ADMIN_CONTROLLED_RECOVERY"),
+        putPaperSessionStartedAt: (observedAt) =>
+          this.state.waitUntil(this.env.CONFIG_STORE.put(PAPER_SESSION_STARTED_AT_KEY, observedAt)),
+        logRecovery: (metadata) =>
+          this.logger.warn("ADMIN_CONTROLLED_RECOVERY", "Admin controlled recovery applied", {
+            ...metadata
+          }),
+        publishRecovery: (publishPayload) =>
+          this.publish("ADMIN_CONTROLLED_RECOVERY", publishPayload)
+      }
+    );
   }
 
   private async applySnapshot(
