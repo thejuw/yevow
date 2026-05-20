@@ -113,11 +113,11 @@ import {
   prepareApprovedExecutionPlan,
   type ApprovedExecutionPlan
 } from "./execution/ExecutionPlanRuntime";
+import { dispatchExecutionPlanSideEffects } from "./execution/ExecutionPlanDispatchRuntime";
 import {
-  dispatchExecutionPlanSideEffects,
   dispatchTradeIntentSideEffects,
   dispatchTradeIntentToExecutioner
-} from "./execution/ExecutionDispatchRuntime";
+} from "./execution/TradeIntentDispatchRuntime";
 import { applyExecutionReportFlow } from "./execution/ExecutionReportRuntime";
 import {
   evaluateCroupierRuntime,

@@ -2,19 +2,23 @@ import { describe, expect, it } from "vitest";
 import {
   buildExecutionDispatchBlockLog,
   buildExecutionDispatchRuntimeDecision,
-  buildExecutionPlanDispatchAction,
-  dispatchExecutionPlanSideEffects,
-  dispatchTradeIntentToExecutioner,
-  dispatchTradeIntentSideEffects,
   emitExecutionDispatchBlockLog,
   type ExecutionDispatchBlockLogger,
-  type ExecutionDispatchLogger,
-  type TradeIntentDispatchSideEffectHandlers,
-  evaluateExecutionDispatchGate,
+  evaluateExecutionDispatchGate
+} from "../../src/engine/trading/execution/ExecutionDispatchGateRuntime";
+import {
+  buildExecutionPlanDispatchAction,
+  dispatchExecutionPlanSideEffects,
   shadowTradeIntentAuthorizedLogMetadata,
   tradeIntentAuthorizedLogMetadata,
   tradeIntentDispatchBlockedLogMetadata
-} from "../../src/engine/trading/execution/ExecutionDispatchRuntime";
+} from "../../src/engine/trading/execution/ExecutionPlanDispatchRuntime";
+import {
+  dispatchTradeIntentToExecutioner,
+  dispatchTradeIntentSideEffects,
+  type ExecutionDispatchLogger,
+  type TradeIntentDispatchSideEffectHandlers
+} from "../../src/engine/trading/execution/TradeIntentDispatchRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { TradeIntent } from "../../src/types";
 
