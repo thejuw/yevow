@@ -104,7 +104,6 @@ import {
   strategyQuoteDisabledReason as runtimeStrategyQuoteDisabledReason
 } from "./quotes/QuoteStateRuntime";
 import {
-  buildCroupierQuoteAction,
   buildQuoteDispatchIntents,
   buildQuoteRefreshRuntimeDecision,
   dispatchedQuoteSnapshot,
@@ -615,6 +614,7 @@ import {
 import { isInformationalTick, isTradeTick } from "./state/TickClassification";
 import { evaluateTickTargetPreflight } from "./state/TickPreflightRuntime";
 import {
+  buildAcceptedTickFinalizationArtifacts,
   buildAcceptedTickLifecycleArtifacts,
   buildAcceptedTickStateTransition
 } from "./pipelines/AcceptedTickRuntime";
@@ -3340,20 +3340,12 @@ export class TradingEngine {
     );
     this.journalAcceptedTick(input.tick, input.metrics, input.oracleBayesianTrace);
 
-    const croupierQuoteAction = buildCroupierQuoteAction({
-      instrumentCode: input.tick.instrumentCode,
-      pullAllQuotes: input.croupierDecision.pullAllQuotes,
-      quote: input.croupierDecision.quote,
-      strategyQuoteDisableReason: input.strategyQuoteDisableReason,
-      adverseSelectionCost: input.croupierDecision.adverseSelectionCost,
-      minEvThreshold: input.croupierDecision.minEvThreshold,
-      shadowReplay: input.shadowReplay,
-      tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-      profilerQuoteHalt: input.isProfilerQuoteHalt,
-      cascadeShield: input.isCascadeShield
+    const finalization = buildAcceptedTickFinalizationArtifacts({
+      sideEffects: input,
+      tradingEnabled: this.cachedConfig.TRADING_ENABLED
     });
 
-    this.handleCroupierQuoteAction(input.tick.instrumentCode, croupierQuoteAction);
+    this.handleCroupierQuoteAction(input.tick.instrumentCode, finalization.croupierQuoteAction);
     this.dispatchExecutionPlans(input.executionPlans, input.shadowReplay);
     this.dispatchInventoryHedgeIfNeeded(
       input.book,
@@ -3377,7 +3369,7 @@ export class TradingEngine {
       input.metrics.status,
       input.hotPathStartedAt
     );
-    if (input.profilerResult.closedBuckets > 0) {
+    if (finalization.shouldPublishAmVpinTelemetry) {
       this.publishAmVpinTelemetry(
         input.profilerResult.state,
         input.tick.instrumentCode,

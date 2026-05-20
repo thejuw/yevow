@@ -1,6 +1,7 @@
 import type { CroupierDecision } from "../../../agents/CroupierAgent";
 import type { ProfilerEvaluation } from "../../../agents/ProfilerAgent";
 import type { OracleTickResult } from "../agents/AgentEvaluationRuntime";
+import { buildCroupierQuoteAction, type CroupierQuoteAction } from "../quotes/QuoteDispatchRuntime";
 import { aggregateQuoteState } from "../state/AssetStateRuntime";
 import { nextTickAgentHealth } from "../state/AgentHealthRuntime";
 import type { AcceptedTickStateInput } from "../state/TickStateRuntime";
@@ -28,6 +29,16 @@ export interface BuildAcceptedTickLifecycleInput {
 export interface AcceptedTickLifecycleArtifacts {
   readonly commitInput: AcceptedTickStateCommitInput;
   readonly sideEffectsInput: AcceptedTickSideEffectsInput;
+}
+
+export interface AcceptedTickFinalizationInput {
+  readonly sideEffects: AcceptedTickSideEffectsInput;
+  readonly tradingEnabled: boolean;
+}
+
+export interface AcceptedTickFinalizationArtifacts {
+  readonly croupierQuoteAction: CroupierQuoteAction;
+  readonly shouldPublishAmVpinTelemetry: boolean;
 }
 
 export interface AcceptedTickStateTransitionInput {
@@ -131,6 +142,28 @@ export function buildAcceptedTickStateTransition(
     agentHealth,
     maxLatencyMs: input.maxLatencyMs,
     observedAt: input.commit.observedAt
+  };
+}
+
+export function buildAcceptedTickFinalizationArtifacts(
+  input: AcceptedTickFinalizationInput
+): AcceptedTickFinalizationArtifacts {
+  const sideEffects = input.sideEffects;
+
+  return {
+    croupierQuoteAction: buildCroupierQuoteAction({
+      instrumentCode: sideEffects.tick.instrumentCode,
+      pullAllQuotes: sideEffects.croupierDecision.pullAllQuotes,
+      quote: sideEffects.croupierDecision.quote,
+      strategyQuoteDisableReason: sideEffects.strategyQuoteDisableReason,
+      adverseSelectionCost: sideEffects.croupierDecision.adverseSelectionCost,
+      minEvThreshold: sideEffects.croupierDecision.minEvThreshold,
+      shadowReplay: sideEffects.shadowReplay,
+      tradingEnabled: input.tradingEnabled,
+      profilerQuoteHalt: sideEffects.isProfilerQuoteHalt,
+      cascadeShield: sideEffects.isCascadeShield
+    }),
+    shouldPublishAmVpinTelemetry: sideEffects.profilerResult.closedBuckets > 0
   };
 }
 

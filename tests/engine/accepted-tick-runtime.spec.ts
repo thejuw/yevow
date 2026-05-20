@@ -3,6 +3,7 @@ import type { CroupierDecision } from "../../src/agents/CroupierAgent";
 import type { ProfilerEvaluation } from "../../src/agents/ProfilerAgent";
 import type { OracleTickResult } from "../../src/engine/trading/agents/AgentEvaluationRuntime";
 import {
+  buildAcceptedTickFinalizationArtifacts,
   buildAcceptedTickLifecycleArtifacts,
   buildAcceptedTickStateTransition
 } from "../../src/engine/trading/pipelines/AcceptedTickRuntime";
@@ -117,6 +118,17 @@ describe("AcceptedTickRuntime", () => {
       oracleBayesianTrace: oracleResult.bayesianTrace,
       hotPathStartedAt: 123,
       shadowReplay: true
+    });
+    expect(
+      buildAcceptedTickFinalizationArtifacts({
+        sideEffects: artifacts.sideEffectsInput,
+        tradingEnabled: true
+      })
+    ).toMatchObject({
+      croupierQuoteAction: {
+        kind: "NONE"
+      },
+      shouldPublishAmVpinTelemetry: true
     });
 
     const transition = buildAcceptedTickStateTransition({
