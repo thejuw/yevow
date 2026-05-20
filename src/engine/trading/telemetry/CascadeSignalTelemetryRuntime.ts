@@ -44,6 +44,15 @@ export interface CascadeUiSignalSideEffectHandlers {
   ) => void;
 }
 
+export interface CascadeOperationalAlertSideEffectHandlers {
+  readonly publish: (
+    telemetryType: CascadeOperationalAlertTelemetry["telemetryType"],
+    payload: CascadeOperationalAlertTelemetry["payload"],
+    correlationId: string
+  ) => void;
+  readonly notify: (notification: NotifierEvent) => void;
+}
+
 export interface CascadeOperationalAlertTelemetry {
   readonly telemetryType: "CASCADE_ALERT";
   readonly payload: JsonRecord;
@@ -109,6 +118,17 @@ export function buildCascadeSignalTelemetry(
     },
     correlationId: signal.signalId
   };
+}
+
+export function emitCascadeOperationalAlertSideEffects(
+  event: CascadeOperationalAlertTelemetry,
+  handlers: CascadeOperationalAlertSideEffectHandlers
+): void {
+  handlers.publish(event.telemetryType, event.payload, event.correlationId);
+
+  if (event.notification) {
+    handlers.notify(event.notification);
+  }
 }
 
 export function recordCascadeUiSignalSideEffects(

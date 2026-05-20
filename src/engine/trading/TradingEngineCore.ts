@@ -254,6 +254,7 @@ import {
   cascadeSignalRejectionLogMetadata,
   cascadeSignalEmittedAlertMetadata,
   cascadeSizeRejectedLogMetadata,
+  emitCascadeOperationalAlertSideEffects,
   recordCascadeUiSignalSideEffects
 } from "./telemetry/CascadeSignalTelemetryRuntime";
 import {
@@ -4848,12 +4849,11 @@ export class TradingEngine {
       dedupeKey
     );
 
-    this.publish(event.telemetryType, event.payload, event.correlationId);
-    if (!event.notification) {
-      return;
-    }
-
-    this.notifier.notify(event.notification);
+    emitCascadeOperationalAlertSideEffects(event, {
+      publish: (telemetryType, payload, correlationId) =>
+        this.publish(telemetryType, payload, correlationId),
+      notify: (notification) => this.notifier.notify(notification)
+    });
   }
 
   private async ensureCascadePaperModeArmed(observedAt: string): Promise<void> {

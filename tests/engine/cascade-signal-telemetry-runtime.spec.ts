@@ -13,6 +13,8 @@ import {
   cascadeSignalRejectionLogMetadata,
   cascadeSignalEmittedAlertMetadata,
   cascadeSizeRejectedLogMetadata,
+  emitCascadeOperationalAlertSideEffects,
+  type CascadeOperationalAlertSideEffectHandlers,
   recordCascadeUiSignalSideEffects,
   type CascadeUiSignalSideEffectHandlers
 } from "../../src/engine/trading/telemetry/CascadeSignalTelemetryRuntime";
@@ -144,6 +146,33 @@ describe("CascadeSignalTelemetryRuntime", () => {
         }
       }
     });
+  });
+
+  it("emits cascade operational alert side effects only when notifications exist", () => {
+    const sideEffects = cascadeOperationalAlertSideEffectSpy();
+    const dashboardOnly = buildCascadeOperationalAlertTelemetry(
+      "CASCADE_DETECTED",
+      "Cascade detected",
+      "Large liquidation wave detected",
+      { cascadeId: "cascade-1" },
+      "cascade-1"
+    );
+    const external = buildCascadeOperationalAlertTelemetry(
+      "POSITION_OPENED",
+      "Cascade position opened",
+      "Paper cascade entry opened",
+      { positionId: "position-1" },
+      "position-1"
+    );
+
+    emitCascadeOperationalAlertSideEffects(dashboardOnly, sideEffects.handlers);
+    emitCascadeOperationalAlertSideEffects(external, sideEffects.handlers);
+
+    expect(sideEffects.events).toEqual([
+      "publish:CASCADE_ALERT:cascade-1",
+      "publish:CASCADE_ALERT:position-1",
+      "notify:HIGH"
+    ]);
   });
 
   it("builds cascade entry signal, trace, and alert metadata", () => {
@@ -286,6 +315,25 @@ describe("CascadeSignalTelemetryRuntime", () => {
     ).toBeNull();
   });
 });
+
+function cascadeOperationalAlertSideEffectSpy(): {
+  events: string[];
+  handlers: CascadeOperationalAlertSideEffectHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      publish(telemetryType, _payload, correlationId) {
+        events.push(`publish:${telemetryType}:${correlationId}`);
+      },
+      notify(notification) {
+        events.push(`notify:${notification.priority}`);
+      }
+    }
+  };
+}
 
 function cascadeUiSignalSideEffectSpy(): {
   events: string[];
