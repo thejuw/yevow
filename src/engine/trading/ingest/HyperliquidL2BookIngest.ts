@@ -6,15 +6,17 @@ import {
 import {
   hyperliquidNativeInstrumentCode,
   nativeHyperliquidLatencyMetrics,
+  normalizeSourceExchange,
+  normalizeSourceWeight,
+  parseHyperliquidNativeLevels
+} from "../helpers/NativeHyperliquidRuntime";
+import {
   nativeExchangeTimestamp,
   nativeIso,
   nativeObject,
   nativeSequence,
-  normalizeSourceExchange,
-  normalizeSourceWeight,
-  parseHyperliquidNativeLevels,
   requireNativeString
-} from "../helpers/NativeHyperliquidRuntime";
+} from "../helpers/NativeValueRuntime";
 import { parseTimestampMs } from "../helpers/RuntimeClock";
 import { readPositiveNumber } from "../helpers/RuntimeParsing";
 import { resolveNativeHyperliquidMaxLatencyMs } from "../performance/LatencyTickRuntime";

@@ -1,4 +1,4 @@
-import { nativeIso, nativeNumber, nativeString } from "../helpers/NativeHyperliquidRuntime";
+import { nativeIso, nativeNumber, nativeString } from "../helpers/NativeValueRuntime";
 import { aggregateQuoteState, suspendAssetQuoteStates } from "../state/AssetStateRuntime";
 import { touchAgentHealth } from "../state/AgentStateDefaults";
 import type { CitadelDropDecision } from "../../../utils/CitadelProtocol";

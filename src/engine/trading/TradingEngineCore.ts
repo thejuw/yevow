@@ -498,16 +498,18 @@ import {
   buildCascadeManualCloseRuntimeResult
 } from "./cascade/CascadeManualCloseRuntime";
 import {
-  epochMillis,
-  nativeHashSequence,
   normalizeNativeCoin,
   normalizeNativeInstrumentCode,
   splitNativeInstrument,
   baseAssetFromInstrument,
-  nativeBookSideLevels,
+  nativeBookSideLevels
+} from "./helpers/NativeHyperliquidRuntime";
+import {
+  epochMillis,
+  nativeHashSequence,
   nativeNumber,
   nativeSide
-} from "./helpers/NativeHyperliquidRuntime";
+} from "./helpers/NativeValueRuntime";
 import { highResolutionNow, roundLatency } from "./helpers/RuntimeClock";
 import { wait } from "./helpers/RuntimeMath";
 import {
