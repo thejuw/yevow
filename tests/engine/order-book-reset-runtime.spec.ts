@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyOrderBookResetConnectionIds,
   applyOrderBookResetStores,
   orderBookResetConnectionKeys,
   orderBookResetDeleteKeys,
@@ -79,6 +80,20 @@ describe("OrderBookResetRuntime", () => {
       })
     ).toEqual(["hyperliquid:default"]);
     expect(orderBookResetConnectionKeys(resolveOrderBookReset({ source: "ADMIN" }))).toEqual([]);
+  });
+
+  it("applies reset connection ids to active ingest connection keys", () => {
+    const connections = new Map<string, string>([["hyperliquid:old", "conn-old"]]);
+
+    applyOrderBookResetConnectionIds(connections, "conn-1", ["hyperliquid:book"]);
+    applyOrderBookResetConnectionIds(connections, null, ["hyperliquid:ignored"]);
+
+    expect(connections).toEqual(
+      new Map([
+        ["hyperliquid:old", "conn-old"],
+        ["hyperliquid:book", "conn-1"]
+      ])
+    );
   });
 
   it("mutates only scoped book stores unless reset is global", () => {

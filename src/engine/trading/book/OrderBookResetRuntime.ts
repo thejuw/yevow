@@ -134,6 +134,20 @@ export function orderBookResetConnectionKeys(reset: ResolvedOrderBookReset): str
   return [`${sourceExchange}:${reset.resetStreamId ?? "default"}`];
 }
 
+export function applyOrderBookResetConnectionIds(
+  connections: Map<string, string>,
+  connectionId: string | null,
+  connectionKeys: readonly string[]
+): void {
+  if (!connectionId) {
+    return;
+  }
+
+  for (const connectionKey of connectionKeys) {
+    connections.set(connectionKey, connectionId);
+  }
+}
+
 export function orderBookResetTelemetry(
   reset: ResolvedOrderBookReset,
   deletedBookSnapshots: number

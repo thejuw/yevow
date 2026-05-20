@@ -50,6 +50,7 @@ import {
   bookSnapshotStorageWrites
 } from "./book/BookRuntimeState";
 import {
+  applyOrderBookResetConnectionIds,
   orderBookResetRuntimeArtifacts,
   resolveOrderBookReset
 } from "./book/OrderBookResetRuntime";
@@ -2083,11 +2084,11 @@ export class TradingEngine {
 
     if (artifacts.latencyResetReason) {
       this.resetLatencyBaseline(reset.now, artifacts.latencyResetReason);
-      if (reset.connectionId) {
-        for (const connectionKey of artifacts.connectionKeys) {
-          this.activeIngestConnections.set(connectionKey, reset.connectionId);
-        }
-      }
+      applyOrderBookResetConnectionIds(
+        this.activeIngestConnections,
+        reset.connectionId,
+        artifacts.connectionKeys
+      );
     }
 
     await Promise.all([
