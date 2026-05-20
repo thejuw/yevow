@@ -641,159 +641,22 @@ import {
   resolveMaxLatencyMs
 } from "./state/EngineStateDefaults";
 import { isInformationalTick, isTradeTick, extractTickStreamId } from "./state/TickClassification";
-
-interface TickHandlingOptions {
-  shadowReplay?: boolean;
-}
-
-type TickBookResolution =
-  | {
-      kind: "BOOK";
-      book: InternalOrderBook;
-      orderBookUpdateMs: number;
-    }
-  | {
-      kind: "EARLY_RETURN";
-      result: TickIngestResult;
-    };
-
-interface AcceptedTickStateCommitInput {
-  readonly tick: MarketTick;
-  readonly metrics: LatencyMetrics;
-  readonly book: InternalOrderBook;
-  readonly oracle: EngineState["oracle"];
-  readonly sentiment: SentimentState;
-  readonly ensemble: EngineState["ensemble"];
-  readonly leadLag: EngineState["leadLag"];
-  readonly inventory: InventoryState;
-  readonly riskMetrics: EngineState["riskMetrics"];
-  readonly assetQuoteState: EngineState["quoteState"];
-  readonly shadowQueueState: ShadowQueueState;
-  readonly executionPlan: ApprovedExecutionPlan | null;
-  readonly croupierDecision: CroupierDecision;
-  readonly executionPlans: readonly ApprovedExecutionPlan[];
-  readonly inventoryGuard: EngineState["inventoryGuard"];
-  readonly domSnapshot: DomAnalysisSnapshot;
-  readonly anomalyResult: AnomalyDetectionResult;
-  readonly profilerStates: EngineState["profilerStates"];
-  readonly profilerResult: ProfilerEvaluation;
-  readonly oracleLatencyMs: number;
-  readonly profilerLatencyMs: number;
-  readonly croupierLatencyMs: number;
-  readonly shadowReplay: boolean;
-  readonly observedAt: string;
-}
-
-interface PostBookTickContext {
-  readonly volatilitySnapshot: MultiScaleVolatilitySnapshot | null;
-  readonly shadowQueueState: ShadowQueueState;
-  readonly domSnapshot: DomAnalysisSnapshot;
-}
-
-interface TickDecisionContext {
-  readonly leadLag: EngineState["leadLag"];
-  readonly inventory: InventoryState;
-  readonly riskMetrics: EngineState["riskMetrics"];
-  readonly profilerStates: EngineState["profilerStates"];
-  readonly assetMatrix: EngineState["assetMatrix"];
-  readonly inventoryGuard: EngineState["inventoryGuard"];
-  readonly sentimentForDecision: SentimentState;
-}
-
-interface QuotePolicyResult {
-  readonly executionPlans: ApprovedExecutionPlan[];
-  readonly assetQuoteState: EngineState["quoteState"];
-  readonly strategyQuoteDisableReason: string | null;
-  readonly isCascadeShield: boolean;
-  readonly isProfilerQuoteHalt: boolean;
-}
-
-interface AcceptedExecutionContext {
-  readonly ensemble: EngineState["ensemble"];
-  readonly executionPlan: ApprovedExecutionPlan | null;
-  readonly executionPlans: ApprovedExecutionPlan[];
-  readonly quotePolicy: QuotePolicyResult;
-}
-
-interface AcceptedTickSideEffectsInput {
-  readonly tick: MarketTick;
-  readonly metrics: LatencyMetrics;
-  readonly book: InternalOrderBook;
-  readonly anomalyResult: AnomalyDetectionResult;
-  readonly profilerResult: ProfilerEvaluation;
-  readonly profilerLatencyMs: number;
-  readonly croupierDecision: CroupierDecision;
-  readonly executionPlans: readonly ApprovedExecutionPlan[];
-  readonly inventory: InventoryState;
-  readonly strategyQuoteDisableReason: string | null;
-  readonly isCascadeShield: boolean;
-  readonly isProfilerQuoteHalt: boolean;
-  readonly oracleBayesianTrace: BayesianUpdateTrace | null;
-  readonly hotPathStartedAt: number;
-  readonly shadowReplay: boolean;
-}
-
-interface AcceptedDecisionPipelineInput {
-  readonly tick: MarketTick;
-  readonly book: InternalOrderBook;
-  readonly domSnapshot: DomAnalysisSnapshot;
-  readonly volatilitySnapshot: MultiScaleVolatilitySnapshot | null;
-  readonly shadowQueueState: ShadowQueueState;
-  readonly anomalyResult: AnomalyDetectionResult;
-  readonly metrics: LatencyMetrics;
-  readonly wakeUpTimeMs: number | null;
-  readonly orderBookUpdateMs: number;
-  readonly hotPathStartedAt: number;
-  readonly shadowReplay: boolean;
-}
-
-interface HistoricalReplayCompletionInput {
-  readonly replayId: string;
-  readonly replayLoop: ShadowReplayLoopResult;
-  readonly initialShadowBankroll: number;
-  readonly historicalTradeCount: number;
-  readonly shadowTrades: ReturnType<typeof markHistoricalReplayTrades>;
-  readonly speedMultiplier: number;
-  readonly replayOptions: ReplayOptions;
-  readonly dateFrom: string | null;
-  readonly dateTo: string | null;
-  readonly startedAt: string;
-  readonly ticksLength: number;
-}
-
-interface HistoricalReplayStatusInput {
-  readonly replayId: string;
-  readonly ticksTotal: number;
-  readonly shadowBankroll: number;
-  readonly speedMultiplier: number;
-  readonly dateFrom: string | null;
-  readonly dateTo: string | null;
-  readonly scenario: ReplayScenario;
-  readonly startedAt: string;
-  readonly updatedAt: string;
-}
-
-interface LoadedReplayTicks {
-  readonly sourceTicks: MarketTick[];
-  readonly ticks: MarketTick[];
-}
-
-interface LoadedReplayShadowTrades {
-  readonly historicalTrades: ReplayTradeRow[];
-  readonly shadowTrades: ReplayResult["shadowTrades"];
-}
-
-interface ShadowReplayWithRestoreInput {
-  readonly replayId: string;
-  readonly ticks: MarketTick[];
-  readonly replayOptions: ReplayOptions;
-  readonly speedMultiplier: number;
-  readonly initialShadowBankroll: number;
-  readonly dateFrom: string | null;
-  readonly dateTo: string | null;
-  readonly startedAt: string;
-  readonly liveSnapshot: EngineReplaySnapshot;
-}
+import type {
+  AcceptedDecisionPipelineInput,
+  AcceptedExecutionContext,
+  AcceptedTickSideEffectsInput,
+  AcceptedTickStateCommitInput,
+  HistoricalReplayCompletionInput,
+  HistoricalReplayStatusInput,
+  LoadedReplayShadowTrades,
+  LoadedReplayTicks,
+  PostBookTickContext,
+  QuotePolicyResult,
+  ShadowReplayWithRestoreInput,
+  TickBookResolution,
+  TickDecisionContext,
+  TickHandlingOptions
+} from "./pipelines/TickPipelineTypes";
 
 export class TradingEngine {
   private readonly startedAt = Date.now();
