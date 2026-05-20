@@ -551,10 +551,15 @@ import {
   cascadeInstrumentSet,
   latestAbsorptionForInstrument,
   latestCascadeAtForInstrument,
-  isOpenCascadePosition,
   recentSwingLow,
   recentSwingHigh
 } from "./cascade/CascadeSelectionRuntime";
+import {
+  cascadeManualCloseResponse,
+  cascadePositionNotOpenResponse,
+  executableManualCloseIntents,
+  openCascadePositionById
+} from "./cascade/CascadeManualCloseRuntime";
 import { hasRuntimeConfigUpdate } from "./config/RuntimeConfigUpdateDetection";
 import {
   epochMillis,
@@ -1630,12 +1635,10 @@ export class TradingEngine {
     actor: string,
     reason: string
   ): Promise<{ ok: boolean; error?: string; position?: JsonRecord; intents?: JsonRecord[] }> {
-    const position = this.cascadePositionManager
-      .snapshot()
-      .find((candidate) => candidate.positionId === positionId);
+    const position = openCascadePositionById(this.cascadePositionManager.snapshot(), positionId);
 
-    if (!position || !isOpenCascadePosition(position)) {
-      return { ok: false, error: "CASCADE_POSITION_NOT_OPEN" };
+    if (!position) {
+      return cascadePositionNotOpenResponse();
     }
 
     const observedAt = new Date().toISOString();
@@ -1655,15 +1658,13 @@ export class TradingEngine {
     );
 
     if (!update) {
-      return { ok: false, error: "CASCADE_POSITION_NOT_OPEN" };
+      return cascadePositionNotOpenResponse();
     }
 
-    for (const intent of update.intents) {
-      if (intent.kind === "CLOSE" && intent.size > 0) {
-        this.state.waitUntil(
-          this.dispatchExecution(this.tradeIntentFromCascadePositionIntent(intent, observedAt))
-        );
-      }
+    for (const intent of executableManualCloseIntents(update.intents)) {
+      this.state.waitUntil(
+        this.dispatchExecution(this.tradeIntentFromCascadePositionIntent(intent, observedAt))
+      );
     }
 
     this.logger.warn(
@@ -1696,11 +1697,7 @@ export class TradingEngine {
       )
     );
 
-    return {
-      ok: true,
-      position: update.position as unknown as JsonRecord,
-      intents: update.intents as unknown as JsonRecord[]
-    };
+    return cascadeManualCloseResponse(update);
   }
 
   private currentCascadeDetectorConfig(instrumentCode: string): CascadeDetectorConfig {
