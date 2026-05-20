@@ -602,7 +602,6 @@ import {
   defaultQuoteState,
   defaultAssetQuoteStates,
   selectedMoltworkerInstruments,
-  isTargetInstrument,
   isInstrumentSelectedByMoltworker,
   normalizeAssetMatrix,
   filterTargetOrderBooks,
@@ -644,6 +643,7 @@ import {
   resolveMaxLatencyMs
 } from "./state/EngineStateDefaults";
 import { isInformationalTick, isTradeTick, extractTickStreamId } from "./state/TickClassification";
+import { evaluateTickTargetPreflight } from "./state/TickPreflightRuntime";
 import type {
   AcceptedDecisionPipelineInput,
   AcceptedExecutionContext,
@@ -3701,15 +3701,10 @@ export class TradingEngine {
   ): Promise<TickIngestResult> {
     const hotPathStartedAt = highResolutionNow();
     const shadowReplay = options.shadowReplay === true;
-    const normalizedInstrument = normalizeNativeInstrumentCode(tick.instrumentCode);
+    const targetPreflight = evaluateTickTargetPreflight({ tick, shadowReplay });
 
-    if (!shadowReplay && !isTargetInstrument(normalizedInstrument)) {
-      return {
-        accepted: false,
-        status: "IGNORED",
-        reason: "NON_TARGET_ASSET",
-        processedCount: 0
-      };
+    if (targetPreflight.rejection) {
+      return targetPreflight.rejection;
     }
 
     this.maybeAutoResumeShadowMode(tick, shadowReplay);
