@@ -52,6 +52,18 @@ export interface GrpcFatalDropArtifacts {
   readonly response: { status: "GRPC_FATAL_DROP" };
 }
 
+export interface GrpcFatalDropSideEffectHandlers {
+  readonly applyState: (state: EngineState) => void;
+  readonly persistStorage: (
+    writes: Record<string, unknown>,
+    reason: "GRPC_FATAL_DROP"
+  ) => Promise<unknown>;
+  readonly schedule: (work: Promise<unknown>) => void;
+  readonly logError: (eventType: string, message: string, metadata: JsonRecord) => void;
+  readonly publish: (type: string, payload: JsonRecord) => void;
+  readonly cancelAllQuotes: (instrumentCode: "ALL", reason: "GRPC_FATAL_DROP") => Promise<unknown>;
+}
+
 export function resolveGrpcFatalDropPayload(
   payload: GrpcFatalDropPayload,
   fallbackObservedAt = new Date().toISOString()
@@ -172,4 +184,22 @@ export function grpcFatalDropArtifacts(input: GrpcFatalDropArtifactsInput): Grpc
     events,
     response: { status: "GRPC_FATAL_DROP" }
   };
+}
+
+export function applyGrpcFatalDropSideEffects(
+  artifacts: GrpcFatalDropArtifacts,
+  handlers: GrpcFatalDropSideEffectHandlers
+): void {
+  handlers.applyState(artifacts.state);
+  handlers.schedule(handlers.persistStorage(artifacts.storageWrites, "GRPC_FATAL_DROP"));
+  handlers.logError(
+    artifacts.events.telemetryType,
+    "Dwellir gRPC blackout forced quote evacuation",
+    artifacts.events.logMetadata
+  );
+  handlers.publish(artifacts.events.telemetryType, artifacts.events.telemetryPayload);
+
+  if (artifacts.events.shouldCancelAllQuotes) {
+    handlers.schedule(handlers.cancelAllQuotes("ALL", "GRPC_FATAL_DROP"));
+  }
 }

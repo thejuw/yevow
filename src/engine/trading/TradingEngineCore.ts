@@ -233,7 +233,7 @@ import {
   type HyperliquidL2BookHotPathDecision,
   type HyperliquidRawIngestPayload
 } from "./ingest/HyperliquidRawIngest";
-import { grpcFatalDropArtifacts } from "./ingest/GrpcDropRuntime";
+import { applyGrpcFatalDropSideEffects, grpcFatalDropArtifacts } from "./ingest/GrpcDropRuntime";
 import {
   handleTradingEngineHttpRoute,
   type EngineHttpRouteContext
@@ -1911,19 +1911,16 @@ export class TradingEngine {
       shadowMode: isShadowMode(this.env),
       engineStateKey: ENGINE_STATE_KEY
     });
-    this.engineState = artifacts.state;
-    this.state.waitUntil(
-      this.persistHotStorageSnapshot(artifacts.storageWrites, "GRPC_FATAL_DROP")
-    );
-    this.logger.error(
-      artifacts.events.telemetryType,
-      "Dwellir gRPC blackout forced quote evacuation",
-      artifacts.events.logMetadata
-    );
-    this.publish(artifacts.events.telemetryType, artifacts.events.telemetryPayload);
-    if (artifacts.events.shouldCancelAllQuotes) {
-      this.state.waitUntil(this.cancelAllQuotes("ALL", "GRPC_FATAL_DROP"));
-    }
+    applyGrpcFatalDropSideEffects(artifacts, {
+      applyState: (state) => {
+        this.engineState = state;
+      },
+      persistStorage: (writes, reason) => this.persistHotStorageSnapshot(writes, reason),
+      schedule: (work) => this.state.waitUntil(work),
+      logError: (eventType, message, metadata) => this.logger.error(eventType, message, metadata),
+      publish: (type, publishPayload) => this.publish(type, publishPayload),
+      cancelAllQuotes: (instrumentCode, reason) => this.cancelAllQuotes(instrumentCode, reason)
+    });
 
     return artifacts.response;
   }

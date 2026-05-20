@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyGrpcFatalDropSideEffects,
   buildGrpcFatalDropEventArtifacts,
   grpcFatalDropArtifacts,
   resolveGrpcFatalDropPayload,
-  stateAfterGrpcFatalDrop
+  stateAfterGrpcFatalDrop,
+  type GrpcFatalDropSideEffectHandlers
 } from "../../src/engine/trading/ingest/GrpcDropRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 
@@ -188,4 +190,71 @@ describe("GrpcDropRuntime", () => {
     });
     expect(artifacts.response).toEqual({ status: "GRPC_FATAL_DROP" });
   });
+
+  it("applies fatal-drop state, persistence, telemetry, and evacuation side effects", async () => {
+    const artifacts = grpcFatalDropArtifacts({
+      payload: {
+        streamId: "dwellir-stream",
+        observedAt: "2026-05-18T12:00:00.000Z",
+        disconnectedForMs: 250,
+        thresholdMs: 200,
+        reason: "DWELLIR_GRPC_WATCHDOG_TIMEOUT"
+      },
+      currentState: defaultEngineState("grpc-side-effects"),
+      shadowMode: true,
+      engineStateKey: "engine:state"
+    });
+    const sideEffects = grpcFatalDropSideEffectSpy();
+
+    applyGrpcFatalDropSideEffects(artifacts, sideEffects.handlers);
+
+    expect(sideEffects.events).toEqual([
+      "state:CRITICAL",
+      "persist:GRPC_FATAL_DROP:1",
+      "schedule",
+      "error:GRPC_FATAL_DROP:DWELLIR_GRPC_WATCHDOG_TIMEOUT",
+      "publish:GRPC_FATAL_DROP:CANCEL_ALL_QUOTES",
+      "cancel:ALL:GRPC_FATAL_DROP",
+      "schedule"
+    ]);
+
+    await Promise.all(sideEffects.scheduled);
+  });
 });
+
+function grpcFatalDropSideEffectSpy(): {
+  events: string[];
+  scheduled: Promise<unknown>[];
+  handlers: GrpcFatalDropSideEffectHandlers;
+} {
+  const events: string[] = [];
+  const scheduled: Promise<unknown>[] = [];
+
+  return {
+    events,
+    scheduled,
+    handlers: {
+      applyState(state) {
+        events.push(`state:${state.citadel.status}`);
+      },
+      persistStorage(writes, reason) {
+        events.push(`persist:${reason}:${Object.keys(writes).length}`);
+        return Promise.resolve();
+      },
+      schedule(work) {
+        events.push("schedule");
+        scheduled.push(work);
+      },
+      logError(eventType, _message, metadata) {
+        events.push(`error:${eventType}:${metadata.reason}`);
+      },
+      publish(type, payload) {
+        events.push(`publish:${type}:${payload.action}`);
+      },
+      cancelAllQuotes(instrumentCode, reason) {
+        events.push(`cancel:${instrumentCode}:${reason}`);
+        return Promise.resolve();
+      }
+    }
+  };
+}
