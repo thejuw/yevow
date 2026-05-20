@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { defaultConfig } from "../../src/ConfigManager";
 import {
+  applyQuoteSuppressionRuntime,
   applyQuoteSuppressionPolicy,
   isCascadeShieldSignal,
   isProfilerQuoteHaltSignal,
@@ -355,6 +356,58 @@ describe("QuoteStateRuntime", () => {
       {
         kind: "CANCEL_QUOTES",
         reason: "ENSEMBLE_CIRCUIT_BREAKER"
+      }
+    ]);
+  });
+
+  it("applies full quote suppression runtime from state, config, profiler, and selection inputs", () => {
+    const plan = { id: "plan-1" };
+    const state = {
+      quoteState: quoteState(),
+      assetQuoteStates: {}
+    };
+    const result = applyQuoteSuppressionRuntime({
+      ...state,
+      instrumentCode: "btc-usd",
+      quote: quote("new"),
+      pullAllQuotes: false,
+      instrumentSelected: true,
+      config: {
+        ...defaultConfig,
+        TRADING_ENABLED: true,
+        MARKET_MAKING_MODE: "OFF",
+        QUOTE_HIBERNATE_MS: 30_000
+      },
+      tradingEnabled: true,
+      shadowReplay: false,
+      executionPlans: [plan],
+      profilerSignalType: "AM_VPIN_CRITICAL",
+      profilerQuoteHaltUntil: null,
+      ensembleAnomalyCircuitBreaker: false,
+      ensembleRationale: "",
+      observedAt: OBSERVED_AT
+    });
+
+    expect(result.executionPlans).toEqual([]);
+    expect(result.strategyQuoteDisableReason).toBe("MARKET_MAKING_OFF");
+    expect(result.assetQuoteState).toMatchObject({
+      status: "SUSPENDED",
+      reason: "AM_VPIN_CRITICAL"
+    });
+    expect(result.sideEffects).toEqual([
+      {
+        kind: "CANCEL_QUOTES",
+        reason: "MARKET_MAKING_OFF"
+      },
+      {
+        kind: "PUBLISH_SUSPEND",
+        payload: {
+          instrumentCode: "btc-usd",
+          reason: "AM_VPIN_CRITICAL",
+          status: "SUSPENDED",
+          suspendedUntil: "2026-05-18T13:01:00.000Z",
+          updatedAt: OBSERVED_AT
+        }
       }
     ]);
   });

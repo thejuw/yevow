@@ -104,8 +104,7 @@ import {
 } from "./funding/FundingRuntime";
 import {
   nextQuoteStateForInstrument as nextRuntimeQuoteStateForInstrument,
-  applyQuoteSuppressionPolicy,
-  quoteSuppressionSideEffects,
+  applyQuoteSuppressionRuntime,
   resolveQuoteHibernateMs,
   resumeExpiredQuoteStates,
   strategyQuoteDisabledReason as runtimeStrategyQuoteDisabledReason
@@ -2960,24 +2959,16 @@ export class TradingEngine {
     ensembleAnomalyCircuitBreaker: boolean,
     ensembleRationale: string
   ): QuotePolicyResult {
-    const previousQuoteState = quoteStateForInstrumentState(
-      this.engineState.assetQuoteStates,
-      instrumentCode,
-      this.engineState.quoteState
-    );
-    const assetQuoteState = this.nextQuoteStateForInstrument(
-      instrumentCode,
-      croupierDecision.quote,
-      croupierDecision.pullAllQuotes,
-      observedAt
-    );
-    const strategyQuoteDisableReason = runtimeStrategyQuoteDisabledReason(this.cachedConfig);
-
     const profilerSignalType = profilerResult.signal?.featureVector.signalType;
-    const quotePolicy = applyQuoteSuppressionPolicy({
-      previousQuoteState,
-      assetQuoteState,
-      strategyQuoteDisableReason,
+    const quotePolicy = applyQuoteSuppressionRuntime({
+      assetQuoteStates: this.engineState.assetQuoteStates,
+      quoteState: this.engineState.quoteState,
+      instrumentCode,
+      quote: croupierDecision.quote,
+      pullAllQuotes: croupierDecision.pullAllQuotes,
+      instrumentSelected: isInstrumentSelectedByMoltworker(instrumentCode, this.macroBias),
+      config: this.cachedConfig,
+      envQuoteHibernateMs: this.env.QUOTE_HIBERNATE_MS,
       tradingEnabled: this.cachedConfig.TRADING_ENABLED,
       shadowReplay,
       executionPlans,
@@ -2987,14 +2978,12 @@ export class TradingEngine {
           ? profilerResult.signal.featureVector.suspendedUntil
           : undefined,
       profilerQuoteHaltUntil: profilerResult.state.quoteHaltUntil,
-      amVpinQuoteHaltMs: this.cachedConfig.AM_VPIN_QUOTE_HALT_MS,
-      quoteHibernateMs: resolveQuoteHibernateMs(this.cachedConfig, this.env.QUOTE_HIBERNATE_MS),
       ensembleAnomalyCircuitBreaker,
       ensembleRationale,
       observedAt
     });
 
-    for (const effect of quoteSuppressionSideEffects({ instrumentCode, ...quotePolicy })) {
+    for (const effect of quotePolicy.sideEffects) {
       if (effect.kind === "PUBLISH_SUSPEND") {
         this.publish("SUSPEND_QUOTES", effect.payload);
       } else {

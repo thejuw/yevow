@@ -1,7 +1,11 @@
 import type { EngineState, GlobalRiskConfig, QuoteSignal } from "../../../types";
 import { DEFAULT_QUOTE_HIBERNATE_MS } from "../../../TradingEngineConstants";
 import { readPositiveInteger } from "../helpers/RuntimeParsing";
-import { aggregateQuoteState, resumeExpiredAssetQuoteStates } from "../state/AssetStateRuntime";
+import {
+  aggregateQuoteState,
+  quoteStateForInstrumentState,
+  resumeExpiredAssetQuoteStates
+} from "../state/AssetStateRuntime";
 
 export interface NextQuoteStateInput {
   readonly previous: EngineState["quoteState"];
@@ -73,6 +77,32 @@ export interface QuoteSuppressionPolicyResult<TExecutionPlan> {
   readonly suspendTelemetry: Record<string, unknown> | null;
   readonly isCascadeShield: boolean;
   readonly isProfilerQuoteHalt: boolean;
+}
+
+export interface QuoteSuppressionRuntimeInput<TExecutionPlan> {
+  readonly assetQuoteStates: EngineState["assetQuoteStates"];
+  readonly quoteState: EngineState["quoteState"];
+  readonly instrumentCode: string;
+  readonly quote: QuoteSignal | null;
+  readonly pullAllQuotes: boolean;
+  readonly instrumentSelected: boolean;
+  readonly config: GlobalRiskConfig;
+  readonly envQuoteHibernateMs?: string;
+  readonly tradingEnabled: boolean;
+  readonly shadowReplay: boolean;
+  readonly executionPlans: readonly TExecutionPlan[];
+  readonly profilerSignalType: unknown;
+  readonly profilerSuspendedUntil?: string;
+  readonly profilerQuoteHaltUntil?: string | null;
+  readonly ensembleAnomalyCircuitBreaker: boolean;
+  readonly ensembleRationale: string;
+  readonly observedAt: string;
+}
+
+export interface QuoteSuppressionRuntimeResult<
+  TExecutionPlan
+> extends QuoteSuppressionPolicyResult<TExecutionPlan> {
+  readonly sideEffects: QuoteSuppressionSideEffect[];
 }
 
 export type QuoteSuppressionSideEffect =
@@ -268,6 +298,53 @@ export function quoteSuppressionSideEffects(
   }
 
   return effects;
+}
+
+export function applyQuoteSuppressionRuntime<TExecutionPlan>(
+  input: QuoteSuppressionRuntimeInput<TExecutionPlan>
+): QuoteSuppressionRuntimeResult<TExecutionPlan> {
+  const previousQuoteState = quoteStateForInstrumentState(
+    input.assetQuoteStates,
+    input.instrumentCode,
+    input.quoteState
+  );
+  const strategyQuoteDisableReason = strategyQuoteDisabledReason(input.config);
+  const assetQuoteState = nextQuoteStateForInstrument({
+    previous: previousQuoteState,
+    quote: input.quote,
+    tradingEnabled: input.config.TRADING_ENABLED,
+    strategyDisabledReason: strategyQuoteDisableReason,
+    instrumentSelected: input.instrumentSelected,
+    pullAllQuotes: input.pullAllQuotes,
+    quoteHibernateMs: resolveQuoteHibernateMs(input.config, input.envQuoteHibernateMs),
+    observedAt: input.observedAt
+  });
+  const policy = applyQuoteSuppressionPolicy({
+    previousQuoteState,
+    assetQuoteState,
+    strategyQuoteDisableReason,
+    tradingEnabled: input.tradingEnabled,
+    shadowReplay: input.shadowReplay,
+    executionPlans: input.executionPlans,
+    profilerSignalType: input.profilerSignalType,
+    profilerSuspendedUntil: input.profilerSuspendedUntil,
+    profilerQuoteHaltUntil: input.profilerQuoteHaltUntil,
+    amVpinQuoteHaltMs: input.config.AM_VPIN_QUOTE_HALT_MS,
+    quoteHibernateMs: resolveQuoteHibernateMs(input.config, input.envQuoteHibernateMs),
+    ensembleAnomalyCircuitBreaker: input.ensembleAnomalyCircuitBreaker,
+    ensembleRationale: input.ensembleRationale,
+    observedAt: input.observedAt
+  });
+
+  return {
+    ...policy,
+    sideEffects: quoteSuppressionSideEffects({
+      instrumentCode: input.instrumentCode,
+      strategyCancelReason: policy.strategyCancelReason,
+      suppressionCancelReason: policy.suppressionCancelReason,
+      suspendTelemetry: policy.suspendTelemetry
+    })
+  };
 }
 
 export function resumeExpiredQuoteStates(
