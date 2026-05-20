@@ -276,9 +276,9 @@ import { runShadowReplayLoop, type ShadowReplayLoopResult } from "./replay/Repla
 import { applyShadowReplayPreparation } from "./replay/ReplayPreparationRuntime";
 import {
   recordCompletedReplaySideEffects,
-  resolveInitialShadowBankroll,
   writeReplayRunningStatusSideEffect
 } from "./replay/ReplayResultRuntime";
+import { runHistoricalReplayRuntime } from "./replay/ReplayRunRuntime";
 import {
   captureEngineReplaySnapshot,
   restoreReplaySnapshotSideEffects,
@@ -4256,70 +4256,37 @@ export class TradingEngine {
   ): Promise<ReplayResult> {
     const startedAt = new Date().toISOString();
     const replayId = crypto.randomUUID();
-    await this.writeHistoricalReplayRunningStatus({
-      replayId,
-      ticksTotal: 0,
-      shadowBankroll,
-      speedMultiplier,
-      dateFrom,
-      dateTo,
-      scenario: replayOptions.scenario,
-      startedAt,
-      updatedAt: startedAt
-    });
-    const liveSnapshot = this.captureReplaySnapshot();
-    const { ticks } = await this.loadScenarioReplayTicks(
-      limit,
-      dateFrom,
-      dateTo,
-      replayOptions.scenario
+
+    return runHistoricalReplayRuntime(
+      {
+        limit,
+        requestedShadowBankroll: shadowBankroll,
+        speedMultiplier,
+        dateFrom,
+        dateTo,
+        replayOptions,
+        startedAt,
+        replayId,
+        fallbackBankroll: DEFAULT_PAPER_BANKROLL_USD
+      },
+      {
+        nowIso: () => new Date().toISOString(),
+        writeRunningStatus: (statusInput) => this.writeHistoricalReplayRunningStatus(statusInput),
+        captureReplaySnapshot: () => this.captureReplaySnapshot(),
+        loadScenarioReplayTicks: (replayLimit, replayDateFrom, replayDateTo, scenario) =>
+          this.loadScenarioReplayTicks(replayLimit, replayDateFrom, replayDateTo, scenario),
+        currentLiveBankroll: () => ({
+          equity: this.engineState.bankroll.equity,
+          cash: this.engineState.bankroll.cash
+        }),
+        loadReplayShadowTrades: (ticks) => this.loadReplayShadowTrades(ticks),
+        prepareShadowReplayState: (initialShadowBankroll, replayStartedAt, runtimeReplayId) =>
+          this.prepareShadowReplayState(initialShadowBankroll, replayStartedAt, runtimeReplayId),
+        runShadowReplayWithRestore: (replayInput) => this.runShadowReplayWithRestore(replayInput),
+        recordCompletedReplay: (completionInput) =>
+          this.recordCompletedHistoricalReplay(completionInput)
+      }
     );
-    const initialShadowBankroll = resolveInitialShadowBankroll({
-      requestedShadowBankroll: shadowBankroll,
-      liveEquity: this.engineState.bankroll.equity,
-      liveCash: this.engineState.bankroll.cash,
-      fallbackBankroll: DEFAULT_PAPER_BANKROLL_USD
-    });
-    await this.writeHistoricalReplayRunningStatus({
-      replayId,
-      ticksTotal: ticks.length,
-      shadowBankroll: initialShadowBankroll,
-      speedMultiplier,
-      dateFrom,
-      dateTo,
-      scenario: replayOptions.scenario,
-      startedAt,
-      updatedAt: new Date().toISOString()
-    });
-    const { historicalTrades, shadowTrades } = await this.loadReplayShadowTrades(ticks);
-
-    this.prepareShadowReplayState(initialShadowBankroll, startedAt, replayId);
-
-    const replayLoop = await this.runShadowReplayWithRestore({
-      replayId,
-      ticks,
-      replayOptions,
-      speedMultiplier,
-      initialShadowBankroll,
-      dateFrom,
-      dateTo,
-      startedAt,
-      liveSnapshot
-    });
-
-    return this.recordCompletedHistoricalReplay({
-      replayId,
-      replayLoop,
-      initialShadowBankroll,
-      historicalTradeCount: historicalTrades.length,
-      shadowTrades,
-      speedMultiplier,
-      replayOptions,
-      dateFrom,
-      dateTo,
-      startedAt,
-      ticksLength: ticks.length
-    });
   }
 
   private captureReplaySnapshot(): EngineReplaySnapshot {
