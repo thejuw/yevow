@@ -88,6 +88,15 @@ export interface ConfigRefreshSideEffectHandlers {
   readonly warnRefresh: (metadata: JsonRecord) => void;
 }
 
+export type RuntimeConfigUpdateSideEffectsInput = RuntimeConfigUpdateResult;
+
+export interface RuntimeConfigUpdateSideEffectHandlers {
+  readonly setMaxLatencyMs: (maxLatencyMs: number) => void;
+  readonly applyState: (state: EngineState) => void;
+  readonly persistState: () => Promise<void>;
+  readonly warnApplied: (metadata: JsonRecord) => void;
+}
+
 export function stateAfterRuntimeConfigUpdate(
   input: RuntimeConfigUpdateInput
 ): RuntimeConfigUpdateResult {
@@ -234,4 +243,14 @@ export async function applyConfigRefreshSideEffects(
   if (shouldLogConfigRefresh(input)) {
     handlers.warnRefresh(buildConfigRefreshLog(input));
   }
+}
+
+export async function applyRuntimeConfigUpdateSideEffects(
+  input: RuntimeConfigUpdateSideEffectsInput,
+  handlers: RuntimeConfigUpdateSideEffectHandlers
+): Promise<void> {
+  handlers.setMaxLatencyMs(input.maxLatencyMs);
+  handlers.applyState(input.state);
+  await handlers.persistState();
+  handlers.warnApplied(buildRuntimeConfigAppliedLog(input));
 }

@@ -194,7 +194,7 @@ import {
 } from "./cascade/CascadeAbsorptionRuntime";
 import {
   applyConfigRefreshSideEffects,
-  buildRuntimeConfigAppliedLog,
+  applyRuntimeConfigUpdateSideEffects,
   configRefreshQuoteState,
   configRefreshTopologyFromLocation,
   stateAfterConfigRefresh,
@@ -4934,15 +4934,17 @@ export class TradingEngine {
       observedAt: now
     });
 
-    this.maxLatencyMs = runtimeUpdate.maxLatencyMs;
-    this.engineState = runtimeUpdate.state;
-
-    await this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "ADMIN_CONFIG_APPLIED");
-
-    this.logger.warn(
-      "ADMIN_CONFIG_APPLIED",
-      "Runtime configuration updated",
-      buildRuntimeConfigAppliedLog({ state: this.engineState, maxLatencyMs: this.maxLatencyMs })
-    );
+    await applyRuntimeConfigUpdateSideEffects(runtimeUpdate, {
+      setMaxLatencyMs: (maxLatencyMs) => {
+        this.maxLatencyMs = maxLatencyMs;
+      },
+      applyState: (state) => {
+        this.engineState = state;
+      },
+      persistState: () =>
+        this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "ADMIN_CONFIG_APPLIED"),
+      warnApplied: (metadata) =>
+        this.logger.warn("ADMIN_CONFIG_APPLIED", "Runtime configuration updated", metadata)
+    });
   }
 }

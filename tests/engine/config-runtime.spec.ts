@@ -3,6 +3,7 @@ import { defaultConfig } from "../../src/ConfigManager";
 import { neutralMacroBias } from "../../src/Governor";
 import {
   applyConfigRefreshSideEffects,
+  applyRuntimeConfigUpdateSideEffects,
   buildConfigRefreshLog,
   buildRuntimeConfigAppliedLog,
   configRefreshQuoteState,
@@ -10,7 +11,8 @@ import {
   shouldLogConfigRefresh,
   stateAfterConfigRefresh,
   stateAfterRuntimeConfigUpdate,
-  type ConfigRefreshSideEffectHandlers
+  type ConfigRefreshSideEffectHandlers,
+  type RuntimeConfigUpdateSideEffectHandlers
 } from "../../src/engine/trading/config/ConfigRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { AdminConfigUpdate } from "../../src/types";
@@ -299,6 +301,27 @@ describe("ConfigRuntime", () => {
       "warn:config-v2"
     ]);
   });
+
+  it("applies runtime config update side effects in persistence order", async () => {
+    const state = defaultEngineState("runtime-config-side-effects");
+    state.mode = "PAPER";
+    state.risk = {
+      ...state.risk,
+      configVersion: "risk-v3",
+      killSwitch: true
+    };
+    const sideEffects = runtimeConfigUpdateSideEffectSpy();
+
+    await applyRuntimeConfigUpdateSideEffects(
+      {
+        state,
+        maxLatencyMs: 175
+      },
+      sideEffects.handlers
+    );
+
+    expect(sideEffects.events).toEqual(["latency:175", "state:PAPER", "persist", "warn:risk-v3"]);
+  });
 });
 
 function configRefreshSideEffectSpy(): {
@@ -331,6 +354,32 @@ function configRefreshSideEffectSpy(): {
       },
       warnRefresh(metadata) {
         events.push(`warn:${String(metadata.configVersion)}`);
+      }
+    }
+  };
+}
+
+function runtimeConfigUpdateSideEffectSpy(): {
+  events: string[];
+  handlers: RuntimeConfigUpdateSideEffectHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      setMaxLatencyMs(maxLatencyMs) {
+        events.push(`latency:${maxLatencyMs}`);
+      },
+      applyState(state) {
+        events.push(`state:${state.mode}`);
+      },
+      persistState() {
+        events.push("persist");
+        return Promise.resolve();
+      },
+      warnApplied(metadata) {
+        events.push(`warn:${String(metadata.riskConfigVersion)}`);
       }
     }
   };
