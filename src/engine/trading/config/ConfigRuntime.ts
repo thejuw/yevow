@@ -101,6 +101,35 @@ export interface ConfigRefreshSideEffectsInput extends ConfigRefreshLogInput {
   readonly refreshedState: EngineState;
 }
 
+export interface EffectiveGovernanceConfig {
+  readonly config: GlobalRiskConfig;
+  readonly macroBias: MacroBias;
+  readonly temporaryOverride: TemporaryGovernanceOverride | null;
+}
+
+export interface ConfigRefreshFlowInput {
+  readonly source: "ALARM" | "ADMIN_SIGNAL";
+  readonly previousVersion: string;
+  readonly configSnapshot?: GlobalRiskConfig;
+  readonly currentState: EngineState;
+  readonly observedAt: string;
+  readonly requestId: string;
+  readonly env: Pick<
+    Env,
+    "PLACEMENT_TARGET_COLO" | "GOLDEN_COLOS" | "HIGH_LATENCY_COLO_RISK_MULTIPLIER"
+  >;
+}
+
+export interface ConfigRefreshFlowResult extends EffectiveGovernanceConfig {
+  readonly refreshedState: EngineState;
+}
+
+export interface ConfigRefreshFlowHandlers extends ConfigRefreshRuntimeStateHandlers {
+  readonly fetchConfig: () => Promise<GlobalRiskConfig>;
+  readonly readEffectiveConfig: (config: GlobalRiskConfig) => Promise<EffectiveGovernanceConfig>;
+  readonly applyRefreshSideEffects: (input: ConfigRefreshSideEffectsInput) => Promise<void>;
+}
+
 export interface ConfigRefreshSideEffectHandlers {
   readonly applyConfigCache: (
     config: GlobalRiskConfig,
@@ -330,6 +359,41 @@ export async function applyConfigRefreshSideEffects(
   if (shouldLogConfigRefresh(input)) {
     handlers.warnRefresh(buildConfigRefreshLog(input));
   }
+}
+
+export async function applyConfigRefreshFlow(
+  input: ConfigRefreshFlowInput,
+  handlers: ConfigRefreshFlowHandlers
+): Promise<ConfigRefreshFlowResult> {
+  const effectiveGovernance = await handlers.readEffectiveConfig(
+    input.configSnapshot ?? (await handlers.fetchConfig())
+  );
+  const refreshedState = buildConfigRefreshRuntimeState(
+    {
+      currentState: input.currentState,
+      nextConfig: effectiveGovernance.config,
+      macroBias: effectiveGovernance.macroBias,
+      temporaryOverride: effectiveGovernance.temporaryOverride,
+      observedAt: input.observedAt,
+      requestId: input.requestId,
+      env: input.env
+    },
+    handlers
+  );
+
+  await handlers.applyRefreshSideEffects({
+    source: input.source,
+    previousVersion: input.previousVersion,
+    nextConfig: effectiveGovernance.config,
+    macroBias: effectiveGovernance.macroBias,
+    temporaryOverride: effectiveGovernance.temporaryOverride,
+    refreshedState
+  });
+
+  return {
+    ...effectiveGovernance,
+    refreshedState
+  };
 }
 
 export async function applyRuntimeConfigUpdateSideEffects(

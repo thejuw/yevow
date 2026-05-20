@@ -3,6 +3,7 @@ import { defaultConfig } from "../../src/ConfigManager";
 import { neutralMacroBias } from "../../src/Governor";
 import {
   applyAdminConfigUpdateFlow,
+  applyConfigRefreshFlow,
   applyConfigRefreshSideEffects,
   applyRuntimeConfigUpdateSideEffects,
   buildConfigRefreshRuntimeState,
@@ -13,6 +14,7 @@ import {
   shouldLogConfigRefresh,
   stateAfterConfigRefresh,
   stateAfterRuntimeConfigUpdate,
+  type ConfigRefreshFlowHandlers,
   type ConfigRefreshSideEffectHandlers,
   type AdminConfigUpdateFlowHandlers,
   type RuntimeConfigUpdateSideEffectHandlers
@@ -411,6 +413,42 @@ describe("ConfigRuntime", () => {
     ]);
   });
 
+  it("orchestrates config refresh flow through fetch, governance, state build, and side effects", async () => {
+    const currentState = defaultEngineState("config-refresh-flow");
+    currentState.location = {
+      ...currentState.location,
+      placement: "remote-nrt"
+    };
+    const flow = configRefreshFlowSpy();
+
+    const result = await applyConfigRefreshFlow(
+      {
+        source: "ALARM",
+        previousVersion: "config-v1",
+        currentState,
+        observedAt: "2026-05-18T15:00:00.000Z",
+        requestId: "config-refresh-flow-request",
+        env: {
+          PLACEMENT_TARGET_COLO: "NRT",
+          GOLDEN_COLOS: "NRT,HND",
+          HIGH_LATENCY_COLO_RISK_MULTIPLIER: "0.25"
+        }
+      },
+      flow.handlers
+    );
+
+    expect(result.config.version).toBe("config-fetched-effective");
+    expect(result.refreshedState.cachedConfig.version).toBe("config-fetched-effective");
+    expect(result.refreshedState.location.colo).toBe("NRT");
+    expect(flow.events).toEqual([
+      "fetch",
+      "effective:config-fetched",
+      "snapshot-profilers",
+      "matrix:2026-05-18T15:00:00.000Z",
+      "apply:config-fetched-effective:config-v1"
+    ]);
+  });
+
   it("applies runtime config update side effects in persistence order", async () => {
     const state = defaultEngineState("runtime-config-side-effects");
     state.mode = "PAPER";
@@ -557,6 +595,52 @@ function configRefreshSideEffectSpy(): {
       },
       warnRefresh(metadata) {
         events.push(`warn:${String(metadata.configVersion)}`);
+      }
+    }
+  };
+}
+
+function configRefreshFlowSpy(): {
+  events: string[];
+  handlers: ConfigRefreshFlowHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      fetchConfig() {
+        events.push("fetch");
+        return Promise.resolve({
+          ...defaultConfig,
+          TRADING_ENABLED: true,
+          GOLDEN_COLOS: "NRT,HND",
+          version: "config-fetched"
+        });
+      },
+      readEffectiveConfig(config) {
+        events.push(`effective:${config.version}`);
+        return Promise.resolve({
+          config: {
+            ...config,
+            LATENCY_THRESHOLD_MS: 125,
+            version: `${config.version}-effective`
+          },
+          macroBias: neutralMacroBias(),
+          temporaryOverride: null
+        });
+      },
+      snapshotProfilers() {
+        events.push("snapshot-profilers");
+        return defaultEngineState("config-refresh-flow-profilers").profilerStates;
+      },
+      calculateAssetMatrix(observedAt) {
+        events.push(`matrix:${observedAt}`);
+        return defaultEngineState("config-refresh-flow-matrix").assetMatrix;
+      },
+      applyRefreshSideEffects(input) {
+        events.push(`apply:${input.nextConfig.version}:${input.previousVersion}`);
+        return Promise.resolve();
       }
     }
   };

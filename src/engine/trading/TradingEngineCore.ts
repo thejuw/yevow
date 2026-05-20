@@ -181,9 +181,9 @@ import {
 } from "./cascade/CascadeAbsorptionRuntime";
 import {
   applyAdminConfigUpdateFlow,
+  applyConfigRefreshFlow,
   applyConfigRefreshSideEffects,
-  applyRuntimeConfigUpdateSideEffects,
-  buildConfigRefreshRuntimeState
+  applyRuntimeConfigUpdateSideEffects
 } from "./config/ConfigRuntime";
 import {
   absorptionAnalyzerConfig as buildAbsorptionAnalyzerConfig,
@@ -4408,23 +4408,25 @@ export class TradingEngine {
     );
   }
 
-  private buildRefreshedConfigState(
-    nextConfig: GlobalRiskConfig,
-    macroBias: MacroBias,
-    temporaryOverride: TemporaryGovernanceOverride | null,
-    observedAt: string
-  ): EngineState {
-    return buildConfigRefreshRuntimeState(
+  private async refreshConfig(
+    source: "ALARM" | "ADMIN_SIGNAL",
+    configSnapshot?: GlobalRiskConfig
+  ): Promise<void> {
+    const now = new Date().toISOString();
+
+    await applyConfigRefreshFlow(
       {
+        source,
+        previousVersion: this.cachedConfig.version,
+        configSnapshot,
         currentState: this.engineState,
-        nextConfig,
-        macroBias,
-        temporaryOverride,
-        observedAt,
+        observedAt: now,
         requestId: crypto.randomUUID(),
         env: this.env
       },
       {
+        fetchConfig: () => this.configManager.fetchConfig(),
+        readEffectiveConfig: (config) => this.governor.readEffectiveConfig(config),
         snapshotProfilers: () => this.profilerRegistry.snapshot(),
         calculateAssetMatrix: (
           matrixObservedAt,
@@ -4439,57 +4441,33 @@ export class TradingEngine {
             latestOracle,
             profilerStates,
             assetQuoteStates
-          )
-      }
-    );
-  }
-
-  private async refreshConfig(
-    source: "ALARM" | "ADMIN_SIGNAL",
-    configSnapshot?: GlobalRiskConfig
-  ): Promise<void> {
-    const previousVersion = this.cachedConfig.version;
-    const effectiveGovernance = await this.governor.readEffectiveConfig(
-      configSnapshot ?? (await this.configManager.fetchConfig())
-    );
-    const nextConfig = effectiveGovernance.config;
-    const now = new Date().toISOString();
-    const refreshedState = this.buildRefreshedConfigState(
-      nextConfig,
-      effectiveGovernance.macroBias,
-      effectiveGovernance.temporaryOverride,
-      now
-    );
-
-    await applyConfigRefreshSideEffects(
-      {
-        source,
-        previousVersion,
-        nextConfig,
-        macroBias: effectiveGovernance.macroBias,
-        temporaryOverride: effectiveGovernance.temporaryOverride,
-        refreshedState
-      },
-      {
-        applyConfigCache: (config, macroBias, temporaryOverride) => {
-          this.cachedConfig = config;
-          this.macroBias = macroBias;
-          this.activeTemporaryOverride = temporaryOverride;
-        },
-        configureProfilers: (config) => this.profilerRegistry.configure(config),
-        setMaxLatencyMs: (maxLatencyMs) => {
-          this.maxLatencyMs = maxLatencyMs;
-        },
-        clearKillSwitchLog: () => {
-          this.killSwitchLogged = false;
-        },
-        applyState: (state) => {
-          this.engineState = state;
-        },
-        persistState: () =>
-          this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "CONFIG_REFRESH"),
-        warnRefresh: (metadata) =>
-          this.logger.warn("CONFIG_REFRESHED", "Trading engine config cache refreshed", metadata)
+          ),
+        applyRefreshSideEffects: (refresh) =>
+          applyConfigRefreshSideEffects(refresh, {
+            applyConfigCache: (config, macroBias, temporaryOverride) => {
+              this.cachedConfig = config;
+              this.macroBias = macroBias;
+              this.activeTemporaryOverride = temporaryOverride;
+            },
+            configureProfilers: (config) => this.profilerRegistry.configure(config),
+            setMaxLatencyMs: (maxLatencyMs) => {
+              this.maxLatencyMs = maxLatencyMs;
+            },
+            clearKillSwitchLog: () => {
+              this.killSwitchLogged = false;
+            },
+            applyState: (state) => {
+              this.engineState = state;
+            },
+            persistState: () =>
+              this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "CONFIG_REFRESH"),
+            warnRefresh: (metadata) =>
+              this.logger.warn(
+                "CONFIG_REFRESHED",
+                "Trading engine config cache refreshed",
+                metadata
+              )
+          })
       }
     );
   }
