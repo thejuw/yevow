@@ -236,6 +236,50 @@ export function stateAfterLatencyBaselineReset(
   };
 }
 
+export interface LatencyBaselineResetArtifactsInput {
+  readonly currentState: EngineState;
+  readonly observedAt: string;
+  readonly reason: string;
+}
+
+export interface LatencyBaselineResetArtifacts {
+  readonly state: EngineState;
+  readonly latencyHistory: readonly LatencyMetrics[];
+  readonly processingLatencySamples: readonly number[];
+  readonly logMetadata: JsonRecord;
+}
+
+export interface LatencyBaselineResetSideEffectHandlers {
+  readonly applyState: (state: EngineState) => void;
+  readonly replaceLatencyHistory: (history: readonly LatencyMetrics[]) => void;
+  readonly replaceProcessingLatencySamples: (samples: readonly number[]) => void;
+  readonly logReset: (metadata: JsonRecord) => void;
+}
+
+export function latencyBaselineResetArtifacts(
+  input: LatencyBaselineResetArtifactsInput
+): LatencyBaselineResetArtifacts {
+  return {
+    state: stateAfterLatencyBaselineReset(input.currentState, input.observedAt),
+    latencyHistory: [],
+    processingLatencySamples: [],
+    logMetadata: {
+      reason: input.reason,
+      observedAt: input.observedAt
+    }
+  };
+}
+
+export function applyLatencyBaselineResetSideEffects(
+  artifacts: LatencyBaselineResetArtifacts,
+  handlers: LatencyBaselineResetSideEffectHandlers
+): void {
+  handlers.replaceLatencyHistory(artifacts.latencyHistory);
+  handlers.replaceProcessingLatencySamples(artifacts.processingLatencySamples);
+  handlers.applyState(artifacts.state);
+  handlers.logReset(artifacts.logMetadata);
+}
+
 export interface PerformanceSpikeLogGateInput {
   readonly logAt: Map<string, number>;
   readonly latencyMetrics: LatencyMetrics;

@@ -147,6 +147,7 @@ import { calculateAssetMatrix as calculateRuntimeAssetMatrix } from "./state/Ass
 import {
   applyExecutionProfileSideEffects,
   applyHardStaleTickDropSideEffects,
+  applyLatencyBaselineResetSideEffects,
   applyNativeHyperliquidLatencyPullSideEffects,
   applyPerformanceSpikeLogSideEffect,
   applyStaleDataKillSwitchSideEffects,
@@ -155,12 +156,12 @@ import {
   buildPerformanceMetricsText,
   buildStaleDataKillSwitchArtifacts,
   latencySnapshotStorageWrites,
+  latencyBaselineResetArtifacts,
   nativeHyperliquidLatencyPullArtifacts,
   hydrateLatencyMetricsFromState,
   nextLatencyAverage,
   prepareTickLatencyRuntime,
   recordProcessingLatencySample,
-  stateAfterLatencyBaselineReset,
   stateAfterHardStaleTickDrop,
   stateAfterStaleDataKillSwitch,
   type ExecutionTraceInput
@@ -4475,12 +4476,23 @@ export class TradingEngine {
   }
 
   private resetLatencyBaseline(observedAt: string, reason: string): void {
-    this.latencyHistory = [];
-    this.processingLatencySamples = [];
-    this.engineState = stateAfterLatencyBaselineReset(this.engineState, observedAt);
-    this.logger.info("LATENCY_BASELINE_RESET", "Reset stale latency baseline", {
-      reason,
-      observedAt
+    const artifacts = latencyBaselineResetArtifacts({
+      currentState: this.engineState,
+      observedAt,
+      reason
+    });
+    applyLatencyBaselineResetSideEffects(artifacts, {
+      replaceLatencyHistory: (history) => {
+        this.latencyHistory = [...history];
+      },
+      replaceProcessingLatencySamples: (samples) => {
+        this.processingLatencySamples = [...samples];
+      },
+      applyState: (state) => {
+        this.engineState = state;
+      },
+      logReset: (metadata) =>
+        this.logger.info("LATENCY_BASELINE_RESET", "Reset stale latency baseline", metadata)
     });
   }
 

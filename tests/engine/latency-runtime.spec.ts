@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyExecutionProfileSideEffects,
   applyHardStaleTickDropSideEffects,
+  applyLatencyBaselineResetSideEffects,
   applyNativeHyperliquidLatencyPullSideEffects,
   applyPerformanceSpikeLogSideEffect,
   applyStaleDataKillSwitchSideEffects,
@@ -15,6 +16,7 @@ import {
   hardStalePullTelemetryPayload,
   hardStaleTickDropLogMetadata,
   hydrateLatencyMetricsFromState,
+  latencyBaselineResetArtifacts,
   latencySnapshotStorageWrites,
   nativeHyperliquidLatencyPullArtifacts,
   nativeHyperliquidLatencyPullStorageWrites,
@@ -34,6 +36,7 @@ import {
   stateAfterHardStaleTickDrop,
   type ExecutionProfileSideEffectHandlers,
   type HardStaleTickDropSideEffectHandlers,
+  type LatencyBaselineResetSideEffectHandlers,
   type NativeHyperliquidLatencyPullSideEffectHandlers,
   type PerformanceSpikeLogSideEffectHandlers,
   type StaleDataKillSwitchSideEffectHandlers
@@ -241,6 +244,33 @@ describe("LatencyRuntime", () => {
       },
       updatedAt: "2026-05-18T15:00:01.000Z"
     });
+  });
+
+  it("assembles and applies latency baseline reset side effects", () => {
+    const currentState = defaultEngineState("latency-reset-effects");
+    currentState.averageLatency = 180;
+    currentState.latencySampleCount = 99;
+    const artifacts = latencyBaselineResetArtifacts({
+      currentState,
+      observedAt: "2026-05-18T15:00:01.000Z",
+      reason: "FRESH_SAMPLE_AFTER_BACKLOG"
+    });
+    const sideEffects = latencyBaselineResetSideEffectSpy();
+
+    applyLatencyBaselineResetSideEffects(artifacts, sideEffects.handlers);
+
+    expect(artifacts.state).toMatchObject({
+      averageLatency: 0,
+      latencySampleCount: 0
+    });
+    expect(artifacts.latencyHistory).toEqual([]);
+    expect(artifacts.processingLatencySamples).toEqual([]);
+    expect(sideEffects.events).toEqual([
+      "history:0",
+      "samples:0",
+      "state:0",
+      "log:FRESH_SAMPLE_AFTER_BACKLOG"
+    ]);
   });
 
   it("throttles performance spike logs by instrument and status", () => {
@@ -953,6 +983,31 @@ function staleDataKillSwitchSideEffectSpy(): {
       cancelAllQuotes(instrumentCode, reason) {
         events.push(`cancel:${instrumentCode}:${reason}`);
         return Promise.resolve();
+      }
+    }
+  };
+}
+
+function latencyBaselineResetSideEffectSpy(): {
+  events: string[];
+  handlers: LatencyBaselineResetSideEffectHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      replaceLatencyHistory(history) {
+        events.push(`history:${history.length}`);
+      },
+      replaceProcessingLatencySamples(samples) {
+        events.push(`samples:${samples.length}`);
+      },
+      applyState(state) {
+        events.push(`state:${state.averageLatency}`);
+      },
+      logReset(metadata) {
+        events.push(`log:${metadata.reason}`);
       }
     }
   };
