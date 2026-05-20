@@ -68,6 +68,12 @@ export interface LiquidationEventProcessingResult {
   readonly processedCount: number;
 }
 
+export interface CascadeDetectedArtifacts {
+  readonly logMetadata: JsonRecord;
+  readonly telemetryPayload: JsonRecord;
+  readonly alertMetadata: JsonRecord;
+}
+
 export interface CascadeLiquidationJournalDb {
   prepare(query: string): D1PreparedStatement;
   batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]>;
@@ -245,5 +251,16 @@ export function cascadeDetectedAlertMetadata(cascade: CascadeEvent): JsonRecord 
     zScore: cascade.zScore,
     priceMoveAtr: cascade.priceMoveAtr,
     detectedAt: cascade.detectedAt
+  };
+}
+
+export function buildCascadeDetectedArtifacts(
+  cascade: CascadeEvent,
+  assetProfile: CascadeAssetProfile
+): CascadeDetectedArtifacts {
+  return {
+    logMetadata: cascadeDetectedLogMetadata(cascade),
+    telemetryPayload: cascadeDetectedTelemetryPayload(cascade, assetProfile),
+    alertMetadata: cascadeDetectedAlertMetadata(cascade)
   };
 }

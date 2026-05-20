@@ -171,9 +171,7 @@ import {
   currentCascadeSignalSnapshot as buildCurrentCascadeSignalSnapshot
 } from "./cascade/CascadeSnapshots";
 import {
-  cascadeDetectedAlertMetadata,
-  cascadeDetectedLogMetadata,
-  cascadeDetectedTelemetryPayload,
+  buildCascadeDetectedArtifacts,
   liquidationEventProcessingResult,
   persistCascadeLiquidationEvents,
   resolveLiquidationEventContext
@@ -1487,20 +1485,17 @@ export class TradingEngine {
       cascades.push(cascade);
       this.cascadeEventsById.set(cascade.cascadeId, cascade);
       this.absorptionAnalyzer.trackCascade(cascade);
-      this.logger.warn(
-        "CASCADE_DETECTED",
-        "Liquidation cascade detected",
-        cascadeDetectedLogMetadata(cascade)
+      const artifacts = buildCascadeDetectedArtifacts(
+        cascade,
+        this.cascadeAssetProfile(cascade.instrumentCode)
       );
-      this.publish(
-        "CASCADE_DETECTED",
-        cascadeDetectedTelemetryPayload(cascade, this.cascadeAssetProfile(cascade.instrumentCode))
-      );
+      this.logger.warn("CASCADE_DETECTED", "Liquidation cascade detected", artifacts.logMetadata);
+      this.publish("CASCADE_DETECTED", artifacts.telemetryPayload);
       this.emitCascadeOperationalAlert(
         "CASCADE_DETECTED",
         "Cascade detected",
         `${cascade.instrumentCode} ${cascade.direction} liquidation cascade detected.`,
-        cascadeDetectedAlertMetadata(cascade),
+        artifacts.alertMetadata,
         cascade.cascadeId
       );
     }

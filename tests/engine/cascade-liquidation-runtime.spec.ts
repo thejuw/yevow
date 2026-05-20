@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { defaultLiquidationHeatmapState } from "../../src/agents/HeatmapAgent";
 import {
+  buildCascadeDetectedArtifacts,
   cascadeLiquidationInsertStatements,
   cascadeDetectedAlertMetadata,
   cascadeDetectedLogMetadata,
@@ -236,6 +237,11 @@ describe("CascadeLiquidationRuntime", () => {
       zScore: 3.5,
       priceMoveAtr: 2.1,
       detectedAt: OBSERVED_AT
+    });
+    expect(buildCascadeDetectedArtifacts(cascade, profile)).toEqual({
+      logMetadata: cascadeDetectedLogMetadata(cascade),
+      telemetryPayload: cascadeDetectedTelemetryPayload(cascade, profile),
+      alertMetadata: cascadeDetectedAlertMetadata(cascade)
     });
   });
 
