@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildAgentStateSnapshot } from "../../src/engine/trading/telemetry/AgentSnapshotRuntime";
+import {
+  buildAgentStateSnapshot,
+  emitAgentStateSnapshot,
+  type AgentStateSnapshotPublishHandlers
+} from "../../src/engine/trading/telemetry/AgentSnapshotRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { AgentName, AgentSignal } from "../../src/types";
 
@@ -54,7 +58,42 @@ describe("AgentSnapshotRuntime", () => {
       heartbeatAt: "2026-05-19T12:00:00.000Z"
     });
   });
+
+  it("emits periodic agent state snapshots through the publish boundary", () => {
+    const state = defaultEngineState("agent-snapshot-emit");
+    state.processedTicks = 2_000;
+    const sideEffects = agentSnapshotPublishSpy();
+
+    const result = emitAgentStateSnapshot(
+      {
+        engineState: state,
+        latestAgentSignals: new Map(),
+        observedAt: "2026-05-19T12:00:01.000Z",
+        snapshotIntervalTicks: 1_000
+      },
+      sideEffects.handlers
+    );
+
+    expect(result?.correlationId).toBe("agent-snapshot:2000");
+    expect(sideEffects.events).toEqual(["publish:AGENT_STATE_SNAPSHOT:agent-snapshot:2000"]);
+  });
 });
+
+function agentSnapshotPublishSpy(): {
+  events: string[];
+  handlers: AgentStateSnapshotPublishHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      publish(type, _payload, correlationId) {
+        events.push(`publish:${type}:${correlationId}`);
+      }
+    }
+  };
+}
 
 function signal(overrides: Partial<AgentSignal> = {}): AgentSignal {
   return {

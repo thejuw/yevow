@@ -244,7 +244,7 @@ import {
   agentSignalStorageKey,
   applyAcceptedAgentSignalSideEffects
 } from "./telemetry/AgentSignalRuntime";
-import { buildAgentStateSnapshot } from "./telemetry/AgentSnapshotRuntime";
+import { emitAgentStateSnapshot } from "./telemetry/AgentSnapshotRuntime";
 import {
   buildCascadeOperationalAlertTelemetry,
   cascadeEntryAgentSignal,
@@ -4581,18 +4581,17 @@ export class TradingEngine {
   }
 
   private maybeRecordAgentSnapshot(observedAt: string): void {
-    const snapshot = buildAgentStateSnapshot({
-      engineState: this.engineState,
-      latestAgentSignals: this.latestAgentSignals,
-      observedAt,
-      snapshotIntervalTicks: AGENT_SNAPSHOT_TICK_INTERVAL
-    });
-
-    if (!snapshot) {
-      return;
-    }
-
-    this.publish("AGENT_STATE_SNAPSHOT", snapshot.payload, snapshot.correlationId);
+    emitAgentStateSnapshot(
+      {
+        engineState: this.engineState,
+        latestAgentSignals: this.latestAgentSignals,
+        observedAt,
+        snapshotIntervalTicks: AGENT_SNAPSHOT_TICK_INTERVAL
+      },
+      {
+        publish: (type, payload, correlationId) => this.publish(type, payload, correlationId)
+      }
+    );
   }
 
   private logPerformance(latencyMetrics: LatencyMetrics): void {

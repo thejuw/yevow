@@ -13,6 +13,14 @@ export interface AgentStateSnapshotResult {
   readonly correlationId: string;
 }
 
+export interface AgentStateSnapshotPublishHandlers {
+  readonly publish: (
+    type: "AGENT_STATE_SNAPSHOT",
+    payload: AgentStateSnapshotResult["payload"],
+    correlationId: string
+  ) => void;
+}
+
 export function buildAgentStateSnapshot(
   input: AgentStateSnapshotInput
 ): AgentStateSnapshotResult | null {
@@ -45,4 +53,18 @@ export function buildAgentStateSnapshot(
     },
     correlationId: `agent-snapshot:${processedTicks}`
   };
+}
+
+export function emitAgentStateSnapshot(
+  input: AgentStateSnapshotInput,
+  handlers: AgentStateSnapshotPublishHandlers
+): AgentStateSnapshotResult | null {
+  const snapshot = buildAgentStateSnapshot(input);
+
+  if (!snapshot) {
+    return null;
+  }
+
+  handlers.publish("AGENT_STATE_SNAPSHOT", snapshot.payload, snapshot.correlationId);
+  return snapshot;
 }
