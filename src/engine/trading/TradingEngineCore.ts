@@ -644,6 +644,7 @@ import {
 } from "./state/EngineStateDefaults";
 import { isInformationalTick, isTradeTick } from "./state/TickClassification";
 import { evaluateTickTargetPreflight } from "./state/TickPreflightRuntime";
+import { buildAcceptedTickLifecycleArtifacts } from "./pipelines/AcceptedTickRuntime";
 import type {
   AcceptedDecisionPipelineInput,
   AcceptedExecutionContext,
@@ -3631,51 +3632,20 @@ export class TradingEngine {
       croupierDecision,
       decisionContext
     );
-
-    this.commitAcceptedTickState({
-      tick: input.tick,
-      metrics: input.metrics,
-      book: input.book,
-      oracle: oracleResult.state,
-      sentiment: decisionContext.sentimentForDecision,
-      ensemble: executionContext.ensemble,
-      leadLag: decisionContext.leadLag,
-      inventory: decisionContext.inventory,
-      riskMetrics: decisionContext.riskMetrics,
-      assetQuoteState: executionContext.quotePolicy.assetQuoteState,
-      shadowQueueState: input.shadowQueueState,
-      executionPlan: executionContext.executionPlan,
-      croupierDecision,
-      executionPlans: executionContext.executionPlans,
-      inventoryGuard: decisionContext.inventoryGuard,
-      domSnapshot: input.domSnapshot,
-      anomalyResult: input.anomalyResult,
-      profilerStates: decisionContext.profilerStates,
+    const lifecycle = buildAcceptedTickLifecycleArtifacts({
+      pipeline: input,
       profilerResult,
+      profilerLatencyMs,
+      oracleResult,
       oracleLatencyMs,
-      profilerLatencyMs,
+      croupierDecision,
       croupierLatencyMs,
-      shadowReplay: input.shadowReplay,
-      observedAt: input.metrics.brainTimestamp
+      decisionContext,
+      executionContext
     });
 
-    await this.finalizeAcceptedTick({
-      tick: input.tick,
-      metrics: input.metrics,
-      book: input.book,
-      anomalyResult: input.anomalyResult,
-      profilerResult,
-      profilerLatencyMs,
-      croupierDecision,
-      executionPlans: executionContext.executionPlans,
-      inventory: decisionContext.inventory,
-      strategyQuoteDisableReason: executionContext.quotePolicy.strategyQuoteDisableReason,
-      isCascadeShield: executionContext.quotePolicy.isCascadeShield,
-      isProfilerQuoteHalt: executionContext.quotePolicy.isProfilerQuoteHalt,
-      oracleBayesianTrace: oracleResult.bayesianTrace,
-      hotPathStartedAt: input.hotPathStartedAt,
-      shadowReplay: input.shadowReplay
-    });
+    this.commitAcceptedTickState(lifecycle.commitInput);
+    await this.finalizeAcceptedTick(lifecycle.sideEffectsInput);
   }
 
   private async handleTick(
