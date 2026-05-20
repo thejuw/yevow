@@ -233,11 +233,7 @@ import {
   type HyperliquidL2BookHotPathDecision,
   type HyperliquidRawIngestPayload
 } from "./ingest/HyperliquidRawIngest";
-import {
-  buildGrpcFatalDropEventArtifacts,
-  resolveGrpcFatalDropPayload,
-  stateAfterGrpcFatalDrop
-} from "./ingest/GrpcDropRuntime";
+import { grpcFatalDropArtifacts } from "./ingest/GrpcDropRuntime";
 import {
   handleTradingEngineHttpRoute,
   type EngineHttpRouteContext
@@ -2049,47 +2045,27 @@ export class TradingEngine {
   private async handleGrpcFatalDrop(
     payload: GrpcFatalDropPayload
   ): Promise<{ status: "GRPC_FATAL_DROP" }> {
-    const { observedAt, disconnectedForMs, thresholdMs, reason } =
-      resolveGrpcFatalDropPayload(payload);
-    const grpcDrop = stateAfterGrpcFatalDrop({
-      currentState: this.engineState,
-      disconnectedForMs,
-      thresholdMs,
-      reason,
-      observedAt,
-      shadowMode: isShadowMode(this.env)
-    });
-    const { citadel } = grpcDrop;
-    const events = buildGrpcFatalDropEventArtifacts({
+    const artifacts = grpcFatalDropArtifacts({
       payload,
-      resolved: {
-        observedAt,
-        disconnectedForMs,
-        thresholdMs,
-        reason
-      },
-      citadel
+      currentState: this.engineState,
+      shadowMode: isShadowMode(this.env),
+      engineStateKey: ENGINE_STATE_KEY
     });
-    this.engineState = grpcDrop.state;
+    this.engineState = artifacts.state;
     this.state.waitUntil(
-      this.persistHotStorageSnapshot(
-        {
-          [ENGINE_STATE_KEY]: this.engineState
-        },
-        "GRPC_FATAL_DROP"
-      )
+      this.persistHotStorageSnapshot(artifacts.storageWrites, "GRPC_FATAL_DROP")
     );
     this.logger.error(
-      events.telemetryType,
+      artifacts.events.telemetryType,
       "Dwellir gRPC blackout forced quote evacuation",
-      events.logMetadata
+      artifacts.events.logMetadata
     );
-    this.publish(events.telemetryType, events.telemetryPayload);
-    if (events.shouldCancelAllQuotes) {
+    this.publish(artifacts.events.telemetryType, artifacts.events.telemetryPayload);
+    if (artifacts.events.shouldCancelAllQuotes) {
       this.state.waitUntil(this.cancelAllQuotes("ALL", "GRPC_FATAL_DROP"));
     }
 
-    return { status: "GRPC_FATAL_DROP" };
+    return artifacts.response;
   }
 
   private quoteStateStalePull(

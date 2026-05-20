@@ -36,6 +36,22 @@ export interface GrpcFatalDropEventArtifacts {
   readonly shouldCancelAllQuotes: boolean;
 }
 
+export interface GrpcFatalDropArtifactsInput {
+  readonly payload: GrpcFatalDropPayload;
+  readonly currentState: EngineState;
+  readonly shadowMode: boolean;
+  readonly engineStateKey: string;
+  readonly fallbackObservedAt?: string;
+}
+
+export interface GrpcFatalDropArtifacts {
+  readonly resolved: ResolvedGrpcFatalDrop;
+  readonly state: EngineState;
+  readonly storageWrites: Record<string, unknown>;
+  readonly events: GrpcFatalDropEventArtifacts;
+  readonly response: { status: "GRPC_FATAL_DROP" };
+}
+
 export function resolveGrpcFatalDropPayload(
   payload: GrpcFatalDropPayload,
   fallbackObservedAt = new Date().toISOString()
@@ -131,5 +147,29 @@ export function stateAfterGrpcFatalDrop(input: GrpcFatalDropStateInput): GrpcFat
       heartbeatAt: input.observedAt,
       updatedAt: input.observedAt
     }
+  };
+}
+
+export function grpcFatalDropArtifacts(input: GrpcFatalDropArtifactsInput): GrpcFatalDropArtifacts {
+  const resolved = resolveGrpcFatalDropPayload(input.payload, input.fallbackObservedAt);
+  const grpcDrop = stateAfterGrpcFatalDrop({
+    currentState: input.currentState,
+    ...resolved,
+    shadowMode: input.shadowMode
+  });
+  const events = buildGrpcFatalDropEventArtifacts({
+    payload: input.payload,
+    resolved,
+    citadel: grpcDrop.citadel
+  });
+
+  return {
+    resolved,
+    state: grpcDrop.state,
+    storageWrites: {
+      [input.engineStateKey]: grpcDrop.state
+    },
+    events,
+    response: { status: "GRPC_FATAL_DROP" }
   };
 }

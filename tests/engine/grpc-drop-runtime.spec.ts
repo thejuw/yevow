@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildGrpcFatalDropEventArtifacts,
+  grpcFatalDropArtifacts,
   resolveGrpcFatalDropPayload,
   stateAfterGrpcFatalDrop
 } from "../../src/engine/trading/ingest/GrpcDropRuntime";
@@ -152,5 +153,39 @@ describe("GrpcDropRuntime", () => {
     expect(result.citadel.shouldEvacuate).toBe(false);
     expect(result.state.citadel.lastEvacuationAt).toBe("2026-05-18T11:59:00.000Z");
     expect(result.state.agentHealth.EXECUTIONER.status).toBe("YELLOW");
+  });
+
+  it("assembles fatal-drop state, storage, telemetry, and response artifacts", () => {
+    const artifacts = grpcFatalDropArtifacts({
+      payload: {
+        streamId: "dwellir-stream",
+        observedAt: "2026-05-18T12:00:00.000Z",
+        disconnectedForMs: 250,
+        thresholdMs: 200,
+        reason: "DWELLIR_GRPC_WATCHDOG_TIMEOUT"
+      },
+      currentState: defaultEngineState("grpc-artifacts"),
+      shadowMode: true,
+      engineStateKey: "engine:state"
+    });
+
+    expect(artifacts.resolved).toMatchObject({
+      disconnectedForMs: 250,
+      thresholdMs: 200,
+      reason: "DWELLIR_GRPC_WATCHDOG_TIMEOUT"
+    });
+    expect(artifacts.state.citadel.status).toBe("CRITICAL");
+    expect(artifacts.storageWrites).toEqual({
+      "engine:state": artifacts.state
+    });
+    expect(artifacts.events).toMatchObject({
+      telemetryType: "GRPC_FATAL_DROP",
+      shouldCancelAllQuotes: true,
+      telemetryPayload: {
+        streamId: "dwellir-stream",
+        action: "CANCEL_ALL_QUOTES"
+      }
+    });
+    expect(artifacts.response).toEqual({ status: "GRPC_FATAL_DROP" });
   });
 });
