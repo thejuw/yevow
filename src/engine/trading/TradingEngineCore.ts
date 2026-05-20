@@ -202,6 +202,10 @@ import {
   cascadeDetectorConfig as buildCascadeDetectorConfig,
   cascadeRecoverySignalConfig as buildCascadeRecoverySignalConfig
 } from "./cascade/CascadeConfigRuntime";
+import {
+  closedOneMinuteCandlesForTick,
+  shouldEvaluateCascadeStrategy
+} from "./cascade/CascadeStrategyRuntime";
 import { OrderBookReconstructor, type OrderBookStores } from "./book/OrderBookReconstructor";
 import type { AppliedBookUpdate, BookDeltaWithTicker, BookSyncState } from "./book/BookTypes";
 import {
@@ -1751,10 +1755,7 @@ export class TradingEngine {
   }
 
   private async evaluateCascadeStrategy(tick: MarketTick, observedAt: string): Promise<void> {
-    if (
-      this.cachedConfig.STRATEGY_MODE === "OFF" ||
-      this.cachedConfig.STRATEGY_MODE === "MARKET_MAKING"
-    ) {
+    if (!shouldEvaluateCascadeStrategy(this.cachedConfig.STRATEGY_MODE)) {
       return;
     }
 
@@ -1765,11 +1766,7 @@ export class TradingEngine {
       return;
     }
 
-    const closed1m = closedCandles.filter(
-      (candle) =>
-        candle.timeframe === "1m" &&
-        candle.instrumentCode.toLowerCase() === tick.instrumentCode.toLowerCase()
-    );
+    const closed1m = closedOneMinuteCandlesForTick(closedCandles, tick);
     if (closed1m.length === 0) {
       return;
     }
