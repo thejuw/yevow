@@ -3,6 +3,7 @@ import type {
   EdgeTopology,
   EngineLocation,
   EngineState,
+  Env,
   GlobalRiskConfig,
   JsonRecord,
   MacroBias,
@@ -11,7 +12,7 @@ import type {
 import { configFromAdminSnapshot } from "../../../ConfigManager";
 import { toJsonValue } from "../helpers/RuntimeSerialization";
 import { mergeRiskLimits, resolveMaxLatencyMs } from "../state/EngineStateDefaults";
-import { applyLocationRisk } from "../helpers/PlacementResolver";
+import { applyLocationRisk, resolveEngineLocation } from "../helpers/PlacementResolver";
 import {
   aggregateQuoteState,
   reconcileAssetQuoteStatesForConfig
@@ -57,6 +58,30 @@ export interface ConfigRefreshQuoteStateInput {
 export interface ConfigRefreshQuoteStateResult {
   readonly assetQuoteStates: EngineState["assetQuoteStates"];
   readonly quoteState: EngineState["quoteState"];
+}
+
+export interface ConfigRefreshRuntimeStateInput {
+  readonly currentState: EngineState;
+  readonly nextConfig: GlobalRiskConfig;
+  readonly macroBias: MacroBias;
+  readonly temporaryOverride: TemporaryGovernanceOverride | null;
+  readonly observedAt: string;
+  readonly requestId: string;
+  readonly env: Pick<
+    Env,
+    "PLACEMENT_TARGET_COLO" | "GOLDEN_COLOS" | "HIGH_LATENCY_COLO_RISK_MULTIPLIER"
+  >;
+}
+
+export interface ConfigRefreshRuntimeStateHandlers {
+  readonly snapshotProfilers: () => EngineState["profilerStates"];
+  readonly calculateAssetMatrix: (
+    observedAt: string,
+    latestInstrumentCode: string | undefined,
+    latestOracle: EngineState["oracle"],
+    profilerStates: EngineState["profilerStates"],
+    assetQuoteStates: EngineState["assetQuoteStates"]
+  ) => EngineState["assetMatrix"];
 }
 
 export interface ConfigRefreshLogInput {
@@ -214,6 +239,50 @@ export function configRefreshTopologyFromLocation(
     requestId,
     observedAt
   };
+}
+
+export function buildConfigRefreshRuntimeState(
+  input: ConfigRefreshRuntimeStateInput,
+  handlers: ConfigRefreshRuntimeStateHandlers
+): EngineState {
+  const quoteRefresh = configRefreshQuoteState({
+    assetQuoteStates: input.currentState.assetQuoteStates,
+    quoteState: input.currentState.quoteState,
+    nextConfig: input.nextConfig,
+    macroBias: input.macroBias,
+    observedAt: input.observedAt
+  });
+  const profilerStates = handlers.snapshotProfilers();
+  const refreshedLocation = resolveEngineLocation(
+    configRefreshTopologyFromLocation(
+      input.currentState.location,
+      input.observedAt,
+      input.requestId
+    ),
+    input.currentState.location,
+    input.env,
+    input.nextConfig,
+    input.currentState.location.observedLatencyMs
+  );
+
+  return stateAfterConfigRefresh({
+    currentState: input.currentState,
+    nextConfig: input.nextConfig,
+    macroBias: input.macroBias,
+    temporaryOverride: input.temporaryOverride,
+    nextAssetQuoteStates: quoteRefresh.assetQuoteStates,
+    nextQuoteState: quoteRefresh.quoteState,
+    assetMatrix: handlers.calculateAssetMatrix(
+      input.observedAt,
+      input.currentState.microstructure.instrumentCode ?? undefined,
+      input.currentState.oracle,
+      profilerStates,
+      quoteRefresh.assetQuoteStates
+    ),
+    profilerStates,
+    refreshedLocation,
+    observedAt: input.observedAt
+  });
 }
 
 export function shouldLogConfigRefresh(input: ConfigRefreshLogInput): boolean {

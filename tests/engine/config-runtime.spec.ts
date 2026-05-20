@@ -5,6 +5,7 @@ import {
   applyAdminConfigUpdateFlow,
   applyConfigRefreshSideEffects,
   applyRuntimeConfigUpdateSideEffects,
+  buildConfigRefreshRuntimeState,
   buildConfigRefreshLog,
   buildRuntimeConfigAppliedLog,
   configRefreshQuoteState,
@@ -203,6 +204,112 @@ describe("ConfigRuntime", () => {
       placement: "remote-nrt",
       requestId: "request-1",
       observedAt: "2026-05-18T15:00:00.000Z"
+    });
+  });
+
+  it("builds full config refresh runtime state from injected collaborators", () => {
+    const currentState = defaultEngineState("config-refresh-runtime-state");
+    currentState.location = {
+      ...currentState.location,
+      colo: null,
+      placement: "remote-nrt",
+      observedLatencyMs: 37
+    };
+    currentState.microstructure = {
+      ...currentState.microstructure,
+      instrumentCode: "BTC-PERP"
+    };
+    const nextConfig = {
+      ...defaultConfig,
+      TRADING_ENABLED: false,
+      MAX_POSITION_SIZE: 250,
+      LATENCY_THRESHOLD_MS: 125,
+      GOLDEN_COLOS: "NRT,HND",
+      version: "config-refresh-runtime-v1"
+    };
+    const profilerStates = {
+      ...currentState.profilerStates,
+      "btc-usd": {
+        ...currentState.profilerStates["btc-usd"],
+        toxicityScore: 0.42
+      }
+    };
+    const matrixInputs: {
+      observedAt: string | null;
+      latestInstrumentCode: string | undefined;
+      oracleRegime: string | null;
+      profilerToxicity: number;
+      quoteStatus: string;
+    } = {
+      observedAt: null,
+      latestInstrumentCode: undefined,
+      oracleRegime: null,
+      profilerToxicity: 0,
+      quoteStatus: "UNKNOWN"
+    };
+
+    const result = buildConfigRefreshRuntimeState(
+      {
+        currentState,
+        nextConfig,
+        macroBias: neutralMacroBias(),
+        temporaryOverride: null,
+        observedAt: "2026-05-18T15:00:00.000Z",
+        requestId: "config-refresh-request-1",
+        env: {
+          PLACEMENT_TARGET_COLO: "NRT",
+          GOLDEN_COLOS: "NRT,HND",
+          HIGH_LATENCY_COLO_RISK_MULTIPLIER: "0.25"
+        }
+      },
+      {
+        snapshotProfilers: () => profilerStates,
+        calculateAssetMatrix: (
+          observedAt,
+          latestInstrumentCode,
+          latestOracle,
+          nextProfilerStates,
+          assetQuoteStates
+        ) => {
+          matrixInputs.observedAt = observedAt;
+          matrixInputs.latestInstrumentCode = latestInstrumentCode;
+          matrixInputs.oracleRegime = latestOracle.regime;
+          matrixInputs.profilerToxicity = nextProfilerStates["btc-usd"]?.toxicityScore ?? 0;
+          matrixInputs.quoteStatus = assetQuoteStates["btc-usd"]?.status ?? "UNKNOWN";
+
+          return {
+            "btc-usd": {
+              ...currentState.assetMatrix["btc-usd"],
+              selectedByMoltworker: true,
+              quoteStatus: "SUSPENDED",
+              updatedAt: observedAt
+            }
+          };
+        }
+      }
+    );
+
+    expect(result.cachedConfig.version).toBe("config-refresh-runtime-v1");
+    expect(result.location).toMatchObject({
+      colo: "NRT",
+      isGoldenRegion: true,
+      observedLatencyMs: 37
+    });
+    expect(result.quoteState).toMatchObject({
+      status: "SUSPENDED",
+      reason: "TRADING_DISABLED",
+      updatedAt: "2026-05-18T15:00:00.000Z"
+    });
+    expect(result.assetMatrix["btc-usd"]).toMatchObject({
+      selectedByMoltworker: true,
+      quoteStatus: "SUSPENDED",
+      updatedAt: "2026-05-18T15:00:00.000Z"
+    });
+    expect(matrixInputs).toMatchObject({
+      observedAt: "2026-05-18T15:00:00.000Z",
+      latestInstrumentCode: "BTC-PERP",
+      profilerToxicity: 0.42,
+      quoteStatus: "SUSPENDED"
     });
   });
 

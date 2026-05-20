@@ -21,7 +21,6 @@ import {
   applyTopologyWarmUpRuntime,
   applyTopologyObservationSideEffects,
   defaultEngineLocation,
-  resolveEngineLocation,
   stateAfterLocationLatency,
   stateAfterTopologyObservation
 } from "./helpers/PlacementResolver";
@@ -184,9 +183,7 @@ import {
   applyAdminConfigUpdateFlow,
   applyConfigRefreshSideEffects,
   applyRuntimeConfigUpdateSideEffects,
-  configRefreshQuoteState,
-  configRefreshTopologyFromLocation,
-  stateAfterConfigRefresh
+  buildConfigRefreshRuntimeState
 } from "./config/ConfigRuntime";
 import {
   absorptionAnalyzerConfig as buildAbsorptionAnalyzerConfig,
@@ -4417,40 +4414,34 @@ export class TradingEngine {
     temporaryOverride: TemporaryGovernanceOverride | null,
     observedAt: string
   ): EngineState {
-    const quoteRefresh = configRefreshQuoteState({
-      assetQuoteStates: this.engineState.assetQuoteStates,
-      quoteState: this.engineState.quoteState,
-      nextConfig,
-      macroBias,
-      observedAt
-    });
-    const profilerStates = this.profilerRegistry.snapshot();
-    const refreshedLocation = resolveEngineLocation(
-      configRefreshTopologyFromLocation(this.engineState.location, observedAt, crypto.randomUUID()),
-      this.engineState.location,
-      this.env,
-      nextConfig,
-      this.engineState.location.observedLatencyMs
-    );
-
-    return stateAfterConfigRefresh({
-      currentState: this.engineState,
-      nextConfig,
-      macroBias,
-      temporaryOverride,
-      nextAssetQuoteStates: quoteRefresh.assetQuoteStates,
-      nextQuoteState: quoteRefresh.quoteState,
-      assetMatrix: this.calculateAssetMatrix(
+    return buildConfigRefreshRuntimeState(
+      {
+        currentState: this.engineState,
+        nextConfig,
+        macroBias,
+        temporaryOverride,
         observedAt,
-        this.engineState.microstructure.instrumentCode ?? undefined,
-        this.engineState.oracle,
-        profilerStates,
-        quoteRefresh.assetQuoteStates
-      ),
-      profilerStates,
-      refreshedLocation,
-      observedAt
-    });
+        requestId: crypto.randomUUID(),
+        env: this.env
+      },
+      {
+        snapshotProfilers: () => this.profilerRegistry.snapshot(),
+        calculateAssetMatrix: (
+          matrixObservedAt,
+          latestInstrumentCode,
+          latestOracle,
+          profilerStates,
+          assetQuoteStates
+        ) =>
+          this.calculateAssetMatrix(
+            matrixObservedAt,
+            latestInstrumentCode,
+            latestOracle,
+            profilerStates,
+            assetQuoteStates
+          )
+      }
+    );
   }
 
   private async refreshConfig(
