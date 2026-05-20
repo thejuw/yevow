@@ -109,6 +109,19 @@ export interface LiquidationIngestRuntimeResult {
   readonly ingestResult: TickIngestResult;
 }
 
+export interface CascadeLiquidationDetectionHandlers {
+  readonly configureAbsorptionAnalyzer: () => void;
+  readonly isInstrumentEnabled: (instrumentCode: string) => boolean;
+  readonly configureDetector: (instrumentCode: string) => void;
+  readonly observeCascade: (event: LiquidationEvent, observedAt: string) => CascadeEvent | null;
+  readonly rememberCascade: (cascade: CascadeEvent) => void;
+  readonly trackCascadeAbsorption: (cascade: CascadeEvent) => void;
+  readonly assetProfile: (instrumentCode: string) => CascadeAssetProfile;
+  readonly logDetected: (metadata: JsonRecord) => void;
+  readonly publishDetected: (payload: JsonRecord) => void;
+  readonly alertDetected: (cascade: CascadeEvent, metadata: JsonRecord) => void;
+}
+
 export interface CascadeDetectedArtifacts {
   readonly logMetadata: JsonRecord;
   readonly telemetryPayload: JsonRecord;
@@ -259,6 +272,42 @@ export function processLiquidationIngestRuntime(
     state: processed.state,
     ingestResult: processed.ingestResult
   };
+}
+
+export function recordCascadeLiquidationDetections(
+  events: readonly LiquidationEvent[],
+  observedAt: string,
+  handlers: CascadeLiquidationDetectionHandlers
+): CascadeEvent[] {
+  const cascades: CascadeEvent[] = [];
+  handlers.configureAbsorptionAnalyzer();
+
+  for (const event of events) {
+    if (!handlers.isInstrumentEnabled(event.instrumentCode)) {
+      continue;
+    }
+
+    handlers.configureDetector(event.instrumentCode);
+    const cascade = handlers.observeCascade(event, observedAt);
+
+    if (!cascade) {
+      continue;
+    }
+
+    cascades.push(cascade);
+    handlers.rememberCascade(cascade);
+    handlers.trackCascadeAbsorption(cascade);
+
+    const artifacts = buildCascadeDetectedArtifacts(
+      cascade,
+      handlers.assetProfile(cascade.instrumentCode)
+    );
+    handlers.logDetected(artifacts.logMetadata);
+    handlers.publishDetected(artifacts.telemetryPayload);
+    handlers.alertDetected(cascade, artifacts.alertMetadata);
+  }
+
+  return cascades;
 }
 
 export function cascadeLiquidationInsertStatements(

@@ -180,6 +180,7 @@ import {
   liquidationEventProcessingResult,
   persistCascadeLiquidationEvents,
   processLiquidationIngestRuntime,
+  recordCascadeLiquidationDetections,
   resolveLiquidationEventContext
 } from "./cascade/CascadeLiquidationRuntime";
 import {
@@ -1449,43 +1450,32 @@ export class TradingEngine {
     events: LiquidationEvent[],
     observedAt: string
   ): CascadeEvent[] {
-    const cascades: CascadeEvent[] = [];
-    this.absorptionAnalyzer.configure(this.currentAbsorptionAnalyzerConfig());
-
-    for (const event of events) {
-      if (!this.isCascadeInstrumentEnabled(event.instrumentCode)) {
-        continue;
-      }
-
-      this.cascadeDetector.configure(this.currentCascadeDetectorConfig(event.instrumentCode));
-      const cascade = this.cascadeDetector.observe(event, {
-        observedAt,
-        atr1h: this.resolveCascadeAtr1h(event)
-      });
-
-      if (!cascade) {
-        continue;
-      }
-
-      cascades.push(cascade);
-      this.cascadeEventsById.set(cascade.cascadeId, cascade);
-      this.absorptionAnalyzer.trackCascade(cascade);
-      const artifacts = buildCascadeDetectedArtifacts(
-        cascade,
-        this.cascadeAssetProfile(cascade.instrumentCode)
-      );
-      this.logger.warn("CASCADE_DETECTED", "Liquidation cascade detected", artifacts.logMetadata);
-      this.publish("CASCADE_DETECTED", artifacts.telemetryPayload);
-      this.emitCascadeOperationalAlert(
-        "CASCADE_DETECTED",
-        "Cascade detected",
-        `${cascade.instrumentCode} ${cascade.direction} liquidation cascade detected.`,
-        artifacts.alertMetadata,
-        cascade.cascadeId
-      );
-    }
-
-    return cascades;
+    return recordCascadeLiquidationDetections(events, observedAt, {
+      configureAbsorptionAnalyzer: () =>
+        this.absorptionAnalyzer.configure(this.currentAbsorptionAnalyzerConfig()),
+      isInstrumentEnabled: (instrumentCode) => this.isCascadeInstrumentEnabled(instrumentCode),
+      configureDetector: (instrumentCode) =>
+        this.cascadeDetector.configure(this.currentCascadeDetectorConfig(instrumentCode)),
+      observeCascade: (event, detectedAt) =>
+        this.cascadeDetector.observe(event, {
+          observedAt: detectedAt,
+          atr1h: this.resolveCascadeAtr1h(event)
+        }),
+      rememberCascade: (cascade) => this.cascadeEventsById.set(cascade.cascadeId, cascade),
+      trackCascadeAbsorption: (cascade) => this.absorptionAnalyzer.trackCascade(cascade),
+      assetProfile: (instrumentCode) => this.cascadeAssetProfile(instrumentCode),
+      logDetected: (metadata) =>
+        this.logger.warn("CASCADE_DETECTED", "Liquidation cascade detected", metadata),
+      publishDetected: (payload) => this.publish("CASCADE_DETECTED", payload),
+      alertDetected: (cascade, metadata) =>
+        this.emitCascadeOperationalAlert(
+          "CASCADE_DETECTED",
+          "Cascade detected",
+          `${cascade.instrumentCode} ${cascade.direction} liquidation cascade detected.`,
+          metadata,
+          cascade.cascadeId
+        )
+    });
   }
 
   private async persistCascadeLiquidations(events: LiquidationEvent[]): Promise<void> {

@@ -12,6 +12,7 @@ import {
   liquidationEventTelemetry,
   persistCascadeLiquidationEvents,
   processLiquidationIngestRuntime,
+  recordCascadeLiquidationDetections,
   resolveLiquidationEventContext,
   stateAfterLiquidationHeatmap
 } from "../../src/engine/trading/cascade/CascadeLiquidationRuntime";
@@ -334,6 +335,79 @@ describe("CascadeLiquidationRuntime", () => {
       logMetadata: cascadeDetectedLogMetadata(cascade),
       telemetryPayload: cascadeDetectedTelemetryPayload(cascade, profile),
       alertMetadata: cascadeDetectedAlertMetadata(cascade)
+    });
+  });
+
+  it("records cascade liquidation detections with configured side effects", () => {
+    const event = liquidationEvent();
+    const cascade = cascadeEvent();
+    const calls: string[] = [];
+    const published: Record<string, unknown>[] = [];
+    const alerts: { cascadeId: string; metadata: Record<string, unknown> }[] = [];
+
+    const detected = recordCascadeLiquidationDetections([event], OBSERVED_AT, {
+      configureAbsorptionAnalyzer() {
+        calls.push("configure-absorption");
+      },
+      isInstrumentEnabled(instrumentCode) {
+        calls.push(`enabled:${instrumentCode}`);
+        return true;
+      },
+      configureDetector(instrumentCode) {
+        calls.push(`configure-detector:${instrumentCode}`);
+      },
+      observeCascade(observedEvent, observedAt) {
+        calls.push(`observe:${observedEvent.eventId}:${observedAt}`);
+        return cascade;
+      },
+      rememberCascade(observedCascade) {
+        calls.push(`remember:${observedCascade.cascadeId}`);
+      },
+      trackCascadeAbsorption(observedCascade) {
+        calls.push(`track:${observedCascade.cascadeId}`);
+      },
+      assetProfile() {
+        return {
+          asset: "BTC",
+          notionalThresholdUsd: 50_000_000,
+          zScoreThreshold: 3,
+          minPriceMoveAtr: 1.5,
+          maxPositionNotionalPct: 0.25,
+          assetLiquidityCapUsd: 25_000,
+          maxSlippageBps: 8,
+          rationale: "test profile"
+        };
+      },
+      logDetected(metadata) {
+        calls.push(`log:${metadata.cascadeId as string}`);
+      },
+      publishDetected(payload) {
+        published.push(payload);
+      },
+      alertDetected(observedCascade, metadata) {
+        alerts.push({ cascadeId: observedCascade.cascadeId, metadata });
+      }
+    });
+
+    expect(detected).toEqual([cascade]);
+    expect(calls).toEqual([
+      "configure-absorption",
+      "enabled:btc-usd",
+      "configure-detector:btc-usd",
+      `observe:liq-1:${OBSERVED_AT}`,
+      "remember:cascade-1",
+      "track:cascade-1",
+      "log:cascade-1"
+    ]);
+    expect(published).toHaveLength(1);
+    expect(published[0]).toMatchObject({
+      cascadeId: "cascade-1",
+      instrumentCode: "btc-usd"
+    });
+    expect(published[0]?.assetProfile).toMatchObject({ asset: "BTC" });
+    expect(alerts[0]).toMatchObject({
+      cascadeId: "cascade-1",
+      metadata: { cascadeId: "cascade-1", instrumentCode: "btc-usd" }
     });
   });
 
