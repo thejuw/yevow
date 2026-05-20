@@ -448,6 +448,24 @@ export interface StaleDataKillSwitchArtifacts {
   readonly ingestResult: TickIngestResult;
 }
 
+export interface StaleDataKillSwitchSideEffectInput {
+  readonly tick: MarketTick;
+  readonly metrics: LatencyMetrics;
+  readonly artifacts: StaleDataKillSwitchArtifacts;
+  readonly tradingEnabled: boolean;
+}
+
+export interface StaleDataKillSwitchSideEffectHandlers {
+  readonly logPerformance: (metrics: LatencyMetrics) => void;
+  readonly publishKillSwitch: (payload: JsonRecord) => void;
+  readonly notify: (notification: NotifierEvent) => void;
+  readonly schedule: (work: Promise<unknown>) => void;
+  readonly cancelAllQuotes: (
+    instrumentCode: string,
+    reason: "STALE_DATA_KILL_SWITCH"
+  ) => Promise<unknown>;
+}
+
 export function stateAfterStaleDataKillSwitch(
   input: StaleDataKillSwitchInput
 ): StaleDataKillSwitchResult {
@@ -540,6 +558,21 @@ export function staleDataKillSwitchNotification(
       maxLatencyMs: input.maxLatencyMs
     }
   };
+}
+
+export function applyStaleDataKillSwitchSideEffects(
+  input: StaleDataKillSwitchSideEffectInput,
+  handlers: StaleDataKillSwitchSideEffectHandlers
+): void {
+  handlers.logPerformance(input.metrics);
+  handlers.publishKillSwitch(input.artifacts.telemetryPayload);
+  handlers.notify(input.artifacts.notification);
+
+  if (input.tradingEnabled) {
+    handlers.schedule(
+      handlers.cancelAllQuotes(input.tick.instrumentCode, "STALE_DATA_KILL_SWITCH")
+    );
+  }
 }
 
 export interface NativeHyperliquidLatencyPullInput {

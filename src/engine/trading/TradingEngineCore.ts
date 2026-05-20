@@ -148,6 +148,7 @@ import {
   applyExecutionProfileSideEffects,
   applyHardStaleTickDropSideEffects,
   applyPerformanceSpikeLogSideEffect,
+  applyStaleDataKillSwitchSideEffects,
   appendLatencyHistory,
   buildHardStaleTickDropArtifacts,
   buildPerformanceMetricsText,
@@ -2339,12 +2340,21 @@ export class TradingEngine {
       "STALE_DATA_KILL_SWITCH"
     );
 
-    this.logPerformance(metrics);
-    this.publish("STALE_DATA_KILL_SWITCH", staleKillSwitch.telemetryPayload);
-    this.notifier.notify(staleKillSwitch.notification);
-    if (this.cachedConfig.TRADING_ENABLED) {
-      this.state.waitUntil(this.cancelAllQuotes(tick.instrumentCode, "STALE_DATA_KILL_SWITCH"));
-    }
+    applyStaleDataKillSwitchSideEffects(
+      {
+        tick,
+        metrics,
+        artifacts: staleKillSwitch,
+        tradingEnabled: this.cachedConfig.TRADING_ENABLED
+      },
+      {
+        logPerformance: (staleMetrics) => this.logPerformance(staleMetrics),
+        publishKillSwitch: (payload) => this.publish("STALE_DATA_KILL_SWITCH", payload),
+        notify: (notification) => this.notifier.notify(notification),
+        schedule: (work) => this.state.waitUntil(work),
+        cancelAllQuotes: (instrumentCode, reason) => this.cancelAllQuotes(instrumentCode, reason)
+      }
+    );
     this.publishTickTelemetry(tick, metrics, "STALE", hotPathStartedAt);
     this.maybeRecordAgentSnapshot(metrics.brainTimestamp);
 

@@ -3,6 +3,7 @@ import {
   applyExecutionProfileSideEffects,
   applyHardStaleTickDropSideEffects,
   applyPerformanceSpikeLogSideEffect,
+  applyStaleDataKillSwitchSideEffects,
   appendLatencyHistory,
   buildHardStaleTickDropArtifacts,
   buildExecutionPerformanceTransition,
@@ -31,7 +32,8 @@ import {
   stateAfterHardStaleTickDrop,
   type ExecutionProfileSideEffectHandlers,
   type HardStaleTickDropSideEffectHandlers,
-  type PerformanceSpikeLogSideEffectHandlers
+  type PerformanceSpikeLogSideEffectHandlers,
+  type StaleDataKillSwitchSideEffectHandlers
 } from "../../src/engine/trading/performance/LatencyRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { EngineState, ExecutionProfile, LatencyMetrics, MarketTick } from "../../src/types";
@@ -504,6 +506,36 @@ describe("LatencyRuntime", () => {
     });
   });
 
+  it("applies soft stale kill-switch side effects in telemetry and cancel order", async () => {
+    const metrics = latencyMetrics({ status: "STALE", totalLatencyMs: 650 });
+    const artifacts = buildStaleDataKillSwitchArtifacts({
+      tick: tick({ sequence: 321 }),
+      metrics,
+      maxLatencyMs: 250
+    });
+    const sideEffects = staleDataKillSwitchSideEffectSpy();
+
+    applyStaleDataKillSwitchSideEffects(
+      {
+        tick: tick({ sequence: 321 }),
+        metrics,
+        artifacts,
+        tradingEnabled: true
+      },
+      sideEffects.handlers
+    );
+
+    expect(sideEffects.events).toEqual([
+      "performance:btc-usd:STALE",
+      "publish:PULL_CURRENT_QUOTES",
+      "notify:HIGH",
+      "cancel:btc-usd:STALE_DATA_KILL_SWITCH",
+      "schedule"
+    ]);
+
+    await Promise.all(sideEffects.scheduled);
+  });
+
   it("pulls native Hyperliquid quotes when latency exceeds the hot-path threshold", () => {
     const currentState = defaultEngineState("native-latency-test");
     currentState.averageLatency = 151;
@@ -838,6 +870,39 @@ function hardStaleTickDropSideEffectSpy(): {
       },
       publishPull(payload) {
         events.push(`publish:${payload.action}`);
+      },
+      schedule(work) {
+        events.push("schedule");
+        scheduled.push(work);
+      },
+      cancelAllQuotes(instrumentCode, reason) {
+        events.push(`cancel:${instrumentCode}:${reason}`);
+        return Promise.resolve();
+      }
+    }
+  };
+}
+
+function staleDataKillSwitchSideEffectSpy(): {
+  events: string[];
+  scheduled: Promise<unknown>[];
+  handlers: StaleDataKillSwitchSideEffectHandlers;
+} {
+  const events: string[] = [];
+  const scheduled: Promise<unknown>[] = [];
+
+  return {
+    events,
+    scheduled,
+    handlers: {
+      logPerformance(metrics) {
+        events.push(`performance:${metrics.instrumentCode}:${metrics.status}`);
+      },
+      publishKillSwitch(payload) {
+        events.push(`publish:${payload.action}`);
+      },
+      notify(notification) {
+        events.push(`notify:${notification.priority}`);
       },
       schedule(work) {
         events.push("schedule");
