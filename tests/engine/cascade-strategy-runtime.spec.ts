@@ -6,6 +6,8 @@ import {
   applyCascadeSizeRejectionSideEffects,
   closedOneMinuteCandlesForTick,
   processCascadeClosedCandleSignals,
+  processAcceptedCascadeSignalFlow,
+  type CascadeAcceptedSignalFlowHandlers,
   type CascadeOpenPositionSideEffectHandlers,
   type CascadeSignalRejectionSideEffectHandlers,
   type CascadeSizeRejectionSideEffectHandlers,
@@ -149,6 +151,66 @@ describe("CascadeStrategyRuntime", () => {
     ]);
   });
 
+  it("processes accepted cascade signals through sizing, position open, and rejection branches", async () => {
+    const accepted = cascadeAcceptedSignalFlowSpy();
+    const acceptedResult = processAcceptedCascadeSignalFlow(
+      {
+        signal: recoverySignal("signal-accepted", "btc-usd"),
+        observedAt: "2026-05-18T20:01:00.000Z",
+        engineId: "engine-1",
+        equity: 10_000,
+        riskPerTradePct: 0.01,
+        assetProfile: assetProfile(),
+        currentHeat: 0.1,
+        heatCapPct: 0.25
+      },
+      accepted.handlers
+    );
+
+    expect(acceptedResult.sizeDecision.approved).toBe(true);
+    expect(acceptedResult.position?.positionId).toBe("position-1");
+    expect(acceptedResult.intent?.intentId).toBe("intent-1");
+    expect(accepted.events).toEqual([
+      "alert:SIGNAL_EMITTED:signal-accepted",
+      "register:signal-accepted:20",
+      "build:intent:signal-accepted:20",
+      "signal:signal-accepted:TAKEN",
+      "trace:cascade-entry-signal-accepted",
+      "dispatch:intent-1",
+      "schedule",
+      "persist",
+      "schedule",
+      "alert:POSITION_OPENED:position-1"
+    ]);
+    await Promise.all(accepted.scheduled);
+
+    const rejected = cascadeAcceptedSignalFlowSpy();
+    const rejectedResult = processAcceptedCascadeSignalFlow(
+      {
+        signal: recoverySignal("signal-rejected", "btc-usd"),
+        observedAt: "2026-05-18T20:01:00.000Z",
+        engineId: "engine-1",
+        equity: 10_000,
+        riskPerTradePct: 0.01,
+        assetProfile: assetProfile(),
+        currentHeat: 0.25,
+        heatCapPct: 0.25
+      },
+      rejected.handlers
+    );
+
+    expect(rejectedResult.sizeDecision).toMatchObject({
+      approved: false,
+      limitingFactor: "HEAT"
+    });
+    expect(rejectedResult.position).toBeNull();
+    expect(rejected.events).toEqual([
+      "alert:SIGNAL_EMITTED:signal-rejected",
+      "warn:CASCADE_SIZE_REJECTED:signal-rejected:HEAT",
+      "alert:HEAT_CAP_EXCEEDED:signal-rejected"
+    ]);
+  });
+
   it("processes closed one-minute candles through cascade signal handlers", async () => {
     const acceptedSignal = recoverySignal("signal-accepted", "btc-usd");
     const rejected = rejection("cascade-rejected", "btc-usd");
@@ -219,7 +281,7 @@ function candle(overrides: Partial<Candle> = {}): Candle {
   };
 }
 
-function position(): CascadeOpenPosition {
+function position(overrides: Partial<CascadeOpenPosition> = {}): CascadeOpenPosition {
   return {
     positionId: "position-1",
     signalId: "signal-1",
@@ -243,7 +305,8 @@ function position(): CascadeOpenPosition {
     firstTargetTaken: false,
     secondTargetTaken: false,
     enteredAt: "2026-05-18T20:00:00.000Z",
-    updatedAt: "2026-05-18T20:00:00.000Z"
+    updatedAt: "2026-05-18T20:00:00.000Z",
+    ...overrides
   };
 }
 
@@ -409,6 +472,54 @@ function cascadeSizeRejectionSideEffectSpy(): {
         events.push(
           `alert:${eventType}:${dedupeKey}:${metadata.signalId}:${metadata.currentHeat}:${metadata.heatCapPct}`
         );
+      }
+    }
+  };
+}
+
+function cascadeAcceptedSignalFlowSpy(): {
+  events: string[];
+  scheduled: Promise<void>[];
+  handlers: CascadeAcceptedSignalFlowHandlers;
+} {
+  const events: string[] = [];
+  const scheduled: Promise<void>[] = [];
+
+  return {
+    events,
+    scheduled,
+    handlers: {
+      emitOperationalAlert(eventType, _title, _message, _metadata, dedupeKey) {
+        events.push(`alert:${eventType}:${dedupeKey}`);
+      },
+      registerPosition(signal, sizeDecision) {
+        events.push(`register:${signal.signalId}:${sizeDecision.units}`);
+        return position({ signalId: signal.signalId });
+      },
+      buildEntryIntent(signal, size) {
+        events.push(`build:intent:${signal.signalId}:${size}`);
+        return tradeIntent();
+      },
+      recordUiSignal(signal, outcome) {
+        events.push(`signal:${signal.signalId}:${outcome}`);
+      },
+      traceDecision(decision) {
+        events.push(`trace:${decision.decisionId}`);
+      },
+      schedule(work) {
+        events.push("schedule");
+        scheduled.push(work);
+      },
+      dispatchExecution(intent) {
+        events.push(`dispatch:${intent.intentId}`);
+        return Promise.resolve();
+      },
+      persistPositions() {
+        events.push("persist");
+        return Promise.resolve();
+      },
+      logWarn(event, _message, metadata) {
+        events.push(`warn:${event}:${metadata.signalId}:${metadata.limitingFactor}`);
       }
     }
   };

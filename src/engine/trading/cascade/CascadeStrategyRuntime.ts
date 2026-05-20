@@ -5,6 +5,7 @@ import {
   cascadeHeatCapAlertMetadata,
   cascadePositionOpenedAlertMetadata,
   cascadeSizeRejectedLogMetadata,
+  cascadeSignalEmittedAlertMetadata,
   cascadeSignalRejectionAgentSignal,
   cascadeSignalRejectionLogMetadata,
   type CascadeCloseOperationalAlert
@@ -30,6 +31,8 @@ import type {
   TradeIntent
 } from "../../../types";
 import type { CascadeAssetProfile } from "../../../strategy/cascade/AssetProfiles";
+import { calculatePositionSize } from "../../../strategy/cascade/PositionSizer";
+import type { CascadeAlertEventType } from "../../../strategy/cascade/OperationalSafeguards";
 
 export type CascadePositionUpdateAlert = CascadeCloseOperationalAlert;
 
@@ -112,6 +115,49 @@ export interface CascadeClosedCandleSignalHandlers {
     signal: CascadeRecoverySignal,
     observedAt: string
   ) => Promise<void>;
+}
+
+export interface CascadeAcceptedSignalFlowInput {
+  readonly signal: CascadeRecoverySignal;
+  readonly observedAt: string;
+  readonly engineId: string;
+  readonly equity: number;
+  readonly riskPerTradePct: number;
+  readonly assetProfile: CascadeAssetProfile;
+  readonly currentHeat: number;
+  readonly heatCapPct: number;
+}
+
+export interface CascadeAcceptedSignalFlowHandlers {
+  readonly emitOperationalAlert: (
+    eventType: CascadeAlertEventType,
+    title: string,
+    message: string,
+    metadata: JsonRecord,
+    dedupeKey: string
+  ) => void;
+  readonly registerPosition: (
+    signal: CascadeRecoverySignal,
+    sizeDecision: PositionSizeDecision,
+    observedAt: string
+  ) => CascadeOpenPosition;
+  readonly buildEntryIntent: (
+    signal: CascadeRecoverySignal,
+    size: number,
+    observedAt: string
+  ) => TradeIntent;
+  readonly recordUiSignal: (signal: AgentSignal, outcome: "TAKEN") => void;
+  readonly traceDecision: (decision: AgentDecisionTrace) => void;
+  readonly schedule: (work: Promise<void>) => void;
+  readonly dispatchExecution: (intent: TradeIntent) => Promise<void>;
+  readonly persistPositions: () => Promise<void>;
+  readonly logWarn: (event: string, message: string, metadata: JsonRecord) => void;
+}
+
+export interface CascadeAcceptedSignalFlowResult {
+  readonly sizeDecision: PositionSizeDecision;
+  readonly position: CascadeOpenPosition | null;
+  readonly intent: TradeIntent | null;
 }
 
 export function shouldEvaluateCascadeStrategy(
@@ -210,6 +256,76 @@ export function applyCascadeSizeRejectionSideEffects(
     ),
     input.signal.signalId
   );
+}
+
+export function processAcceptedCascadeSignalFlow(
+  input: CascadeAcceptedSignalFlowInput,
+  handlers: CascadeAcceptedSignalFlowHandlers
+): CascadeAcceptedSignalFlowResult {
+  handlers.emitOperationalAlert(
+    "SIGNAL_EMITTED",
+    "Cascade signal emitted",
+    `${input.signal.instrumentCode} ${input.signal.direction} cascade recovery signal emitted.`,
+    cascadeSignalEmittedAlertMetadata(input.signal),
+    input.signal.signalId
+  );
+
+  const sizeDecision = calculatePositionSize({
+    equity: input.equity,
+    riskPerTradePct: input.riskPerTradePct,
+    entryPrice: input.signal.entryPrice,
+    stopPrice: input.signal.stopPrice,
+    maxPositionNotionalPct: input.assetProfile.maxPositionNotionalPct,
+    assetLiquidityCap: input.assetProfile.assetLiquidityCapUsd,
+    currentHeat: input.currentHeat,
+    heatCapPct: input.heatCapPct
+  });
+
+  if (!sizeDecision.approved) {
+    applyCascadeSizeRejectionSideEffects(
+      {
+        signal: input.signal,
+        sizeDecision,
+        currentHeat: input.currentHeat,
+        heatCapPct: input.heatCapPct
+      },
+      {
+        logWarn: handlers.logWarn,
+        emitOperationalAlert: (eventType, title, message, metadata, dedupeKey) => {
+          handlers.emitOperationalAlert(eventType, title, message, metadata, dedupeKey);
+        }
+      }
+    );
+
+    return { sizeDecision, position: null, intent: null };
+  }
+
+  const position = handlers.registerPosition(input.signal, sizeDecision, input.observedAt);
+  const intent = handlers.buildEntryIntent(input.signal, sizeDecision.units, input.observedAt);
+  applyCascadeOpenPositionSideEffects(
+    {
+      signal: input.signal,
+      intent,
+      engineId: input.engineId,
+      position,
+      assetProfile: input.assetProfile,
+      sizeDecision,
+      currentHeat: input.currentHeat,
+      observedAt: input.observedAt
+    },
+    {
+      recordUiSignal: handlers.recordUiSignal,
+      traceDecision: handlers.traceDecision,
+      schedule: handlers.schedule,
+      dispatchExecution: handlers.dispatchExecution,
+      persistPositions: handlers.persistPositions,
+      emitOperationalAlert: (eventType, title, message, metadata, dedupeKey) => {
+        handlers.emitOperationalAlert(eventType, title, message, metadata, dedupeKey);
+      }
+    }
+  );
+
+  return { sizeDecision, position, intent };
 }
 
 export async function processCascadeClosedCandleSignals(

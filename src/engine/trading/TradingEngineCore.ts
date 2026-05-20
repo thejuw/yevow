@@ -196,11 +196,10 @@ import {
 } from "./cascade/CascadeConfigRuntime";
 import { ensureCascadePaperModeArmedRuntime } from "./cascade/CascadePaperModeRuntime";
 import {
-  applyCascadeOpenPositionSideEffects,
   applyCascadePositionUpdateSideEffects,
   applyCascadeSignalRejectionSideEffects,
-  applyCascadeSizeRejectionSideEffects,
   processCascadeClosedCandleSignals,
+  processAcceptedCascadeSignalFlow,
   shouldEvaluateCascadeStrategy
 } from "./cascade/CascadeStrategyRuntime";
 import { OrderBookReconstructor, type OrderBookStores } from "./book/OrderBookReconstructor";
@@ -238,7 +237,6 @@ import {
 import { emitAgentStateSnapshot } from "./telemetry/AgentSnapshotRuntime";
 import {
   buildCascadeOperationalAlertTelemetry,
-  cascadeSignalEmittedAlertMetadata,
   emitCascadeOperationalAlertSideEffects,
   recordCascadeUiSignalSideEffects
 } from "./telemetry/CascadeSignalTelemetryRuntime";
@@ -354,7 +352,6 @@ import { HeatManager } from "../../strategy/cascade/HeatManager";
 import type { NewsCalendar } from "../../strategy/cascade/NewsCalendar";
 import type { CascadeAlertEventType } from "../../strategy/cascade/OperationalSafeguards";
 import { PositionManager } from "../../strategy/cascade/PositionManager";
-import { calculatePositionSize } from "../../strategy/cascade/PositionSizer";
 import { calculateVwap } from "../../strategy/cascade/indicators/VWAP";
 import type {
   AdminConfigUpdate,
@@ -404,13 +401,11 @@ import type {
   Candle,
   CascadeDetectorConfig,
   CascadeEvent,
-  CascadeOpenPosition,
   CascadePositionIntent,
   CascadeRecoverySignal,
   CascadeRecoverySignalRejection,
   CascadeRecoverySignalResult,
-  LiquidationEvent,
-  PositionSizeDecision
+  LiquidationEvent
 } from "../../strategy/cascade/types";
 
 import {
@@ -1703,51 +1698,30 @@ export class TradingEngine {
     });
   }
 
-  private handleRejectedCascadeSize(
+  private async processCascadeSignal(
     signal: CascadeRecoverySignal,
-    sizeDecision: PositionSizeDecision,
-    currentHeat: number
-  ): void {
-    applyCascadeSizeRejectionSideEffects(
+    observedAt: string
+  ): Promise<void> {
+    const assetProfile = this.cascadeAssetProfile(signal.instrumentCode);
+    const currentHeat = this.cascadeHeatManager.currentHeat(this.cascadePositionManager.snapshot());
+    processAcceptedCascadeSignalFlow(
       {
         signal,
-        sizeDecision,
+        observedAt,
+        engineId: this.engineState.engineId,
+        equity: this.engineState.bankroll.equity,
+        riskPerTradePct: this.cachedConfig.RISK_PER_TRADE_PCT,
+        assetProfile,
         currentHeat,
         heatCapPct: this.cachedConfig.HEAT_CAP_PCT
       },
       {
-        logWarn: (event, message, metadata) => this.logger.warn(event, message, metadata),
         emitOperationalAlert: (eventType, title, message, metadata, dedupeKey) =>
-          this.emitCascadeOperationalAlert(eventType, title, message, metadata, dedupeKey)
-      }
-    );
-  }
-
-  private openCascadePosition(
-    signal: CascadeRecoverySignal,
-    sizeDecision: PositionSizeDecision,
-    assetProfile: CascadeAssetProfile,
-    currentHeat: number,
-    observedAt: string
-  ): void {
-    const position = this.cascadePositionManager.registerFromSignal(
-      signal,
-      sizeDecision,
-      observedAt
-    );
-    const intent = this.tradeIntentFromCascadeSignal(signal, sizeDecision.units, observedAt);
-    applyCascadeOpenPositionSideEffects(
-      {
-        signal,
-        intent,
-        engineId: this.engineState.engineId,
-        position,
-        assetProfile,
-        sizeDecision,
-        currentHeat,
-        observedAt
-      },
-      {
+          this.emitCascadeOperationalAlert(eventType, title, message, metadata, dedupeKey),
+        registerPosition: (acceptedSignal, sizeDecision, acceptedAt) =>
+          this.cascadePositionManager.registerFromSignal(acceptedSignal, sizeDecision, acceptedAt),
+        buildEntryIntent: (acceptedSignal, size, acceptedAt) =>
+          this.tradeIntentFromCascadeSignal(acceptedSignal, size, acceptedAt),
         recordUiSignal: (agentSignal, outcome) => this.recordCascadeUiSignal(agentSignal, outcome),
         traceDecision: (decision) => this.logger.traceDecision(decision),
         schedule: (work) => this.state.waitUntil(work),
@@ -1758,42 +1732,9 @@ export class TradingEngine {
             this.cascadePositionManager.snapshot(),
             "CASCADE_POSITION_OPENED"
           ),
-        emitOperationalAlert: (eventType, title, message, metadata, dedupeKey) =>
-          this.emitCascadeOperationalAlert(eventType, title, message, metadata, dedupeKey)
+        logWarn: (event, message, metadata) => this.logger.warn(event, message, metadata)
       }
     );
-  }
-
-  private async processCascadeSignal(
-    signal: CascadeRecoverySignal,
-    observedAt: string
-  ): Promise<void> {
-    const assetProfile = this.cascadeAssetProfile(signal.instrumentCode);
-    const currentHeat = this.cascadeHeatManager.currentHeat(this.cascadePositionManager.snapshot());
-    this.emitCascadeOperationalAlert(
-      "SIGNAL_EMITTED",
-      "Cascade signal emitted",
-      `${signal.instrumentCode} ${signal.direction} cascade recovery signal emitted.`,
-      cascadeSignalEmittedAlertMetadata(signal),
-      signal.signalId
-    );
-    const sizeDecision = calculatePositionSize({
-      equity: this.engineState.bankroll.equity,
-      riskPerTradePct: this.cachedConfig.RISK_PER_TRADE_PCT,
-      entryPrice: signal.entryPrice,
-      stopPrice: signal.stopPrice,
-      maxPositionNotionalPct: assetProfile.maxPositionNotionalPct,
-      assetLiquidityCap: assetProfile.assetLiquidityCapUsd,
-      currentHeat,
-      heatCapPct: this.cachedConfig.HEAT_CAP_PCT
-    });
-
-    if (!sizeDecision.approved) {
-      this.handleRejectedCascadeSize(signal, sizeDecision, currentHeat);
-      return;
-    }
-
-    this.openCascadePosition(signal, sizeDecision, assetProfile, currentHeat, observedAt);
   }
 
   private cascadeSignalEngineWithConfig(): CascadeRecoverySignalEngine {
