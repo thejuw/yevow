@@ -80,6 +80,28 @@ export interface BuildReplayResultOutput {
   readonly logMetadata: JsonRecord;
 }
 
+export interface BuildCompletedReplayArtifactsInput {
+  readonly replayId: string;
+  readonly replayOptions: ReplayOptions;
+  readonly ticksLength: number;
+  readonly ticksReplayed: number;
+  readonly initialShadowBankroll: number;
+  readonly historicalTradeCount: number;
+  readonly generatedIntentCount: number;
+  readonly speedMultiplier: number;
+  readonly modeledTrades: ReplayResult["shadowTrades"];
+  readonly shadowTrades: ReplayResult["shadowTrades"];
+  readonly sentiment: SentimentState;
+  readonly dateFrom: string | null;
+  readonly dateTo: string | null;
+  readonly startedAt: string;
+  readonly completedAt: string;
+}
+
+export interface CompletedReplayArtifacts extends BuildReplayResultOutput {
+  readonly status: ReplayStatus;
+}
+
 export function resolveInitialShadowBankroll(input: ResolveInitialShadowBankrollInput): number {
   if (input.requestedShadowBankroll > 0) {
     return input.requestedShadowBankroll;
@@ -233,6 +255,44 @@ export function buildHistoricalReplayResult(
       speedMultiplier: input.speedMultiplier,
       liveStateRestored: true
     }
+  };
+}
+
+export function buildCompletedReplayArtifacts(
+  input: BuildCompletedReplayArtifactsInput
+): CompletedReplayArtifacts {
+  const replayBuild = buildHistoricalReplayResult({
+    replayId: input.replayId,
+    ticksReplayed: input.ticksReplayed,
+    initialShadowBankroll: input.initialShadowBankroll,
+    historicalTradeCount: input.historicalTradeCount,
+    generatedIntentCount: input.generatedIntentCount,
+    speedMultiplier: input.speedMultiplier,
+    replayOptions: input.replayOptions,
+    modeledTrades: input.modeledTrades,
+    shadowTrades: input.shadowTrades,
+    sentiment: input.sentiment,
+    startedAt: input.startedAt,
+    completedAt: input.completedAt
+  });
+
+  return {
+    ...replayBuild,
+    status: buildReplayStatus({
+      replayId: input.replayId,
+      status: "COMPLETED",
+      ticksTotal: input.ticksLength,
+      ticksProcessed: input.ticksLength,
+      progressPct: 100,
+      speedMultiplier: input.speedMultiplier,
+      shadowBankroll: replayBuild.result.shadowBankroll,
+      dateFrom: input.dateFrom,
+      dateTo: input.dateTo,
+      scenario: input.replayOptions.scenario,
+      startedAt: input.startedAt,
+      updatedAt: input.completedAt,
+      completedAt: input.completedAt
+    })
   };
 }
 

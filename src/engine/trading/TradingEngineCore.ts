@@ -294,7 +294,7 @@ import {
 } from "./replay/ReplayJournal";
 import { runShadowReplayLoop, type ShadowReplayLoopResult } from "./replay/ReplayLoopRuntime";
 import {
-  buildHistoricalReplayResult,
+  buildCompletedReplayArtifacts,
   buildReplayStatus,
   buildShadowReplayConfig,
   buildShadowReplayEngineState,
@@ -4811,17 +4811,20 @@ export class TradingEngine {
     input: HistoricalReplayCompletionInput
   ): Promise<ReplayResult> {
     const completedAt = new Date().toISOString();
-    const replayBuild = buildHistoricalReplayResult({
+    const replayBuild = buildCompletedReplayArtifacts({
       replayId: input.replayId,
+      replayOptions: input.replayOptions,
+      ticksLength: input.ticksLength,
       ticksReplayed: input.replayLoop.ticksReplayed,
       initialShadowBankroll: input.initialShadowBankroll,
       historicalTradeCount: input.historicalTradeCount,
       generatedIntentCount: input.replayLoop.generatedIntentCount,
       speedMultiplier: input.speedMultiplier,
-      replayOptions: input.replayOptions,
       modeledTrades: input.replayLoop.modeledTrades,
       shadowTrades: input.shadowTrades,
       sentiment: this.engineState.sentiment,
+      dateFrom: input.dateFrom,
+      dateTo: input.dateTo,
       startedAt: input.startedAt,
       completedAt
     });
@@ -4838,23 +4841,7 @@ export class TradingEngine {
       input.dateFrom,
       input.dateTo
     );
-    await this.replayJournal.writeStatus(
-      buildReplayStatus({
-        replayId: input.replayId,
-        status: "COMPLETED",
-        ticksTotal: input.ticksLength,
-        ticksProcessed: input.ticksLength,
-        progressPct: 100,
-        speedMultiplier: input.speedMultiplier,
-        shadowBankroll: result.shadowBankroll,
-        dateFrom: input.dateFrom,
-        dateTo: input.dateTo,
-        scenario: input.replayOptions.scenario,
-        startedAt: input.startedAt,
-        updatedAt: completedAt,
-        completedAt
-      })
-    );
+    await this.replayJournal.writeStatus(replayBuild.status);
 
     return result;
   }

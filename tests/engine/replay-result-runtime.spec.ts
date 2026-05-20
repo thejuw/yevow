@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildCompletedReplayArtifacts,
   buildHistoricalReplayResult,
   buildReplayStatus,
   buildShadowReplayConfig,
@@ -99,6 +100,53 @@ describe("ReplayResultRuntime", () => {
     ]);
     expect(output.result.latencyModel).toMatchObject({ type: "fixed-plus-shock" });
     expect(output.result.ablation).toBeNull();
+  });
+
+  it("builds completed replay artifacts with final status", () => {
+    const artifacts = buildCompletedReplayArtifacts({
+      replayId: "replay-complete",
+      replayOptions: options({ scenario: "FLASH_CRASH" }),
+      ticksLength: 80,
+      ticksReplayed: 75,
+      initialShadowBankroll: 300,
+      historicalTradeCount: 2,
+      generatedIntentCount: 3,
+      speedMultiplier: 4,
+      modeledTrades: [trade({ theoreticalPnl: 2 })],
+      shadowTrades: [trade({ theoreticalPnl: -1 })],
+      sentiment: defaultEngineState("replay-result").sentiment,
+      dateFrom: "2026-05-01T00:00:00.000Z",
+      dateTo: "2026-05-02T00:00:00.000Z",
+      startedAt: STARTED_AT,
+      completedAt: COMPLETED_AT
+    });
+
+    expect(artifacts.result).toMatchObject({
+      replayId: "replay-complete",
+      scenario: "FLASH_CRASH",
+      ticksReplayed: 75,
+      shadowBankroll: 302,
+      theoreticalPnl: 2,
+      baselinePnl: -1
+    });
+    expect(artifacts.status).toMatchObject({
+      replayId: "replay-complete",
+      status: "COMPLETED",
+      ticksTotal: 80,
+      ticksProcessed: 80,
+      progressPct: 100,
+      shadowBankroll: 302,
+      dateFrom: "2026-05-01T00:00:00.000Z",
+      dateTo: "2026-05-02T00:00:00.000Z",
+      scenario: "FLASH_CRASH",
+      startedAt: STARTED_AT,
+      updatedAt: COMPLETED_AT,
+      completedAt: COMPLETED_AT
+    });
+    expect(artifacts.logMetadata).toMatchObject({
+      replayId: "replay-complete",
+      liveStateRestored: true
+    });
   });
 
   it("resolves and bootstraps isolated paper replay state", () => {
