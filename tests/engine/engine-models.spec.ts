@@ -10,7 +10,11 @@ import {
   mapManagedStatusToTradeStatus,
   stateAfterExecutionAccounting
 } from "../../src/engine/ExecutionAccounting";
-import { buildExecutionReportRuntimeUpdate } from "../../src/engine/trading/execution/ExecutionReportRuntime";
+import {
+  applyExecutionReportSideEffects,
+  buildExecutionReportRuntimeUpdate,
+  type ExecutionReportSideEffectHandlers
+} from "../../src/engine/trading/execution/ExecutionReportRuntime";
 import { evaluateIntentDispatchGate } from "../../src/engine/IntentGeneration";
 import { countOrderBookLevels } from "../../src/engine/OrderBookState";
 import { QueuePositionModel } from "../../src/engine/QueuePositionModel";
@@ -141,6 +145,58 @@ describe("execution accounting", () => {
     expect(update.executionQuality.implementationShortfall).toBe(1.05);
     expect(update.adverseSelectionMarkPrice).toBe(102);
     expect(update.nextState.inventory).toBe(inventory);
+  });
+
+  it("applies execution report side effects in engine order", async () => {
+    const observedAt = "2026-05-18T12:00:00.000Z";
+    const state = engineState({
+      lastTradeIntent: tradeIntent({ intentId: "intent-open" }),
+      orderMap: {
+        "order-open": managedOrder({
+          clientId: "order-open",
+          intentId: "intent-open",
+          side: "BUY",
+          price: 100,
+          size: 1
+        })
+      }
+    });
+    const report: ExecutionReport = {
+      clientId: "order-open",
+      instrumentCode: "btc-usd",
+      side: "BUY",
+      status: "FILLED",
+      filledSize: 0.5,
+      achievedPrice: 101,
+      expectedPrice: 100,
+      fees: 0.05,
+      latencyMs: 12,
+      observedAt
+    };
+    const update = buildExecutionReportRuntimeUpdate({
+      state,
+      report,
+      markPrice: () => 102,
+      calculateInventory: () => inventoryState({ netDelta: 0.5, updatedAt: observedAt })
+    });
+    const sideEffects = executionReportSideEffectSpy();
+
+    await applyExecutionReportSideEffects(
+      {
+        report,
+        update,
+        oracleRegime: "REGIME_RANGE"
+      },
+      sideEffects.handlers
+    );
+
+    expect(sideEffects.events).toEqual([
+      "adverse:order-open:102:REGIME_RANGE",
+      "quality:order-open",
+      "state:FILLED",
+      "record:order-open",
+      "publish:order-open"
+    ]);
   });
 
   it("realizes pnl when a fill closes an existing position", () => {
@@ -643,6 +699,35 @@ describe("engine support utilities", () => {
     });
   });
 });
+
+function executionReportSideEffectSpy(): {
+  events: string[];
+  handlers: ExecutionReportSideEffectHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      observeAdverseSelection(_report, order, markPrice, oracleRegime) {
+        events.push(`adverse:${order.clientId}:${markPrice}:${oracleRegime}`);
+      },
+      recordExecutionQuality(record) {
+        events.push(`quality:${record.clientId}`);
+      },
+      applyState(state) {
+        events.push(`state:${state.orderMap["order-open"]?.status ?? "MISSING"}`);
+        return Promise.resolve();
+      },
+      recordExecution(tradeExecution) {
+        events.push(`record:${tradeExecution.orderId}`);
+      },
+      publishTradeExecution(tradeExecution) {
+        events.push(`publish:${tradeExecution.orderId}`);
+      }
+    }
+  };
+}
 
 function engineState(overrides: Partial<EngineState> = {}): EngineState {
   const now = "2026-05-18T12:00:00.000Z";

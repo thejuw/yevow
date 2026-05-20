@@ -25,6 +25,27 @@ export interface ExecutionReportRuntimeUpdate {
   readonly nextState: EngineState;
 }
 
+export interface ExecutionReportSideEffectsInput {
+  readonly report: ExecutionReport;
+  readonly update: ExecutionReportRuntimeUpdate;
+  readonly oracleRegime: EngineState["oracle"]["regime"];
+}
+
+export interface ExecutionReportSideEffectHandlers {
+  readonly observeAdverseSelection: (
+    report: ExecutionReport,
+    order: ExecutionAccountingResult["order"],
+    markPrice: number,
+    oracleRegime: EngineState["oracle"]["regime"]
+  ) => void;
+  readonly recordExecutionQuality: (record: ExecutionQualityRecord) => void;
+  readonly applyState: (state: EngineState) => Promise<void>;
+  readonly recordExecution: (tradeExecution: ExecutionAccountingResult["tradeExecution"]) => void;
+  readonly publishTradeExecution: (
+    tradeExecution: ExecutionAccountingResult["tradeExecution"]
+  ) => void;
+}
+
 export function buildExecutionReportRuntimeUpdate(
   input: ExecutionReportRuntimeUpdateInput
 ): ExecutionReportRuntimeUpdate {
@@ -50,4 +71,20 @@ export function buildExecutionReportRuntimeUpdate(
       inventory
     })
   };
+}
+
+export async function applyExecutionReportSideEffects(
+  input: ExecutionReportSideEffectsInput,
+  handlers: ExecutionReportSideEffectHandlers
+): Promise<void> {
+  handlers.observeAdverseSelection(
+    input.report,
+    input.update.accounting.order,
+    input.update.adverseSelectionMarkPrice,
+    input.oracleRegime
+  );
+  handlers.recordExecutionQuality(input.update.executionQuality);
+  await handlers.applyState(input.update.nextState);
+  handlers.recordExecution(input.update.accounting.tradeExecution);
+  handlers.publishTradeExecution(input.update.accounting.tradeExecution);
 }

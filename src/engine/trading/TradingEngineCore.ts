@@ -123,7 +123,10 @@ import {
   dispatchTradeIntentSideEffects,
   dispatchTradeIntentToExecutioner
 } from "./execution/ExecutionDispatchRuntime";
-import { buildExecutionReportRuntimeUpdate } from "./execution/ExecutionReportRuntime";
+import {
+  applyExecutionReportSideEffects,
+  buildExecutionReportRuntimeUpdate
+} from "./execution/ExecutionReportRuntime";
 import {
   buildOracleTickInput,
   buildProfilerContext,
@@ -4023,23 +4026,34 @@ export class TradingEngine {
       calculateInventory: (observedAt, openPositions) =>
         this.calculateInventoryState(observedAt, openPositions)
     });
-    this.adverseSelectionModel.observeExecutionReport(
-      report,
-      executionUpdate.accounting.order,
-      executionUpdate.adverseSelectionMarkPrice,
-      this.engineState.oracle.regime
-    );
 
-    this.logger.recordExecutionQuality(executionUpdate.executionQuality);
-
-    this.engineState = executionUpdate.nextState;
-
-    await this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "EXECUTION_REPORT");
-    this.logger.recordExecution(executionUpdate.accounting.tradeExecution);
-    this.publish(
-      "TRADE_EXECUTION_UPDATE",
-      executionUpdate.accounting.tradeExecution as unknown as Record<string, unknown>,
-      executionUpdate.accounting.tradeExecution.tradeId
+    await applyExecutionReportSideEffects(
+      {
+        report,
+        update: executionUpdate,
+        oracleRegime: this.engineState.oracle.regime
+      },
+      {
+        observeAdverseSelection: (executionReport, order, markPrice, oracleRegime) =>
+          this.adverseSelectionModel.observeExecutionReport(
+            executionReport,
+            order,
+            markPrice,
+            oracleRegime
+          ),
+        recordExecutionQuality: (record) => this.logger.recordExecutionQuality(record),
+        applyState: async (state) => {
+          this.engineState = state;
+          await this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "EXECUTION_REPORT");
+        },
+        recordExecution: (tradeExecution) => this.logger.recordExecution(tradeExecution),
+        publishTradeExecution: (tradeExecution) =>
+          this.publish(
+            "TRADE_EXECUTION_UPDATE",
+            tradeExecution as unknown as Record<string, unknown>,
+            tradeExecution.tradeId
+          )
+      }
     );
   }
 
