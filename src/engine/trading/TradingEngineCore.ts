@@ -211,7 +211,7 @@ import {
 } from "./cascade/CascadeConfigRuntime";
 import {
   applyCascadePositionUpdateSideEffects,
-  closedOneMinuteCandlesForTick,
+  processCascadeClosedCandleSignals,
   shouldEvaluateCascadeStrategy
 } from "./cascade/CascadeStrategyRuntime";
 import { OrderBookReconstructor, type OrderBookStores } from "./book/OrderBookReconstructor";
@@ -1739,40 +1739,18 @@ export class TradingEngine {
       return;
     }
 
-    const closed1m = closedOneMinuteCandlesForTick(closedCandles, tick);
-    if (closed1m.length === 0) {
-      return;
-    }
-
     await this.cascadeNewsCalendar.refresh();
-    for (const reclaimCandle of closed1m) {
-      const absorption = latestAbsorptionForInstrument(
-        this.cascadeAbsorptionsById,
-        reclaimCandle.instrumentCode
-      );
-      if (!absorption) {
-        continue;
-      }
-
-      const cascade = this.cascadeEventsById.get(absorption.cascadeId);
-      if (!cascade) {
-        continue;
-      }
-
-      const signalResult = this.evaluateCascadeRecoverySignal(
-        cascade,
-        absorption,
-        reclaimCandle,
-        observedAt
-      );
-
-      if (!signalResult.accepted) {
-        this.recordRejectedCascadeSignal(signalResult.rejection, observedAt);
-        continue;
-      }
-
-      await this.processCascadeSignal(signalResult.signal, observedAt);
-    }
+    await processCascadeClosedCandleSignals(closedCandles, tick, observedAt, {
+      latestAbsorptionForInstrument: (instrumentCode) =>
+        latestAbsorptionForInstrument(this.cascadeAbsorptionsById, instrumentCode),
+      cascadeForAbsorption: (absorption) =>
+        this.cascadeEventsById.get(absorption.cascadeId) ?? null,
+      evaluateSignal: (cascade, absorption, reclaimCandle, signalObservedAt) =>
+        this.evaluateCascadeRecoverySignal(cascade, absorption, reclaimCandle, signalObservedAt),
+      recordRejectedSignal: (rejection, rejectedAt) =>
+        this.recordRejectedCascadeSignal(rejection, rejectedAt),
+      processAcceptedSignal: (signal, acceptedAt) => this.processCascadeSignal(signal, acceptedAt)
+    });
   }
 
   private async dispatchCascadePositionUpdates(
