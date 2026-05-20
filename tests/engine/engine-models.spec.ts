@@ -10,6 +10,7 @@ import {
   mapManagedStatusToTradeStatus,
   stateAfterExecutionAccounting
 } from "../../src/engine/ExecutionAccounting";
+import { buildExecutionReportRuntimeUpdate } from "../../src/engine/trading/execution/ExecutionReportRuntime";
 import { evaluateIntentDispatchGate } from "../../src/engine/IntentGeneration";
 import { countOrderBookLevels } from "../../src/engine/OrderBookState";
 import { QueuePositionModel } from "../../src/engine/QueuePositionModel";
@@ -20,6 +21,7 @@ import type {
   EngineState,
   ExecutionReport,
   InternalOrderBook,
+  InventoryState,
   ManagedOrder,
   QuoteSignal,
   ReplayResult,
@@ -94,6 +96,51 @@ describe("execution accounting", () => {
       primaryDriver: "CROUPIER",
       size: 0.5
     });
+  });
+
+  it("builds the execution report runtime update used by the durable object", () => {
+    const observedAt = "2026-05-18T12:00:00.000Z";
+    const state = engineState({
+      lastTradeIntent: tradeIntent({ intentId: "intent-open" }),
+      orderMap: {
+        "order-open": managedOrder({
+          clientId: "order-open",
+          intentId: "intent-open",
+          side: "BUY",
+          price: 100,
+          size: 1
+        })
+      }
+    });
+    const inventory = inventoryState({ netDelta: 0.5, updatedAt: observedAt });
+    const report: ExecutionReport = {
+      clientId: "order-open",
+      instrumentCode: "btc-usd",
+      side: "BUY",
+      status: "FILLED",
+      filledSize: 0.5,
+      achievedPrice: 101,
+      expectedPrice: 100,
+      fees: 0.05,
+      latencyMs: 12,
+      observedAt
+    };
+
+    const update = buildExecutionReportRuntimeUpdate({
+      state,
+      report,
+      markPrice: () => 102,
+      calculateInventory: (inventoryObservedAt, openPositions) => {
+        expect(inventoryObservedAt).toBe(observedAt);
+        expect(openPositions["btc-usd"]?.quantity).toBe(0.5);
+        return inventory;
+      }
+    });
+
+    expect(update.accounting.tradeExecution.status).toBe("FILLED");
+    expect(update.executionQuality.implementationShortfall).toBe(1.05);
+    expect(update.adverseSelectionMarkPrice).toBe(102);
+    expect(update.nextState.inventory).toBe(inventory);
   });
 
   it("realizes pnl when a fill closes an existing position", () => {
@@ -682,6 +729,22 @@ function managedOrder(overrides: Partial<ManagedOrder> = {}): ManagedOrder {
     createdAt: "2026-05-18T12:00:00.000Z",
     updatedAt: "2026-05-18T12:00:00.000Z",
     ackDeadlineAt: "2026-05-18T12:00:05.000Z",
+    ...overrides
+  };
+}
+
+function inventoryState(overrides: Partial<InventoryState> = {}): InventoryState {
+  return {
+    netDelta: 0,
+    current_inventory_delta: 0,
+    baseAsset: "BTC",
+    normalization: {},
+    maxInventoryUnits: 1,
+    maxInventoryDelta: 1,
+    inventoryPenalty: 0,
+    stopBid: false,
+    stopAsk: false,
+    updatedAt: null,
     ...overrides
   };
 }

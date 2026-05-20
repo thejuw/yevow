@@ -16,11 +16,6 @@ import {
   type AnomalyDetectionResult
 } from "../../agents/AnomalyDetector";
 import { CroupierAgent, type CroupierDecision } from "../../agents/CroupierAgent";
-import {
-  applyExecutionAccounting,
-  executionQualityFromAccounting,
-  stateAfterExecutionAccounting
-} from "../ExecutionAccounting";
 import { evaluateIntentDispatchGate } from "../IntentGeneration";
 import { AdverseSelectionModel } from "../AdverseSelectionModel";
 import {
@@ -126,6 +121,7 @@ import {
   dispatchTradeIntentToExecutioner,
   emitExecutionDispatchBlockLog
 } from "./execution/ExecutionDispatchRuntime";
+import { buildExecutionReportRuntimeUpdate } from "./execution/ExecutionReportRuntime";
 import {
   buildOracleTickInput,
   buildProfilerContext,
@@ -4259,7 +4255,7 @@ export class TradingEngine {
   }
 
   private async applyExecutionReport(report: ExecutionReport): Promise<void> {
-    const accounting = applyExecutionAccounting({
+    const executionUpdate = buildExecutionReportRuntimeUpdate({
       state: this.engineState,
       report,
       markPrice: (instrumentCode, fallback) =>
@@ -4270,37 +4266,27 @@ export class TradingEngine {
           },
           instrumentCode,
           fallback
-        )
+        ),
+      calculateInventory: (observedAt, openPositions) =>
+        this.calculateInventoryState(observedAt, openPositions)
     });
-    const inventory = this.calculateInventoryState(accounting.observedAt, accounting.openPositions);
     this.adverseSelectionModel.observeExecutionReport(
       report,
-      accounting.order,
-      currentMarkPriceForInstrument(
-        {
-          orderBook: this.orderBook,
-          microstructure: this.engineState.microstructure
-        },
-        accounting.order.instrumentCode,
-        accounting.order.price
-      ),
+      executionUpdate.accounting.order,
+      executionUpdate.adverseSelectionMarkPrice,
       this.engineState.oracle.regime
     );
 
-    this.logger.recordExecutionQuality(executionQualityFromAccounting(report, accounting));
+    this.logger.recordExecutionQuality(executionUpdate.executionQuality);
 
-    this.engineState = stateAfterExecutionAccounting({
-      state: this.engineState,
-      accounting,
-      inventory
-    });
+    this.engineState = executionUpdate.nextState;
 
     await this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "EXECUTION_REPORT");
-    this.logger.recordExecution(accounting.tradeExecution);
+    this.logger.recordExecution(executionUpdate.accounting.tradeExecution);
     this.publish(
       "TRADE_EXECUTION_UPDATE",
-      accounting.tradeExecution as unknown as Record<string, unknown>,
-      accounting.tradeExecution.tradeId
+      executionUpdate.accounting.tradeExecution as unknown as Record<string, unknown>,
+      executionUpdate.accounting.tradeExecution.tradeId
     );
   }
 
