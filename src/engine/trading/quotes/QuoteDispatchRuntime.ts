@@ -144,6 +144,17 @@ export type CroupierQuoteAction =
       readonly kind: "NONE";
     };
 
+export interface CroupierQuoteActionSideEffectHandlers {
+  readonly publish: (
+    type: string,
+    payload: Record<string, unknown>,
+    correlationId?: string
+  ) => void;
+  readonly schedule: (work: Promise<void>) => void;
+  readonly cancelAllQuotes: (instrumentCode: string, reason: string) => Promise<void>;
+  readonly dispatchQuote: (quote: QuoteSignal) => Promise<void>;
+}
+
 export function buildQuoteDispatchIntents(
   input: QuoteDispatchIntentInput
 ): QuoteDispatchIntentResult {
@@ -257,6 +268,38 @@ export function buildCroupierQuoteAction(input: CroupierQuoteActionInput): Croup
     shouldDispatch: !input.shadowReplay && input.tradingEnabled && !input.profilerQuoteHalt,
     cascadeShieldCancelReason: input.cascadeShield ? "CASCADE_SHIELD" : null
   };
+}
+
+export function dispatchCroupierQuoteActionSideEffects(
+  instrumentCode: string,
+  action: CroupierQuoteAction,
+  handlers: CroupierQuoteActionSideEffectHandlers
+): void {
+  if (action.kind === "PULL_ALL_QUOTES") {
+    handlers.publish(action.publish.type, action.publish.payload);
+    if (action.cancelReason) {
+      handlers.schedule(handlers.cancelAllQuotes(instrumentCode, action.cancelReason));
+    }
+    return;
+  }
+
+  if (action.kind !== "POST_QUOTE") {
+    return;
+  }
+
+  handlers.publish(action.publish.type, action.publish.payload, action.publish.correlationId);
+
+  if (!action.shouldDispatch) {
+    return;
+  }
+
+  handlers.schedule(
+    action.cascadeShieldCancelReason
+      ? handlers
+          .cancelAllQuotes(instrumentCode, action.cascadeShieldCancelReason)
+          .then(() => handlers.dispatchQuote(action.quote))
+      : handlers.dispatchQuote(action.quote)
+  );
 }
 
 export function evaluateQuoteRefreshThrottle(

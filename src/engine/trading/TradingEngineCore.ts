@@ -106,6 +106,7 @@ import {
 import {
   buildQuoteDispatchIntents,
   buildQuoteRefreshRuntimeDecision,
+  dispatchCroupierQuoteActionSideEffects,
   dispatchedQuoteSnapshot,
   quoteDispatchBlockedLogMetadata,
   quoteRefreshThrottleLogMetadata,
@@ -2563,38 +2564,12 @@ export class TradingEngine {
     instrumentCode: string,
     croupierQuoteAction: CroupierQuoteAction
   ): void {
-    if (croupierQuoteAction.kind === "PULL_ALL_QUOTES") {
-      this.publish(croupierQuoteAction.publish.type, croupierQuoteAction.publish.payload);
-      if (croupierQuoteAction.cancelReason) {
-        this.state.waitUntil(
-          this.cancelAllQuotes(instrumentCode, croupierQuoteAction.cancelReason)
-        );
-      }
-      return;
-    }
-
-    if (croupierQuoteAction.kind !== "POST_QUOTE") {
-      return;
-    }
-
-    this.publish(
-      croupierQuoteAction.publish.type,
-      croupierQuoteAction.publish.payload,
-      croupierQuoteAction.publish.correlationId
-    );
-
-    if (!croupierQuoteAction.shouldDispatch) {
-      return;
-    }
-
-    const quote = croupierQuoteAction.quote;
-    this.state.waitUntil(
-      croupierQuoteAction.cascadeShieldCancelReason
-        ? this.cancelAllQuotes(instrumentCode, croupierQuoteAction.cascadeShieldCancelReason).then(
-            () => this.dispatchQuote(quote)
-          )
-        : this.dispatchQuote(quote)
-    );
+    dispatchCroupierQuoteActionSideEffects(instrumentCode, croupierQuoteAction, {
+      publish: (type, payload, correlationId) => this.publish(type, payload, correlationId),
+      schedule: (work) => this.state.waitUntil(work),
+      cancelAllQuotes: (code, reason) => this.cancelAllQuotes(code, reason),
+      dispatchQuote: (quote) => this.dispatchQuote(quote)
+    });
   }
 
   private dispatchExecutionPlans(

@@ -3,6 +3,7 @@ import {
   buildCroupierQuoteAction,
   buildQuoteDispatchIntents,
   buildQuoteRefreshRuntimeDecision,
+  dispatchCroupierQuoteActionSideEffects,
   dispatchedQuoteSnapshot,
   evaluateQuoteRefreshThrottle,
   quoteDispatchBlockedLogMetadata,
@@ -247,6 +248,41 @@ describe("QuoteDispatchRuntime", () => {
         cascadeShield: false
       })
     ).toMatchObject({ kind: "POST_QUOTE", shouldDispatch: false });
+  });
+
+  it("dispatches croupier quote action side effects through supplied handlers", async () => {
+    const published: unknown[] = [];
+    const scheduled: Promise<void>[] = [];
+    const calls: string[] = [];
+    const quote = quoteSignal();
+
+    dispatchCroupierQuoteActionSideEffects(
+      "btc-usd",
+      {
+        kind: "POST_QUOTE",
+        quote,
+        publish: { type: "POST_QUOTE", payload: { signalId: "quote-1" }, correlationId: "quote-1" },
+        shouldDispatch: true,
+        cascadeShieldCancelReason: "CASCADE_SHIELD"
+      },
+      {
+        publish: (type, payload, correlationId) => published.push({ type, payload, correlationId }),
+        schedule: (work) => scheduled.push(work),
+        async cancelAllQuotes(instrumentCode, reason) {
+          calls.push(`cancel:${instrumentCode}:${reason}`);
+        },
+        async dispatchQuote(dispatchedQuote) {
+          calls.push(`dispatch:${dispatchedQuote.signalId}`);
+        }
+      }
+    );
+
+    await Promise.all(scheduled);
+
+    expect(published).toEqual([
+      { type: "POST_QUOTE", payload: { signalId: "quote-1" }, correlationId: "quote-1" }
+    ]);
+    expect(calls).toEqual(["cancel:btc-usd:CASCADE_SHIELD", "dispatch:quote-1"]);
   });
 
   it("evaluates quote refresh throttles from queue advice and log cadence", () => {
