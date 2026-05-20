@@ -142,16 +142,14 @@ import {
 } from "./execution/ExecutionQueueRuntime";
 import { calculateAssetMatrix as calculateRuntimeAssetMatrix } from "./state/AssetMatrixRuntime";
 import {
+  applyExecutionProfileSideEffects,
   appendLatencyHistory,
   buildHardStaleTickDropArtifacts,
-  buildExecutionPerformanceTransition,
   buildPerformanceMetricsText,
-  buildPerformanceSnapshot,
   buildStaleDataKillSwitchArtifacts,
   latencySnapshotStorageWrites,
   nativeHyperliquidLatencyPullStorageWrites,
   hydrateLatencyMetricsFromState,
-  nextExecutionProfile,
   nextLatencyAverage,
   prepareTickLatencyRuntime,
   recordProcessingLatencySample,
@@ -4502,38 +4500,42 @@ export class TradingEngine {
     );
     const nextProcessedTicks = this.engineState.processedTicks + 1;
     const totalHotPathMs = roundLatency(Math.max(0, highResolutionNow() - trace.hotPathStartedAt));
-    const { profile: nextProfile, shouldCompute } = nextExecutionProfile({
-      previousProfile: this.engineState.executionProfile,
-      processingLatencySamples: this.processingLatencySamples,
-      processingLatencyMs,
-      nextProcessedTicks,
-      jitterThresholdMs: this.jitterThresholdMs,
-      jitterSampleWindow: this.jitterSampleWindow,
-      jitterComputeIntervalTicks: this.jitterComputeIntervalTicks,
-      coldStartWakeupThresholdMs: COLD_START_WAKEUP_THRESHOLD_MS,
-      totalHotPathMs,
-      trace
-    });
 
-    this.engineState = {
-      ...this.engineState,
-      executionProfile: nextProfile
-    };
-
-    if (shouldCompute && nextProfile.status !== this.lastPerformanceStatus) {
-      this.lastPerformanceStatus = nextProfile.status;
-      const snapshot = buildPerformanceSnapshot(
-        this.engineState.engineId,
-        nextProfile,
+    applyExecutionProfileSideEffects(
+      {
+        engineId: this.engineState.engineId,
+        previousProfile: this.engineState.executionProfile,
+        processingLatencySamples: this.processingLatencySamples,
+        processingLatencyMs,
         nextProcessedTicks,
-        trace.observedAt
-      );
-      const transition = buildExecutionPerformanceTransition(snapshot);
-
-      this.logger.logPerformanceSnapshot(snapshot);
-      this.publish(transition.telemetryType, transition.telemetryPayload, transition.correlationId);
-      this.notifier.notify(transition.notification);
-    }
+        jitterThresholdMs: this.jitterThresholdMs,
+        jitterSampleWindow: this.jitterSampleWindow,
+        jitterComputeIntervalTicks: this.jitterComputeIntervalTicks,
+        coldStartWakeupThresholdMs: COLD_START_WAKEUP_THRESHOLD_MS,
+        totalHotPathMs,
+        trace,
+        lastPerformanceStatus: this.lastPerformanceStatus
+      },
+      {
+        applyProfile: (profile) => {
+          this.engineState = {
+            ...this.engineState,
+            executionProfile: profile
+          };
+        },
+        markPerformanceStatus: (status) => {
+          this.lastPerformanceStatus = status;
+        },
+        logPerformanceSnapshot: (snapshot) => this.logger.logPerformanceSnapshot(snapshot),
+        publishTransition: (transition) =>
+          this.publish(
+            transition.telemetryType,
+            transition.telemetryPayload,
+            transition.correlationId
+          ),
+        notify: (notification) => this.notifier.notify(notification)
+      }
+    );
   }
 
   private performanceMetricsResponse(): Response {

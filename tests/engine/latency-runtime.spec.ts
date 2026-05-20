@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyExecutionProfileSideEffects,
   appendLatencyHistory,
   buildHardStaleTickDropArtifacts,
   buildExecutionPerformanceTransition,
@@ -25,7 +26,8 @@ import {
   stateAfterLatencyBaselineReset,
   stateAfterNativeHyperliquidLatencyPull,
   stateAfterStaleDataKillSwitch,
-  stateAfterHardStaleTickDrop
+  stateAfterHardStaleTickDrop,
+  type ExecutionProfileSideEffectHandlers
 } from "../../src/engine/trading/performance/LatencyRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { EngineState, ExecutionProfile, LatencyMetrics, MarketTick } from "../../src/types";
@@ -673,7 +675,75 @@ describe("LatencyRuntime", () => {
       }
     });
   });
+
+  it("applies execution profile side effects when stability changes", () => {
+    const sideEffects = executionProfileSideEffectSpy();
+
+    const result = applyExecutionProfileSideEffects(
+      {
+        engineId: "engine-1",
+        previousProfile: profile({
+          status: "STABLE",
+          lastComputedAt: "2026-05-18T14:59:00.000Z"
+        }),
+        processingLatencySamples: [1, 5, 9],
+        processingLatencyMs: 9,
+        nextProcessedTicks: 10,
+        jitterThresholdMs: 2,
+        jitterSampleWindow: 3,
+        jitterComputeIntervalTicks: 5,
+        coldStartWakeupThresholdMs: 25,
+        totalHotPathMs: 12,
+        trace: {
+          wakeUpTimeMs: 30,
+          orderBookUpdateMs: 2,
+          agentLogicMs: 4,
+          hotPathStartedAt: 0,
+          observedAt: "2026-05-18T15:00:00.000Z"
+        },
+        lastPerformanceStatus: "STABLE"
+      },
+      sideEffects.handlers
+    );
+
+    expect(result.profile.status).toBe("UNSTABLE");
+    expect(sideEffects.events).toEqual([
+      "profile:UNSTABLE",
+      "mark:UNSTABLE",
+      "snapshot:UNSTABLE",
+      "publish:ENGINE_PERFORMANCE_UNSTABLE:engine-1:10",
+      "notify:HIGH"
+    ]);
+  });
 });
+
+function executionProfileSideEffectSpy(): {
+  events: string[];
+  handlers: ExecutionProfileSideEffectHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      applyProfile(nextProfile) {
+        events.push(`profile:${nextProfile.status}`);
+      },
+      markPerformanceStatus(status) {
+        events.push(`mark:${status}`);
+      },
+      logPerformanceSnapshot(snapshot) {
+        events.push(`snapshot:${snapshot.status}`);
+      },
+      publishTransition(transition) {
+        events.push(`publish:${transition.telemetryType}:${transition.correlationId}`);
+      },
+      notify(notification) {
+        events.push(`notify:${notification.priority}`);
+      }
+    }
+  };
+}
 
 function tick(overrides: Partial<MarketTick> = {}): MarketTick {
   return {
