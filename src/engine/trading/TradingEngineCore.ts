@@ -132,10 +132,9 @@ import {
   buildExecutionReportRuntimeUpdate
 } from "./execution/ExecutionReportRuntime";
 import {
-  buildOracleTickInput,
-  buildProfilerContext,
-  disabledOracleTickResult,
   evaluateCroupierRuntime,
+  evaluateOracleRuntime,
+  evaluateProfilerRuntime,
   type OracleTickResult
 } from "./agents/AgentEvaluationRuntime";
 import { applyIntentPaperExecutionBudgetSideEffects } from "./execution/PaperExecutionBudgetRuntime";
@@ -585,7 +584,6 @@ import {
   normalizePaperBankroll,
   parseDeltaNormalizationWeights,
   touchAgentHealth,
-  disabledProfilerEvaluation,
   disabledCroupierDecision,
   defaultAnomalyStatus,
   normalizeExecutionProfile,
@@ -2892,23 +2890,19 @@ export class TradingEngine {
     hotPathStartedAt: number
   ): { profilerResult: ProfilerEvaluation; profilerLatencyMs: number } {
     const profilerAgent = this.profilerRegistry.forInstrument(tick.instrumentCode);
-    const profilerStartedAt = highResolutionNow();
-    const profilerResult: ProfilerEvaluation = this.cachedConfig.PROFILER_ENABLED
-      ? profilerAgent.processTick(
-          tick,
-          buildProfilerContext({
-            engineId: this.engineState.engineId,
-            observedAt,
-            book,
-            dom: domSnapshot,
-            liquidationHeatmap: this.engineState.liquidationHeatmap,
-            jumpDetected
-          })
-        )
-      : disabledProfilerEvaluation(profilerAgent.snapshot(), observedAt);
-    const profilerLatencyMs = this.cachedConfig.PROFILER_ENABLED
-      ? roundLatency(highResolutionNow() - profilerStartedAt)
-      : 0;
+    const { profilerResult, profilerLatencyMs } = evaluateProfilerRuntime({
+      profilerEnabled: this.cachedConfig.PROFILER_ENABLED,
+      agent: profilerAgent,
+      tick,
+      context: {
+        engineId: this.engineState.engineId,
+        observedAt,
+        book,
+        dom: domSnapshot,
+        liquidationHeatmap: this.engineState.liquidationHeatmap,
+        jumpDetected
+      }
+    });
 
     this.observeExecutionProfile(metrics, {
       wakeUpTimeMs,
@@ -2926,22 +2920,15 @@ export class TradingEngine {
     book: InternalOrderBook,
     observedAt: string
   ): { oracleResult: OracleTickResult; oracleLatencyMs: number } {
-    const oracleStartedAt = highResolutionNow();
-    const oracleResult = this.cachedConfig.ORACLE_ENABLED
-      ? this.oracleAgent.processTick(
-          buildOracleTickInput({
-            tick,
-            book,
-            observedAt,
-            config: this.cachedConfig
-          })
-        )
-      : disabledOracleTickResult(this.engineState.oracle, observedAt);
-    const oracleLatencyMs = this.cachedConfig.ORACLE_ENABLED
-      ? roundLatency(highResolutionNow() - oracleStartedAt)
-      : 0;
-
-    return { oracleResult, oracleLatencyMs };
+    return evaluateOracleRuntime({
+      oracleEnabled: this.cachedConfig.ORACLE_ENABLED,
+      agent: this.oracleAgent,
+      oracle: this.engineState.oracle,
+      tick,
+      book,
+      observedAt,
+      config: this.cachedConfig
+    });
   }
 
   private buildTickDecisionContext(

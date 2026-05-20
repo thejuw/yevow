@@ -6,11 +6,20 @@ import {
   buildOracleTickInput,
   buildProfilerContext,
   disabledOracleTickResult,
-  evaluateCroupierRuntime
+  evaluateCroupierRuntime,
+  evaluateOracleRuntime,
+  evaluateProfilerRuntime,
+  type OracleRuntimeAgent,
+  type ProfilerRuntimeAgent
 } from "../../src/engine/trading/agents/AgentEvaluationRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { CroupierDecision, CroupierInput } from "../../src/agents/CroupierAgent";
-import type { DomAnalysisSnapshot, InternalOrderBook, MarketTick } from "../../src/types";
+import type {
+  DomAnalysisSnapshot,
+  InternalOrderBook,
+  MarketTick,
+  ProfilerState
+} from "../../src/types";
 
 const OBSERVED_AT = "2026-05-19T12:00:00.000Z";
 
@@ -68,6 +77,130 @@ describe("AgentEvaluationRuntime", () => {
       regimeChanged: false,
       state: {
         updatedAt: OBSERVED_AT
+      }
+    });
+  });
+
+  it("evaluates profiler runtime branches with disabled fallback", () => {
+    const profilerState = profilerStateSnapshot();
+    let capturedContext: unknown = null;
+    const agent: ProfilerRuntimeAgent = {
+      processTick(_tick, context) {
+        capturedContext = context;
+        return {
+          processed: true,
+          skippedReason: null,
+          closedBuckets: 1,
+          toxicityScore: 0.42,
+          state: profilerState,
+          signal: null
+        };
+      },
+      snapshot() {
+        return profilerState;
+      }
+    };
+
+    const enabled = evaluateProfilerRuntime({
+      profilerEnabled: true,
+      agent,
+      tick: tick(),
+      context: {
+        engineId: "engine-1",
+        observedAt: OBSERVED_AT,
+        book: book(),
+        dom: dom(),
+        liquidationHeatmap: null,
+        jumpDetected: true
+      }
+    });
+
+    expect(enabled.profilerResult).toMatchObject({
+      processed: true,
+      toxicityScore: 0.42
+    });
+    expect(enabled.profilerLatencyMs).toBeGreaterThanOrEqual(0);
+    expect(capturedContext).toMatchObject({
+      engineId: "engine-1",
+      observedAt: OBSERVED_AT,
+      jumpDetected: true
+    });
+
+    const disabled = evaluateProfilerRuntime({
+      profilerEnabled: false,
+      agent,
+      tick: tick(),
+      context: {
+        engineId: "engine-1",
+        observedAt: OBSERVED_AT,
+        book: book(),
+        dom: dom(),
+        liquidationHeatmap: null,
+        jumpDetected: false
+      }
+    });
+
+    expect(disabled.profilerLatencyMs).toBe(0);
+    expect(disabled.profilerResult).toMatchObject({
+      processed: false,
+      skippedReason: "PROFILER_AGENT_DISABLED",
+      toxicityScore: 0,
+      state: {
+        toxicityState: "NORMAL",
+        pressureSide: "NEUTRAL"
+      }
+    });
+  });
+
+  it("evaluates oracle runtime branches with disabled fallback", () => {
+    const state = defaultEngineState("engine-1");
+    let capturedInput: unknown = null;
+    const agent: OracleRuntimeAgent = {
+      processTick(input) {
+        capturedInput = input;
+        return {
+          state: { ...state.oracle, updatedAt: OBSERVED_AT },
+          bayesianTrace: null,
+          regimeChanged: true
+        };
+      }
+    };
+
+    const enabled = evaluateOracleRuntime({
+      oracleEnabled: true,
+      agent,
+      oracle: state.oracle,
+      tick: tick(),
+      book: book(),
+      observedAt: OBSERVED_AT,
+      config: defaultConfig
+    });
+
+    expect(enabled.oracleResult.regimeChanged).toBe(true);
+    expect(enabled.oracleLatencyMs).toBeGreaterThanOrEqual(0);
+    expect(capturedInput).toMatchObject({
+      observedAt: OBSERVED_AT,
+      config: {
+        ORACLE_GOVERNANCE_MODE: defaultConfig.ORACLE_GOVERNANCE_MODE
+      }
+    });
+
+    const disabled = evaluateOracleRuntime({
+      oracleEnabled: false,
+      agent,
+      oracle: state.oracle,
+      tick: tick(),
+      book: book(),
+      observedAt: OBSERVED_AT,
+      config: defaultConfig
+    });
+
+    expect(disabled).toMatchObject({
+      oracleLatencyMs: 0,
+      oracleResult: {
+        bayesianTrace: null,
+        regimeChanged: false,
+        state: { updatedAt: OBSERVED_AT }
       }
     });
   });
@@ -264,6 +397,55 @@ function book(): InternalOrderBook {
     isSynced: true,
     desyncReason: null,
     sequence: 1,
+    updatedAt: OBSERVED_AT
+  };
+}
+
+function profilerStateSnapshot(): ProfilerState {
+  return {
+    schemaVersion: "profiler.v1",
+    bucketSize: 10,
+    rollingWindow: 50,
+    alertThreshold: 0.7,
+    toxicityScore: 0.42,
+    amVpinScore: 0.42,
+    obi: 0.25,
+    obiDepth: 5,
+    directionalDecay: 0.3,
+    latestSignedImbalance: 0,
+    latestDirectionalImbalance: 0,
+    toxicityState: "NORMAL",
+    pressureSide: "NEUTRAL",
+    spreadMultiplier: 1,
+    reservationShiftBps: 0,
+    quoteHaltUntil: null,
+    amVpinBucketCompletions: 0,
+    amVpinMean: 0,
+    amVpinM2: 0,
+    amVpinVariance: 0,
+    amVpinRing: {
+      buyVolumes: [],
+      sellVolumes: [],
+      signedImbalances: [],
+      directionalImbalances: [],
+      obiValues: []
+    },
+    distanceToCascadePct: null,
+    cascadeShieldUntil: null,
+    cascadeClusterId: null,
+    cascadeSide: null,
+    activeBucket: null,
+    buckets: [],
+    totalBucketsClosed: 0,
+    lastProcessedSequence: null,
+    lastSignalId: null,
+    lastAlertBucketCount: 0,
+    lastSpoofingWallId: null,
+    tradeSizeCount: 0,
+    tradeSizeMean: 0,
+    tradeSizeM2: 0,
+    tradeSizeWindow: [],
+    quoteSuspendedUntil: null,
     updatedAt: OBSERVED_AT
   };
 }

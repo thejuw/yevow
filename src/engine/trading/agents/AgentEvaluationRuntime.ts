@@ -1,9 +1,8 @@
 import type { CroupierDecision, CroupierInput } from "../../../agents/CroupierAgent";
-import type { ProfilerContext } from "../../../agents/ProfilerAgent";
-import {
-  type AdverseSelectionModel,
-  adversePenaltyForQuoteSide
-} from "../../AdverseSelectionModel";
+import type { ProfilerContext, ProfilerEvaluation } from "../../../agents/ProfilerAgent";
+import { disabledProfilerEvaluation } from "../state/EngineStateDefaults";
+import type { AdverseSelectionModel } from "../../AdverseSelectionModel";
+import { adversePenaltyForQuoteSide } from "../../AdverseSelectionModel";
 import type {
   BayesianUpdateTrace,
   GlobalRiskConfig,
@@ -15,6 +14,7 @@ import type {
   MarketTick,
   OracleState,
   SentimentAlphaMode,
+  ProfilerState,
   SentimentState,
   ToxicityPressureSide,
   ToxicityState
@@ -53,6 +53,42 @@ export interface OracleTickResult {
   readonly state: OracleState;
   readonly bayesianTrace: BayesianUpdateTrace | null;
   readonly regimeChanged: boolean;
+}
+
+export interface ProfilerRuntimeAgent {
+  processTick(tick: MarketTick, context: ProfilerContext): ProfilerEvaluation;
+  snapshot(): ProfilerState;
+}
+
+export interface ProfilerRuntimeEvaluationInput {
+  readonly profilerEnabled: boolean;
+  readonly agent: ProfilerRuntimeAgent;
+  readonly tick: MarketTick;
+  readonly context: ProfilerContextInput;
+}
+
+export interface ProfilerRuntimeEvaluationResult {
+  readonly profilerResult: ProfilerEvaluation;
+  readonly profilerLatencyMs: number;
+}
+
+export interface OracleRuntimeAgent {
+  processTick(input: OracleTickInput): OracleTickResult;
+}
+
+export interface OracleRuntimeEvaluationInput {
+  readonly oracleEnabled: boolean;
+  readonly agent: OracleRuntimeAgent;
+  readonly oracle: OracleState;
+  readonly tick: MarketTick;
+  readonly book: InternalOrderBook;
+  readonly observedAt: string;
+  readonly config: GlobalRiskConfig;
+}
+
+export interface OracleRuntimeEvaluationResult {
+  readonly oracleResult: OracleTickResult;
+  readonly oracleLatencyMs: number;
 }
 
 export interface CroupierEvaluationInputParams {
@@ -151,6 +187,43 @@ export function disabledOracleTickResult(
     },
     bayesianTrace: null,
     regimeChanged: false
+  };
+}
+
+export function evaluateProfilerRuntime(
+  input: ProfilerRuntimeEvaluationInput
+): ProfilerRuntimeEvaluationResult {
+  const profilerStartedAt = highResolutionNow();
+  const profilerResult = input.profilerEnabled
+    ? input.agent.processTick(input.tick, buildProfilerContext(input.context))
+    : disabledProfilerEvaluation(input.agent.snapshot(), input.context.observedAt);
+
+  return {
+    profilerResult,
+    profilerLatencyMs: input.profilerEnabled
+      ? roundLatency(highResolutionNow() - profilerStartedAt)
+      : 0
+  };
+}
+
+export function evaluateOracleRuntime(
+  input: OracleRuntimeEvaluationInput
+): OracleRuntimeEvaluationResult {
+  const oracleStartedAt = highResolutionNow();
+  const oracleResult = input.oracleEnabled
+    ? input.agent.processTick(
+        buildOracleTickInput({
+          tick: input.tick,
+          book: input.book,
+          observedAt: input.observedAt,
+          config: input.config
+        })
+      )
+    : disabledOracleTickResult(input.oracle, input.observedAt);
+
+  return {
+    oracleResult,
+    oracleLatencyMs: input.oracleEnabled ? roundLatency(highResolutionNow() - oracleStartedAt) : 0
   };
 }
 
