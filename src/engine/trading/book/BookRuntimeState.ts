@@ -74,6 +74,19 @@ export interface BookSnapshotRuntimeArtifacts {
   readonly telemetry: JsonRecord;
 }
 
+export interface BookSnapshotSideEffectOptions {
+  readonly persist: boolean;
+}
+
+export interface BookSnapshotSideEffectHandlers {
+  readonly persistStorage: (
+    writes: Record<string, unknown>,
+    reason: "ORDER_BOOK_SNAPSHOT_APPLIED"
+  ) => Promise<unknown>;
+  readonly logSnapshotApplied: (metadata: JsonRecord) => void;
+  readonly publishSnapshotApplied: (payload: JsonRecord) => void;
+}
+
 export interface BookDeltaStateInput {
   readonly currentState: EngineState;
   readonly book: InternalOrderBook;
@@ -196,6 +209,21 @@ export function bookSnapshotRuntimeArtifacts(
     shouldEmitTelemetry,
     telemetry: bookSnapshotTelemetry(input.applied)
   };
+}
+
+export async function applyBookSnapshotSideEffects(
+  artifacts: BookSnapshotRuntimeArtifacts,
+  options: BookSnapshotSideEffectOptions,
+  handlers: BookSnapshotSideEffectHandlers
+): Promise<void> {
+  if (options.persist) {
+    await handlers.persistStorage(artifacts.storageWrites, "ORDER_BOOK_SNAPSHOT_APPLIED");
+  }
+
+  if (artifacts.shouldEmitTelemetry) {
+    handlers.logSnapshotApplied(artifacts.telemetry);
+    handlers.publishSnapshotApplied(artifacts.telemetry);
+  }
 }
 
 export function stateAfterAcceptedBookDelta(input: BookDeltaStateInput): EngineState {

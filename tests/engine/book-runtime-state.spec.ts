@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyBookSnapshotSideEffects,
   bookDesyncStorageExtra,
   bookSnapshotRuntimeArtifacts,
   bookSnapshotTelemetry,
@@ -13,7 +14,8 @@ import {
   stateAfterInformationalBookNotReady,
   stateAfterOrderBookReset,
   stateAfterRejectedBookDelta,
-  stateAfterRebuiltBookSnapshot
+  stateAfterRebuiltBookSnapshot,
+  type BookSnapshotSideEffectHandlers
 } from "../../src/engine/trading/book/BookRuntimeState";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type {
@@ -257,6 +259,84 @@ describe("BookRuntimeState", () => {
       tickSize: 0.001,
       timeToBookMs: 2
     });
+  });
+
+  it("applies snapshot persistence and telemetry side effects in order", async () => {
+    const currentState = defaultEngineState("book-snapshot-effects");
+    const snapshotBook = book({ marketKey: "hyperliquid:hype-usd", instrumentCode: "hype-usd" });
+    const artifacts = bookSnapshotRuntimeArtifacts({
+      currentState,
+      book: snapshotBook,
+      internalOrderBookDepth: 8,
+      priceDiscovery: priceDiscovery("hype-usd", 5),
+      dom: dom("hype-usd"),
+      updatedAt: OBSERVED_AT,
+      engineStateKey: "engine:state",
+      domWallHistoryKey: "dom:walls",
+      domWallHistory: [],
+      orderBookPrefix: "book:",
+      marketKey: snapshotBook.marketKey,
+      telemetryEnabled: true,
+      snapshotSource: "ADMIN",
+      processedTicks: 999,
+      earlyTickLimit: 5,
+      telemetryInterval: 1_000,
+      applied: {
+        instrumentCode: "hype-usd",
+        exchangeCode: "hyperliquid",
+        sequence: 42,
+        bidLevels: 3,
+        askLevels: 4,
+        tickSize: 0.001,
+        timeToBookMs: 2
+      }
+    });
+    const sideEffects = bookSnapshotSideEffectSpy();
+
+    await applyBookSnapshotSideEffects(artifacts, { persist: true }, sideEffects.handlers);
+
+    expect(sideEffects.events).toEqual([
+      "persist:ORDER_BOOK_SNAPSHOT_APPLIED:3",
+      "log:42",
+      "publish:42"
+    ]);
+  });
+
+  it("skips snapshot persistence and telemetry when disabled", async () => {
+    const currentState = defaultEngineState("book-snapshot-effects");
+    const snapshotBook = book();
+    const artifacts = bookSnapshotRuntimeArtifacts({
+      currentState,
+      book: snapshotBook,
+      internalOrderBookDepth: 8,
+      priceDiscovery: priceDiscovery("btc-usd", 100),
+      dom: dom("btc-usd"),
+      updatedAt: OBSERVED_AT,
+      engineStateKey: "engine:state",
+      domWallHistoryKey: "dom:walls",
+      domWallHistory: [],
+      orderBookPrefix: "book:",
+      marketKey: snapshotBook.marketKey,
+      telemetryEnabled: false,
+      snapshotSource: "HYPERLIQUID",
+      processedTicks: 999,
+      earlyTickLimit: 5,
+      telemetryInterval: 1_000,
+      applied: {
+        instrumentCode: "btc-usd",
+        exchangeCode: "hyperliquid",
+        sequence: 42,
+        bidLevels: 3,
+        askLevels: 4,
+        tickSize: 0.001,
+        timeToBookMs: 2
+      }
+    });
+    const sideEffects = bookSnapshotSideEffectSpy();
+
+    await applyBookSnapshotSideEffects(artifacts, { persist: false }, sideEffects.handlers);
+
+    expect(sideEffects.events).toEqual([]);
   });
 
   it("marks informational ticks as book-not-ready without mutating quote state when disabled", () => {
@@ -588,5 +668,28 @@ function latencyMetrics(overrides: Partial<LatencyMetrics> = {}): LatencyMetrics
     latencyRiskMultiplier: 1,
     positionSizeMultiplier: 1,
     ...overrides
+  };
+}
+
+function bookSnapshotSideEffectSpy(): {
+  events: string[];
+  handlers: BookSnapshotSideEffectHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      persistStorage(writes, reason) {
+        events.push(`persist:${reason}:${Object.keys(writes).length}`);
+        return Promise.resolve();
+      },
+      logSnapshotApplied(metadata) {
+        events.push(`log:${metadata.sequence}`);
+      },
+      publishSnapshotApplied(payload) {
+        events.push(`publish:${payload.sequence}`);
+      }
+    }
   };
 }

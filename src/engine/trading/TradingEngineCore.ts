@@ -37,6 +37,7 @@ import {
   nullableMarkPriceForInstrument
 } from "./book/BookViews";
 import {
+  applyBookSnapshotSideEffects,
   bookDesyncStorageExtra,
   markBookSyncDesynced,
   stateAfterAcceptedBookDelta,
@@ -2132,18 +2133,20 @@ export class TradingEngine {
     });
     this.engineState = artifacts.state;
 
-    if (options.persist !== false) {
-      await this.safeStoragePut(artifacts.storageWrites, "ORDER_BOOK_SNAPSHOT_APPLIED");
-    }
-
-    if (artifacts.shouldEmitTelemetry) {
-      this.logger.info(
-        "ORDER_BOOK_SNAPSHOT_APPLIED",
-        "Full order book snapshot applied",
-        artifacts.telemetry
-      );
-      this.publish("ORDER_BOOK_SNAPSHOT_APPLIED", artifacts.telemetry);
-    }
+    await applyBookSnapshotSideEffects(
+      artifacts,
+      { persist: options.persist !== false },
+      {
+        persistStorage: (writes, reason) => this.safeStoragePut(writes, reason),
+        logSnapshotApplied: (metadata) =>
+          this.logger.info(
+            "ORDER_BOOK_SNAPSHOT_APPLIED",
+            "Full order book snapshot applied",
+            metadata
+          ),
+        publishSnapshotApplied: (payload) => this.publish("ORDER_BOOK_SNAPSHOT_APPLIED", payload)
+      }
+    );
 
     return book;
   }
