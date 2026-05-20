@@ -334,15 +334,13 @@ import {
 } from "./state/EngineBootServices";
 import { nextTickAgentHealth } from "./state/AgentHealthRuntime";
 import {
-  killSwitchActiveLogMetadata,
   shadowModeAutoResumeLogMetadata,
   shadowModeAutoResumeTelemetry,
   shouldAutoResumeShadowMode,
-  shouldBlockHaltedTrading,
-  shouldLogDisabledTrading,
   stateAfterAcceptedTick,
   stateAfterShadowModeAutoResume
 } from "./state/TickStateRuntime";
+import { evaluateTickAvailability } from "./state/TickAvailabilityRuntime";
 import {
   buildHotPathTickSnapshotWrites,
   shouldJournalMarketTick as shouldPersistMarketTick
@@ -2941,56 +2939,26 @@ export class TradingEngine {
     tick: MarketTick,
     shadowReplay: boolean
   ): TickIngestResult | null {
-    if (
-      shouldBlockHaltedTrading({
-        shadowReplay,
-        shadowMode: isShadowMode(this.env),
-        tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-        mode: this.engineState.mode
-      })
-    ) {
-      if (!this.killSwitchLogged) {
-        this.logger.warn(
-          "KILL_SWITCH_ACTIVE",
-          "Trading halted by cached config",
-          killSwitchActiveLogMetadata({
-            tick,
-            configVersion: this.cachedConfig.version,
-            tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-            mode: this.engineState.mode
-          })
-        );
-        this.killSwitchLogged = true;
-      }
+    const availability = evaluateTickAvailability({
+      tick,
+      shadowReplay,
+      shadowMode: isShadowMode(this.env),
+      tradingEnabled: this.cachedConfig.TRADING_ENABLED,
+      mode: this.engineState.mode,
+      configVersion: this.cachedConfig.version,
+      killSwitchLogged: this.killSwitchLogged
+    });
 
-      return {
-        accepted: false,
-        status: "DISABLED",
-        reason: "TRADING_DISABLED"
-      };
-    }
-
-    if (
-      shouldLogDisabledTrading({
-        shadowReplay,
-        tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-        killSwitchLogged: this.killSwitchLogged
-      })
-    ) {
+    if (availability.log) {
       this.logger.warn(
-        "KILL_SWITCH_ACTIVE",
-        "Trading disabled; market data remains enabled",
-        killSwitchActiveLogMetadata({
-          tick,
-          configVersion: this.cachedConfig.version,
-          tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-          mode: this.engineState.mode
-        })
+        availability.log.eventType,
+        availability.log.message,
+        availability.log.metadata
       );
-      this.killSwitchLogged = true;
     }
+    this.killSwitchLogged = availability.nextKillSwitchLogged;
 
-    return null;
+    return availability.result;
   }
 
   private scheduleAcceptedTickSnapshot(
