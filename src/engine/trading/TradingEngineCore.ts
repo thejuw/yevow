@@ -218,6 +218,7 @@ import {
 } from "./cascade/CascadeConfigRuntime";
 import { ensureCascadePaperModeArmedRuntime } from "./cascade/CascadePaperModeRuntime";
 import {
+  applyCascadeOpenPositionSideEffects,
   applyCascadePositionUpdateSideEffects,
   processCascadeClosedCandleSignals,
   shouldEvaluateCascadeStrategy
@@ -256,10 +257,7 @@ import {
 import { emitAgentStateSnapshot } from "./telemetry/AgentSnapshotRuntime";
 import {
   buildCascadeOperationalAlertTelemetry,
-  cascadeEntryAgentSignal,
-  cascadeEntryDecisionTrace,
   cascadeHeatCapAlertMetadata,
-  cascadePositionOpenedAlertMetadata,
   cascadeSignalRejectionAgentSignal,
   cascadeSignalRejectionLogMetadata,
   cascadeSignalEmittedAlertMetadata,
@@ -1815,31 +1813,31 @@ export class TradingEngine {
       observedAt
     );
     const intent = this.tradeIntentFromCascadeSignal(signal, sizeDecision.units, observedAt);
-    const cascadeEntryContext = {
-      signal,
-      intent,
-      engineId: this.engineState.engineId,
-      position,
-      assetProfile,
-      sizeDecision,
-      observedAt
-    };
-    this.recordCascadeUiSignal(cascadeEntryAgentSignal(cascadeEntryContext), "TAKEN");
-    this.logger.traceDecision(cascadeEntryDecisionTrace({ ...cascadeEntryContext, currentHeat }));
-    this.state.waitUntil(this.dispatchExecution(intent));
-    this.state.waitUntil(
-      this.safeStoragePut(
-        CASCADE_POSITIONS_KEY,
-        this.cascadePositionManager.snapshot(),
-        "CASCADE_POSITION_OPENED"
-      )
-    );
-    this.emitCascadeOperationalAlert(
-      "POSITION_OPENED",
-      "Cascade position opened",
-      `${position.instrumentCode} ${position.direction} cascade position opened.`,
-      cascadePositionOpenedAlertMetadata(cascadeEntryContext),
-      position.positionId
+    applyCascadeOpenPositionSideEffects(
+      {
+        signal,
+        intent,
+        engineId: this.engineState.engineId,
+        position,
+        assetProfile,
+        sizeDecision,
+        currentHeat,
+        observedAt
+      },
+      {
+        recordUiSignal: (agentSignal, outcome) => this.recordCascadeUiSignal(agentSignal, outcome),
+        traceDecision: (decision) => this.logger.traceDecision(decision),
+        schedule: (work) => this.state.waitUntil(work),
+        dispatchExecution: (tradeIntent) => this.dispatchExecution(tradeIntent),
+        persistPositions: () =>
+          this.safeStoragePut(
+            CASCADE_POSITIONS_KEY,
+            this.cascadePositionManager.snapshot(),
+            "CASCADE_POSITION_OPENED"
+          ),
+        emitOperationalAlert: (eventType, title, message, metadata, dedupeKey) =>
+          this.emitCascadeOperationalAlert(eventType, title, message, metadata, dedupeKey)
+      }
     );
   }
 

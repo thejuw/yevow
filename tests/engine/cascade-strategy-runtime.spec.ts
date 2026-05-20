@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyCascadeOpenPositionSideEffects,
   applyCascadePositionUpdateSideEffects,
   closedOneMinuteCandlesForTick,
   processCascadeClosedCandleSignals,
+  type CascadeOpenPositionSideEffectHandlers,
   shouldEvaluateCascadeStrategy
 } from "../../src/engine/trading/cascade/CascadeStrategyRuntime";
+import type { CascadeAssetProfile } from "../../src/strategy/cascade/AssetProfiles";
 import type {
   AbsorptionConfirmed,
   Candle,
@@ -12,8 +15,10 @@ import type {
   CascadeOpenPosition,
   CascadePositionIntent,
   CascadeRecoverySignal,
-  CascadeRecoverySignalRejection
+  CascadeRecoverySignalRejection,
+  PositionSizeDecision
 } from "../../src/strategy/cascade/types";
+import type { TradeIntent } from "../../src/types";
 
 describe("CascadeStrategyRuntime", () => {
   it("gates cascade evaluation by strategy mode", () => {
@@ -60,6 +65,35 @@ describe("CascadeStrategyRuntime", () => {
     );
 
     expect(calls).toEqual(["dispatch:close", "alert:STOP_HIT:position-1", "persist"]);
+  });
+
+  it("emits cascade open-position side effects in order", async () => {
+    const sideEffects = cascadeOpenPositionSideEffectSpy();
+
+    applyCascadeOpenPositionSideEffects(
+      {
+        signal: recoverySignal("signal-1", "btc-usd"),
+        intent: tradeIntent(),
+        engineId: "engine-1",
+        position: position(),
+        assetProfile: assetProfile(),
+        sizeDecision: positionSizeDecision(),
+        currentHeat: 0.1,
+        observedAt: "2026-05-18T20:01:00.000Z"
+      },
+      sideEffects.handlers
+    );
+
+    expect(sideEffects.events).toEqual([
+      "signal:signal-1:TAKEN",
+      "trace:cascade-entry-signal-1",
+      "dispatch:intent-1",
+      "schedule",
+      "persist",
+      "schedule",
+      "alert:POSITION_OPENED:position-1:position-1"
+    ]);
+    await Promise.all(sideEffects.scheduled);
   });
 
   it("processes closed one-minute candles through cascade signal handlers", async () => {
@@ -179,6 +213,108 @@ function positionIntent(
     size,
     referencePrice: 99,
     createdAt: "2026-05-18T20:01:00.000Z"
+  };
+}
+
+function tradeIntent(): TradeIntent {
+  return {
+    schemaVersion: "trade-intent.v1",
+    intentId: "intent-1",
+    traceId: "trace-1",
+    instrumentCode: "btc-usd",
+    marketKey: "BTC",
+    source_exchange: "hyperliquid",
+    direction: "LONG",
+    executionStyle: "TAKER_IOC",
+    action: "BUY",
+    orderType: "IOC",
+    postOnly: false,
+    timeInForce: "IOC",
+    intendedPrice: 101,
+    expectedPrice: 101,
+    requestedSize: 1,
+    approvedSize: 1,
+    probabilityWin: 0.55,
+    probabilityLoss: 0.45,
+    profit: 10,
+    loss: 5,
+    executionCosts: 0.1,
+    adverseSelectionCost: 0.2,
+    expectedValue: 2,
+    minEvThreshold: 0.1,
+    maxSlippageBps: 8,
+    confidence: 0.8,
+    rationale: "test cascade entry",
+    createdAt: "2026-05-18T20:01:00.000Z"
+  };
+}
+
+function assetProfile(): CascadeAssetProfile {
+  return {
+    asset: "BTC",
+    notionalThresholdUsd: 50_000_000,
+    zScoreThreshold: 3,
+    minPriceMoveAtr: 1.5,
+    maxPositionNotionalPct: 0.25,
+    assetLiquidityCapUsd: 25_000,
+    maxSlippageBps: 8,
+    rationale: "test profile"
+  };
+}
+
+function positionSizeDecision(): PositionSizeDecision {
+  return {
+    approved: true,
+    units: 1,
+    notionalUsd: 101,
+    riskUsd: 5,
+    riskPct: 0.01,
+    heatAfterPct: 0.2,
+    limitingFactor: "RISK",
+    reason: "approved",
+    bounds: {
+      riskUnits: 1,
+      notionalUnits: 2,
+      liquidityUnits: 3,
+      heatUnits: 4
+    }
+  };
+}
+
+function cascadeOpenPositionSideEffectSpy(): {
+  events: string[];
+  scheduled: Promise<void>[];
+  handlers: CascadeOpenPositionSideEffectHandlers;
+} {
+  const events: string[] = [];
+  const scheduled: Promise<void>[] = [];
+
+  return {
+    events,
+    scheduled,
+    handlers: {
+      recordUiSignal(signal, outcome) {
+        events.push(`signal:${signal.signalId}:${outcome}`);
+      },
+      traceDecision(decision) {
+        events.push(`trace:${decision.decisionId}`);
+      },
+      schedule(work) {
+        events.push("schedule");
+        scheduled.push(work);
+      },
+      dispatchExecution(intent) {
+        events.push(`dispatch:${intent.intentId}`);
+        return Promise.resolve();
+      },
+      persistPositions() {
+        events.push("persist");
+        return Promise.resolve();
+      },
+      emitOperationalAlert(eventType, _title, _message, metadata, dedupeKey) {
+        events.push(`alert:${eventType}:${dedupeKey}:${metadata.positionId}`);
+      }
+    }
   };
 }
 
