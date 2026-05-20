@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildShadowQueueDecisionAction,
+  buildShadowQueueDecisionRuntimeArtifacts,
   buildShadowQueueDecisionTrace,
   buildShadowQueueGhostFillRecord,
   buildShadowQueueGhostFillRuntimeRecord,
@@ -380,6 +381,50 @@ describe("ShadowQueueRuntime", () => {
       },
       cancelReason: null,
       dispatchIntent: null
+    });
+  });
+
+  it("assembles shadow queue decision runtime artifacts", () => {
+    const artifacts = buildShadowQueueDecisionRuntimeArtifacts({
+      decision: decision({ action: "GREEN_LIGHT", dispatchSide: "BUY", microDrift: 0.6 }),
+      book: book(),
+      observedAt: OBSERVED_AT,
+      engineId: "engine-1",
+      baseSpreadBps: 4,
+      exchangeFeeBps: 1,
+      toxicityScore: 0.3,
+      equity: 1_000,
+      maxPositionPct: 0.1,
+      kellyFraction: 0.5,
+      inventory: inventory({ netDelta: 0, maxInventoryUnits: 2 }),
+      positionSizeMultiplier: 1,
+      quoteStateStatus: "ACTIVE",
+      cachedConfigVersion: "config-v1",
+      tradingEnabled: true
+    });
+
+    expect(artifacts.intent).toMatchObject({
+      intentId: "vlo-intent:decision-1",
+      action: "BUY",
+      orderType: "LIMIT",
+      postOnly: true
+    });
+    expect(artifacts.decision.tradeIntentId).toBe("vlo-intent:decision-1");
+    expect(artifacts.trace).toMatchObject({
+      decisionId: "decision-1",
+      expectedValue: artifacts.intent?.expectedValue,
+      riskSnapshot: {
+        quoteState: "ACTIVE",
+        cachedConfigVersion: "config-v1"
+      }
+    });
+    expect(artifacts.action).toMatchObject({
+      publish: {
+        type: "SHADOW_QUEUE_GREEN_LIGHT",
+        correlationId: "decision-1"
+      },
+      cancelReason: null,
+      dispatchIntent: artifacts.intent
     });
   });
 

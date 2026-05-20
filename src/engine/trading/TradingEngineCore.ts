@@ -60,15 +60,14 @@ import {
 } from "./book/OrderBookResetRuntime";
 import { buildDomAnalysisSnapshot, currentDomHeatmapSnapshot } from "./book/DomAnalyzer";
 import {
-  buildShadowQueueDecisionAction,
+  buildShadowQueueDecisionRuntimeArtifacts,
   buildShadowQueueGhostFillRuntimeRecord,
-  buildShadowQueueDecisionTrace,
   buildShadowQueueLatencyBreachTelemetry,
   buildShadowQueueNoEdgeTelemetry,
-  buildShadowQueueTradeIntentFromDecision,
   enforceShadowQueueDecisionLatency,
   resolveShadowQueueNoEdgeLogInterval,
   resolveShadowQueueSizingConfig,
+  type ShadowQueueDecisionAction,
   shouldLogShadowQueueNoEdge as shouldLogShadowQueueNoEdgeEvent,
   shouldProcessShadowQueueTick
 } from "./shadow/ShadowQueueRuntime";
@@ -3677,15 +3676,9 @@ export class TradingEngine {
   }
 
   private dispatchShadowQueueDecisionAction(
-    decision: ShadowQueueDecision,
-    intent: TradeIntent | null,
+    action: ShadowQueueDecisionAction,
     book: InternalOrderBook
   ): void {
-    const action = buildShadowQueueDecisionAction({
-      decision,
-      intent,
-      tradingEnabled: this.cachedConfig.TRADING_ENABLED
-    });
     this.publish(action.publish.type, action.publish.payload, action.publish.correlationId);
 
     if (action.cancelReason) {
@@ -3716,7 +3709,7 @@ export class TradingEngine {
       envMaxPositionPct: readPositiveNumber(this.env.MAX_POSITION_PCT, DEFAULT_MAX_POSITION_PCT),
       envKellyFraction: readPositiveNumber(this.env.KELLY_FRACTION, 0.5)
     });
-    const intent = buildShadowQueueTradeIntentFromDecision({
+    const artifacts = buildShadowQueueDecisionRuntimeArtifacts({
       decision,
       book,
       observedAt,
@@ -3728,28 +3721,16 @@ export class TradingEngine {
       maxPositionPct: sizing.maxPositionPct,
       kellyFraction: sizing.kellyFraction,
       inventory: this.engineState.inventory,
-      positionSizeMultiplier: this.engineState.location.positionSizeMultiplier
+      positionSizeMultiplier: this.engineState.location.positionSizeMultiplier,
+      quoteStateStatus: this.engineState.quoteState.status,
+      cachedConfigVersion: this.cachedConfig.version,
+      tradingEnabled: this.cachedConfig.TRADING_ENABLED
     });
-    const updatedDecision = {
-      ...decision,
-      tradeIntentId: intent?.intentId ?? null
-    };
+    this.logger.traceDecision(artifacts.trace);
 
-    this.logger.traceDecision(
-      buildShadowQueueDecisionTrace({
-        decision: updatedDecision,
-        intent,
-        engineId: this.engineState.engineId,
-        quoteStateStatus: this.engineState.quoteState.status,
-        inventory: this.engineState.inventory,
-        cachedConfigVersion: this.cachedConfig.version,
-        observedAt
-      })
-    );
+    this.dispatchShadowQueueDecisionAction(artifacts.action, book);
 
-    this.dispatchShadowQueueDecisionAction(updatedDecision, intent, book);
-
-    return updatedDecision;
+    return artifacts.decision;
   }
 
   private updateLeadLagMetrics(

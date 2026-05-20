@@ -156,6 +156,19 @@ export interface ShadowQueueDecisionActionInput {
   readonly tradingEnabled: boolean;
 }
 
+export interface ShadowQueueDecisionRuntimeInput extends ShadowQueueIntentFromDecisionInput {
+  readonly quoteStateStatus: string;
+  readonly cachedConfigVersion: string;
+  readonly tradingEnabled: boolean;
+}
+
+export interface ShadowQueueDecisionRuntimeArtifacts {
+  readonly decision: ShadowQueueDecision;
+  readonly intent: TradeIntent | null;
+  readonly trace: AgentDecisionTrace;
+  readonly action: ShadowQueueDecisionAction;
+}
+
 export interface ShadowQueueDecisionAction {
   readonly publish: {
     readonly type:
@@ -437,6 +450,35 @@ export function buildShadowQueueDecisionAction(
     },
     cancelReason: isRedLight && input.tradingEnabled ? "SHADOW_QUEUE_RED_LIGHT" : null,
     dispatchIntent: input.tradingEnabled ? input.intent : null
+  };
+}
+
+export function buildShadowQueueDecisionRuntimeArtifacts(
+  input: ShadowQueueDecisionRuntimeInput
+): ShadowQueueDecisionRuntimeArtifacts {
+  const intent = buildShadowQueueTradeIntentFromDecision(input);
+  const decision = {
+    ...input.decision,
+    tradeIntentId: intent?.intentId ?? null
+  };
+
+  return {
+    decision,
+    intent,
+    trace: buildShadowQueueDecisionTrace({
+      decision,
+      intent,
+      engineId: input.engineId,
+      quoteStateStatus: input.quoteStateStatus,
+      inventory: input.inventory,
+      cachedConfigVersion: input.cachedConfigVersion,
+      observedAt: input.observedAt
+    }),
+    action: buildShadowQueueDecisionAction({
+      decision,
+      intent,
+      tradingEnabled: input.tradingEnabled
+    })
   };
 }
 
