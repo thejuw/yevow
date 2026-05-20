@@ -312,11 +312,10 @@ import {
   tradingEngineLoggerRuntimeContext
 } from "./state/EngineBootServices";
 import {
-  shadowModeAutoResumeLogMetadata,
-  shadowModeAutoResumeTelemetry,
+  applyShadowModeAutoResumeSideEffects,
+  shadowModeAutoResumeArtifacts,
   shouldAutoResumeShadowMode,
-  stateAfterAcceptedTick,
-  stateAfterShadowModeAutoResume
+  stateAfterAcceptedTick
 } from "./state/TickStateRuntime";
 import { evaluateTickAvailability } from "./state/TickAvailabilityRuntime";
 import {
@@ -2614,23 +2613,30 @@ export class TradingEngine {
       resumedAt
     );
 
-    this.engineState = stateAfterShadowModeAutoResume({
+    const artifacts = shadowModeAutoResumeArtifacts({
       currentState: this.engineState,
       normalizedBankroll: normalizePaperBankroll(this.engineState.bankroll, this.env, resumedAt),
       assetQuoteStates,
       quoteState: aggregateQuoteState(assetQuoteStates, this.engineState.quoteState, resumedAt),
-      observedAt: resumedAt
+      observedAt: resumedAt,
+      tick,
+      configVersion: this.cachedConfig.version
     });
-    this.killSwitchLogged = false;
-    this.logger.warn(
-      "SHADOW_MODE_AUTO_RESUME",
-      "Shadow mode resumed paper trading after a stale halt",
-      shadowModeAutoResumeLogMetadata({
-        tick,
-        configVersion: this.cachedConfig.version
-      })
-    );
-    this.publish("RESUME_QUOTES", shadowModeAutoResumeTelemetry(resumedAt));
+    applyShadowModeAutoResumeSideEffects(artifacts, {
+      applyState: (state) => {
+        this.engineState = state;
+      },
+      clearKillSwitchLogged: () => {
+        this.killSwitchLogged = false;
+      },
+      warnResume: (metadata) =>
+        this.logger.warn(
+          "SHADOW_MODE_AUTO_RESUME",
+          "Shadow mode resumed paper trading after a stale halt",
+          metadata
+        ),
+      publishResume: (payload) => this.publish("RESUME_QUOTES", payload)
+    });
   }
 
   private resolveTradingAvailability(

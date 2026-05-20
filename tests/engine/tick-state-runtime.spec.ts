@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyShadowModeAutoResumeSideEffects,
   killSwitchActiveLogMetadata,
+  shadowModeAutoResumeArtifacts,
   shadowModeAutoResumeLogMetadata,
   shadowModeAutoResumeTelemetry,
   shouldAutoResumeShadowMode,
   shouldBlockHaltedTrading,
   shouldLogDisabledTrading,
   stateAfterAcceptedTick,
-  stateAfterShadowModeAutoResume
+  stateAfterShadowModeAutoResume,
+  type ShadowModeAutoResumeSideEffectHandlers
 } from "../../src/engine/trading/state/TickStateRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { DomAnalysisSnapshot, InternalOrderBook, ManagedOrder } from "../../src/types";
@@ -120,6 +123,50 @@ describe("TickStateRuntime", () => {
     });
   });
 
+  it("assembles and applies shadow-mode auto-resume side effects", () => {
+    const currentState = defaultEngineState("shadow-resume");
+    currentState.mode = "HALTED";
+    const assetQuoteStates = currentState.assetQuoteStates;
+    const quoteState = {
+      ...currentState.quoteState,
+      status: "ACTIVE" as const,
+      reason: null,
+      updatedAt: OBSERVED_AT
+    };
+    const bankroll = {
+      ...currentState.bankroll,
+      equity: 300,
+      cash: 300,
+      updatedAt: OBSERVED_AT
+    };
+    const artifacts = shadowModeAutoResumeArtifacts({
+      currentState,
+      normalizedBankroll: bankroll,
+      assetQuoteStates,
+      quoteState,
+      observedAt: OBSERVED_AT,
+      tick: { instrumentCode: "btc-usd" },
+      configVersion: "config-1"
+    });
+    const sideEffects = shadowModeAutoResumeSideEffectSpy();
+
+    applyShadowModeAutoResumeSideEffects(artifacts, sideEffects.handlers);
+
+    expect(artifacts.state.mode).toBe("PAPER");
+    expect(artifacts.logMetadata).toEqual({
+      instrumentCode: "btc-usd",
+      previousMode: "HALTED",
+      nextMode: "PAPER",
+      configVersion: "config-1"
+    });
+    expect(sideEffects.events).toEqual([
+      "state:PAPER",
+      "clearKillSwitchLogged",
+      "warn:btc-usd",
+      "publish:SHADOW_MODE_AUTO_RESUME"
+    ]);
+  });
+
   it("assembles accepted tick engine state and tracks newly managed orders", () => {
     const currentState = defaultEngineState("tick-state-test");
     currentState.mode = "HALTED";
@@ -204,6 +251,31 @@ function managedOrder(clientId: string): ManagedOrder {
     createdAt: OBSERVED_AT,
     updatedAt: OBSERVED_AT,
     ackDeadlineAt: OBSERVED_AT
+  };
+}
+
+function shadowModeAutoResumeSideEffectSpy(): {
+  events: string[];
+  handlers: ShadowModeAutoResumeSideEffectHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      applyState(state) {
+        events.push(`state:${state.mode}`);
+      },
+      clearKillSwitchLogged() {
+        events.push("clearKillSwitchLogged");
+      },
+      warnResume(metadata) {
+        events.push(`warn:${metadata.instrumentCode}`);
+      },
+      publishResume(payload) {
+        events.push(`publish:${payload.reason}`);
+      }
+    }
   };
 }
 

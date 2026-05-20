@@ -26,6 +26,24 @@ export interface ShadowModeAutoResumeInput {
   readonly observedAt: string;
 }
 
+export interface ShadowModeAutoResumeArtifactsInput extends ShadowModeAutoResumeInput {
+  readonly tick: Pick<MarketTick, "instrumentCode">;
+  readonly configVersion: string;
+}
+
+export interface ShadowModeAutoResumeArtifacts {
+  readonly state: EngineState;
+  readonly logMetadata: JsonRecord;
+  readonly telemetryPayload: JsonRecord;
+}
+
+export interface ShadowModeAutoResumeSideEffectHandlers {
+  readonly applyState: (state: EngineState) => void;
+  readonly clearKillSwitchLogged: () => void;
+  readonly warnResume: (metadata: JsonRecord) => void;
+  readonly publishResume: (payload: JsonRecord) => void;
+}
+
 export interface AcceptedTickStateInput {
   readonly currentState: EngineState;
   readonly tradingEnabled: boolean;
@@ -121,6 +139,29 @@ export function stateAfterShadowModeAutoResume(input: ShadowModeAutoResumeInput)
     heartbeatAt: input.observedAt,
     updatedAt: input.observedAt
   };
+}
+
+export function shadowModeAutoResumeArtifacts(
+  input: ShadowModeAutoResumeArtifactsInput
+): ShadowModeAutoResumeArtifacts {
+  return {
+    state: stateAfterShadowModeAutoResume(input),
+    logMetadata: shadowModeAutoResumeLogMetadata({
+      tick: input.tick,
+      configVersion: input.configVersion
+    }),
+    telemetryPayload: shadowModeAutoResumeTelemetry(input.observedAt)
+  };
+}
+
+export function applyShadowModeAutoResumeSideEffects(
+  artifacts: ShadowModeAutoResumeArtifacts,
+  handlers: ShadowModeAutoResumeSideEffectHandlers
+): void {
+  handlers.applyState(artifacts.state);
+  handlers.clearKillSwitchLogged();
+  handlers.warnResume(artifacts.logMetadata);
+  handlers.publishResume(artifacts.telemetryPayload);
 }
 
 export function stateAfterAcceptedTick(input: AcceptedTickStateInput): EngineState {
