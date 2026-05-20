@@ -269,10 +269,10 @@ import {
 import { emitTickTelemetry } from "./telemetry/TickTelemetryRuntime";
 import { type ReplayOptions, type ReplayScenario } from "./routes/ReplayAdminRoutes";
 import {
-  markHistoricalReplayTrades,
-  type ReplayJournal,
-  type ReplayTradeRow
-} from "./replay/ReplayJournal";
+  loadReplayShadowTradesFromJournal,
+  loadScenarioReplayTicksFromJournal
+} from "./replay/ReplayDataRuntime";
+import { type ReplayJournal } from "./replay/ReplayJournal";
 import { runShadowReplayLoop, type ShadowReplayLoopResult } from "./replay/ReplayLoopRuntime";
 import {
   buildShadowReplayConfig,
@@ -557,7 +557,6 @@ import {
   readJsonOrNull,
   json
 } from "./helpers/RuntimeParsing";
-import { applyReplayScenarioToTick } from "./replay/ReplayModelRuntime";
 import { resolveGhostBookConfig } from "./shadow/GhostBookConfigRuntime";
 import {
   defaultQuoteState,
@@ -4255,22 +4254,20 @@ export class TradingEngine {
     dateTo: string | null,
     scenario: ReplayScenario
   ): Promise<LoadedReplayTicks> {
-    const sourceTicks = await this.replayJournal.loadTicks(limit, dateFrom, dateTo);
-    const ticks = sourceTicks.map((tick, index) =>
-      applyReplayScenarioToTick(tick, scenario, index, sourceTicks.length)
-    );
-
-    return { sourceTicks, ticks };
+    return loadScenarioReplayTicksFromJournal({
+      replayJournal: this.replayJournal,
+      limit,
+      dateFrom,
+      dateTo,
+      scenario
+    });
   }
 
   private async loadReplayShadowTrades(ticks: MarketTick[]): Promise<LoadedReplayShadowTrades> {
-    const historicalTrades =
-      ticks.length > 0
-        ? await this.replayJournal.loadTrades(ticks[0].receivedAt, ticks.at(-1)!.receivedAt)
-        : [];
-    const shadowTrades = markHistoricalReplayTrades(historicalTrades, ticks);
-
-    return { historicalTrades, shadowTrades };
+    return loadReplayShadowTradesFromJournal({
+      replayJournal: this.replayJournal,
+      ticks
+    });
   }
 
   private async runShadowReplayWithRestore(
