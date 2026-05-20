@@ -14,6 +14,7 @@ import {
   DEFAULT_QUOTE_REFRESH_MIN_PRICE_TICKS
 } from "../../../TradingEngineConstants";
 import { readPositiveInteger } from "../helpers/RuntimeParsing";
+import { isQuoteSuspendedAt } from "../state/AssetStateRuntime";
 
 export interface QuoteDispatchIntentInput {
   readonly quote: QuoteSignal;
@@ -48,6 +49,19 @@ export interface QuoteDispatchSideEffectHandlers {
   readonly logSkippedOrder: (skipped: SkippedQuoteOrder) => void;
   readonly dispatchExecution: (intent: TradeIntent) => Promise<void>;
   readonly rememberDispatchedQuote: (quote: QuoteSignal) => void;
+}
+
+export interface QuoteDispatchFlowInput extends QuoteDispatchIntentInput {
+  readonly hasExecutioner: boolean;
+  readonly tradingEnabled: boolean;
+  readonly instrumentSelected: boolean;
+  readonly assetRuntimeState: EngineState["assetMatrix"][string] | undefined;
+  readonly instrumentQuoteState: EngineState["quoteState"];
+}
+
+export interface QuoteDispatchFlowHandlers
+  extends QuoteDispatchSideEffectHandlers, QuoteDispatchBlockedSideEffectHandlers {
+  readonly shouldThrottleQuoteDispatch: (quote: QuoteSignal) => boolean;
 }
 
 export interface QuoteDispatchBlockedLogInput {
@@ -265,6 +279,38 @@ export async function applyQuoteDispatchSideEffects(
   if (dispatch.intents.length > 0) {
     handlers.rememberDispatchedQuote(quote);
   }
+}
+
+export async function applyQuoteDispatchFlow(
+  input: QuoteDispatchFlowInput,
+  handlers: QuoteDispatchFlowHandlers
+): Promise<boolean> {
+  if (!input.hasExecutioner || !input.tradingEnabled) {
+    return false;
+  }
+
+  if (!input.instrumentSelected || input.assetRuntimeState?.quoteEligible === false) {
+    applyQuoteDispatchBlockedSideEffects(
+      {
+        quote: input.quote,
+        assetRuntimeState: input.assetRuntimeState
+      },
+      handlers
+    );
+    return false;
+  }
+
+  if (
+    isQuoteSuspendedAt(input.instrumentQuoteState, input.quote.createdAt) ||
+    handlers.shouldThrottleQuoteDispatch(input.quote)
+  ) {
+    return false;
+  }
+
+  const dispatch = buildQuoteDispatchIntents(input);
+  await applyQuoteDispatchSideEffects(input.quote, dispatch, handlers);
+
+  return dispatch.intents.length > 0;
 }
 
 export function quoteDispatchBlockedLogMetadata(input: QuoteDispatchBlockedLogInput): JsonRecord {

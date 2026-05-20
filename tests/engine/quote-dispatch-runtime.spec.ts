@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyQuoteDispatchBlockedSideEffects,
+  applyQuoteDispatchFlow,
   applyQuoteDispatchSideEffects,
   applyQuoteRefreshThrottleSideEffects,
   buildCroupierQuoteAction,
@@ -12,6 +13,7 @@ import {
   quoteDispatchBlockedLogMetadata,
   quoteRefreshThrottleLogMetadata,
   type QuoteDispatchBlockedSideEffectHandlers,
+  type QuoteDispatchFlowHandlers,
   type QuoteDispatchSideEffectHandlers,
   type QuoteRefreshThrottleSideEffectHandlers
 } from "../../src/engine/trading/quotes/QuoteDispatchRuntime";
@@ -138,6 +140,69 @@ describe("QuoteDispatchRuntime", () => {
     );
 
     expect(sideEffects.events).toEqual(["skip:SELL:0", "dispatch:bid-1", "remember:quote-1"]);
+  });
+
+  it("runs the quote dispatch flow through gating, throttling, and intent fan-out", async () => {
+    const sideEffects = quoteDispatchFlowSideEffectSpy();
+
+    const dispatched = await applyQuoteDispatchFlow(
+      quoteDispatchFlowInput({
+        shouldThrottle: false
+      }),
+      sideEffects.handlers
+    );
+
+    expect(dispatched).toBe(true);
+    expect(sideEffects.events).toEqual(["dispatch:bid-1", "dispatch:ask-1", "remember:quote-1"]);
+  });
+
+  it("blocks quote dispatch flow when the asset is not selected or eligible", async () => {
+    const sideEffects = quoteDispatchFlowSideEffectSpy();
+    const assetRuntimeState = defaultEngineState("quote-flow-block").assetMatrix["btc-usd"];
+
+    const dispatched = await applyQuoteDispatchFlow(
+      quoteDispatchFlowInput({
+        instrumentSelected: false,
+        assetRuntimeState: assetRuntimeState
+          ? {
+              ...assetRuntimeState,
+              quoteEligible: false,
+              quoteReason: "MOLTWORKER_NOT_SELECTED"
+            }
+          : undefined
+      }),
+      sideEffects.handlers
+    );
+
+    expect(dispatched).toBe(false);
+    expect(sideEffects.events).toEqual([
+      "log:QUOTE_DISPATCH_BLOCKED:quote-1:MOLTWORKER_NOT_SELECTED"
+    ]);
+  });
+
+  it("skips quote dispatch flow when the executioner is unavailable or throttle is active", async () => {
+    const unavailable = quoteDispatchFlowSideEffectSpy();
+    const throttled = quoteDispatchFlowSideEffectSpy();
+
+    expect(
+      await applyQuoteDispatchFlow(
+        quoteDispatchFlowInput({
+          hasExecutioner: false
+        }),
+        unavailable.handlers
+      )
+    ).toBe(false);
+    expect(unavailable.events).toEqual([]);
+
+    expect(
+      await applyQuoteDispatchFlow(
+        quoteDispatchFlowInput({
+          shouldThrottle: true
+        }),
+        throttled.handlers
+      )
+    ).toBe(false);
+    expect(throttled.events).toEqual(["throttle:throttle"]);
   });
 
   it("builds blocked quote dispatch metadata from asset runtime state", () => {
@@ -551,6 +616,84 @@ function quoteDispatchSideEffectSpy(): {
         events.push(`remember:${quote.signalId}`);
       }
     }
+  };
+}
+
+function quoteDispatchFlowSideEffectSpy(): {
+  events: string[];
+  handlers: QuoteDispatchFlowHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      logInfo(event, _message, metadata) {
+        events.push(`log:${event}:${metadata.quoteSignalId}:${metadata.reason}`);
+      },
+      logSkippedOrder(skipped) {
+        events.push(`skip:${skipped.side}:${skipped.maxOrderNotional}`);
+      },
+      dispatchExecution(intent) {
+        events.push(`dispatch:${intent.intentId}`);
+        return Promise.resolve();
+      },
+      rememberDispatchedQuote(quote) {
+        events.push(`remember:${quote.signalId}`);
+      },
+      shouldThrottleQuoteDispatch(quote) {
+        if (quote.signalId === "throttle") {
+          events.push(`throttle:${quote.signalId}`);
+          return true;
+        }
+
+        return false;
+      }
+    }
+  };
+}
+
+function quoteDispatchFlowInput(
+  overrides: Partial<Parameters<typeof applyQuoteDispatchFlow>[0]> & {
+    readonly shouldThrottle?: boolean;
+  } = {}
+): Parameters<typeof applyQuoteDispatchFlow>[0] {
+  const state = defaultEngineState("quote-flow");
+  const shouldThrottle = overrides.shouldThrottle === true;
+  const quote =
+    overrides.quote ?? quoteSignal({ signalId: shouldThrottle ? "throttle" : "quote-1" });
+
+  return {
+    quote,
+    hasExecutioner: true,
+    tradingEnabled: true,
+    instrumentSelected: true,
+    assetRuntimeState: state.assetMatrix["btc-usd"]
+      ? {
+          ...state.assetMatrix["btc-usd"],
+          selectedByMoltworker: true,
+          quoteEligible: true,
+          quoteReason: "ACTIVE"
+        }
+      : undefined,
+    instrumentQuoteState: {
+      ...state.quoteState,
+      status: "ACTIVE",
+      reason: null,
+      suspendedUntil: null
+    },
+    engineId: "engine-1",
+    bankrollEquity: 1_000,
+    bankrollCash: 1_000,
+    maxPositionPct: 0.1,
+    maxPositionSize: 100,
+    assetAllocationPct: 1,
+    positionSizeMultiplier: 1,
+    fallbackSourceExchange: "hyperliquid",
+    spreadBps: 2,
+    toxicityScore: 0,
+    ...overrides,
+    quote
   };
 }
 

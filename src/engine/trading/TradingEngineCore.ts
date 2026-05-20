@@ -99,10 +99,8 @@ import {
   strategyQuoteDisabledReason as runtimeStrategyQuoteDisabledReason
 } from "./quotes/QuoteStateRuntime";
 import {
-  applyQuoteDispatchBlockedSideEffects,
-  applyQuoteDispatchSideEffects,
+  applyQuoteDispatchFlow,
   applyQuoteRefreshThrottleSideEffects,
-  buildQuoteDispatchIntents,
   buildQuoteRefreshRuntimeDecision,
   dispatchCroupierQuoteActionSideEffects,
   dispatchedQuoteSnapshot,
@@ -552,7 +550,6 @@ import {
   defaultAssetMatrix,
   normalizeAssetQuoteStates,
   quoteStateForInstrumentState,
-  isQuoteSuspendedAt,
   suspendAssetQuoteStates,
   aggregateQuoteState,
   quotePriceMovedTicks,
@@ -3563,76 +3560,54 @@ export class TradingEngine {
     );
   }
 
-  private shouldSkipQuoteDispatch(
-    quote: NonNullable<EngineState["quoteState"]["lastQuote"]>
-  ): boolean {
-    if (!this.env.EXECUTIONER || !this.cachedConfig.TRADING_ENABLED) {
-      return true;
-    }
-
-    const assetRuntimeState = this.engineState.assetMatrix?.[quote.instrumentCode];
-    if (
-      !isInstrumentSelectedByMoltworker(quote.instrumentCode, this.macroBias) ||
-      assetRuntimeState?.quoteEligible === false
-    ) {
-      applyQuoteDispatchBlockedSideEffects(
-        { quote, assetRuntimeState },
-        {
-          logInfo: (event, message, metadata) => this.logger.info(event, message, metadata)
-        }
-      );
-      return true;
-    }
-
-    return (
-      isQuoteSuspendedAt(
-        quoteStateForInstrumentState(
-          this.engineState.assetQuoteStates,
-          quote.instrumentCode,
-          this.engineState.quoteState
-        ),
-        quote.createdAt
-      ) || this.shouldThrottleQuoteDispatch(quote)
-    );
-  }
-
   private async dispatchQuote(
     quote: NonNullable<EngineState["quoteState"]["lastQuote"]>
   ): Promise<void> {
-    if (this.shouldSkipQuoteDispatch(quote)) {
-      return;
-    }
-
     const maxPositionPct =
       this.cachedConfig.MAX_POSITION_PCT > 0
         ? this.cachedConfig.MAX_POSITION_PCT
         : readPositiveNumber(this.env.MAX_POSITION_PCT, DEFAULT_MAX_POSITION_PCT);
+    const assetRuntimeState = this.engineState.assetMatrix?.[quote.instrumentCode];
     const assetAllocation =
       this.engineState.assetMatrix?.[quote.instrumentCode]?.capitalAllocationPct ?? 1;
-    const quoteDispatch = buildQuoteDispatchIntents({
-      quote,
-      engineId: this.engineState.engineId,
-      bankrollEquity: this.engineState.bankroll.equity,
-      bankrollCash: this.engineState.bankroll.cash,
-      maxPositionPct,
-      maxPositionSize: this.cachedConfig.MAX_POSITION_SIZE,
-      assetAllocationPct: assetAllocation,
-      positionSizeMultiplier: this.engineState.location.positionSizeMultiplier,
-      fallbackSourceExchange: this.engineState.microstructure.source_exchange,
-      spreadBps: this.engineState.microstructure.spreadBps,
-      toxicityScore: this.engineState.toxicityScore
-    });
 
-    await applyQuoteDispatchSideEffects(quote, quoteDispatch, {
-      logSkippedOrder: (skipped) =>
-        this.logger.warn(
-          "QUOTE_ORDER_RISK_CAP_ZERO",
-          "Skipped quote order with no remaining risk budget",
-          { ...skipped }
+    await applyQuoteDispatchFlow(
+      {
+        quote,
+        hasExecutioner: Boolean(this.env.EXECUTIONER),
+        tradingEnabled: this.cachedConfig.TRADING_ENABLED,
+        instrumentSelected: isInstrumentSelectedByMoltworker(quote.instrumentCode, this.macroBias),
+        assetRuntimeState,
+        instrumentQuoteState: quoteStateForInstrumentState(
+          this.engineState.assetQuoteStates,
+          quote.instrumentCode,
+          this.engineState.quoteState
         ),
-      dispatchExecution: (intent) => this.dispatchExecution(intent),
-      rememberDispatchedQuote: (dispatchedQuote) => this.rememberDispatchedQuote(dispatchedQuote)
-    });
+        engineId: this.engineState.engineId,
+        bankrollEquity: this.engineState.bankroll.equity,
+        bankrollCash: this.engineState.bankroll.cash,
+        maxPositionPct,
+        maxPositionSize: this.cachedConfig.MAX_POSITION_SIZE,
+        assetAllocationPct: assetAllocation,
+        positionSizeMultiplier: this.engineState.location.positionSizeMultiplier,
+        fallbackSourceExchange: this.engineState.microstructure.source_exchange,
+        spreadBps: this.engineState.microstructure.spreadBps,
+        toxicityScore: this.engineState.toxicityScore
+      },
+      {
+        logInfo: (event, message, metadata) => this.logger.info(event, message, metadata),
+        logSkippedOrder: (skipped) =>
+          this.logger.warn(
+            "QUOTE_ORDER_RISK_CAP_ZERO",
+            "Skipped quote order with no remaining risk budget",
+            { ...skipped }
+          ),
+        dispatchExecution: (intent) => this.dispatchExecution(intent),
+        rememberDispatchedQuote: (dispatchedQuote) => this.rememberDispatchedQuote(dispatchedQuote),
+        shouldThrottleQuoteDispatch: (candidateQuote) =>
+          this.shouldThrottleQuoteDispatch(candidateQuote)
+      }
+    );
   }
 
   private shouldThrottleQuoteDispatch(
