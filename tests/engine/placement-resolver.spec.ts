@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyLocationRisk,
   applyTopologyObservationSideEffects,
+  applyTopologyWarmUpRuntime,
   buildTopologyObservationLogEvents,
   defaultEngineLocation,
   locationChanged,
@@ -16,6 +17,7 @@ import {
   stateAfterLocationLatency,
   stateAfterTopologyObservation,
   topologyWarmUpDecision,
+  type TopologyWarmUpRuntimeHandlers,
   type TopologyWarmUpSideEffectHandlers,
   type TopologyObservationSideEffectHandlers
 } from "../../src/engine/trading/helpers/PlacementResolver";
@@ -412,6 +414,45 @@ describe("PlacementResolver", () => {
     ]);
   });
 
+  it("applies topology warm-up runtime state marking before scheduling probes", async () => {
+    const sideEffects = topologyWarmUpRuntimeSpy();
+    const topology = edgeTopology({ colo: "NRT", placement: "remote-nrt" });
+
+    const skipped = applyTopologyWarmUpRuntime(
+      {
+        topology,
+        warmedColo: "NRT",
+        warmedAt: 1_000,
+        intervalMs: 5_000,
+        nowMs: 2_000
+      },
+      sideEffects.handlers
+    );
+    const scheduled = applyTopologyWarmUpRuntime(
+      {
+        topology,
+        warmedColo: "DFW",
+        warmedAt: 1_000,
+        intervalMs: 5_000,
+        nowMs: 2_000
+      },
+      sideEffects.handlers
+    );
+
+    expect(skipped.shouldWarmUp).toBe(false);
+    expect(scheduled.shouldWarmUp).toBe(true);
+    expect(sideEffects.events).toEqual(["mark:NRT:2000", "read", "config", "schedule"]);
+
+    await Promise.all(sideEffects.scheduled);
+    expect(sideEffects.events).toEqual([
+      "mark:NRT:2000",
+      "read",
+      "config",
+      "schedule",
+      "info:ENGINE_WARMUP:NRT"
+    ]);
+  });
+
   it("updates observed location latency without changing the placement identity", () => {
     const state = defaultEngineState("placement-latency");
     state.location = {
@@ -479,6 +520,24 @@ function topologyWarmUpSideEffectSpy(): {
       schedule(work) {
         events.push("schedule");
         scheduled.push(work);
+      }
+    }
+  };
+}
+
+function topologyWarmUpRuntimeSpy(): {
+  events: string[];
+  scheduled: Promise<void>[];
+  handlers: TopologyWarmUpRuntimeHandlers;
+} {
+  const base = topologyWarmUpSideEffectSpy();
+
+  return {
+    ...base,
+    handlers: {
+      ...base.handlers,
+      markWarmUp(colo, warmedAtMs) {
+        base.events.push(`mark:${colo}:${warmedAtMs}`);
       }
     }
   };

@@ -18,13 +18,12 @@ import {
 import { CroupierAgent, type CroupierDecision } from "../../agents/CroupierAgent";
 import { AdverseSelectionModel } from "../AdverseSelectionModel";
 import {
+  applyTopologyWarmUpRuntime,
   applyTopologyObservationSideEffects,
   defaultEngineLocation,
   resolveEngineLocation,
-  scheduleTopologyWarmUpSideEffects,
   stateAfterLocationLatency,
-  stateAfterTopologyObservation,
-  topologyWarmUpDecision
+  stateAfterTopologyObservation
 } from "./helpers/PlacementResolver";
 import { priceKey, SortedBookSide } from "./book/SortedBookSide";
 import { countBookLevels, isCrossedBook, microstructureFromBook } from "./book/BookReconstruction";
@@ -4689,23 +4688,19 @@ export class TradingEngine {
   }
 
   private warmUpForTopology(topology: EdgeTopology): void {
-    const decision = topologyWarmUpDecision({
-      topology,
-      warmedColo: this.warmedColo,
-      warmedAt: this.warmedAt,
-      intervalMs: WARM_UP_INTERVAL_MS,
-      nowMs: Date.now()
-    });
-
-    if (!decision.shouldWarmUp) {
-      return;
-    }
-
-    this.warmedColo = decision.colo;
-    this.warmedAt = decision.warmedAt;
-    scheduleTopologyWarmUpSideEffects(
-      { topology, decision },
+    applyTopologyWarmUpRuntime(
       {
+        topology,
+        warmedColo: this.warmedColo,
+        warmedAt: this.warmedAt,
+        intervalMs: WARM_UP_INTERVAL_MS,
+        nowMs: Date.now()
+      },
+      {
+        markWarmUp: (colo, warmedAtMs) => {
+          this.warmedColo = colo;
+          this.warmedAt = warmedAtMs;
+        },
         readEngineState: () => this.state.storage.get(ENGINE_STATE_KEY),
         fetchConfig: () => this.configManager.fetchConfig(),
         info: (eventType, message, metadata) => this.logger.info(eventType, message, metadata),

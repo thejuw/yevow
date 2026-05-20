@@ -236,6 +236,10 @@ export interface TopologyWarmUpSideEffectInput {
   readonly decision: TopologyWarmUpDecision;
 }
 
+export interface TopologyWarmUpRuntimeHandlers extends TopologyWarmUpSideEffectHandlers {
+  readonly markWarmUp: (colo: string, warmedAtMs: number) => void;
+}
+
 export function stateAfterTopologyObservation(
   input: TopologyObservationInput
 ): TopologyObservationResult {
@@ -364,6 +368,22 @@ export function scheduleTopologyWarmUpSideEffects(
     });
 
   handlers.schedule(warmUp);
+}
+
+export function applyTopologyWarmUpRuntime(
+  input: TopologyWarmUpDecisionInput,
+  handlers: TopologyWarmUpRuntimeHandlers
+): TopologyWarmUpDecision {
+  const decision = topologyWarmUpDecision(input);
+
+  if (!decision.shouldWarmUp) {
+    return decision;
+  }
+
+  handlers.markWarmUp(decision.colo, decision.warmedAt);
+  scheduleTopologyWarmUpSideEffects({ topology: input.topology, decision }, handlers);
+
+  return decision;
 }
 
 export interface LocationLatencyInput {
