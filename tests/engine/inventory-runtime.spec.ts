@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { defaultConfig } from "../../src/ConfigManager";
 import {
+  applyInventoryHedgeSideEffects,
   buildInventoryHedgeIntent,
   calculateInventoryState,
   inventoryHedgeAuthorizedLogMetadata,
@@ -216,6 +217,66 @@ describe("InventoryRuntime", () => {
       currentInventoryDelta: 1.5,
       triggerPct: 0.6
     });
+  });
+
+  it("applies inventory hedge side effects while preserving shadow suppression", () => {
+    const hedge = buildInventoryHedgeIntent({
+      book: book({ bestBid: 99.5, bestAsk: 100.5, midPrice: 100, tickSize: 0.5 }),
+      inventory: inventory({ current_inventory_delta: 1.5, maxInventoryDelta: 2 }),
+      observedAt: OBSERVED_AT,
+      engineId: "engine-1",
+      config: {
+        ...defaultConfig,
+        HEDGE_ENABLED: true,
+        MAX_INVENTORY_DELTA: 1,
+        HEDGE_TRIGGER_INVENTORY_PCT: 0.6,
+        HEDGE_COOLDOWN_MS: 30_000,
+        HEDGE_MAX_SLIPPAGE_BPS: 8,
+        EXCHANGE_FEE_BPS: 1
+      },
+      lastHedgeAtMs: 0,
+      fallbackNowMs: 1
+    });
+    const calls: string[] = [];
+    const handlers = {
+      rememberDispatchedAt(instrumentCode: string, dispatchedAtMs: number) {
+        calls.push(`remember:${instrumentCode}:${dispatchedAtMs}`);
+      },
+      logAuthorized(metadata: Record<string, unknown>) {
+        calls.push(`log:${metadata.intentId as string}`);
+      },
+      scheduleExecution(intent: { intentId: string }) {
+        calls.push(`execute:${intent.intentId}`);
+      }
+    };
+
+    const liveIntent = applyInventoryHedgeSideEffects(
+      {
+        hedge,
+        inventory: inventory({ current_inventory_delta: 1.5 }),
+        triggerPct: 0.6,
+        suppressExecution: false
+      },
+      handlers
+    );
+    const shadowIntent = applyInventoryHedgeSideEffects(
+      {
+        hedge,
+        inventory: inventory({ current_inventory_delta: 1.5 }),
+        triggerPct: 0.6,
+        suppressExecution: true
+      },
+      handlers
+    );
+
+    expect(liveIntent?.intentId).toBe(`inventory-hedge:btc-usd:${Date.parse(OBSERVED_AT)}`);
+    expect(shadowIntent).toBeNull();
+    expect(calls).toEqual([
+      `remember:btc-usd:${Date.parse(OBSERVED_AT)}`,
+      `log:inventory-hedge:btc-usd:${Date.parse(OBSERVED_AT)}`,
+      `execute:inventory-hedge:btc-usd:${Date.parse(OBSERVED_AT)}`,
+      `remember:btc-usd:${Date.parse(OBSERVED_AT)}`
+    ]);
   });
 
   it("rejects inventory hedge intents when gates are not satisfied", () => {

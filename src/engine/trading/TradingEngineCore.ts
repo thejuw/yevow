@@ -76,9 +76,9 @@ import {
   updateLeadLagMetrics as updateLeadLagRuntimeMetrics
 } from "./leadlag/LeadLagRuntime";
 import {
+  applyInventoryHedgeSideEffects,
   buildInventoryHedgeIntent,
   calculateInventoryState as calculateInventoryRuntimeState,
-  inventoryHedgeAuthorizedLogMetadata,
   referencePriceForBaseAsset as resolveBaseAssetReferencePrice,
   resolveInventoryStateConfig
 } from "./inventory/InventoryRuntime";
@@ -2520,26 +2520,25 @@ export class TradingEngine {
       lastHedgeAtMs: this.lastHedgeDispatchedAt.get(book.instrumentCode) ?? 0,
       fallbackNowMs: Date.now()
     });
-    const hedgeIntent = hedge?.intent ?? null;
-
-    if (hedge) {
-      this.lastHedgeDispatchedAt.set(book.instrumentCode, hedge.dispatchedAtMs);
-    }
-
-    if (!hedgeIntent || shadowReplay) {
-      return;
-    }
-
-    this.logger.warn(
-      "INVENTORY_HEDGE_AUTHORIZED",
-      "Inventory hedge IOC path authorized",
-      inventoryHedgeAuthorizedLogMetadata({
-        intent: hedgeIntent,
+    applyInventoryHedgeSideEffects(
+      {
+        hedge,
         inventory,
-        triggerPct: this.cachedConfig.HEDGE_TRIGGER_INVENTORY_PCT
-      })
+        triggerPct: this.cachedConfig.HEDGE_TRIGGER_INVENTORY_PCT,
+        suppressExecution: shadowReplay
+      },
+      {
+        rememberDispatchedAt: (instrumentCode, dispatchedAtMs) =>
+          this.lastHedgeDispatchedAt.set(instrumentCode, dispatchedAtMs),
+        logAuthorized: (metadata) =>
+          this.logger.warn(
+            "INVENTORY_HEDGE_AUTHORIZED",
+            "Inventory hedge IOC path authorized",
+            metadata
+          ),
+        scheduleExecution: (intent) => this.state.waitUntil(this.dispatchExecution(intent))
+      }
     );
-    this.state.waitUntil(this.dispatchExecution(hedgeIntent));
   }
 
   private async handleProfilerSignal(

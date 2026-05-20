@@ -83,6 +83,19 @@ export interface InventoryHedgeAuthorizedLogInput {
   readonly triggerPct: number;
 }
 
+export interface InventoryHedgeSideEffectInput {
+  readonly hedge: InventoryHedgeIntentResult | null;
+  readonly inventory: Pick<InventoryState, "current_inventory_delta">;
+  readonly triggerPct: number;
+  readonly suppressExecution: boolean;
+}
+
+export interface InventoryHedgeSideEffectHandlers {
+  readonly rememberDispatchedAt: (instrumentCode: string, dispatchedAtMs: number) => void;
+  readonly logAuthorized: (metadata: JsonRecord) => void;
+  readonly scheduleExecution: (intent: TradeIntent) => void;
+}
+
 export function calculateInventoryState(input: InventoryStateInput): InventoryState {
   const normalized = normalizeInventoryDelta(input);
   const netDelta = Object.values(input.positions).reduce(
@@ -246,6 +259,33 @@ export function inventoryHedgeAuthorizedLogMetadata(
     currentInventoryDelta: input.inventory.current_inventory_delta,
     triggerPct: input.triggerPct
   };
+}
+
+export function applyInventoryHedgeSideEffects(
+  input: InventoryHedgeSideEffectInput,
+  handlers: InventoryHedgeSideEffectHandlers
+): TradeIntent | null {
+  if (!input.hedge) {
+    return null;
+  }
+
+  const intent = input.hedge.intent;
+  handlers.rememberDispatchedAt(intent.instrumentCode, input.hedge.dispatchedAtMs);
+
+  if (input.suppressExecution) {
+    return null;
+  }
+
+  handlers.logAuthorized(
+    inventoryHedgeAuthorizedLogMetadata({
+      intent,
+      inventory: input.inventory,
+      triggerPct: input.triggerPct
+    })
+  );
+  handlers.scheduleExecution(intent);
+
+  return intent;
 }
 
 export function normalizeInventoryDelta(
