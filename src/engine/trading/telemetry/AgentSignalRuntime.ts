@@ -41,6 +41,33 @@ export interface AcceptedAgentSignalStorageInput {
   readonly signal: AgentSignal;
 }
 
+export interface AcceptedAgentSignalSideEffectsInput {
+  readonly signals: AgentSignal[];
+  readonly latestAgentSignals: Map<AgentName, AgentSignal>;
+  readonly engineState: EngineState;
+  readonly signal: AgentSignal;
+  readonly latencyMs: number;
+  readonly signalBufferLimit: number;
+  readonly engineStateKey: string;
+  readonly tradingEnabled: boolean;
+}
+
+export interface AcceptedAgentSignalSideEffectHandlers {
+  readonly applyState: (state: EngineState) => void;
+  readonly persistStorageEntries: (entries: Record<string, unknown>) => Promise<void>;
+  readonly logAgentDecision: (signal: AgentSignal, latencyMs: number) => void;
+  readonly publish: (
+    telemetryType: string,
+    payload: Record<string, unknown>,
+    correlationId?: string
+  ) => void;
+  readonly schedule: (work: Promise<void>) => void;
+  readonly cancelAllQuotes: (
+    instrumentCode: string,
+    reason: HawkesEvacuationDispatch["cancelReason"]
+  ) => Promise<void>;
+}
+
 export function recordAgentSignalInBuffers(input: AgentSignalBufferInput): void {
   input.signals.push(input.signal);
 
@@ -144,4 +171,51 @@ export function buildHawkesEvacuationDispatch(
     cancelInstrumentCode: signal.instrumentCode || "ALL",
     cancelReason: "HAWKES_FLOW_CLUSTER"
   };
+}
+
+export async function applyAcceptedAgentSignalSideEffects(
+  input: AcceptedAgentSignalSideEffectsInput,
+  handlers: AcceptedAgentSignalSideEffectHandlers
+): Promise<AcceptedAgentSignalResult> {
+  recordAgentSignalInBuffers({
+    signals: input.signals,
+    latestAgentSignals: input.latestAgentSignals,
+    signal: input.signal,
+    signalBufferLimit: input.signalBufferLimit
+  });
+
+  const acceptedSignal = stateAfterAcceptedAgentSignal({
+    engineState: input.engineState,
+    signal: input.signal,
+    latencyMs: input.latencyMs
+  });
+  handlers.applyState(acceptedSignal.state);
+
+  await handlers.persistStorageEntries(
+    acceptedAgentSignalStorageEntries({
+      engineStateKey: input.engineStateKey,
+      state: acceptedSignal.state,
+      signal: input.signal
+    })
+  );
+
+  handlers.logAgentDecision(input.signal, input.latencyMs);
+  handlers.publish(
+    acceptedSignal.telemetry.telemetryType,
+    acceptedSignal.telemetry.payload,
+    acceptedSignal.telemetry.correlationId
+  );
+
+  if (acceptedSignal.hawkesEvacuation) {
+    const evacuation = buildHawkesEvacuationDispatch(input.signal, acceptedSignal.state.quoteState);
+    handlers.publish(evacuation.telemetryType, evacuation.payload, evacuation.correlationId);
+
+    if (input.tradingEnabled) {
+      handlers.schedule(
+        handlers.cancelAllQuotes(evacuation.cancelInstrumentCode, evacuation.cancelReason)
+      );
+    }
+  }
+
+  return acceptedSignal;
 }

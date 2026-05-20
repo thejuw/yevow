@@ -240,11 +240,8 @@ import {
 } from "./routes/EngineWebSocketStreams";
 import type { TradingTelemetryBus } from "./telemetry/TelemetryBus";
 import {
-  acceptedAgentSignalStorageEntries,
   agentSignalStorageKey,
-  buildHawkesEvacuationDispatch,
-  recordAgentSignalInBuffers,
-  stateAfterAcceptedAgentSignal
+  applyAcceptedAgentSignalSideEffects
 } from "./telemetry/AgentSignalRuntime";
 import { buildAgentStateSnapshot } from "./telemetry/AgentSnapshotRuntime";
 import {
@@ -4810,44 +4807,30 @@ export class TradingEngine {
   }
 
   private async acceptAgentSignal(signal: AgentSignal, latencyMs: number): Promise<void> {
-    recordAgentSignalInBuffers({
-      signals: this.signals,
-      latestAgentSignals: this.latestAgentSignals,
-      signal,
-      signalBufferLimit: SIGNAL_BUFFER_LIMIT
-    });
-    const acceptedSignal = stateAfterAcceptedAgentSignal({
-      engineState: this.engineState,
-      signal,
-      latencyMs
-    });
-    this.engineState = acceptedSignal.state;
-
-    await this.safeStoragePut(
-      acceptedAgentSignalStorageEntries({
+    await applyAcceptedAgentSignalSideEffects(
+      {
+        signals: this.signals,
+        latestAgentSignals: this.latestAgentSignals,
+        engineState: this.engineState,
+        signal,
+        latencyMs,
+        signalBufferLimit: SIGNAL_BUFFER_LIMIT,
         engineStateKey: ENGINE_STATE_KEY,
-        state: this.engineState,
-        signal
-      }),
-      "AGENT_SIGNAL"
-    );
-
-    this.logger.agentDecision(signal, latencyMs);
-    this.publish(
-      acceptedSignal.telemetry.telemetryType,
-      acceptedSignal.telemetry.payload,
-      acceptedSignal.telemetry.correlationId
-    );
-
-    if (acceptedSignal.hawkesEvacuation) {
-      const evacuation = buildHawkesEvacuationDispatch(signal, this.engineState.quoteState);
-      this.publish(evacuation.telemetryType, evacuation.payload, evacuation.correlationId);
-      if (this.cachedConfig.TRADING_ENABLED) {
-        this.state.waitUntil(
-          this.cancelAllQuotes(evacuation.cancelInstrumentCode, evacuation.cancelReason)
-        );
+        tradingEnabled: this.cachedConfig.TRADING_ENABLED
+      },
+      {
+        applyState: (state) => {
+          this.engineState = state;
+        },
+        persistStorageEntries: (entries) => this.safeStoragePut(entries, "AGENT_SIGNAL"),
+        logAgentDecision: (agentSignal, signalLatencyMs) =>
+          this.logger.agentDecision(agentSignal, signalLatencyMs),
+        publish: (telemetryType, payload, correlationId) =>
+          this.publish(telemetryType, payload, correlationId),
+        schedule: (work) => this.state.waitUntil(work),
+        cancelAllQuotes: (instrumentCode, reason) => this.cancelAllQuotes(instrumentCode, reason)
       }
-    }
+    );
   }
 
   private emitCascadeOperationalAlert(

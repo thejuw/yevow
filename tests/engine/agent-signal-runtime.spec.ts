@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   acceptedAgentSignalStorageEntries,
   agentSignalStorageKey,
+  applyAcceptedAgentSignalSideEffects,
   buildHawkesEvacuationDispatch,
+  type AcceptedAgentSignalSideEffectHandlers,
   recordAgentSignalInBuffers,
   stateAfterAcceptedAgentSignal
 } from "../../src/engine/trading/telemetry/AgentSignalRuntime";
@@ -131,7 +133,81 @@ describe("AgentSignalRuntime", () => {
       "signal:signal-storage-1": acceptedSignal
     });
   });
+
+  it("applies accepted signal side effects and schedules Hawkes evacuation cancels", async () => {
+    const state = defaultEngineState("agent-signal-side-effects");
+    const signals: AgentSignal[] = [];
+    const latestAgentSignals = new Map<AgentName, AgentSignal>();
+    const sideEffects = acceptedSignalSideEffectSpy();
+
+    const result = await applyAcceptedAgentSignalSideEffects(
+      {
+        signals,
+        latestAgentSignals,
+        engineState: state,
+        signal: signal({
+          action: "PAUSE",
+          featureVector: { signalType: "HAWKES_FLOW_CLUSTER" }
+        }),
+        latencyMs: 4,
+        signalBufferLimit: 5,
+        engineStateKey: "engine:state",
+        tradingEnabled: true
+      },
+      sideEffects.handlers
+    );
+
+    await Promise.all(sideEffects.scheduled);
+
+    expect(result.hawkesEvacuation).toBe(true);
+    expect(signals.map((item) => item.signalId)).toEqual(["signal-1"]);
+    expect(latestAgentSignals.get("ORACLE")?.signalId).toBe("signal-1");
+    expect(sideEffects.events).toEqual([
+      "state:1",
+      "persist:engine:state,signal:signal-1",
+      "log:signal-1:4",
+      "publish:AGENT_SIGNAL:signal-1",
+      "publish:SUSPEND_QUOTES:signal-1",
+      "cancel:btc-usd:HAWKES_FLOW_CLUSTER"
+    ]);
+  });
 });
+
+function acceptedSignalSideEffectSpy(): {
+  events: string[];
+  scheduled: Promise<void>[];
+  handlers: AcceptedAgentSignalSideEffectHandlers;
+} {
+  const events: string[] = [];
+  const scheduled: Promise<void>[] = [];
+
+  return {
+    events,
+    scheduled,
+    handlers: {
+      applyState(state) {
+        events.push(`state:${state.acceptedSignals}`);
+      },
+      persistStorageEntries(entries) {
+        events.push(`persist:${Object.keys(entries).join(",")}`);
+        return Promise.resolve();
+      },
+      logAgentDecision(agentSignal, latencyMs) {
+        events.push(`log:${agentSignal.signalId}:${latencyMs}`);
+      },
+      publish(telemetryType, _payload, correlationId) {
+        events.push(`publish:${telemetryType}:${correlationId ?? "NONE"}`);
+      },
+      schedule(work) {
+        scheduled.push(work);
+      },
+      cancelAllQuotes(instrumentCode, reason) {
+        events.push(`cancel:${instrumentCode}:${reason}`);
+        return Promise.resolve();
+      }
+    }
+  };
+}
 
 function signal(overrides: Partial<AgentSignal> = {}): AgentSignal {
   return {
