@@ -55,6 +55,12 @@ export interface QuoteDispatchBlockedLogInput {
   readonly assetRuntimeState: EngineState["assetMatrix"][string] | undefined;
 }
 
+export type QuoteDispatchBlockedSideEffectInput = QuoteDispatchBlockedLogInput;
+
+export interface QuoteDispatchBlockedSideEffectHandlers {
+  readonly logInfo: (event: string, message: string, metadata: JsonRecord) => void;
+}
+
 export interface DispatchedQuoteSnapshot {
   readonly bid: number | null;
   readonly ask: number | null;
@@ -269,6 +275,17 @@ export function quoteDispatchBlockedLogMetadata(input: QuoteDispatchBlockedLogIn
     quoteEligible: input.assetRuntimeState?.quoteEligible ?? null,
     reason: input.assetRuntimeState?.quoteReason ?? "MOLTWORKER_NOT_SELECTED"
   };
+}
+
+export function applyQuoteDispatchBlockedSideEffects(
+  input: QuoteDispatchBlockedSideEffectInput,
+  handlers: QuoteDispatchBlockedSideEffectHandlers
+): void {
+  handlers.logInfo(
+    "QUOTE_DISPATCH_BLOCKED",
+    "Skipped quote for inactive Moltworker asset",
+    quoteDispatchBlockedLogMetadata(input)
+  );
 }
 
 export function buildCroupierQuoteAction(input: CroupierQuoteActionInput): CroupierQuoteAction {

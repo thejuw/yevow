@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyQuoteDispatchBlockedSideEffects,
   applyQuoteDispatchSideEffects,
   applyQuoteRefreshThrottleSideEffects,
   buildCroupierQuoteAction,
@@ -10,6 +11,7 @@ import {
   evaluateQuoteRefreshThrottle,
   quoteDispatchBlockedLogMetadata,
   quoteRefreshThrottleLogMetadata,
+  type QuoteDispatchBlockedSideEffectHandlers,
   type QuoteDispatchSideEffectHandlers,
   type QuoteRefreshThrottleSideEffectHandlers
 } from "../../src/engine/trading/quotes/QuoteDispatchRuntime";
@@ -169,6 +171,30 @@ describe("QuoteDispatchRuntime", () => {
       quoteEligible: null,
       reason: "MOLTWORKER_NOT_SELECTED"
     });
+  });
+
+  it("emits blocked quote dispatch side effects", () => {
+    const assetRuntimeState = defaultEngineState("quote-dispatch-test").assetMatrix["btc-usd"];
+    const sideEffects = quoteDispatchBlockedSideEffectSpy();
+
+    if (!assetRuntimeState) {
+      throw new Error("missing btc-usd asset runtime fixture");
+    }
+
+    applyQuoteDispatchBlockedSideEffects(
+      {
+        quote: quoteSignal(),
+        assetRuntimeState: {
+          ...assetRuntimeState,
+          selectedByMoltworker: false,
+          quoteEligible: false,
+          quoteReason: "GOVERNOR_DISABLED"
+        }
+      },
+      sideEffects.handlers
+    );
+
+    expect(sideEffects.events).toEqual(["log:QUOTE_DISPATCH_BLOCKED:quote-1:GOVERNOR_DISABLED"]);
   });
 
   it("preserves liquidation absorption rationale and fallback source exchange", () => {
@@ -523,6 +549,22 @@ function quoteDispatchSideEffectSpy(): {
       },
       rememberDispatchedQuote(quote) {
         events.push(`remember:${quote.signalId}`);
+      }
+    }
+  };
+}
+
+function quoteDispatchBlockedSideEffectSpy(): {
+  events: string[];
+  handlers: QuoteDispatchBlockedSideEffectHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      logInfo(event, _message, metadata) {
+        events.push(`log:${event}:${metadata.quoteSignalId}:${metadata.reason}`);
       }
     }
   };

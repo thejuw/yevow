@@ -108,13 +108,13 @@ import {
   strategyQuoteDisabledReason as runtimeStrategyQuoteDisabledReason
 } from "./quotes/QuoteStateRuntime";
 import {
+  applyQuoteDispatchBlockedSideEffects,
   applyQuoteDispatchSideEffects,
   applyQuoteRefreshThrottleSideEffects,
   buildQuoteDispatchIntents,
   buildQuoteRefreshRuntimeDecision,
   dispatchCroupierQuoteActionSideEffects,
   dispatchedQuoteSnapshot,
-  quoteDispatchBlockedLogMetadata,
   type CroupierQuoteAction
 } from "./quotes/QuoteDispatchRuntime";
 import {
@@ -3732,10 +3732,11 @@ export class TradingEngine {
       !isInstrumentSelectedByMoltworker(quote.instrumentCode, this.macroBias) ||
       assetRuntimeState?.quoteEligible === false
     ) {
-      this.logger.info(
-        "QUOTE_DISPATCH_BLOCKED",
-        "Skipped quote for inactive Moltworker asset",
-        quoteDispatchBlockedLogMetadata({ quote, assetRuntimeState })
+      applyQuoteDispatchBlockedSideEffects(
+        { quote, assetRuntimeState },
+        {
+          logInfo: (event, message, metadata) => this.logger.info(event, message, metadata)
+        }
       );
       return true;
     }
