@@ -11,6 +11,7 @@ import type {
 } from "../../../types";
 import { microstructureFromBook } from "../book/BookReconstruction";
 import type { TickIngestResult } from "../TradingEngineRouteTypes";
+import type { ExecutionTraceInput } from "../performance/LatencyRuntime";
 
 export interface AnomalyEmergencyPauseStateInput {
   readonly currentState: EngineState;
@@ -81,6 +82,20 @@ export interface AnomalyEmergencyPauseSideEffectHandlers {
   readonly applyState: (state: EngineState) => void;
   readonly persistStorageWrites: (writes: Record<string, unknown>) => Promise<void>;
   readonly emitEmergencyPause: (event: AnomalyEmergencyPauseTelemetry) => void;
+}
+
+export interface AnomalyEmergencyPauseFlowInput extends AnomalyEmergencyPauseArtifactsInput {
+  readonly executionTrace: ExecutionTraceInput;
+}
+
+export interface AnomalyEmergencyPauseFlowHandlers extends AnomalyEmergencyPauseSideEffectHandlers {
+  readonly observeExecutionProfile: (metrics: LatencyMetrics, trace: ExecutionTraceInput) => void;
+  readonly publishTickTelemetry: (
+    tick: MarketTick,
+    metrics: LatencyMetrics,
+    status: "FRESH",
+    hotPathStartedAt: number
+  ) => void;
 }
 
 export interface AnomalyEmergencyPauseEmitHandlers {
@@ -245,6 +260,24 @@ export async function applyAnomalyEmergencyPauseSideEffects(
   handlers.applyState(artifacts.state);
   await handlers.persistStorageWrites(artifacts.storageWrites);
   handlers.emitEmergencyPause(artifacts.event);
+}
+
+export async function applyAnomalyEmergencyPauseFlow(
+  input: AnomalyEmergencyPauseFlowInput,
+  handlers: AnomalyEmergencyPauseFlowHandlers
+): Promise<TickIngestResult> {
+  handlers.observeExecutionProfile(input.metrics, input.executionTrace);
+
+  const artifacts = anomalyEmergencyPauseArtifacts(input);
+  await applyAnomalyEmergencyPauseSideEffects(artifacts, handlers);
+  handlers.publishTickTelemetry(
+    input.tick,
+    input.metrics,
+    "FRESH",
+    input.executionTrace.hotPathStartedAt
+  );
+
+  return artifacts.result;
 }
 
 export function emitAnomalyEmergencyPauseSideEffects(

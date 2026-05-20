@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyAnomalyEmergencyPauseFlow,
   applyAnomalyEmergencyPauseSideEffects,
   anomalyEmergencyPauseArtifacts,
   anomalyEmergencyPauseStorageWrites,
@@ -7,6 +8,7 @@ import {
   emitAnomalyEmergencyPauseSideEffects,
   stateAfterAnomalyEmergencyPause,
   type AnomalyEmergencyPauseEmitHandlers,
+  type AnomalyEmergencyPauseFlowHandlers,
   type AnomalyEmergencyPauseSideEffectHandlers
 } from "../../src/engine/trading/anomaly/AnomalyRuntime";
 import type { AnomalyDetectionResult } from "../../src/agents/AnomalyDetector";
@@ -215,6 +217,53 @@ describe("AnomalyRuntime", () => {
     expect(sideEffects.events).toEqual(["state:HALTED", "persist:8", "emit:anomaly-1"]);
   });
 
+  it("orchestrates emergency pause flow through profiling, persistence, and telemetry", async () => {
+    const sideEffects = anomalyFlowSideEffectSpy();
+
+    const result = await applyAnomalyEmergencyPauseFlow(
+      {
+        currentState: defaultEngineState("anomaly-flow"),
+        engineStateKey: "engine:state",
+        performanceHistoryKey: "latency:history",
+        latencyHistory: [latency()],
+        processingLatencySamplesKey: "latency:samples",
+        processingLatencySamples: [1],
+        domWallHistoryKey: "dom:walls",
+        domWallHistory: dom().walls,
+        anomalyDetectorStorageKey: "anomaly:state",
+        anomalyResult: anomalyResult(),
+        orderBookPrefix: "book:",
+        book: book(),
+        tick: tick(),
+        domSnapshot: dom(),
+        metrics: latency(),
+        internalOrderBookDepth: 4,
+        observedAt: OBSERVED_AT,
+        executionTrace: {
+          wakeUpTimeMs: 2,
+          orderBookUpdateMs: 1,
+          agentLogicMs: 3,
+          hotPathStartedAt: 123,
+          observedAt: OBSERVED_AT
+        }
+      },
+      sideEffects.handlers
+    );
+
+    expect(result).toMatchObject({
+      accepted: false,
+      status: "ANOMALY_PAUSE",
+      reason: "FLASH_CRASH"
+    });
+    expect(sideEffects.events).toEqual([
+      "profile:3",
+      "state:HALTED",
+      "persist:8",
+      "emit:anomaly-1",
+      "telemetry:FRESH:123"
+    ]);
+  });
+
   it("emits emergency pause audit, bus, and notification side effects in order", () => {
     const event = buildAnomalyEmergencyPauseTelemetry({
       tick: tick(),
@@ -276,6 +325,35 @@ function anomalySideEffectSpy(): {
       },
       emitEmergencyPause(event) {
         events.push(`emit:${event.correlationId}`);
+      }
+    }
+  };
+}
+
+function anomalyFlowSideEffectSpy(): {
+  events: string[];
+  handlers: AnomalyEmergencyPauseFlowHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      observeExecutionProfile(_metrics, trace) {
+        events.push(`profile:${String(trace.agentLogicMs)}`);
+      },
+      applyState(state) {
+        events.push(`state:${state.mode}`);
+      },
+      persistStorageWrites(writes) {
+        events.push(`persist:${Object.keys(writes).length}`);
+        return Promise.resolve();
+      },
+      emitEmergencyPause(event) {
+        events.push(`emit:${event.correlationId}`);
+      },
+      publishTickTelemetry(_tick, _metrics, status, hotPathStartedAt) {
+        events.push(`telemetry:${status}:${hotPathStartedAt}`);
       }
     }
   };

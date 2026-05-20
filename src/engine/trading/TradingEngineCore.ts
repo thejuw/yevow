@@ -65,8 +65,7 @@ import {
   resolveShadowQueueSizingConfig
 } from "./shadow/ShadowQueueRuntime";
 import {
-  applyAnomalyEmergencyPauseSideEffects,
-  anomalyEmergencyPauseArtifacts,
+  applyAnomalyEmergencyPauseFlow,
   emitAnomalyEmergencyPauseSideEffects,
   type AnomalyEmergencyPauseTelemetry
 } from "./anomaly/AnomalyRuntime";
@@ -2379,44 +2378,45 @@ export class TradingEngine {
   ): Promise<TickIngestResult> {
     const anomalyLogicMs = roundLatency(highResolutionNow() - anomalyLogicStartedAt);
 
-    this.observeExecutionProfile(metrics, {
-      wakeUpTimeMs,
-      orderBookUpdateMs,
-      agentLogicMs: anomalyLogicMs,
-      hotPathStartedAt,
-      observedAt: metrics.brainTimestamp
-    });
-
-    const artifacts = anomalyEmergencyPauseArtifacts({
-      currentState: this.engineState,
-      engineStateKey: ENGINE_STATE_KEY,
-      performanceHistoryKey: PERFORMANCE_HISTORY_KEY,
-      latencyHistory: this.latencyHistory,
-      processingLatencySamplesKey: PROCESSING_LATENCY_SAMPLES_KEY,
-      processingLatencySamples: this.processingLatencySamples,
-      domWallHistoryKey: DOM_WALL_HISTORY_KEY,
-      domWallHistory: this.domWallHistory,
-      anomalyDetectorStorageKey: ANOMALY_DETECTOR_STORAGE_KEY,
-      anomalyResult,
-      orderBookPrefix: ORDER_BOOK_PREFIX,
-      book,
-      tick,
-      domSnapshot,
-      metrics,
-      internalOrderBookDepth: countBookLevels(this.bids, this.asks),
-      observedAt: metrics.brainTimestamp
-    });
-
-    await applyAnomalyEmergencyPauseSideEffects(artifacts, {
-      applyState: (state) => {
-        this.engineState = state;
+    return applyAnomalyEmergencyPauseFlow(
+      {
+        currentState: this.engineState,
+        engineStateKey: ENGINE_STATE_KEY,
+        performanceHistoryKey: PERFORMANCE_HISTORY_KEY,
+        latencyHistory: this.latencyHistory,
+        processingLatencySamplesKey: PROCESSING_LATENCY_SAMPLES_KEY,
+        processingLatencySamples: this.processingLatencySamples,
+        domWallHistoryKey: DOM_WALL_HISTORY_KEY,
+        domWallHistory: this.domWallHistory,
+        anomalyDetectorStorageKey: ANOMALY_DETECTOR_STORAGE_KEY,
+        anomalyResult,
+        orderBookPrefix: ORDER_BOOK_PREFIX,
+        book,
+        tick,
+        domSnapshot,
+        metrics,
+        internalOrderBookDepth: countBookLevels(this.bids, this.asks),
+        observedAt: metrics.brainTimestamp,
+        executionTrace: {
+          wakeUpTimeMs,
+          orderBookUpdateMs,
+          agentLogicMs: anomalyLogicMs,
+          hotPathStartedAt,
+          observedAt: metrics.brainTimestamp
+        }
       },
-      persistStorageWrites: (writes) => this.safeStoragePut(writes, "ANOMALY_EMERGENCY_PAUSE"),
-      emitEmergencyPause: (event) => this.triggerEmergencyPause(event)
-    });
-    this.publishTickTelemetry(tick, metrics, "FRESH", hotPathStartedAt);
-
-    return artifacts.result;
+      {
+        observeExecutionProfile: (profileMetrics, trace) =>
+          this.observeExecutionProfile(profileMetrics, trace),
+        applyState: (state) => {
+          this.engineState = state;
+        },
+        persistStorageWrites: (writes) => this.safeStoragePut(writes, "ANOMALY_EMERGENCY_PAUSE"),
+        emitEmergencyPause: (event) => this.triggerEmergencyPause(event),
+        publishTickTelemetry: (telemetryTick, telemetryMetrics, status, telemetryStartedAt) =>
+          this.publishTickTelemetry(telemetryTick, telemetryMetrics, status, telemetryStartedAt)
+      }
+    );
   }
 
   private handleCroupierQuoteAction(
