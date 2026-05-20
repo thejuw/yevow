@@ -61,6 +61,11 @@ export interface AcceptedTickJournalArtifacts {
   readonly acceptedTickLog: AcceptedTickJournalLog | null;
 }
 
+export interface AcceptedTickJournalSideEffectHandlers {
+  readonly recordMarketTick: (tick: MarketTick) => void;
+  readonly logInfo: (eventType: string, message: string, metadata: JsonRecord) => void;
+}
+
 export function buildHotPathTickSnapshotWrites(
   input: HotPathTickSnapshotWritesInput
 ): Record<string, unknown> {
@@ -139,4 +144,24 @@ export function buildAcceptedTickJournalArtifacts(
         }
       : null
   };
+}
+
+export function applyAcceptedTickJournalSideEffects(
+  tick: MarketTick,
+  artifacts: AcceptedTickJournalArtifacts,
+  handlers: AcceptedTickJournalSideEffectHandlers
+): void {
+  if (artifacts.shouldRecordMarketTick) {
+    handlers.recordMarketTick(tick);
+  }
+
+  if (artifacts.bayesianPosteriorLog) {
+    const log = artifacts.bayesianPosteriorLog;
+    handlers.logInfo(log.eventType, log.message, log.metadata);
+  }
+
+  if (artifacts.acceptedTickLog) {
+    const log = artifacts.acceptedTickLog;
+    handlers.logInfo(log.eventType, log.message, log.metadata);
+  }
 }

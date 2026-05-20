@@ -9,6 +9,7 @@ import {
   PROCESSING_LATENCY_SAMPLES_KEY
 } from "../../src/TradingEngineConstants";
 import {
+  applyAcceptedTickJournalSideEffects,
   buildAcceptedTickJournalArtifacts,
   buildHotPathTickSnapshotWrites,
   shouldJournalMarketTick
@@ -121,6 +122,42 @@ describe("TickPersistenceRuntime", () => {
         averageLatencyMs: 12
       }
     });
+  });
+
+  it("applies accepted tick journal side effects through logger handlers", () => {
+    const tick = marketTick("btc-usd");
+    const calls: string[] = [];
+
+    applyAcceptedTickJournalSideEffects(
+      tick,
+      {
+        shouldRecordMarketTick: true,
+        bayesianPosteriorLog: {
+          eventType: "BAYESIAN_POSTERIOR_UPDATED",
+          message: "Oracle posterior PDF updated",
+          metadata: { instrumentCode: "btc-usd" }
+        },
+        acceptedTickLog: {
+          eventType: "MARKET_TICK_ACCEPTED",
+          message: "Market tick processed",
+          metadata: { processedTicks: 1 }
+        }
+      },
+      {
+        recordMarketTick(recordedTick) {
+          calls.push(`record:${recordedTick.instrumentCode}`);
+        },
+        logInfo(eventType, message, metadata) {
+          calls.push(`log:${eventType}:${message}:${Object.keys(metadata).join(",")}`);
+        }
+      }
+    );
+
+    expect(calls).toEqual([
+      "record:btc-usd",
+      "log:BAYESIAN_POSTERIOR_UPDATED:Oracle posterior PDF updated:instrumentCode",
+      "log:MARKET_TICK_ACCEPTED:Market tick processed:processedTicks"
+    ]);
   });
 });
 

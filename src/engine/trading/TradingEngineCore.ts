@@ -316,6 +316,7 @@ import {
 } from "./state/TickStateRuntime";
 import { evaluateTickAvailability } from "./state/TickAvailabilityRuntime";
 import {
+  applyAcceptedTickJournalSideEffects,
   buildAcceptedTickJournalArtifacts,
   buildHotPathTickSnapshotWrites
 } from "./state/TickPersistenceRuntime";
@@ -2673,19 +2674,10 @@ export class TradingEngine {
       bayesianSnapshotInterval: AGENT_SNAPSHOT_TICK_INTERVAL
     });
 
-    if (artifacts.shouldRecordMarketTick) {
-      this.logger.recordMarketTick(tick);
-    }
-
-    if (artifacts.bayesianPosteriorLog) {
-      const log = artifacts.bayesianPosteriorLog;
-      this.logger.info(log.eventType, log.message, log.metadata);
-    }
-
-    if (artifacts.acceptedTickLog) {
-      const log = artifacts.acceptedTickLog;
-      this.logger.info(log.eventType, log.message, log.metadata);
-    }
+    applyAcceptedTickJournalSideEffects(tick, artifacts, {
+      recordMarketTick: (marketTick) => this.logger.recordMarketTick(marketTick),
+      logInfo: (eventType, message, metadata) => this.logger.info(eventType, message, metadata)
+    });
   }
 
   private applyQuoteSuppression(
