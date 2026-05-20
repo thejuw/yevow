@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildCrossAssetHypeCancelArtifacts,
   crossAssetHypeCancelLogMetadata,
   crossAssetHypeCancelTelemetry,
   evaluateCrossAssetHypeQuoteCancel,
+  resolveCrossAssetHypeQuoteCancelConfig,
   updateLeadLagMetrics,
   type LeadLagSample
 } from "../../src/engine/trading/leadlag/LeadLagRuntime";
@@ -163,6 +165,32 @@ describe("LeadLagRuntime", () => {
       moveBps: 12.34567,
       jumpDetected: true,
       observedAt: OBSERVED_AT
+    });
+    expect(buildCrossAssetHypeCancelArtifacts(artifacts)).toEqual({
+      decision,
+      logMetadata: crossAssetHypeCancelLogMetadata(artifacts),
+      telemetry: crossAssetHypeCancelTelemetry(artifacts)
+    });
+  });
+
+  it("resolves cross-asset quote cancellation config from bounded env values", () => {
+    expect(
+      resolveCrossAssetHypeQuoteCancelConfig({
+        leadThresholdBps: "11.5",
+        cooldownMs: "750"
+      })
+    ).toEqual({
+      leadThresholdBps: 11.5,
+      cooldownMs: 750
+    });
+    expect(
+      resolveCrossAssetHypeQuoteCancelConfig({
+        leadThresholdBps: "0",
+        cooldownMs: "10"
+      })
+    ).toEqual({
+      leadThresholdBps: 8,
+      cooldownMs: 100
     });
   });
 });

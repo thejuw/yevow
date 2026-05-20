@@ -2,6 +2,11 @@ import type { EngineState, JsonRecord } from "../../../types";
 import { pearson, returns } from "../helpers/RuntimeMath";
 import type { MultiScaleVolatilitySnapshot } from "../../MultiScaleVolatility";
 import { roundMetric } from "../book/SortedBookSide";
+import {
+  DEFAULT_CROSS_ASSET_CANCEL_COOLDOWN_MS,
+  DEFAULT_CROSS_ASSET_CANCEL_LEAD_BPS
+} from "../../../TradingEngineConstants";
+import { readPositiveInteger, readPositiveNumber } from "../helpers/RuntimeParsing";
 
 export interface LeadLagSample {
   price: number;
@@ -33,6 +38,16 @@ export interface CrossAssetHypeCancelInput {
   readonly fallbackNowMs: number;
 }
 
+export interface CrossAssetHypeQuoteCancelConfigInput {
+  readonly leadThresholdBps?: string;
+  readonly cooldownMs?: string;
+}
+
+export interface CrossAssetHypeQuoteCancelConfig {
+  readonly leadThresholdBps: number;
+  readonly cooldownMs: number;
+}
+
 export interface CrossAssetHypeCancelDecision {
   readonly shouldCancel: boolean;
   readonly nowMs: number;
@@ -45,6 +60,12 @@ export interface CrossAssetHypeCancelArtifactsInput {
   readonly volatility: MultiScaleVolatilitySnapshot | null;
   readonly leadThresholdBps: number;
   readonly observedAt: string;
+}
+
+export interface CrossAssetHypeCancelArtifacts {
+  readonly decision: CrossAssetHypeCancelDecision;
+  readonly logMetadata: JsonRecord;
+  readonly telemetry: JsonRecord;
 }
 
 export function updateLeadLagMetrics(input: LeadLagUpdateInput): EngineState["leadLag"] {
@@ -94,6 +115,23 @@ export function updateLeadLagMetrics(input: LeadLagUpdateInput): EngineState["le
   };
 }
 
+export function resolveCrossAssetHypeQuoteCancelConfig(
+  input: CrossAssetHypeQuoteCancelConfigInput
+): CrossAssetHypeQuoteCancelConfig {
+  return {
+    leadThresholdBps: readPositiveNumber(
+      input.leadThresholdBps,
+      DEFAULT_CROSS_ASSET_CANCEL_LEAD_BPS
+    ),
+    cooldownMs: readPositiveInteger(
+      input.cooldownMs,
+      DEFAULT_CROSS_ASSET_CANCEL_COOLDOWN_MS,
+      100,
+      60_000
+    )
+  };
+}
+
 export function evaluateCrossAssetHypeQuoteCancel(
   input: CrossAssetHypeCancelInput
 ): CrossAssetHypeCancelDecision {
@@ -137,6 +175,16 @@ export function evaluateCrossAssetHypeQuoteCancel(
     nowMs,
     moveBps,
     reason: "BTC_LEAD_MOVE"
+  };
+}
+
+export function buildCrossAssetHypeCancelArtifacts(
+  input: CrossAssetHypeCancelArtifactsInput
+): CrossAssetHypeCancelArtifacts {
+  return {
+    decision: input.decision,
+    logMetadata: crossAssetHypeCancelLogMetadata(input),
+    telemetry: crossAssetHypeCancelTelemetry(input)
   };
 }
 

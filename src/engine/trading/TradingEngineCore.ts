@@ -77,9 +77,9 @@ import {
   type AnomalyEmergencyPauseTelemetry
 } from "./anomaly/AnomalyRuntime";
 import {
-  crossAssetHypeCancelLogMetadata,
-  crossAssetHypeCancelTelemetry,
+  buildCrossAssetHypeCancelArtifacts,
   evaluateCrossAssetHypeQuoteCancel,
+  resolveCrossAssetHypeQuoteCancelConfig,
   updateLeadLagMetrics as updateLeadLagRuntimeMetrics
 } from "./leadlag/LeadLagRuntime";
 import {
@@ -487,8 +487,6 @@ import {
   DEFAULT_HEATMAP_CLUSTER_NOTIONAL_USD,
   DEFAULT_CASCADE_DISTANCE_PCT,
   DEFAULT_PAPER_BANKROLL_USD,
-  DEFAULT_CROSS_ASSET_CANCEL_LEAD_BPS,
-  DEFAULT_CROSS_ASSET_CANCEL_COOLDOWN_MS,
   DEFAULT_MARKET_TICK_MAX_ROWS,
   DEFAULT_SHADOW_VLO_CAPACITY,
   DEFAULT_SHADOW_VLO_DRIFT_TRADES,
@@ -3903,16 +3901,10 @@ export class TradingEngine {
     observedAt: string,
     options: TickHandlingOptions
   ): void {
-    const leadThresholdBps = readPositiveNumber(
-      this.env.CROSS_ASSET_CANCEL_LEAD_BPS,
-      DEFAULT_CROSS_ASSET_CANCEL_LEAD_BPS
-    );
-    const cooldownMs = readPositiveInteger(
-      this.env.CROSS_ASSET_CANCEL_COOLDOWN_MS,
-      DEFAULT_CROSS_ASSET_CANCEL_COOLDOWN_MS,
-      100,
-      60_000
-    );
+    const config = resolveCrossAssetHypeQuoteCancelConfig({
+      leadThresholdBps: this.env.CROSS_ASSET_CANCEL_LEAD_BPS,
+      cooldownMs: this.env.CROSS_ASSET_CANCEL_COOLDOWN_MS
+    });
     const last = this.crossAssetCancelLogAt.get("hype-usd") ?? 0;
     const decision = evaluateCrossAssetHypeQuoteCancel({
       shadowReplay: options.shadowReplay,
@@ -3920,8 +3912,8 @@ export class TradingEngine {
       tickInstrumentCode: tick.instrumentCode,
       volatility,
       observedAt,
-      leadThresholdBps,
-      cooldownMs,
+      leadThresholdBps: config.leadThresholdBps,
+      cooldownMs: config.cooldownMs,
       lastCancelAtMs: last,
       fallbackNowMs: Date.now()
     });
@@ -3931,18 +3923,18 @@ export class TradingEngine {
     }
 
     this.crossAssetCancelLogAt.set("hype-usd", decision.nowMs);
-    const artifacts = {
+    const artifacts = buildCrossAssetHypeCancelArtifacts({
       decision,
       volatility,
-      leadThresholdBps,
+      leadThresholdBps: config.leadThresholdBps,
       observedAt
-    };
+    });
     this.logger.warn(
       "CROSS_ASSET_HYPE_CANCEL",
       "BTC lead move invalidated HYPE resting quotes",
-      crossAssetHypeCancelLogMetadata(artifacts)
+      artifacts.logMetadata
     );
-    this.publish("SUSPEND_QUOTES", crossAssetHypeCancelTelemetry(artifacts));
+    this.publish("SUSPEND_QUOTES", artifacts.telemetry);
     this.state.waitUntil(this.cancelAllQuotes("hype-usd", "BTC_LEAD_MOVE"));
   }
 
