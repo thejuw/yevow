@@ -95,6 +95,19 @@ export function hydrateReplayOrderBooks(
   );
 }
 
+export type HydratedReplayOrderBooks = ReturnType<typeof hydrateReplayOrderBooks>;
+
+export interface ReplaySnapshotRestoreHandlers {
+  readonly listPersistedBookKeys: () => Promise<Iterable<string>>;
+  readonly onListPersistedBookKeysFailure: (error: unknown) => void;
+  readonly applyRuntimeSnapshot: (
+    snapshot: EngineReplaySnapshot,
+    hydratedBooks: HydratedReplayOrderBooks
+  ) => void;
+  readonly deletePersistedBookKeys: (keys: readonly string[]) => Promise<void>;
+  readonly writeRestoreState: (writes: Record<string, unknown>) => Promise<void>;
+}
+
 export function buildReplayRestoreWrites(snapshot: EngineReplaySnapshot): Record<string, unknown> {
   return {
     [ENGINE_STATE_KEY]: snapshot.engineState,
@@ -114,4 +127,22 @@ export function buildReplayRestoreWrites(snapshot: EngineReplaySnapshot): Record
       snapshot.orderBooks.map((book) => [`${ORDER_BOOK_PREFIX}${book.marketKey}`, book])
     )
   };
+}
+
+export async function restoreReplaySnapshotSideEffects(
+  snapshot: EngineReplaySnapshot,
+  handlers: ReplaySnapshotRestoreHandlers
+): Promise<void> {
+  const hydratedBooks = hydrateReplayOrderBooks(snapshot);
+  let persistedBookKeys: string[] = [];
+
+  try {
+    persistedBookKeys = [...(await handlers.listPersistedBookKeys())];
+  } catch (error) {
+    handlers.onListPersistedBookKeysFailure(error);
+  }
+
+  handlers.applyRuntimeSnapshot(snapshot, hydratedBooks);
+  await handlers.deletePersistedBookKeys(persistedBookKeys);
+  await handlers.writeRestoreState(buildReplayRestoreWrites(snapshot));
 }

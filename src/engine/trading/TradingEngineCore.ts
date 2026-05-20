@@ -281,9 +281,8 @@ import {
   writeReplayRunningStatusSideEffect
 } from "./replay/ReplayResultRuntime";
 import {
-  buildReplayRestoreWrites,
   captureEngineReplaySnapshot,
-  hydrateReplayOrderBooks,
+  restoreReplaySnapshotSideEffects,
   type EngineReplaySnapshot
 } from "./replay/ReplaySnapshotRuntime";
 import type { GrpcFatalDropPayload, TickIngestResult } from "./TradingEngineRouteTypes";
@@ -4419,40 +4418,44 @@ export class TradingEngine {
   }
 
   private async restoreReplaySnapshot(snapshot: EngineReplaySnapshot): Promise<void> {
-    const hydratedBooks = hydrateReplayOrderBooks(snapshot);
-    let persistedBookKeys = new Map<string, InternalOrderBook>();
-    try {
-      persistedBookKeys = await this.state.storage.list<InternalOrderBook>({
-        prefix: ORDER_BOOK_PREFIX
-      });
-    } catch (error) {
-      this.handleStorageWriteFailure("REPLAY_RESTORE_LIST_BOOKS", error);
-    }
-
-    this.engineState = snapshot.engineState;
-    this.orderBook = hydratedBooks.snapshots;
-    this.bids = hydratedBooks.bids;
-    this.asks = hydratedBooks.asks;
-    this.bookSync = hydratedBooks.sync;
-    this.rebindOrderBookReconstructor();
-    this.latencyHistory = snapshot.latencyHistory;
-    this.processingLatencySamples = snapshot.processingLatencySamples;
-    this.domWallHistory = snapshot.domWallHistory;
-    this.leadLagSamples = new Map(snapshot.leadLagSamples);
-    this.cachedConfig = snapshot.cachedConfig;
-    this.maxLatencyMs = snapshot.maxLatencyMs;
-    this.lastTickTimestamp = snapshot.lastTickTimestamp;
-    this.signals = snapshot.signals;
-    this.latestAgentSignals = new Map(snapshot.latestAgentSignals);
-    this.profilerRegistry.hydrate(snapshot.profilerState, new Map(snapshot.profilerStates));
-    this.anomalyDetector.hydrate(snapshot.anomalyState);
-    this.oracleAgent.hydrate(snapshot.oracleState);
-    this.sentimentAgent.hydrate(snapshot.sentimentState);
-    this.rateLimiter.hydrate(snapshot.rateLimits);
-
-    await this.safeStorageDelete([...persistedBookKeys.keys()], "REPLAY_RESTORE_DELETE_BOOKS");
-
-    await this.safeStoragePut(buildReplayRestoreWrites(snapshot), "REPLAY_RESTORE");
+    await restoreReplaySnapshotSideEffects(snapshot, {
+      listPersistedBookKeys: async () =>
+        (
+          await this.state.storage.list<InternalOrderBook>({
+            prefix: ORDER_BOOK_PREFIX
+          })
+        ).keys(),
+      onListPersistedBookKeysFailure: (error) =>
+        this.handleStorageWriteFailure("REPLAY_RESTORE_LIST_BOOKS", error),
+      applyRuntimeSnapshot: (replaySnapshot, hydratedBooks) => {
+        this.engineState = replaySnapshot.engineState;
+        this.orderBook = hydratedBooks.snapshots;
+        this.bids = hydratedBooks.bids;
+        this.asks = hydratedBooks.asks;
+        this.bookSync = hydratedBooks.sync;
+        this.rebindOrderBookReconstructor();
+        this.latencyHistory = replaySnapshot.latencyHistory;
+        this.processingLatencySamples = replaySnapshot.processingLatencySamples;
+        this.domWallHistory = replaySnapshot.domWallHistory;
+        this.leadLagSamples = new Map(replaySnapshot.leadLagSamples);
+        this.cachedConfig = replaySnapshot.cachedConfig;
+        this.maxLatencyMs = replaySnapshot.maxLatencyMs;
+        this.lastTickTimestamp = replaySnapshot.lastTickTimestamp;
+        this.signals = replaySnapshot.signals;
+        this.latestAgentSignals = new Map(replaySnapshot.latestAgentSignals);
+        this.profilerRegistry.hydrate(
+          replaySnapshot.profilerState,
+          new Map(replaySnapshot.profilerStates)
+        );
+        this.anomalyDetector.hydrate(replaySnapshot.anomalyState);
+        this.oracleAgent.hydrate(replaySnapshot.oracleState);
+        this.sentimentAgent.hydrate(replaySnapshot.sentimentState);
+        this.rateLimiter.hydrate(replaySnapshot.rateLimits);
+      },
+      deletePersistedBookKeys: (keys) =>
+        this.safeStorageDelete([...keys], "REPLAY_RESTORE_DELETE_BOOKS"),
+      writeRestoreState: (writes) => this.safeStoragePut(writes, "REPLAY_RESTORE")
+    });
   }
 
   private updateLatencyAverage(totalLatencyMs: number): void {

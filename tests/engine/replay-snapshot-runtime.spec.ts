@@ -3,6 +3,7 @@ import {
   buildReplayRestoreWrites,
   captureEngineReplaySnapshot,
   hydrateReplayOrderBooks,
+  restoreReplaySnapshotSideEffects,
   type EngineReplaySnapshot
 } from "../../src/engine/trading/replay/ReplaySnapshotRuntime";
 import {
@@ -100,6 +101,68 @@ describe("ReplaySnapshotRuntime", () => {
       [`${ORDER_BOOK_PREFIX}hyperliquid:btc-usd`]: snapshot.orderBooks[0]
     });
     expect(writes["agent:profiler:state:btc-usd"]).toEqual(snapshot.profilerStates[0][1]);
+  });
+
+  it("restores replay snapshots through ordered side-effect handlers", async () => {
+    const snapshot = replaySnapshot();
+    const calls: string[] = [];
+    let deletedKeys: readonly string[] = [];
+    let restoreWrites: Record<string, unknown> | null = null;
+
+    await restoreReplaySnapshotSideEffects(snapshot, {
+      listPersistedBookKeys: async () => {
+        calls.push("list-books");
+        return ["book:old-a", "book:old-b"];
+      },
+      onListPersistedBookKeysFailure: () => calls.push("list-failed"),
+      applyRuntimeSnapshot: (restoredSnapshot, hydratedBooks) => {
+        calls.push("apply-runtime");
+        expect(restoredSnapshot).toBe(snapshot);
+        expect(hydratedBooks.snapshots.get("hyperliquid:btc-usd")?.midPrice).toBe(100);
+      },
+      deletePersistedBookKeys: async (keys) => {
+        calls.push("delete-books");
+        deletedKeys = keys;
+      },
+      writeRestoreState: async (writes) => {
+        calls.push("write-state");
+        restoreWrites = writes;
+      }
+    });
+
+    expect(calls).toEqual(["list-books", "apply-runtime", "delete-books", "write-state"]);
+    expect(deletedKeys).toEqual(["book:old-a", "book:old-b"]);
+    expect(restoreWrites).toMatchObject({
+      [ENGINE_STATE_KEY]: snapshot.engineState,
+      [`${ORDER_BOOK_PREFIX}hyperliquid:btc-usd`]: snapshot.orderBooks[0]
+    });
+  });
+
+  it("continues replay snapshot restore when persisted book listing fails", async () => {
+    const calls: string[] = [];
+
+    await restoreReplaySnapshotSideEffects(replaySnapshot(), {
+      listPersistedBookKeys: async () => {
+        calls.push("list-books");
+        throw new Error("storage unavailable");
+      },
+      onListPersistedBookKeysFailure: (error) => {
+        calls.push(error instanceof Error ? `list-failed:${error.message}` : "list-failed");
+      },
+      applyRuntimeSnapshot: () => calls.push("apply-runtime"),
+      deletePersistedBookKeys: async (keys) => {
+        calls.push(`delete:${keys.length}`);
+      },
+      writeRestoreState: async () => calls.push("write-state")
+    });
+
+    expect(calls).toEqual([
+      "list-books",
+      "list-failed:storage unavailable",
+      "apply-runtime",
+      "delete:0",
+      "write-state"
+    ]);
   });
 });
 
