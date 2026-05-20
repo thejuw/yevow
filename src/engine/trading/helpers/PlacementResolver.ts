@@ -193,6 +193,18 @@ export interface TopologyObservationLogEvent {
   readonly metadata: JsonRecord;
 }
 
+export interface TopologyObservationSideEffectsInput {
+  readonly observation: TopologyObservationResult;
+  readonly maxOrderNotional: number;
+  readonly baseMaxPositionSize: number;
+}
+
+export interface TopologyObservationSideEffectHandlers {
+  readonly applyState: (state: EngineState) => void;
+  readonly persistState: () => void;
+  readonly warn: (event: TopologyObservationLogEvent) => void;
+}
+
 export function stateAfterTopologyObservation(
   input: TopologyObservationInput
 ): TopologyObservationResult {
@@ -263,6 +275,27 @@ export function buildTopologyObservationLogEvents(
   }
 
   return events;
+}
+
+export function applyTopologyObservationSideEffects(
+  input: TopologyObservationSideEffectsInput,
+  handlers: TopologyObservationSideEffectHandlers
+): void {
+  handlers.applyState(input.observation.state);
+
+  if (!input.observation.changed) {
+    return;
+  }
+
+  handlers.persistState();
+
+  for (const event of buildTopologyObservationLogEvents({
+    observation: input.observation,
+    maxOrderNotional: input.maxOrderNotional,
+    baseMaxPositionSize: input.baseMaxPositionSize
+  })) {
+    handlers.warn(event);
+  }
 }
 
 export interface LocationLatencyInput {

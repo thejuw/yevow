@@ -18,8 +18,7 @@ import {
 import { CroupierAgent, type CroupierDecision } from "../../agents/CroupierAgent";
 import { AdverseSelectionModel } from "../AdverseSelectionModel";
 import {
-  applyLocationRisk,
-  buildTopologyObservationLogEvents,
+  applyTopologyObservationSideEffects,
   defaultEngineLocation,
   resolveEngineLocation,
   stateAfterLocationLatency,
@@ -4644,21 +4643,21 @@ export class TradingEngine {
       env: this.env,
       config: this.cachedConfig
     });
-    this.engineState = observation.state;
-
-    if (!observation.changed) {
-      return;
-    }
-
-    this.waitUntilStoragePut(ENGINE_STATE_KEY, this.engineState, "COLO_TOPOLOGY_CHANGED");
-
-    for (const event of buildTopologyObservationLogEvents({
-      observation,
-      maxOrderNotional: this.engineState.risk.maxOrderNotional,
-      baseMaxPositionSize: this.cachedConfig.MAX_POSITION_SIZE
-    })) {
-      this.logger.warn(event.eventType, event.message, event.metadata);
-    }
+    applyTopologyObservationSideEffects(
+      {
+        observation,
+        maxOrderNotional: observation.state.risk.maxOrderNotional,
+        baseMaxPositionSize: this.cachedConfig.MAX_POSITION_SIZE
+      },
+      {
+        applyState: (state) => {
+          this.engineState = state;
+        },
+        persistState: () =>
+          this.waitUntilStoragePut(ENGINE_STATE_KEY, this.engineState, "COLO_TOPOLOGY_CHANGED"),
+        warn: (event) => this.logger.warn(event.eventType, event.message, event.metadata)
+      }
+    );
   }
 
   private applyLocationLatency(totalLatencyMs: number, observedAt: string): void {

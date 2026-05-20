@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyLocationRisk,
+  applyTopologyObservationSideEffects,
   buildTopologyObservationLogEvents,
   defaultEngineLocation,
   locationChanged,
@@ -12,7 +13,8 @@ import {
   resolveEngineLocation,
   resolveRiskMultiplier,
   stateAfterLocationLatency,
-  stateAfterTopologyObservation
+  stateAfterTopologyObservation,
+  type TopologyObservationSideEffectHandlers
 } from "../../src/engine/trading/helpers/PlacementResolver";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { RiskLimits } from "../../src/types";
@@ -278,6 +280,94 @@ describe("PlacementResolver", () => {
     });
   });
 
+  it("applies topology side effects and only persists changed observations", () => {
+    const state = defaultEngineState("placement-side-effects");
+    const changedObservation = stateAfterTopologyObservation({
+      state,
+      topology: {
+        colo: "DFW",
+        placement: "remote-dfw",
+        country: null,
+        city: null,
+        region: null,
+        timezone: null,
+        latitude: null,
+        longitude: null,
+        requestId: "req-1",
+        observedAt: "2026-05-18T04:00:00.000Z"
+      },
+      env: {
+        PLACEMENT_TARGET_COLO: undefined,
+        GOLDEN_COLOS: "NRT",
+        HIGH_LATENCY_COLO_RISK_MULTIPLIER: "0.25"
+      },
+      config: {
+        version: "risk-v3",
+        TRADING_ENABLED: true,
+        MAX_POSITION_SIZE: 100,
+        MAX_DRAWDOWN_PCT: 0.05,
+        GOLDEN_COLOS: "NRT"
+      }
+    });
+    const changedSideEffects = topologySideEffectSpy();
+
+    applyTopologyObservationSideEffects(
+      {
+        observation: changedObservation,
+        maxOrderNotional: changedObservation.state.risk.maxOrderNotional,
+        baseMaxPositionSize: 100
+      },
+      changedSideEffects.handlers
+    );
+
+    expect(changedSideEffects.events).toEqual([
+      "state:DFW",
+      "persist",
+      "warn:COLO_TOPOLOGY_CHANGED",
+      "warn:PIT_BOSS_RISK_ADJUSTED"
+    ]);
+
+    const unchangedObservation = stateAfterTopologyObservation({
+      state: changedObservation.state,
+      topology: {
+        colo: "DFW",
+        placement: "remote-dfw",
+        country: null,
+        city: null,
+        region: null,
+        timezone: null,
+        latitude: null,
+        longitude: null,
+        requestId: "req-2",
+        observedAt: "2026-05-18T04:00:01.000Z"
+      },
+      env: {
+        PLACEMENT_TARGET_COLO: undefined,
+        GOLDEN_COLOS: "NRT",
+        HIGH_LATENCY_COLO_RISK_MULTIPLIER: "0.25"
+      },
+      config: {
+        version: "risk-v3",
+        TRADING_ENABLED: true,
+        MAX_POSITION_SIZE: 100,
+        MAX_DRAWDOWN_PCT: 0.05,
+        GOLDEN_COLOS: "NRT"
+      }
+    });
+    const unchangedSideEffects = topologySideEffectSpy();
+
+    applyTopologyObservationSideEffects(
+      {
+        observation: unchangedObservation,
+        maxOrderNotional: unchangedObservation.state.risk.maxOrderNotional,
+        baseMaxPositionSize: 100
+      },
+      unchangedSideEffects.handlers
+    );
+
+    expect(unchangedSideEffects.events).toEqual(["state:DFW"]);
+  });
+
   it("updates observed location latency without changing the placement identity", () => {
     const state = defaultEngineState("placement-latency");
     state.location = {
@@ -315,3 +405,25 @@ describe("PlacementResolver", () => {
     });
   });
 });
+
+function topologySideEffectSpy(): {
+  events: string[];
+  handlers: TopologyObservationSideEffectHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      applyState(state) {
+        events.push(`state:${state.location.colo ?? "UNKNOWN"}`);
+      },
+      persistState() {
+        events.push("persist");
+      },
+      warn(event) {
+        events.push(`warn:${event.eventType}`);
+      }
+    }
+  };
+}
