@@ -179,6 +179,7 @@ import {
   buildCascadeDetectedArtifacts,
   liquidationEventProcessingResult,
   persistCascadeLiquidationEvents,
+  processLiquidationIngestRuntime,
   resolveLiquidationEventContext
 } from "./cascade/CascadeLiquidationRuntime";
 import {
@@ -1406,50 +1407,40 @@ export class TradingEngine {
     raw: Record<string, unknown>,
     payload: HyperliquidRawIngestPayload
   ): Promise<TickIngestResult> {
-    const liquidationContext = resolveLiquidationEventContext({
+    const liquidationResult = processLiquidationIngestRuntime({
+      raw,
       payload,
+      currentState: this.engineState,
       currentInstrumentCode: this.engineState.microstructure.instrumentCode,
       defaultAsset: this.env.HL_ASSET,
-      midPrice: this.engineState.microstructure.midPrice
-    });
-    const previousEventCount = this.engineState.liquidationHeatmap.recentEvents.length;
-    const heatmap = this.heatmapAgent.recordLiquidationEvent(raw, {
-      instrumentCode: liquidationContext.instrumentCode,
-      sourceExchange: liquidationContext.sourceExchange,
-      midPrice: liquidationContext.midPrice,
-      observedAt: liquidationContext.observedAt
-    });
-    const cascadeLiquidations = this.cascadeLiquidationStream.ingest(raw, {
-      instrumentCode: liquidationContext.instrumentCode,
-      sourceExchange: liquidationContext.sourceExchange,
-      observedAt: liquidationContext.observedAt,
-      fallbackPrice: liquidationContext.midPrice
-    });
-    if (cascadeLiquidations.length > 0) {
-      this.state.waitUntil(this.persistCascadeLiquidations(cascadeLiquidations));
-    }
-    const cascadeEvents = this.recordCascadeLiquidations(
-      cascadeLiquidations,
-      liquidationContext.observedAt
-    );
-
-    const liquidationResult = liquidationEventProcessingResult({
-      currentState: this.engineState,
-      context: liquidationContext,
-      heatmap,
-      previousEventCount,
-      cascadeLiquidationCount: cascadeLiquidations.length,
-      cascadeEventCount: cascadeEvents.length,
+      midPrice: this.engineState.microstructure.midPrice,
       engineStateKey: ENGINE_STATE_KEY,
-      liquidationHeatmapKey: LIQUIDATION_HEATMAP_STORAGE_KEY
+      liquidationHeatmapKey: LIQUIDATION_HEATMAP_STORAGE_KEY,
+      handlers: {
+        recordHeatmap: (eventRaw, context) =>
+          this.heatmapAgent.recordLiquidationEvent(eventRaw, {
+            instrumentCode: context.instrumentCode,
+            sourceExchange: context.sourceExchange,
+            midPrice: context.midPrice,
+            observedAt: context.observedAt
+          }),
+        ingestCascadeLiquidations: (eventRaw, context) =>
+          this.cascadeLiquidationStream.ingest(eventRaw, {
+            instrumentCode: context.instrumentCode,
+            sourceExchange: context.sourceExchange,
+            observedAt: context.observedAt,
+            fallbackPrice: context.midPrice
+          }),
+        recordCascadeLiquidations: (events, observedAt) =>
+          this.recordCascadeLiquidations(events, observedAt),
+        scheduleCascadeLiquidationJournal: (events) =>
+          this.state.waitUntil(this.persistCascadeLiquidations(events)),
+        scheduleStorageWrites: (storageWrites) =>
+          this.state.waitUntil(this.safeStoragePut(storageWrites, "LIQUIDATION_EVENT")),
+        publish: (type, publishPayload) => this.publish(type, publishPayload)
+      }
     });
     this.engineState = liquidationResult.state;
-
-    this.state.waitUntil(this.safeStoragePut(liquidationResult.storageWrites, "LIQUIDATION_EVENT"));
-
-    if (liquidationResult.shouldPublishTelemetry) {
-      this.publish("LIQUIDATION_EVENT", liquidationResult.telemetryPayload);
-    }
 
     return liquidationResult.ingestResult;
   }

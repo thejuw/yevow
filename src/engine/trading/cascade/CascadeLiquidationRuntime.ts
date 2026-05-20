@@ -70,6 +70,45 @@ export interface LiquidationEventProcessingResult {
   readonly ingestResult: TickIngestResult;
 }
 
+export interface LiquidationIngestSideEffectHandlers {
+  readonly recordHeatmap: (
+    raw: Record<string, unknown>,
+    context: LiquidationEventContext
+  ) => LiquidationHeatmapState;
+  readonly ingestCascadeLiquidations: (
+    raw: Record<string, unknown>,
+    context: LiquidationEventContext
+  ) => LiquidationEvent[];
+  readonly recordCascadeLiquidations: (
+    events: LiquidationEvent[],
+    observedAt: string
+  ) => CascadeEvent[];
+  readonly scheduleCascadeLiquidationJournal: (events: LiquidationEvent[]) => void;
+  readonly scheduleStorageWrites: (storageWrites: Record<string, unknown>) => void;
+  readonly publish: (type: "LIQUIDATION_EVENT", payload: JsonRecord) => void;
+}
+
+export interface LiquidationIngestRuntimeInput {
+  readonly raw: Record<string, unknown>;
+  readonly payload: {
+    readonly receivedAt?: string;
+    readonly instrumentCode?: string;
+    readonly source_exchange?: string;
+  };
+  readonly currentState: EngineState;
+  readonly currentInstrumentCode: string | null | undefined;
+  readonly defaultAsset: string | undefined;
+  readonly midPrice: number | null;
+  readonly engineStateKey: string;
+  readonly liquidationHeatmapKey: string;
+  readonly handlers: LiquidationIngestSideEffectHandlers;
+}
+
+export interface LiquidationIngestRuntimeResult {
+  readonly state: EngineState;
+  readonly ingestResult: TickIngestResult;
+}
+
 export interface CascadeDetectedArtifacts {
   readonly logMetadata: JsonRecord;
   readonly telemetryPayload: JsonRecord;
@@ -175,6 +214,50 @@ export function liquidationEventProcessingResult(
       status: "FRESH",
       processedCount
     }
+  };
+}
+
+export function processLiquidationIngestRuntime(
+  input: LiquidationIngestRuntimeInput
+): LiquidationIngestRuntimeResult {
+  const context = resolveLiquidationEventContext({
+    payload: input.payload,
+    currentInstrumentCode: input.currentInstrumentCode,
+    defaultAsset: input.defaultAsset,
+    midPrice: input.midPrice
+  });
+  const previousEventCount = input.currentState.liquidationHeatmap.recentEvents.length;
+  const heatmap = input.handlers.recordHeatmap(input.raw, context);
+  const cascadeLiquidations = input.handlers.ingestCascadeLiquidations(input.raw, context);
+
+  if (cascadeLiquidations.length > 0) {
+    input.handlers.scheduleCascadeLiquidationJournal(cascadeLiquidations);
+  }
+
+  const cascadeEvents = input.handlers.recordCascadeLiquidations(
+    cascadeLiquidations,
+    context.observedAt
+  );
+  const processed = liquidationEventProcessingResult({
+    currentState: input.currentState,
+    context,
+    heatmap,
+    previousEventCount,
+    cascadeLiquidationCount: cascadeLiquidations.length,
+    cascadeEventCount: cascadeEvents.length,
+    engineStateKey: input.engineStateKey,
+    liquidationHeatmapKey: input.liquidationHeatmapKey
+  });
+
+  input.handlers.scheduleStorageWrites(processed.storageWrites);
+
+  if (processed.shouldPublishTelemetry) {
+    input.handlers.publish("LIQUIDATION_EVENT", processed.telemetryPayload);
+  }
+
+  return {
+    state: processed.state,
+    ingestResult: processed.ingestResult
   };
 }
 

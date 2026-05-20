@@ -11,6 +11,7 @@ import {
   liquidationEventProcessingResult,
   liquidationEventTelemetry,
   persistCascadeLiquidationEvents,
+  processLiquidationIngestRuntime,
   resolveLiquidationEventContext,
   stateAfterLiquidationHeatmap
 } from "../../src/engine/trading/cascade/CascadeLiquidationRuntime";
@@ -201,6 +202,92 @@ describe("CascadeLiquidationRuntime", () => {
       accepted: true,
       status: "FRESH",
       processedCount: 2
+    });
+  });
+
+  it("processes liquidation ingest side effects through domain handlers", () => {
+    const currentState = defaultEngineState("cascade-liquidation-ingest");
+    currentState.microstructure.instrumentCode = "btc-usd";
+    const event = liquidationEvent();
+    const cascade = cascadeEvent();
+    const heatmap = {
+      ...defaultLiquidationHeatmapState("btc-usd", "hyperliquid", 100, 10_000_000, 0.005),
+      recentEvents: [
+        {
+          eventId: "heat-1",
+          instrumentCode: "btc-usd",
+          side: "LONG" as const,
+          forcedFlowSide: "SELL" as const,
+          price: 99,
+          estimatedNotionalUsd: 12_000_000,
+          baseSize: 1,
+          observedAt: OBSERVED_AT
+        }
+      ],
+      totalEstimatedNotionalUsd: 12_000_000
+    };
+    const scheduledJournals: LiquidationEvent[][] = [];
+    const scheduledWrites: Record<string, unknown>[] = [];
+    const published: { type: string; payload: Record<string, unknown> }[] = [];
+
+    const result = processLiquidationIngestRuntime({
+      raw: { channel: "userEvents" },
+      payload: {
+        receivedAt: OBSERVED_AT,
+        instrumentCode: "BTC-USD",
+        source_exchange: "hyperliquid"
+      },
+      currentState,
+      currentInstrumentCode: currentState.microstructure.instrumentCode,
+      defaultAsset: "BTC",
+      midPrice: 100,
+      engineStateKey: "engine",
+      liquidationHeatmapKey: "heatmap",
+      handlers: {
+        recordHeatmap(raw, context) {
+          expect(raw).toEqual({ channel: "userEvents" });
+          expect(context).toMatchObject({
+            instrumentCode: "btc-usd",
+            observedAt: OBSERVED_AT
+          });
+          return heatmap;
+        },
+        ingestCascadeLiquidations(raw, context) {
+          expect(raw).toEqual({ channel: "userEvents" });
+          expect(context.midPrice).toBe(100);
+          return [event];
+        },
+        recordCascadeLiquidations(events, observedAt) {
+          expect(events).toEqual([event]);
+          expect(observedAt).toBe(OBSERVED_AT);
+          return [cascade];
+        },
+        scheduleCascadeLiquidationJournal(events) {
+          scheduledJournals.push(events);
+        },
+        scheduleStorageWrites(storageWrites) {
+          scheduledWrites.push(storageWrites);
+        },
+        publish(type, payload) {
+          published.push({ type, payload });
+        }
+      }
+    });
+
+    expect(result.ingestResult).toEqual({
+      accepted: true,
+      status: "FRESH",
+      processedCount: 1
+    });
+    expect(result.state.liquidationHeatmap).toBe(heatmap);
+    expect(scheduledJournals).toEqual([[event]]);
+    expect(scheduledWrites).toHaveLength(1);
+    expect(scheduledWrites[0]).toMatchObject({ heatmap });
+    expect(published).toHaveLength(1);
+    expect(published[0]?.type).toBe("LIQUIDATION_EVENT");
+    expect(published[0]?.payload).toMatchObject({
+      instrumentCode: "btc-usd",
+      cascadeEventCount: 1
     });
   });
 
