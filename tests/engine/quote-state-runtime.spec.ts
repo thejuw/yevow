@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { defaultConfig } from "../../src/ConfigManager";
 import {
+  applyResumeExpiredQuoteStatesSideEffects,
   applyQuoteSuppressionRuntime,
   applyQuoteSuppressionPolicy,
   applyQuoteSuppressionSideEffects,
@@ -12,8 +13,10 @@ import {
   quoteSuppressionSideEffects,
   resumeExpiredQuoteStates,
   resolveQuoteHibernateMs,
-  strategyQuoteDisabledReason
+  strategyQuoteDisabledReason,
+  type ResumeExpiredQuoteStatesSideEffectHandlers
 } from "../../src/engine/trading/quotes/QuoteStateRuntime";
+import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { EngineState, QuoteSignal } from "../../src/types";
 
 const OBSERVED_AT = "2026-05-18T13:00:00.000Z";
@@ -179,6 +182,39 @@ describe("QuoteStateRuntime", () => {
       observedAt: OBSERVED_AT
     });
     expect(unchanged.changed).toBe(false);
+  });
+
+  it("applies resumed quote state and emits resume telemetry only when state changes", () => {
+    const state = defaultEngineState("quote-resume");
+    state.assetQuoteStates = {
+      "btc-usd": quoteState({
+        status: "SUSPENDED",
+        reason: "BTC_LEAD_MOVE",
+        suspendedUntil: "2026-05-18T12:59:59.000Z"
+      })
+    };
+    state.quoteState = quoteState({
+      status: "SUSPENDED",
+      reason: "BTC_LEAD_MOVE",
+      suspendedUntil: "2026-05-18T12:59:59.000Z"
+    });
+    const sideEffects = resumeExpiredQuoteStatesSideEffectSpy();
+
+    const result = applyResumeExpiredQuoteStatesSideEffects(
+      { currentState: state, observedAt: OBSERVED_AT },
+      sideEffects.handlers
+    );
+
+    expect(result.changed).toBe(true);
+    expect(sideEffects.events).toEqual(["state:ACTIVE", "publish:2026-05-18T13:00:00.000Z"]);
+
+    const unchanged = applyResumeExpiredQuoteStatesSideEffects(
+      { currentState: sideEffects.appliedState ?? state, observedAt: OBSERVED_AT },
+      sideEffects.handlers
+    );
+
+    expect(unchanged.changed).toBe(false);
+    expect(sideEffects.events).toEqual(["state:ACTIVE", "publish:2026-05-18T13:00:00.000Z"]);
   });
 
   it("builds ensemble circuit-breaker quote suspension decisions", () => {
@@ -432,6 +468,32 @@ describe("QuoteStateRuntime", () => {
     });
   });
 });
+
+function resumeExpiredQuoteStatesSideEffectSpy(): {
+  events: string[];
+  appliedState: EngineState | null;
+  handlers: ResumeExpiredQuoteStatesSideEffectHandlers;
+} {
+  const sideEffects: {
+    events: string[];
+    appliedState: EngineState | null;
+    handlers: ResumeExpiredQuoteStatesSideEffectHandlers;
+  } = {
+    events: [],
+    appliedState: null,
+    handlers: {
+      applyState(state) {
+        sideEffects.appliedState = state;
+        sideEffects.events.push(`state:${state.quoteState.status}`);
+      },
+      publishResume(payload) {
+        sideEffects.events.push(`publish:${payload.observedAt}`);
+      }
+    }
+  };
+
+  return sideEffects;
+}
 
 function quoteState(overrides: Partial<EngineState["quoteState"]> = {}): EngineState["quoteState"] {
   return {

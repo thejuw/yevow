@@ -30,6 +30,16 @@ export interface ResumeExpiredQuoteStatesResult {
   readonly changed: boolean;
 }
 
+export interface ResumeExpiredQuoteStatesSideEffectInput {
+  readonly currentState: EngineState;
+  readonly observedAt: string;
+}
+
+export interface ResumeExpiredQuoteStatesSideEffectHandlers {
+  readonly applyState: (state: EngineState) => void;
+  readonly publishResume: (payload: Record<string, unknown>) => void;
+}
+
 export interface QuoteSuppressionDecisionInput {
   readonly previous: EngineState["quoteState"];
   readonly profilerSignalType: unknown;
@@ -413,6 +423,28 @@ export function resumeExpiredQuoteStates(
     quoteState: nextAggregate,
     changed
   };
+}
+
+export function applyResumeExpiredQuoteStatesSideEffects(
+  input: ResumeExpiredQuoteStatesSideEffectInput,
+  handlers: ResumeExpiredQuoteStatesSideEffectHandlers
+): ResumeExpiredQuoteStatesResult {
+  const next = resumeExpiredQuoteStates({
+    assetQuoteStates: input.currentState.assetQuoteStates,
+    quoteState: input.currentState.quoteState,
+    observedAt: input.observedAt
+  });
+
+  if (next.changed) {
+    handlers.applyState({
+      ...input.currentState,
+      quoteState: next.quoteState,
+      assetQuoteStates: next.assetQuoteStates
+    });
+    handlers.publishResume({ observedAt: input.observedAt });
+  }
+
+  return next;
 }
 
 export function strategyQuoteDisabledReason(config: GlobalRiskConfig): string | null {

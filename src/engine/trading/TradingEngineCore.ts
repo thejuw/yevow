@@ -95,12 +95,12 @@ import {
   stateAfterFundingTick
 } from "./funding/FundingRuntime";
 import {
+  applyResumeExpiredQuoteStatesSideEffects,
   nextQuoteStateForInstrument as nextRuntimeQuoteStateForInstrument,
   applyQuoteSuppressionRuntime,
   applyQuoteSuppressionSideEffects,
   quoteSuppressionPolicyProjection,
   resolveQuoteHibernateMs,
-  resumeExpiredQuoteStates,
   strategyQuoteDisabledReason as runtimeStrategyQuoteDisabledReason
 } from "./quotes/QuoteStateRuntime";
 import {
@@ -3640,20 +3640,18 @@ export class TradingEngine {
   }
 
   private maybeResumeQuotes(observedAt: string): void {
-    const next = resumeExpiredQuoteStates({
-      assetQuoteStates: this.engineState.assetQuoteStates,
-      quoteState: this.engineState.quoteState,
-      observedAt
-    });
-
-    if (next.changed) {
-      this.engineState = {
-        ...this.engineState,
-        quoteState: next.quoteState,
-        assetQuoteStates: next.assetQuoteStates
-      };
-      this.publish("RESUME_QUOTES", { observedAt });
-    }
+    applyResumeExpiredQuoteStatesSideEffects(
+      {
+        currentState: this.engineState,
+        observedAt
+      },
+      {
+        applyState: (state) => {
+          this.engineState = state;
+        },
+        publishResume: (payload) => this.publish("RESUME_QUOTES", payload)
+      }
+    );
   }
 
   private maybeCancelLaggingHypeQuotes(
