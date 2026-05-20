@@ -26,7 +26,7 @@ import {
   stateAfterTopologyObservation
 } from "./helpers/PlacementResolver";
 import { priceKey, SortedBookSide } from "./book/SortedBookSide";
-import { countBookLevels, isCrossedBook, microstructureFromBook } from "./book/BookReconstruction";
+import { countBookLevels, microstructureFromBook } from "./book/BookReconstruction";
 import {
   calculateOrderBookPriceDiscovery,
   currentMarkPriceForInstrument,
@@ -224,9 +224,9 @@ import {
 import { OrderBookReconstructor, type OrderBookStores } from "./book/OrderBookReconstructor";
 import type { AppliedBookUpdate, BookDeltaWithTicker, BookSyncState } from "./book/BookTypes";
 import {
+  applyAcceptedHyperliquidL2BookSideEffects,
   applyHyperliquidIngestConnectionSideEffects,
   applyStaleHyperliquidL2BookSideEffects,
-  buildHyperliquidL2BookTickFromBook,
   dispatchHyperliquidL2BookDecision,
   dispatchHyperliquidRawMessageRoute,
   evaluateHyperliquidL2BookRuntime,
@@ -1271,39 +1271,24 @@ export class TradingEngine {
     payload: HyperliquidRawIngestPayload,
     wakeUpTimeMs: number | null
   ): Promise<TickIngestResult> {
-    const { sequence, snapshot } = l2Decision.bundle;
-    const { brainTimestamp, totalLatencyMs } = l2Decision;
-    const book = await this.applySnapshot(snapshot, { persist: false });
-
-    if (isCrossedBook(book)) {
-      await this.orderBookReconstructor.handleCrossedBookSnapshot(
-        book,
-        sequence,
-        totalLatencyMs,
-        brainTimestamp
-      );
-      return {
-        accepted: false,
-        status: "DESYNC",
-        reason: "CROSSED_BOOK",
-        book,
-        processedCount: 0
-      };
-    }
-
-    const representativeTick = buildHyperliquidL2BookTickFromBook({
-      payload,
-      bundle: l2Decision.bundle,
-      book,
-      rawEventType: "native-l2Book"
-    });
-    const result = await this.handleTick(representativeTick, wakeUpTimeMs);
-
-    return {
-      ...result,
-      book,
-      processedCount: 1
-    };
+    return applyAcceptedHyperliquidL2BookSideEffects(
+      {
+        decision: l2Decision,
+        payload,
+        wakeUpTimeMs
+      },
+      {
+        applySnapshot: (snapshot) => this.applySnapshot(snapshot, { persist: false }),
+        handleCrossedBookSnapshot: (book, sequence, totalLatencyMs, observedAt) =>
+          this.orderBookReconstructor.handleCrossedBookSnapshot(
+            book,
+            sequence,
+            totalLatencyMs,
+            observedAt
+          ),
+        handleTick: (tick, wakeUp) => this.handleTick(tick, wakeUp)
+      }
+    );
   }
 
   private async handleHyperliquidL2Book(

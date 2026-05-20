@@ -580,6 +580,23 @@ export interface StaleHyperliquidL2BookSideEffectHandlers {
   ) => void;
 }
 
+export interface AcceptedHyperliquidL2BookSideEffectsInput {
+  readonly decision: Extract<HyperliquidL2BookHotPathDecision, { kind: "ACCEPTED" }>;
+  readonly payload: HyperliquidRawIngestPayload;
+  readonly wakeUpTimeMs: number | null;
+}
+
+export interface AcceptedHyperliquidL2BookSideEffectHandlers {
+  readonly applySnapshot: (snapshot: OrderBookSnapshot) => Promise<InternalOrderBook>;
+  readonly handleCrossedBookSnapshot: (
+    book: InternalOrderBook,
+    sequence: number,
+    totalLatencyMs: number,
+    observedAt: string
+  ) => Promise<void>;
+  readonly handleTick: (tick: MarketTick, wakeUpTimeMs: number | null) => Promise<TickIngestResult>;
+}
+
 export interface HyperliquidL2BookHotPathInput {
   readonly raw: Record<string, unknown>;
   readonly payload: HyperliquidRawIngestPayload;
@@ -751,6 +768,40 @@ export async function applyStaleHyperliquidL2BookSideEffects(
     metrics,
     book,
     processedCount: 0
+  };
+}
+
+export async function applyAcceptedHyperliquidL2BookSideEffects(
+  input: AcceptedHyperliquidL2BookSideEffectsInput,
+  handlers: AcceptedHyperliquidL2BookSideEffectHandlers
+): Promise<TickIngestResult> {
+  const { sequence, snapshot } = input.decision.bundle;
+  const { brainTimestamp, totalLatencyMs } = input.decision;
+  const book = await handlers.applySnapshot(snapshot);
+
+  if (isCrossedBook(book)) {
+    await handlers.handleCrossedBookSnapshot(book, sequence, totalLatencyMs, brainTimestamp);
+    return {
+      accepted: false,
+      status: "DESYNC",
+      reason: "CROSSED_BOOK",
+      book,
+      processedCount: 0
+    };
+  }
+
+  const representativeTick = buildHyperliquidL2BookTickFromBook({
+    payload: input.payload,
+    bundle: input.decision.bundle,
+    book,
+    rawEventType: "native-l2Book"
+  });
+  const result = await handlers.handleTick(representativeTick, input.wakeUpTimeMs);
+
+  return {
+    ...result,
+    book,
+    processedCount: 1
   };
 }
 

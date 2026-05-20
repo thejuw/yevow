@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyAcceptedHyperliquidL2BookSideEffects,
   applyHyperliquidIngestConnectionSideEffects,
   applyStaleHyperliquidL2BookSideEffects,
   buildHyperliquidL2BookSnapshotBundle,
@@ -490,6 +491,127 @@ describe("hyperliquid raw ingest helpers", () => {
     ]);
   });
 
+  it("applies accepted native L2 side effects through the representative tick pipeline", async () => {
+    const decision = evaluateHyperliquidL2BookHotPath({
+      raw: {
+        data: {
+          coin: "BTC",
+          time: Date.parse("2026-01-01T00:00:00.000Z"),
+          sequence: 20,
+          levels: [[{ px: "100", sz: "1" }], [{ px: "101", sz: "1" }]]
+        }
+      },
+      payload: {
+        source_exchange: "hyperliquid",
+        exchangeCode: "HL",
+        instrumentCode: "btc-usd",
+        receivedAt: "2026-01-01T00:00:00.050Z"
+      },
+      resolveExistingSync: () => bookSync(10),
+      maxTimestampDriftMs: 5_000,
+      sequenceGapMs: 15,
+      nativeMaxLatencyMs: 150,
+      averageLatencyMs: 40,
+      sampleCount: 10,
+      location: defaultEngineState("test").location,
+      brainTimestamp: "2026-01-01T00:00:00.100Z"
+    });
+
+    if (decision.kind !== "ACCEPTED") {
+      throw new Error("expected accepted decision");
+    }
+
+    const events: string[] = [];
+    const book = internalBook();
+    const result = await applyAcceptedHyperliquidL2BookSideEffects(
+      {
+        decision,
+        payload: { source_exchange: "hyperliquid", exchangeCode: "HL" },
+        wakeUpTimeMs: 3
+      },
+      {
+        applySnapshot: async () => {
+          events.push("snapshot");
+          return book;
+        },
+        handleCrossedBookSnapshot: async () => {
+          events.push("crossed");
+        },
+        handleTick: async (tick, wakeUpTimeMs) => {
+          events.push(`tick:${tick.instrumentCode}:${tick.price}:${wakeUpTimeMs ?? "NONE"}`);
+          return freshResult();
+        }
+      }
+    );
+
+    expect(result).toMatchObject({
+      accepted: true,
+      status: "FRESH",
+      book,
+      processedCount: 1
+    });
+    expect(events).toEqual(["snapshot", "tick:btc-usd:100:3"]);
+  });
+
+  it("rejects accepted native L2 snapshots that are crossed", async () => {
+    const decision = evaluateHyperliquidL2BookHotPath({
+      raw: {
+        data: {
+          coin: "BTC",
+          time: Date.parse("2026-01-01T00:00:00.000Z"),
+          sequence: 20,
+          levels: [[{ px: "102", sz: "1" }], [{ px: "101", sz: "1" }]]
+        }
+      },
+      payload: {
+        source_exchange: "hyperliquid",
+        exchangeCode: "HL",
+        instrumentCode: "btc-usd",
+        receivedAt: "2026-01-01T00:00:00.050Z"
+      },
+      resolveExistingSync: () => bookSync(10),
+      maxTimestampDriftMs: 5_000,
+      sequenceGapMs: 15,
+      nativeMaxLatencyMs: 150,
+      averageLatencyMs: 40,
+      sampleCount: 10,
+      location: defaultEngineState("test").location,
+      brainTimestamp: "2026-01-01T00:00:00.100Z"
+    });
+
+    if (decision.kind !== "ACCEPTED") {
+      throw new Error("expected accepted decision");
+    }
+
+    const events: string[] = [];
+    const crossedBook = internalBook({ bestBid: 102, bestAsk: 101, spread: -1 });
+    const result = await applyAcceptedHyperliquidL2BookSideEffects(
+      {
+        decision,
+        payload: { source_exchange: "hyperliquid", exchangeCode: "HL" },
+        wakeUpTimeMs: 3
+      },
+      {
+        applySnapshot: async () => crossedBook,
+        handleCrossedBookSnapshot: async (book, sequence, totalLatencyMs, observedAt) => {
+          events.push(`crossed:${book.bestBid}:${sequence}:${totalLatencyMs}:${observedAt}`);
+        },
+        handleTick: async () => {
+          throw new Error("should_not_handle_tick");
+        }
+      }
+    );
+
+    expect(result).toMatchObject({
+      accepted: false,
+      status: "DESYNC",
+      reason: "CROSSED_BOOK",
+      book: crossedBook,
+      processedCount: 0
+    });
+    expect(events).toEqual(["crossed:102:20:100:2026-01-01T00:00:00.100Z"]);
+  });
+
   it("dispatches native L2 hot-path decisions through typed handlers", async () => {
     const raw = {
       data: {
@@ -798,7 +920,7 @@ function freshResult(): TickIngestResult {
   };
 }
 
-function internalBook(): InternalOrderBook {
+function internalBook(overrides: Partial<InternalOrderBook> = {}): InternalOrderBook {
   return {
     marketKey: "hyperliquid:btc-usd",
     source: "HYPERLIQUID",
@@ -820,7 +942,8 @@ function internalBook(): InternalOrderBook {
     isSynced: true,
     desyncReason: null,
     sequence: 20,
-    updatedAt: "2026-01-01T00:00:00.100Z"
+    updatedAt: "2026-01-01T00:00:00.100Z",
+    ...overrides
   };
 }
 
