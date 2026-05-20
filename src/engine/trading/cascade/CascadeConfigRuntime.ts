@@ -7,8 +7,10 @@ import type { GlobalRiskConfig } from "../../../types";
 import type {
   AbsorptionAnalyzerConfig,
   CascadeDetectorConfig,
+  LiquidationEvent,
   CascadeRecoverySignalConfig
 } from "../../../strategy/cascade/types";
+import { readBoundedNumber, readPositiveNumber } from "../helpers/RuntimeParsing";
 
 export function cascadeAssetProfileFromConfig(
   instrumentCode: string,
@@ -54,6 +56,13 @@ export interface AbsorptionAnalyzerRuntimeConfigInput {
   readonly maxActiveCascades: number;
 }
 
+export interface CascadeAtrFallbackInput {
+  readonly event: LiquidationEvent;
+  readonly midPrice: number | null;
+  readonly fallbackUsdValue?: string;
+  readonly fallbackPctValue?: string;
+}
+
 export function absorptionAnalyzerConfig(
   input: AbsorptionAnalyzerRuntimeConfigInput
 ): AbsorptionAnalyzerConfig {
@@ -64,6 +73,17 @@ export function absorptionAnalyzerConfig(
     oiStabilityBps: input.oiStabilityBps,
     maxActiveCascades: input.maxActiveCascades
   };
+}
+
+export function resolveCascadeAtr1h(input: CascadeAtrFallbackInput): number | null {
+  const fallback = readPositiveNumber(input.fallbackUsdValue, 0);
+  if (fallback > 0) {
+    return fallback;
+  }
+
+  const price = input.event.price > 0 ? input.event.price : input.midPrice;
+  const fallbackPct = readBoundedNumber(input.fallbackPctValue, 0, 0, 0.2);
+  return price && price > 0 && fallbackPct > 0 ? price * fallbackPct : null;
 }
 
 export function cascadeRecoverySignalConfig(config: GlobalRiskConfig): CascadeRecoverySignalConfig {

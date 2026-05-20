@@ -4,8 +4,10 @@ import {
   absorptionAnalyzerConfig,
   cascadeAssetProfileFromConfig,
   cascadeDetectorConfig,
-  cascadeRecoverySignalConfig
+  cascadeRecoverySignalConfig,
+  resolveCascadeAtr1h
 } from "../../src/engine/trading/cascade/CascadeConfigRuntime";
+import type { LiquidationEvent } from "../../src/strategy/cascade/types";
 
 describe("CascadeConfigRuntime", () => {
   it("resolves configured per-asset profiles with global fallbacks", () => {
@@ -88,4 +90,56 @@ describe("CascadeConfigRuntime", () => {
       runnerTrailingParam: 21
     });
   });
+
+  it("resolves cascade ATR fallbacks from explicit USD, event price, or mid-price", () => {
+    expect(
+      resolveCascadeAtr1h({
+        event: liquidationEvent({ price: 10_000 }),
+        midPrice: 9_500,
+        fallbackUsdValue: "250",
+        fallbackPctValue: "0.05"
+      })
+    ).toBe(250);
+
+    expect(
+      resolveCascadeAtr1h({
+        event: liquidationEvent({ price: 10_000 }),
+        midPrice: 9_500,
+        fallbackPctValue: "0.05"
+      })
+    ).toBe(500);
+
+    expect(
+      resolveCascadeAtr1h({
+        event: liquidationEvent({ price: 0 }),
+        midPrice: 9_500,
+        fallbackPctValue: "0.02"
+      })
+    ).toBe(190);
+
+    expect(
+      resolveCascadeAtr1h({
+        event: liquidationEvent({ price: 0 }),
+        midPrice: null,
+        fallbackPctValue: "0.02"
+      })
+    ).toBeNull();
+  });
 });
+
+function liquidationEvent(overrides: { price?: number } = {}): LiquidationEvent {
+  return {
+    schemaVersion: "cascade.liquidation-event.v1",
+    eventId: "liq-1",
+    instrumentCode: "btc-usd",
+    sourceExchange: "hyperliquid",
+    side: "LONG",
+    forcedFlowSide: "SELL",
+    price: overrides.price ?? 10_000,
+    notionalUsd: 10_000,
+    baseSize: 1,
+    exchangeTimestamp: "2026-05-18T12:00:00.000Z",
+    observedAt: "2026-05-18T12:00:00.100Z",
+    raw: {}
+  };
+}

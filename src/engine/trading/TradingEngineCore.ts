@@ -180,7 +180,8 @@ import {
   absorptionAnalyzerConfig as buildAbsorptionAnalyzerConfig,
   cascadeAssetProfileFromConfig,
   cascadeDetectorConfig as buildCascadeDetectorConfig,
-  cascadeRecoverySignalConfig as buildCascadeRecoverySignalConfig
+  cascadeRecoverySignalConfig as buildCascadeRecoverySignalConfig,
+  resolveCascadeAtr1h as resolveCascadeAtr1hFromConfig
 } from "./cascade/CascadeConfigRuntime";
 import { ensureCascadePaperModeArmedRuntime } from "./cascade/CascadePaperModeRuntime";
 import {
@@ -470,7 +471,7 @@ import {
   parsePositiveNumberMap
 } from "./book/BookRuntimeHelpers";
 import {
-  cascadeInstrumentSet,
+  isCascadeInstrumentEnabledForConfig,
   latestAbsorptionForInstrument,
   latestCascadeAtForInstrument,
   recentSwingLow,
@@ -505,7 +506,6 @@ import {
   readNumber,
   readPositiveNumber,
   readPositiveInteger,
-  readBoundedNumber,
   clampInteger,
   assertAgentSignal,
   finiteNumber,
@@ -1367,13 +1367,19 @@ export class TradingEngine {
     return recordCascadeLiquidationDetections(events, observedAt, {
       configureAbsorptionAnalyzer: () =>
         this.absorptionAnalyzer.configure(this.currentAbsorptionAnalyzerConfig()),
-      isInstrumentEnabled: (instrumentCode) => this.isCascadeInstrumentEnabled(instrumentCode),
+      isInstrumentEnabled: (instrumentCode) =>
+        isCascadeInstrumentEnabledForConfig(this.cachedConfig.CASCADE_INSTRUMENTS, instrumentCode),
       configureDetector: (instrumentCode) =>
         this.cascadeDetector.configure(this.currentCascadeDetectorConfig(instrumentCode)),
       observeCascade: (event, detectedAt) =>
         this.cascadeDetector.observe(event, {
           observedAt: detectedAt,
-          atr1h: this.resolveCascadeAtr1h(event)
+          atr1h: resolveCascadeAtr1hFromConfig({
+            event,
+            midPrice: this.engineState.microstructure.midPrice,
+            fallbackUsdValue: this.env.CASCADE_ATR_FALLBACK_USD,
+            fallbackPctValue: this.env.CASCADE_ATR_FALLBACK_PCT
+          })
         }),
       rememberCascade: (cascade) => this.cascadeEventsById.set(cascade.cascadeId, cascade),
       trackCascadeAbsorption: (cascade) => this.absorptionAnalyzer.trackCascade(cascade),
@@ -1390,15 +1396,6 @@ export class TradingEngine {
           cascade.cascadeId
         )
     });
-  }
-
-  private isCascadeInstrumentEnabled(instrumentCode: string): boolean {
-    const enabled = cascadeInstrumentSet(this.cachedConfig.CASCADE_INSTRUMENTS);
-    if (enabled.size === 0) {
-      return false;
-    }
-
-    return enabled.has(baseAssetFromInstrument(instrumentCode));
   }
 
   private currentCascadeActiveSnapshot(): JsonRecord[] {
@@ -1519,24 +1516,15 @@ export class TradingEngine {
     });
   }
 
-  private resolveCascadeAtr1h(event: LiquidationEvent): number | null {
-    const fallback = readPositiveNumber(this.env.CASCADE_ATR_FALLBACK_USD, 0);
-    if (fallback > 0) {
-      return fallback;
-    }
-
-    const price = event.price > 0 ? event.price : this.engineState.microstructure.midPrice;
-    const fallbackPct = readBoundedNumber(this.env.CASCADE_ATR_FALLBACK_PCT, 0, 0, 0.2);
-    return price && price > 0 && fallbackPct > 0 ? price * fallbackPct : null;
-  }
-
   private observeCascadeAbsorption(tick: MarketTick): void {
     if (!isTradeTick(tick) || !Number.isFinite(tick.price) || tick.price <= 0) {
       return;
     }
 
     const instrumentCode = normalizeNativeInstrumentCode(tick.instrumentCode);
-    if (!this.isCascadeInstrumentEnabled(instrumentCode)) {
+    if (
+      !isCascadeInstrumentEnabledForConfig(this.cachedConfig.CASCADE_INSTRUMENTS, instrumentCode)
+    ) {
       return;
     }
 
@@ -1606,7 +1594,14 @@ export class TradingEngine {
       reclaimCandle,
       recent1mCandles,
       atr1m: calculateAtr(recent1mCandles, 14),
-      atr1h: latestRawEvent ? this.resolveCascadeAtr1h(latestRawEvent) : null,
+      atr1h: latestRawEvent
+        ? resolveCascadeAtr1hFromConfig({
+            event: latestRawEvent,
+            midPrice: this.engineState.microstructure.midPrice,
+            fallbackUsdValue: this.env.CASCADE_ATR_FALLBACK_USD,
+            fallbackPctValue: this.env.CASCADE_ATR_FALLBACK_PCT
+          })
+        : null,
       preCascadeSwingLow: recentSwingLow(recent1mCandles),
       preCascadeSwingHigh: recentSwingHigh(recent1mCandles),
       cascadeVwap: calculateVwap(recent1mCandles),
@@ -1633,7 +1628,11 @@ export class TradingEngine {
         ingestTick: (currentTick) => this.candleAggregator.ingestTick(currentTick),
         dispatchPositionUpdates: (currentTick, updateObservedAt) =>
           this.dispatchCascadePositionUpdates(currentTick, updateObservedAt),
-        isInstrumentEnabled: (instrumentCode) => this.isCascadeInstrumentEnabled(instrumentCode),
+        isInstrumentEnabled: (instrumentCode) =>
+          isCascadeInstrumentEnabledForConfig(
+            this.cachedConfig.CASCADE_INSTRUMENTS,
+            instrumentCode
+          ),
         refreshNewsCalendar: async () => {
           await this.cascadeNewsCalendar.refresh();
         },

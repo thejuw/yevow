@@ -1,4 +1,7 @@
-import { normalizeNativeInstrumentCode } from "../helpers/NativeHyperliquidRuntime";
+import {
+  baseAssetFromInstrument,
+  normalizeNativeInstrumentCode
+} from "../helpers/NativeHyperliquidRuntime";
 import type {
   AbsorptionConfirmed,
   CascadeEvent,
@@ -12,6 +15,18 @@ export function cascadeInstrumentSet(value: string): Set<string> {
       .map((asset) => asset.trim().toUpperCase())
       .filter((asset) => /^[A-Z0-9]{2,12}$/.test(asset))
   );
+}
+
+export function isCascadeInstrumentEnabledForConfig(
+  cascadeInstruments: string,
+  instrumentCode: string
+): boolean {
+  const enabled = cascadeInstrumentSet(cascadeInstruments);
+  if (enabled.size === 0) {
+    return false;
+  }
+
+  return enabled.has(baseAssetFromInstrument(instrumentCode));
 }
 
 export function latestAbsorptionForInstrument(
