@@ -141,6 +141,7 @@ import {
 } from "./execution/ExecutionQueueRuntime";
 import { calculateAssetMatrix as calculateRuntimeAssetMatrix } from "./state/AssetMatrixRuntime";
 import {
+  appendLatencyHistory,
   buildHardStaleTickDropArtifacts,
   buildExecutionPerformanceTransition,
   buildPerformanceMetricsText,
@@ -148,6 +149,7 @@ import {
   buildStaleDataKillSwitchArtifacts,
   latencySnapshotStorageWrites,
   nativeHyperliquidLatencyPullStorageWrites,
+  hydrateLatencyMetricsFromState,
   nextExecutionProfile,
   nextLatencyAverage,
   prepareTickLatencyRuntime,
@@ -2907,17 +2909,17 @@ export class TradingEngine {
       this.updateLatencyAverage(latency.metrics.totalLatencyMs);
     }
 
-    const metrics = latency.metrics;
+    let metrics = hydrateLatencyMetricsFromState(latency.metrics, this.engineState);
     this.applyLocationLatency(metrics.totalLatencyMs, metrics.brainTimestamp);
+    metrics = hydrateLatencyMetricsFromState(metrics, this.engineState);
 
-    metrics.averageLatencyMs = this.engineState.averageLatency;
-    metrics.sampleCount = this.engineState.latencySampleCount;
-    metrics.latencyRiskMultiplier = this.engineState.location.latencyRiskMultiplier;
-    metrics.positionSizeMultiplier = this.engineState.location.positionSizeMultiplier;
+    this.latencyHistory = appendLatencyHistory(
+      this.latencyHistory,
+      metrics,
+      PERFORMANCE_HISTORY_LIMIT
+    );
 
-    this.latencyHistory = [...this.latencyHistory, metrics].slice(-PERFORMANCE_HISTORY_LIMIT);
-
-    return latency;
+    return { ...latency, metrics };
   }
 
   private async resolveTickBook(

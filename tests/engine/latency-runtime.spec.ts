@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  appendLatencyHistory,
   buildHardStaleTickDropArtifacts,
   buildExecutionPerformanceTransition,
   buildPerformanceMetricsText,
@@ -8,6 +9,7 @@ import {
   calculateTickLatency,
   hardStalePullTelemetryPayload,
   hardStaleTickDropLogMetadata,
+  hydrateLatencyMetricsFromState,
   latencySnapshotStorageWrites,
   nativeHyperliquidLatencyPullStorageWrites,
   nextExecutionProfile,
@@ -175,6 +177,26 @@ describe("LatencyRuntime", () => {
     const samples = [1, 2];
     expect(recordProcessingLatencySample(samples, 3.1234, 2)).toBe(3.123);
     expect(samples).toEqual([2, 3.123]);
+  });
+
+  it("hydrates latency metrics from engine state and appends bounded history", () => {
+    const state = defaultEngineState("latency-hydration");
+    state.averageLatency = 12;
+    state.latencySampleCount = 4;
+    state.location = {
+      ...state.location,
+      latencyRiskMultiplier: 1.25,
+      positionSizeMultiplier: 0.75
+    };
+    const metrics = hydrateLatencyMetricsFromState(latencyMetrics(), state);
+
+    expect(metrics).toMatchObject({
+      averageLatencyMs: 12,
+      sampleCount: 4,
+      latencyRiskMultiplier: 1.25,
+      positionSizeMultiplier: 0.75
+    });
+    expect(appendLatencyHistory([latencyMetrics({ sequence: 1 })], metrics, 1)).toEqual([metrics]);
   });
 
   it("resets stale latency baselines without mutating unrelated state", () => {

@@ -179,6 +179,27 @@ export interface LatencyAverageState {
   readonly latencySampleCount: number;
 }
 
+export function hydrateLatencyMetricsFromState(
+  metrics: LatencyMetrics,
+  state: Pick<EngineState, "averageLatency" | "latencySampleCount" | "location">
+): LatencyMetrics {
+  return {
+    ...metrics,
+    averageLatencyMs: state.averageLatency,
+    sampleCount: state.latencySampleCount,
+    latencyRiskMultiplier: state.location.latencyRiskMultiplier,
+    positionSizeMultiplier: state.location.positionSizeMultiplier
+  };
+}
+
+export function appendLatencyHistory(
+  history: readonly LatencyMetrics[],
+  metrics: LatencyMetrics,
+  limit: number
+): LatencyMetrics[] {
+  return [...history, metrics].slice(-Math.max(1, limit));
+}
+
 export function nextLatencyAverage(
   previous: LatencyAverageState,
   totalLatencyMs: number
