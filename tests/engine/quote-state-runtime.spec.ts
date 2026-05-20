@@ -1,21 +1,25 @@
 import { describe, expect, it } from "vitest";
 import { defaultConfig } from "../../src/ConfigManager";
 import {
-  applyResumeExpiredQuoteStatesSideEffects,
-  applyQuoteSuppressionRuntime,
-  applyQuoteSuppressionPolicy,
-  applyQuoteSuppressionSideEffects,
   isCascadeShieldSignal,
   isProfilerQuoteHaltSignal,
   nextQuoteStateForInstrument,
+  resolveQuoteHibernateMs,
+  strategyQuoteDisabledReason
+} from "../../src/engine/trading/quotes/QuoteLifecycleRuntime";
+import {
+  applyResumeExpiredQuoteStatesSideEffects,
+  resumeExpiredQuoteStates,
+  type ResumeExpiredQuoteStatesSideEffectHandlers
+} from "../../src/engine/trading/quotes/QuoteResumeRuntime";
+import {
+  applyQuoteSuppressionRuntime,
+  applyQuoteSuppressionPolicy,
+  applyQuoteSuppressionSideEffects,
   quoteSuppressionPolicyProjection,
   quoteSuppressionDecision,
-  quoteSuppressionSideEffects,
-  resumeExpiredQuoteStates,
-  resolveQuoteHibernateMs,
-  strategyQuoteDisabledReason,
-  type ResumeExpiredQuoteStatesSideEffectHandlers
-} from "../../src/engine/trading/quotes/QuoteStateRuntime";
+  quoteSuppressionSideEffects
+} from "../../src/engine/trading/quotes/QuoteSuppressionRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { EngineState, QuoteSignal } from "../../src/types";
 

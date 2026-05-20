@@ -85,14 +85,16 @@ import {
   stateAfterFundingTick
 } from "./funding/FundingRuntime";
 import {
-  applyResumeExpiredQuoteStatesSideEffects,
   nextQuoteStateForInstrument as nextRuntimeQuoteStateForInstrument,
-  applyQuoteSuppressionRuntime,
-  applyQuoteSuppressionSideEffects,
-  quoteSuppressionPolicyProjection,
   resolveQuoteHibernateMs,
   strategyQuoteDisabledReason as runtimeStrategyQuoteDisabledReason
-} from "./quotes/QuoteStateRuntime";
+} from "./quotes/QuoteLifecycleRuntime";
+import { applyResumeExpiredQuoteStatesSideEffects } from "./quotes/QuoteResumeRuntime";
+import {
+  applyQuoteSuppressionRuntime,
+  applyQuoteSuppressionSideEffects,
+  quoteSuppressionPolicyProjection
+} from "./quotes/QuoteSuppressionRuntime";
 import { applyQuoteDispatchFlow } from "./quotes/QuoteIntentRuntime";
 import {
   applyQuoteRefreshThrottleSideEffects,
