@@ -1,8 +1,15 @@
 import { normalizeSourceExchange } from "../helpers/NativeHyperliquidRuntime";
 import { buildMarketKey } from "./BookRuntimeHelpers";
-import type { InternalOrderBook, JsonRecord, OrderBookResetRequest } from "../../../types";
+import type {
+  EngineState,
+  InternalOrderBook,
+  JsonRecord,
+  OrderBookResetRequest,
+  PriceDiscoveryMetrics
+} from "../../../types";
 import type { BookSyncState } from "./BookTypes";
 import type { SortedBookSide } from "./SortedBookSide";
+import { stateAfterOrderBookReset } from "./BookRuntimeState";
 
 export interface ResolvedOrderBookReset {
   readonly now: string;
@@ -22,6 +29,27 @@ export interface OrderBookResetStores {
   readonly bids: Map<string, SortedBookSide>;
   readonly asks: Map<string, SortedBookSide>;
   readonly sync: Map<string, BookSyncState>;
+}
+
+export interface OrderBookResetRuntimeInput {
+  readonly reset: ResolvedOrderBookReset;
+  readonly currentState: EngineState;
+  readonly persistedBooks: Map<string, InternalOrderBook>;
+  readonly orderBookPrefix: string;
+  readonly engineStateKey: string;
+  readonly stores: OrderBookResetStores;
+  readonly orderBookSize: number;
+  readonly internalOrderBookDepth: number;
+  readonly priceDiscovery: PriceDiscoveryMetrics | null;
+}
+
+export interface OrderBookResetRuntimeArtifacts {
+  readonly state: EngineState;
+  readonly deleteKeys: string[];
+  readonly connectionKeys: string[];
+  readonly writes: Record<string, unknown>;
+  readonly telemetry: JsonRecord;
+  readonly latencyResetReason: string | null;
 }
 
 export function resolveOrderBookReset(
@@ -121,5 +149,39 @@ export function orderBookResetTelemetry(
     blackoutDurationMs: reset.blackoutDurationMs,
     recoveredAt: reset.recoveredAt,
     deletedBookSnapshots
+  };
+}
+
+export function orderBookResetRuntimeArtifacts(
+  input: OrderBookResetRuntimeInput
+): OrderBookResetRuntimeArtifacts {
+  const deleteKeys = orderBookResetDeleteKeys(
+    input.persistedBooks,
+    input.orderBookPrefix,
+    input.reset.resetMarketKey
+  );
+
+  applyOrderBookResetStores(input.stores, input.reset.resetMarketKey);
+
+  const state = stateAfterOrderBookReset({
+    currentState: input.currentState,
+    resetMarketKey: input.reset.resetMarketKey,
+    resetInstrument: input.reset.resetInstrument,
+    orderBookSize: input.orderBookSize,
+    internalOrderBookDepth: input.internalOrderBookDepth,
+    now: input.reset.now,
+    priceDiscovery: input.priceDiscovery
+  });
+
+  return {
+    state,
+    deleteKeys,
+    connectionKeys: orderBookResetConnectionKeys(input.reset),
+    writes: {
+      [input.engineStateKey]: state
+    },
+    telemetry: orderBookResetTelemetry(input.reset, deleteKeys.length),
+    latencyResetReason:
+      input.reset.source === "INGEST_WORKER" ? `ORDER_BOOK_RESET:${input.reset.reason}` : null
   };
 }

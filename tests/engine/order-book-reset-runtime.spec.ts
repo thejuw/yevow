@@ -3,10 +3,12 @@ import {
   applyOrderBookResetStores,
   orderBookResetConnectionKeys,
   orderBookResetDeleteKeys,
+  orderBookResetRuntimeArtifacts,
   orderBookResetTelemetry,
   resolveOrderBookReset
 } from "../../src/engine/trading/book/OrderBookResetRuntime";
 import { SortedBookSide } from "../../src/engine/trading/book/SortedBookSide";
+import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { BookSyncState } from "../../src/engine/trading/book/BookTypes";
 import type { InternalOrderBook } from "../../src/types";
 
@@ -96,6 +98,50 @@ describe("OrderBookResetRuntime", () => {
     expect(stores.bids.size).toBe(0);
     expect(stores.asks.size).toBe(0);
     expect(stores.sync.size).toBe(0);
+  });
+
+  it("assembles reset runtime artifacts and mutates the scoped book state", () => {
+    const stores = storeSet();
+    const reset = resolveOrderBookReset(
+      {
+        source: "INGEST_WORKER",
+        reason: "STREAM_RECOVERED",
+        streamId: "book",
+        instrumentCode: "BTC-USD",
+        source_exchange: "hyperliquid",
+        connectionId: "conn-1"
+      },
+      "2026-05-18T14:00:00.000Z"
+    );
+
+    const artifacts = orderBookResetRuntimeArtifacts({
+      reset,
+      currentState: defaultEngineState("order-book-reset"),
+      persistedBooks: new Map<string, InternalOrderBook>([
+        ["book:hyperliquid:btc-usd", {} as InternalOrderBook],
+        ["book:hyperliquid:eth-usd", {} as InternalOrderBook]
+      ]),
+      orderBookPrefix: "book:",
+      engineStateKey: "engine:state",
+      stores,
+      orderBookSize: stores.orderBook.size,
+      internalOrderBookDepth: 7,
+      priceDiscovery: null
+    });
+
+    expect(stores.orderBook.has("hyperliquid:btc-usd")).toBe(false);
+    expect(stores.orderBook.has("hyperliquid:eth-usd")).toBe(true);
+    expect(artifacts.deleteKeys).toEqual(["book:hyperliquid:btc-usd"]);
+    expect(artifacts.connectionKeys).toEqual(["hyperliquid:book"]);
+    expect(artifacts.writes["engine:state"]).toBe(artifacts.state);
+    expect(artifacts.state.internalOrderBookDepth).toBe(7);
+    expect(artifacts.state.heartbeatAt).toBe("2026-05-18T14:00:00.000Z");
+    expect(artifacts.latencyResetReason).toBe("ORDER_BOOK_RESET:STREAM_RECOVERED");
+    expect(artifacts.telemetry).toMatchObject({
+      reason: "STREAM_RECOVERED",
+      marketKey: "hyperliquid:btc-usd",
+      deletedBookSnapshots: 1
+    });
   });
 });
 
