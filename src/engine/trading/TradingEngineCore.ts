@@ -218,6 +218,7 @@ import { ensureCascadePaperModeArmedRuntime } from "./cascade/CascadePaperModeRu
 import {
   applyCascadeOpenPositionSideEffects,
   applyCascadePositionUpdateSideEffects,
+  applyCascadeSignalRejectionSideEffects,
   processCascadeClosedCandleSignals,
   shouldEvaluateCascadeStrategy
 } from "./cascade/CascadeStrategyRuntime";
@@ -256,8 +257,6 @@ import { emitAgentStateSnapshot } from "./telemetry/AgentSnapshotRuntime";
 import {
   buildCascadeOperationalAlertTelemetry,
   cascadeHeatCapAlertMetadata,
-  cascadeSignalRejectionAgentSignal,
-  cascadeSignalRejectionLogMetadata,
   cascadeSignalEmittedAlertMetadata,
   cascadeSizeRejectedLogMetadata,
   emitCascadeOperationalAlertSideEffects,
@@ -1654,19 +1653,17 @@ export class TradingEngine {
     rejection: CascadeRecoverySignalRejection,
     observedAt: string
   ): void {
-    this.logger.info(
-      "CASCADE_SIGNAL_REJECTED",
-      "Cascade recovery signal gates rejected entry",
-      cascadeSignalRejectionLogMetadata(rejection)
-    );
-    this.recordCascadeUiSignal(
-      cascadeSignalRejectionAgentSignal({
+    applyCascadeSignalRejectionSideEffects(
+      {
         rejection,
         engineId: this.engineState.engineId,
         observedAt,
         entryWindowMs: this.cachedConfig.ENTRY_WINDOW_SECONDS * 1_000
-      }),
-      "SKIPPED"
+      },
+      {
+        logInfo: (event, message, metadata) => this.logger.info(event, message, metadata),
+        recordUiSignal: (signal, outcome) => this.recordCascadeUiSignal(signal, outcome)
+      }
     );
   }
 

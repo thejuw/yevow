@@ -3,6 +3,8 @@ import {
   cascadeEntryAgentSignal,
   cascadeEntryDecisionTrace,
   cascadePositionOpenedAlertMetadata,
+  cascadeSignalRejectionAgentSignal,
+  cascadeSignalRejectionLogMetadata,
   type CascadeCloseOperationalAlert
 } from "../telemetry/CascadeSignalTelemetryRuntime";
 import type {
@@ -59,6 +61,18 @@ export interface CascadeOpenPositionSideEffectHandlers {
     metadata: JsonRecord,
     dedupeKey: string
   ) => void;
+}
+
+export interface CascadeSignalRejectionSideEffectInput {
+  readonly rejection: CascadeRecoverySignalRejection;
+  readonly engineId: string;
+  readonly observedAt: string;
+  readonly entryWindowMs: number;
+}
+
+export interface CascadeSignalRejectionSideEffectHandlers {
+  readonly logInfo: (event: string, message: string, metadata: JsonRecord) => void;
+  readonly recordUiSignal: (signal: AgentSignal, outcome: "SKIPPED") => void;
 }
 
 export interface CascadeClosedCandleSignalHandlers {
@@ -136,6 +150,18 @@ export function applyCascadeOpenPositionSideEffects(
     cascadePositionOpenedAlertMetadata(input),
     input.position.positionId
   );
+}
+
+export function applyCascadeSignalRejectionSideEffects(
+  input: CascadeSignalRejectionSideEffectInput,
+  handlers: CascadeSignalRejectionSideEffectHandlers
+): void {
+  handlers.logInfo(
+    "CASCADE_SIGNAL_REJECTED",
+    "Cascade recovery signal gates rejected entry",
+    cascadeSignalRejectionLogMetadata(input.rejection)
+  );
+  handlers.recordUiSignal(cascadeSignalRejectionAgentSignal(input), "SKIPPED");
 }
 
 export async function processCascadeClosedCandleSignals(

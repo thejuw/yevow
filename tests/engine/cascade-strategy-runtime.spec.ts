@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   applyCascadeOpenPositionSideEffects,
   applyCascadePositionUpdateSideEffects,
+  applyCascadeSignalRejectionSideEffects,
   closedOneMinuteCandlesForTick,
   processCascadeClosedCandleSignals,
   type CascadeOpenPositionSideEffectHandlers,
+  type CascadeSignalRejectionSideEffectHandlers,
   shouldEvaluateCascadeStrategy
 } from "../../src/engine/trading/cascade/CascadeStrategyRuntime";
 import type { CascadeAssetProfile } from "../../src/strategy/cascade/AssetProfiles";
@@ -94,6 +96,25 @@ describe("CascadeStrategyRuntime", () => {
       "alert:POSITION_OPENED:position-1:position-1"
     ]);
     await Promise.all(sideEffects.scheduled);
+  });
+
+  it("emits cascade signal rejection side effects in order", () => {
+    const sideEffects = cascadeSignalRejectionSideEffectSpy();
+
+    applyCascadeSignalRejectionSideEffects(
+      {
+        rejection: rejection("cascade-rejected", "btc-usd"),
+        engineId: "engine-1",
+        observedAt: "2026-05-18T20:01:00.000Z",
+        entryWindowMs: 60_000
+      },
+      sideEffects.handlers
+    );
+
+    expect(sideEffects.events).toEqual([
+      "log:CASCADE_SIGNAL_REJECTED:cascade-rejected",
+      "signal:PIT_BOSS:HOLD:SKIPPED:60000:Cascade recovery skipped: TEST_REJECTION"
+    ]);
   });
 
   it("processes closed one-minute candles through cascade signal handlers", async () => {
@@ -313,6 +334,27 @@ function cascadeOpenPositionSideEffectSpy(): {
       },
       emitOperationalAlert(eventType, _title, _message, metadata, dedupeKey) {
         events.push(`alert:${eventType}:${dedupeKey}:${metadata.positionId}`);
+      }
+    }
+  };
+}
+
+function cascadeSignalRejectionSideEffectSpy(): {
+  events: string[];
+  handlers: CascadeSignalRejectionSideEffectHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      logInfo(event, _message, metadata) {
+        events.push(`log:${event}:${metadata.cascadeId}`);
+      },
+      recordUiSignal(signal, outcome) {
+        events.push(
+          `signal:${signal.sourceAgent}:${signal.action}:${outcome}:${signal.horizonMs}:${signal.rationale}`
+        );
       }
     }
   };
