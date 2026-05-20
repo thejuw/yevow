@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyQuoteDispatchSideEffects,
   buildCroupierQuoteAction,
   buildQuoteDispatchIntents,
   buildQuoteRefreshRuntimeDecision,
@@ -7,7 +8,8 @@ import {
   dispatchedQuoteSnapshot,
   evaluateQuoteRefreshThrottle,
   quoteDispatchBlockedLogMetadata,
-  quoteRefreshThrottleLogMetadata
+  quoteRefreshThrottleLogMetadata,
+  type QuoteDispatchSideEffectHandlers
 } from "../../src/engine/trading/quotes/QuoteDispatchRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { InternalOrderBook, QuoteSignal } from "../../src/types";
@@ -89,6 +91,49 @@ describe("QuoteDispatchRuntime", () => {
         maxOrderNotional: 0
       }
     ]);
+  });
+
+  it("applies quote dispatch side effects for skipped and executable children", async () => {
+    const quote = quoteSignal();
+    const intent = buildQuoteDispatchIntents({
+      quote,
+      engineId: "engine-1",
+      bankrollEquity: 1_000,
+      bankrollCash: 1_000,
+      maxPositionPct: 0.1,
+      maxPositionSize: 100,
+      assetAllocationPct: 1,
+      positionSizeMultiplier: 1,
+      fallbackSourceExchange: "hyperliquid",
+      spreadBps: 2,
+      toxicityScore: 0
+    }).intents[0];
+    const sideEffects = quoteDispatchSideEffectSpy();
+
+    if (!intent) {
+      throw new Error("missing quote dispatch fixture intent");
+    }
+
+    await applyQuoteDispatchSideEffects(
+      quote,
+      {
+        intents: [intent],
+        skippedOrders: [
+          {
+            quoteSignalId: "quote-1",
+            instrumentCode: "btc-usd",
+            side: "SELL",
+            requestedSize: 2,
+            price: 101,
+            maxOrderNotional: 0
+          }
+        ],
+        maxOrderNotional: 100
+      },
+      sideEffects.handlers
+    );
+
+    expect(sideEffects.events).toEqual(["skip:SELL:0", "dispatch:bid-1", "remember:quote-1"]);
   });
 
   it("builds blocked quote dispatch metadata from asset runtime state", () => {
@@ -416,6 +461,29 @@ describe("QuoteDispatchRuntime", () => {
     });
   });
 });
+
+function quoteDispatchSideEffectSpy(): {
+  events: string[];
+  handlers: QuoteDispatchSideEffectHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      logSkippedOrder(skipped) {
+        events.push(`skip:${skipped.side}:${skipped.maxOrderNotional}`);
+      },
+      dispatchExecution(intent) {
+        events.push(`dispatch:${intent.intentId}`);
+        return Promise.resolve();
+      },
+      rememberDispatchedQuote(quote) {
+        events.push(`remember:${quote.signalId}`);
+      }
+    }
+  };
+}
 
 function quoteSignal(overrides: Partial<QuoteSignal> = {}): QuoteSignal {
   return {

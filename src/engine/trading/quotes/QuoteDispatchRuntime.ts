@@ -44,6 +44,12 @@ export interface QuoteDispatchIntentResult {
   readonly maxOrderNotional: number;
 }
 
+export interface QuoteDispatchSideEffectHandlers {
+  readonly logSkippedOrder: (skipped: SkippedQuoteOrder) => void;
+  readonly dispatchExecution: (intent: TradeIntent) => Promise<void>;
+  readonly rememberDispatchedQuote: (quote: QuoteSignal) => void;
+}
+
 export interface QuoteDispatchBlockedLogInput {
   readonly quote: QuoteSignal;
   readonly assetRuntimeState: EngineState["assetMatrix"][string] | undefined;
@@ -224,6 +230,24 @@ export function buildQuoteDispatchIntents(
   }
 
   return { intents, skippedOrders, maxOrderNotional };
+}
+
+export async function applyQuoteDispatchSideEffects(
+  quote: QuoteSignal,
+  dispatch: QuoteDispatchIntentResult,
+  handlers: QuoteDispatchSideEffectHandlers
+): Promise<void> {
+  for (const skipped of dispatch.skippedOrders) {
+    handlers.logSkippedOrder(skipped);
+  }
+
+  for (const intent of dispatch.intents) {
+    await handlers.dispatchExecution(intent);
+  }
+
+  if (dispatch.intents.length > 0) {
+    handlers.rememberDispatchedQuote(quote);
+  }
 }
 
 export function quoteDispatchBlockedLogMetadata(input: QuoteDispatchBlockedLogInput): JsonRecord {

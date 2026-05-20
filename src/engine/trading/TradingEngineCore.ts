@@ -108,6 +108,7 @@ import {
   strategyQuoteDisabledReason as runtimeStrategyQuoteDisabledReason
 } from "./quotes/QuoteStateRuntime";
 import {
+  applyQuoteDispatchSideEffects,
   buildQuoteDispatchIntents,
   buildQuoteRefreshRuntimeDecision,
   dispatchCroupierQuoteActionSideEffects,
@@ -3798,21 +3799,16 @@ export class TradingEngine {
       toxicityScore: this.engineState.toxicityScore
     });
 
-    for (const skipped of quoteDispatch.skippedOrders) {
-      this.logger.warn(
-        "QUOTE_ORDER_RISK_CAP_ZERO",
-        "Skipped quote order with no remaining risk budget",
-        { ...skipped }
-      );
-    }
-
-    for (const intent of quoteDispatch.intents) {
-      await this.dispatchExecution(intent);
-    }
-
-    if (quoteDispatch.intents.length > 0) {
-      this.rememberDispatchedQuote(quote);
-    }
+    await applyQuoteDispatchSideEffects(quote, quoteDispatch, {
+      logSkippedOrder: (skipped) =>
+        this.logger.warn(
+          "QUOTE_ORDER_RISK_CAP_ZERO",
+          "Skipped quote order with no remaining risk budget",
+          { ...skipped }
+        ),
+      dispatchExecution: (intent) => this.dispatchExecution(intent),
+      rememberDispatchedQuote: (dispatchedQuote) => this.rememberDispatchedQuote(dispatchedQuote)
+    });
   }
 
   private shouldThrottleQuoteDispatch(
