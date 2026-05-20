@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { defaultConfig } from "../../src/ConfigManager";
 import { neutralMacroBias } from "../../src/Governor";
 import {
+  adminRecoveryPlan,
   adminRecoveryResponse,
   adminRecoveryStorageEntries,
   stateAfterAdminControlledRecovery
@@ -15,6 +16,41 @@ import type { EngineState } from "../../src/types";
 const OBSERVED_AT = "2026-05-18T19:00:00.000Z";
 
 describe("RecoveryRuntime", () => {
+  it("normalizes admin recovery requests into an executable plan", () => {
+    expect(
+      adminRecoveryPlan(
+        {
+          reason: "manual-check",
+          instrumentCode: "BTC-PERP",
+          source_exchange: "HYPERLIQUID",
+          clearLatency: false,
+          clearShadowQueue: false,
+          resetPaperPortfolio: true
+        },
+        OBSERVED_AT
+      )
+    ).toEqual({
+      observedAt: OBSERVED_AT,
+      reason: "manual-check",
+      sourceExchange: "hyperliquid",
+      resetInstruments: ["btc-perp"],
+      shouldClearLatency: false,
+      shouldClearShadowQueue: false,
+      shouldResetPaperPortfolio: true
+    });
+  });
+
+  it("defaults blank admin recovery requests to safe broad recovery", () => {
+    expect(adminRecoveryPlan({}, OBSERVED_AT)).toMatchObject({
+      observedAt: OBSERVED_AT,
+      reason: "ADMIN_CONTROLLED_RECOVERY",
+      sourceExchange: "hyperliquid",
+      shouldClearLatency: true,
+      shouldClearShadowQueue: true,
+      shouldResetPaperPortfolio: false
+    });
+  });
+
   it("resets paper portfolio, quote state, citadel, and risk gates for admin recovery", () => {
     const currentState = defaultEngineState("recovery-runtime");
     currentState.bankroll = {

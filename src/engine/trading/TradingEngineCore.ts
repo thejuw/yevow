@@ -352,6 +352,7 @@ import {
 import {
   adminRecoveryResponse,
   adminRecoveryStorageEntries,
+  adminRecoveryPlan,
   stateAfterAdminControlledRecovery
 } from "./state/RecoveryRuntime";
 import {
@@ -2293,24 +2294,20 @@ export class TradingEngine {
     resetPaperPortfolio?: boolean;
     clearShadowQueue?: boolean;
   }): Promise<JsonRecord> {
-    const observedAt = new Date().toISOString();
-    const reason =
-      typeof payload.reason === "string" && payload.reason.length > 0
-        ? payload.reason
-        : "ADMIN_CONTROLLED_RECOVERY";
-    const sourceExchange = payload.source_exchange
-      ? normalizeSourceExchange(payload.source_exchange)
-      : "hyperliquid";
-    const resetInstruments = maintenanceRecoveryInstruments(payload);
+    const recoveryPlan = adminRecoveryPlan(payload);
 
-    await this.resetRecoveryOrderBooks(resetInstruments, reason, sourceExchange, observedAt);
+    await this.resetRecoveryOrderBooks(
+      recoveryPlan.resetInstruments,
+      recoveryPlan.reason,
+      recoveryPlan.sourceExchange,
+      recoveryPlan.observedAt
+    );
 
-    if (payload.clearLatency !== false) {
-      this.resetLatencyBaseline(observedAt, reason);
+    if (recoveryPlan.shouldClearLatency) {
+      this.resetLatencyBaseline(recoveryPlan.observedAt, recoveryPlan.reason);
     }
 
-    const shouldClearShadowQueue = payload.clearShadowQueue !== false;
-    if (shouldClearShadowQueue) {
+    if (recoveryPlan.shouldClearShadowQueue) {
       this.clearRecoveryShadowQueue();
     }
 
@@ -2324,13 +2321,13 @@ export class TradingEngine {
       payload,
       cachedConfig: this.cachedConfig,
       macroBias: this.macroBias,
-      observedAt,
+      observedAt: recoveryPlan.observedAt,
       shadowMode: isShadowMode(this.env),
       paperBankroll,
-      shadowQueue: this.ghostBook.snapshot(observedAt),
-      reason,
-      resetInstruments,
-      sourceExchange,
+      shadowQueue: this.ghostBook.snapshot(recoveryPlan.observedAt),
+      reason: recoveryPlan.reason,
+      resetInstruments: recoveryPlan.resetInstruments,
+      sourceExchange: recoveryPlan.sourceExchange,
       prunedProfilerStorageKeys
     });
 
@@ -2348,8 +2345,10 @@ export class TradingEngine {
       "ADMIN_CONTROLLED_RECOVERY"
     );
 
-    if (payload.resetPaperPortfolio) {
-      this.state.waitUntil(this.env.CONFIG_STORE.put(PAPER_SESSION_STARTED_AT_KEY, observedAt));
+    if (recoveryPlan.shouldResetPaperPortfolio) {
+      this.state.waitUntil(
+        this.env.CONFIG_STORE.put(PAPER_SESSION_STARTED_AT_KEY, recoveryPlan.observedAt)
+      );
     }
 
     this.logger.warn("ADMIN_CONTROLLED_RECOVERY", "Admin controlled recovery applied", {
@@ -2358,9 +2357,9 @@ export class TradingEngine {
     this.publish("ADMIN_CONTROLLED_RECOVERY", recovery.publishPayload);
 
     return adminRecoveryResponse({
-      reason,
-      resetInstruments,
-      sourceExchange,
+      reason: recoveryPlan.reason,
+      resetInstruments: recoveryPlan.resetInstruments,
+      sourceExchange: recoveryPlan.sourceExchange,
       state: this.engineState
     });
   }
