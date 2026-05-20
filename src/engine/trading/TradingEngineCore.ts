@@ -69,9 +69,7 @@ import {
   type AnomalyEmergencyPauseTelemetry
 } from "./anomaly/AnomalyRuntime";
 import {
-  applyCrossAssetHypeCancelSideEffects,
-  evaluateCrossAssetHypeQuoteCancel,
-  resolveCrossAssetHypeQuoteCancelConfig,
+  applyCrossAssetHypeQuoteCancelFlow,
   updateLeadLagMetrics as updateLeadLagRuntimeMetrics
 } from "./leadlag/LeadLagRuntime";
 import {
@@ -3511,33 +3509,17 @@ export class TradingEngine {
     observedAt: string,
     options: TickHandlingOptions
   ): void {
-    const config = resolveCrossAssetHypeQuoteCancelConfig({
-      leadThresholdBps: this.env.CROSS_ASSET_CANCEL_LEAD_BPS,
-      cooldownMs: this.env.CROSS_ASSET_CANCEL_COOLDOWN_MS
-    });
-    const last = this.crossAssetCancelLogAt.get("hype-usd") ?? 0;
-    const decision = evaluateCrossAssetHypeQuoteCancel({
-      shadowReplay: options.shadowReplay,
-      tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-      tickInstrumentCode: tick.instrumentCode,
-      volatility,
-      observedAt,
-      leadThresholdBps: config.leadThresholdBps,
-      cooldownMs: config.cooldownMs,
-      lastCancelAtMs: last,
-      fallbackNowMs: Date.now()
-    });
-
-    if (!decision.shouldCancel) {
-      return;
-    }
-
-    applyCrossAssetHypeCancelSideEffects(
+    applyCrossAssetHypeQuoteCancelFlow(
       {
-        decision,
+        shadowReplay: options.shadowReplay,
+        tradingEnabled: this.cachedConfig.TRADING_ENABLED,
+        tickInstrumentCode: tick.instrumentCode,
         volatility,
-        leadThresholdBps: config.leadThresholdBps,
-        observedAt
+        observedAt,
+        leadThresholdBpsValue: this.env.CROSS_ASSET_CANCEL_LEAD_BPS,
+        cooldownMsValue: this.env.CROSS_ASSET_CANCEL_COOLDOWN_MS,
+        lastCancelAtMs: this.crossAssetCancelLogAt.get("hype-usd") ?? 0,
+        fallbackNowMs: Date.now()
       },
       {
         markCooldown: (instrumentCode, nowMs) =>

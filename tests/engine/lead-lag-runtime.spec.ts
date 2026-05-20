@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyCrossAssetHypeCancelSideEffects,
+  applyCrossAssetHypeQuoteCancelFlow,
   buildCrossAssetHypeCancelArtifacts,
   crossAssetHypeCancelLogMetadata,
   crossAssetHypeCancelTelemetry,
@@ -216,6 +217,38 @@ describe("LeadLagRuntime", () => {
       "schedule"
     ]);
 
+    await Promise.all(sideEffects.scheduled);
+  });
+
+  it("orchestrates cross-asset HYPE cancellation with env config and cooldown state", async () => {
+    const sideEffects = crossAssetHypeCancelSideEffectSpy();
+
+    const decision = applyCrossAssetHypeQuoteCancelFlow(
+      {
+        shadowReplay: false,
+        tradingEnabled: true,
+        tickInstrumentCode: "btc-usd",
+        volatility: volatility({ ret: 0.001 }),
+        observedAt: OBSERVED_AT,
+        leadThresholdBpsValue: "5",
+        cooldownMsValue: "1000",
+        lastCancelAtMs: 0,
+        fallbackNowMs: 1
+      },
+      sideEffects.handlers
+    );
+
+    expect(decision).toMatchObject({
+      shouldCancel: true,
+      reason: "BTC_LEAD_MOVE"
+    });
+    expect(sideEffects.events).toEqual([
+      `mark:hype-usd:${Date.parse(OBSERVED_AT)}`,
+      "warn:CROSS_ASSET_HYPE_CANCEL:BTC lead move invalidated HYPE resting quotes",
+      "publish:hype-usd:BTC_LEAD_MOVE",
+      "cancel:hype-usd:BTC_LEAD_MOVE",
+      "schedule"
+    ]);
     await Promise.all(sideEffects.scheduled);
   });
 

@@ -86,6 +86,18 @@ export interface CrossAssetHypeCancelSideEffectHandlers {
   ) => Promise<unknown>;
 }
 
+export interface CrossAssetHypeQuoteCancelFlowInput {
+  readonly shadowReplay?: boolean;
+  readonly tradingEnabled: boolean;
+  readonly tickInstrumentCode: string;
+  readonly volatility: MultiScaleVolatilitySnapshot | null;
+  readonly observedAt: string;
+  readonly leadThresholdBpsValue?: string;
+  readonly cooldownMsValue?: string;
+  readonly lastCancelAtMs: number;
+  readonly fallbackNowMs: number;
+}
+
 export function updateLeadLagMetrics(input: LeadLagUpdateInput): EngineState["leadLag"] {
   if (input.midPrice === null) {
     return input.currentLeadLag;
@@ -225,6 +237,39 @@ export function applyCrossAssetHypeCancelSideEffects(
   handlers.schedule(handlers.cancelAllQuotes("hype-usd", "BTC_LEAD_MOVE"));
 
   return true;
+}
+
+export function applyCrossAssetHypeQuoteCancelFlow(
+  input: CrossAssetHypeQuoteCancelFlowInput,
+  handlers: CrossAssetHypeCancelSideEffectHandlers
+): CrossAssetHypeCancelDecision {
+  const config = resolveCrossAssetHypeQuoteCancelConfig({
+    leadThresholdBps: input.leadThresholdBpsValue,
+    cooldownMs: input.cooldownMsValue
+  });
+  const decision = evaluateCrossAssetHypeQuoteCancel({
+    shadowReplay: input.shadowReplay,
+    tradingEnabled: input.tradingEnabled,
+    tickInstrumentCode: input.tickInstrumentCode,
+    volatility: input.volatility,
+    observedAt: input.observedAt,
+    leadThresholdBps: config.leadThresholdBps,
+    cooldownMs: config.cooldownMs,
+    lastCancelAtMs: input.lastCancelAtMs,
+    fallbackNowMs: input.fallbackNowMs
+  });
+
+  applyCrossAssetHypeCancelSideEffects(
+    {
+      decision,
+      volatility: input.volatility,
+      leadThresholdBps: config.leadThresholdBps,
+      observedAt: input.observedAt
+    },
+    handlers
+  );
+
+  return decision;
 }
 
 export function crossAssetHypeCancelLogMetadata(
