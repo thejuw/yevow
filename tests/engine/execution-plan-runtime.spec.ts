@@ -5,6 +5,7 @@ import {
   buildManagedOrders,
   executionAckDeadline,
   executionChildrenFromRoutePlan,
+  prepareApprovedExecutionPlan,
   shouldSkipExecutionPlanForQuoteSuspension,
   sorResidualLiquidityShortfallLogMetadata
 } from "../../src/engine/trading/execution/ExecutionPlanRuntime";
@@ -239,6 +240,121 @@ describe("ExecutionPlanRuntime", () => {
         observedAt: OBSERVED_AT
       })
     ).toBe(false);
+  });
+
+  it("prepares approved execution plans through injected Pit Boss approval", () => {
+    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const state = defaultEngineState("execution-plan-prepare");
+    const residualLogs: unknown[] = [];
+    const approvalSpy = vi.fn(() =>
+      pitBossDecision({
+        approved: true,
+        intent: tradeIntent({ requestedSize: 1, approvedSize: 1, expectedPrice: 100 })
+      })
+    );
+
+    try {
+      const plan = prepareApprovedExecutionPlan(
+        {
+          intent: tradeIntent({ requestedSize: 1, approvedSize: 1 }),
+          riskState: state,
+          config: state.cachedConfig,
+          observedAt: OBSERVED_AT,
+          bypassQuoteSuspension: true,
+          maxPositionPct: 0.05,
+          kellyFraction: 0.5,
+          orderBooks: [
+            {
+              marketKey: "hyperliquid:btc-usd",
+              source_exchange: "hyperliquid",
+              instrumentCode: "btc-usd",
+              exchangeCode: "hl",
+              sourceWeight: 1,
+              bestBid: 99.9,
+              bestAsk: 100,
+              midPrice: 99.95,
+              spread: 0.1,
+              bids: [{ price: 99.9, size: 0.2 }],
+              asks: [{ price: 100, size: 0.4 }],
+              weightedImbalance: 0,
+              imbalance: 0,
+              depth: 2,
+              sequence: 1,
+              exchangeTimestamp: OBSERVED_AT,
+              receivedAt: OBSERVED_AT,
+              updatedAt: OBSERVED_AT
+            }
+          ],
+          ackTimeoutMs: 1_500
+        },
+        {
+          approveIntent: approvalSpy,
+          logResidualLiquidityShortfall: (metadata) => residualLogs.push(metadata)
+        }
+      );
+
+      expect(approvalSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ intentId: "intent-1" }),
+        state,
+        state.cachedConfig,
+        0.05,
+        0.5
+      );
+      expect(plan).toMatchObject({
+        intent: { intentId: "intent-1" },
+        sorPlan: { unfilledSize: 0.6 }
+      });
+      expect(residualLogs).toEqual([
+        expect.objectContaining({
+          intentId: "intent-1",
+          instrumentCode: "btc-usd",
+          unfilledSize: 0.6
+        })
+      ]);
+    } finally {
+      randomSpy.mockRestore();
+    }
+  });
+
+  it("does not approve execution plans when intent is missing or quotes are suspended", () => {
+    const state = defaultEngineState("execution-plan-prepare-gated");
+    state.assetQuoteStates["btc-usd"] = {
+      status: "SUSPENDED",
+      reason: "PROFILER_ALERT",
+      suspendedUntil: "2026-05-18T14:01:00.000Z",
+      lastQuote: null,
+      updatedAt: OBSERVED_AT
+    };
+    const approvalSpy = vi.fn(() => pitBossDecision());
+    const input = {
+      riskState: state,
+      config: state.cachedConfig,
+      observedAt: OBSERVED_AT,
+      maxPositionPct: 0.05,
+      kellyFraction: 0.5,
+      orderBooks: [],
+      ackTimeoutMs: 1_500
+    };
+
+    expect(
+      prepareApprovedExecutionPlan(
+        { ...input, intent: null },
+        {
+          approveIntent: approvalSpy,
+          logResidualLiquidityShortfall: () => undefined
+        }
+      )
+    ).toBeNull();
+    expect(
+      prepareApprovedExecutionPlan(
+        { ...input, intent: tradeIntent() },
+        {
+          approveIntent: approvalSpy,
+          logResidualLiquidityShortfall: () => undefined
+        }
+      )
+    ).toBeNull();
+    expect(approvalSpy).not.toHaveBeenCalled();
   });
 
   it("builds SOR residual liquidity shortfall metadata", () => {

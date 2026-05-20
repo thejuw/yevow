@@ -4,6 +4,7 @@ import type { PitBossDecision } from "../../../agents/PitBossAgent";
 import { isQuoteSuspendedAt, quoteStateForInstrumentState } from "../state/AssetStateRuntime";
 import type {
   EngineState,
+  GlobalRiskConfig,
   InternalOrderBook,
   JsonRecord,
   ManagedOrder,
@@ -42,6 +43,29 @@ export interface ExecutionPlanQuoteGateInput {
   readonly riskState: EngineState;
   readonly observedAt: string;
   readonly bypassQuoteSuspension?: boolean;
+}
+
+export interface PrepareApprovedExecutionPlanInput {
+  readonly intent: TradeIntent | null;
+  readonly riskState: EngineState;
+  readonly config: GlobalRiskConfig;
+  readonly observedAt: string;
+  readonly bypassQuoteSuspension?: boolean;
+  readonly maxPositionPct: number;
+  readonly kellyFraction: number;
+  readonly orderBooks: Iterable<InternalOrderBook>;
+  readonly ackTimeoutMs: number;
+}
+
+export interface PrepareApprovedExecutionPlanHandlers {
+  readonly approveIntent: (
+    intent: TradeIntent,
+    riskState: EngineState,
+    config: GlobalRiskConfig,
+    maxPositionPct: number,
+    kellyFraction: number
+  ) => PitBossDecision;
+  readonly logResidualLiquidityShortfall: (metadata: JsonRecord) => void;
 }
 
 export interface SorResidualLogInput {
@@ -119,6 +143,51 @@ export function shouldSkipExecutionPlanForQuoteSuspension(
     ),
     input.observedAt
   );
+}
+
+export function prepareApprovedExecutionPlan(
+  input: PrepareApprovedExecutionPlanInput,
+  handlers: PrepareApprovedExecutionPlanHandlers
+): ApprovedExecutionPlan | null {
+  if (!input.intent) {
+    return null;
+  }
+
+  if (
+    shouldSkipExecutionPlanForQuoteSuspension({
+      intent: input.intent,
+      riskState: input.riskState,
+      observedAt: input.observedAt,
+      bypassQuoteSuspension: input.bypassQuoteSuspension
+    })
+  ) {
+    return null;
+  }
+
+  const pitBossDecision = handlers.approveIntent(
+    input.intent,
+    input.riskState,
+    input.config,
+    input.maxPositionPct,
+    input.kellyFraction
+  );
+
+  if (!pitBossDecision.approved) {
+    return null;
+  }
+
+  const plan = buildApprovedExecutionPlan({
+    pitBossDecision,
+    orderBooks: input.orderBooks,
+    observedAt: input.observedAt,
+    ackTimeoutMs: input.ackTimeoutMs
+  });
+
+  if (plan?.residualLogMetadata) {
+    handlers.logResidualLiquidityShortfall(plan.residualLogMetadata);
+  }
+
+  return plan;
 }
 
 export function sorResidualLiquidityShortfallLogMetadata(input: SorResidualLogInput): JsonRecord {

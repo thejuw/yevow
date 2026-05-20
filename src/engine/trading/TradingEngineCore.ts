@@ -121,8 +121,7 @@ import {
   dispatchQuoteCancelAll
 } from "./quotes/QuoteCancelRuntime";
 import {
-  buildApprovedExecutionPlan,
-  shouldSkipExecutionPlanForQuoteSuspension,
+  prepareApprovedExecutionPlan,
   type ApprovedExecutionPlan
 } from "./execution/ExecutionPlanRuntime";
 import {
@@ -3577,60 +3576,45 @@ export class TradingEngine {
       kellyFractionOverride?: number;
     } = {}
   ): ApprovedExecutionPlan | null {
-    if (!intent) {
-      return null;
-    }
-
     const riskState = options.stateOverride ?? this.engineState;
-    if (
-      shouldSkipExecutionPlanForQuoteSuspension({
+
+    return prepareApprovedExecutionPlan(
+      {
         intent,
         riskState,
+        config: this.cachedConfig,
         observedAt,
-        bypassQuoteSuspension: options.bypassQuoteSuspension
-      })
-    ) {
-      return null;
-    }
-    const pitBossDecision = this.pitBossAgent.approve(
-      intent,
-      riskState,
-      this.cachedConfig,
-      this.cachedConfig.MAX_POSITION_PCT > 0
-        ? this.cachedConfig.MAX_POSITION_PCT
-        : readPositiveNumber(this.env.MAX_POSITION_PCT, DEFAULT_MAX_POSITION_PCT),
-      options.kellyFractionOverride ?? this.cachedConfig.KELLY_FRACTION
+        bypassQuoteSuspension: options.bypassQuoteSuspension,
+        maxPositionPct:
+          this.cachedConfig.MAX_POSITION_PCT > 0
+            ? this.cachedConfig.MAX_POSITION_PCT
+            : readPositiveNumber(this.env.MAX_POSITION_PCT, DEFAULT_MAX_POSITION_PCT),
+        kellyFraction: options.kellyFractionOverride ?? this.cachedConfig.KELLY_FRACTION,
+        orderBooks: this.orderBook.values(),
+        ackTimeoutMs: readPositiveInteger(
+          this.env.ORDER_ACK_TIMEOUT_MS,
+          DEFAULT_ORDER_ACK_TIMEOUT_MS,
+          100,
+          60_000
+        )
+      },
+      {
+        approveIntent: (candidateIntent, candidateRiskState, config, maxPositionPct, kelly) =>
+          this.pitBossAgent.approve(
+            candidateIntent,
+            candidateRiskState,
+            config,
+            maxPositionPct,
+            kelly
+          ),
+        logResidualLiquidityShortfall: (metadata) =>
+          this.logger.warn(
+            "SOR_RESIDUAL_LIQUIDITY_SHORTFALL",
+            "Smart router could not source full approved size",
+            metadata
+          )
+      }
     );
-
-    if (!pitBossDecision.approved) {
-      return null;
-    }
-
-    const plan = buildApprovedExecutionPlan({
-      pitBossDecision,
-      orderBooks: this.orderBook.values(),
-      observedAt,
-      ackTimeoutMs: readPositiveInteger(
-        this.env.ORDER_ACK_TIMEOUT_MS,
-        DEFAULT_ORDER_ACK_TIMEOUT_MS,
-        100,
-        60_000
-      )
-    });
-
-    if (!plan) {
-      return null;
-    }
-
-    if (plan.residualLogMetadata) {
-      this.logger.warn(
-        "SOR_RESIDUAL_LIQUIDITY_SHORTFALL",
-        "Smart router could not source full approved size",
-        plan.residualLogMetadata
-      );
-    }
-
-    return plan;
   }
 
   private nextQuoteStateForInstrument(
