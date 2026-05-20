@@ -243,6 +243,10 @@ export interface PerformanceSpikeLogGateInput {
   readonly nowMs?: number;
 }
 
+export interface PerformanceSpikeLogSideEffectHandlers {
+  readonly logPerformance: (latencyMetrics: LatencyMetrics) => void;
+}
+
 export function shouldLogPerformanceSpikeEvent(input: PerformanceSpikeLogGateInput): boolean {
   const key = `${input.latencyMetrics.instrumentCode}:${input.latencyMetrics.status}`;
   const now = input.nowMs ?? Date.now();
@@ -253,6 +257,18 @@ export function shouldLogPerformanceSpikeEvent(input: PerformanceSpikeLogGateInp
   }
 
   input.logAt.set(key, now);
+  return true;
+}
+
+export function applyPerformanceSpikeLogSideEffect(
+  input: PerformanceSpikeLogGateInput,
+  handlers: PerformanceSpikeLogSideEffectHandlers
+): boolean {
+  if (!shouldLogPerformanceSpikeEvent(input)) {
+    return false;
+  }
+
+  handlers.logPerformance(input.latencyMetrics);
   return true;
 }
 

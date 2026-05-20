@@ -144,6 +144,7 @@ import {
 import { calculateAssetMatrix as calculateRuntimeAssetMatrix } from "./state/AssetMatrixRuntime";
 import {
   applyExecutionProfileSideEffects,
+  applyPerformanceSpikeLogSideEffect,
   appendLatencyHistory,
   buildHardStaleTickDropArtifacts,
   buildPerformanceMetricsText,
@@ -154,7 +155,6 @@ import {
   nextLatencyAverage,
   prepareTickLatencyRuntime,
   recordProcessingLatencySample,
-  shouldLogPerformanceSpikeEvent,
   stateAfterLatencyBaselineReset,
   stateAfterNativeHyperliquidLatencyPull,
   stateAfterHardStaleTickDrop,
@@ -4593,17 +4593,16 @@ export class TradingEngine {
   }
 
   private logPerformance(latencyMetrics: LatencyMetrics): void {
-    if (
-      !shouldLogPerformanceSpikeEvent({
+    applyPerformanceSpikeLogSideEffect(
+      {
         logAt: this.performanceSpikeLogAt,
         latencyMetrics,
         throttleMs: HOT_PATH_LOG_THROTTLE_MS
-      })
-    ) {
-      return;
-    }
-
-    this.logger.logPerformance(latencyMetrics);
+      },
+      {
+        logPerformance: (metrics) => this.logger.logPerformance(metrics)
+      }
+    );
   }
 
   private triggerEmergencyPause(event: AnomalyEmergencyPauseTelemetry): void {

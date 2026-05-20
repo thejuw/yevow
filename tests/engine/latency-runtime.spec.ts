@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyExecutionProfileSideEffects,
+  applyPerformanceSpikeLogSideEffect,
   appendLatencyHistory,
   buildHardStaleTickDropArtifacts,
   buildExecutionPerformanceTransition,
@@ -27,7 +28,8 @@ import {
   stateAfterNativeHyperliquidLatencyPull,
   stateAfterStaleDataKillSwitch,
   stateAfterHardStaleTickDrop,
-  type ExecutionProfileSideEffectHandlers
+  type ExecutionProfileSideEffectHandlers,
+  type PerformanceSpikeLogSideEffectHandlers
 } from "../../src/engine/trading/performance/LatencyRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { EngineState, ExecutionProfile, LatencyMetrics, MarketTick } from "../../src/types";
@@ -271,6 +273,27 @@ describe("LatencyRuntime", () => {
       })
     ).toBe(true);
     expect(logAt.get("btc-usd:STALE")).toBe(11_001);
+  });
+
+  it("logs performance spikes through the throttle gate", () => {
+    const logAt = new Map<string, number>();
+    const metrics = latencyMetrics({ status: "STALE", sequence: 99 });
+    const sideEffects = performanceSpikeLogSideEffectSpy();
+
+    expect(
+      applyPerformanceSpikeLogSideEffect(
+        { logAt, latencyMetrics: metrics, throttleMs: 1_000, nowMs: 1_000 },
+        sideEffects.handlers
+      )
+    ).toBe(true);
+    expect(
+      applyPerformanceSpikeLogSideEffect(
+        { logAt, latencyMetrics: metrics, throttleMs: 1_000, nowMs: 1_500 },
+        sideEffects.handlers
+      )
+    ).toBe(false);
+
+    expect(sideEffects.events).toEqual(["log:btc-usd:STALE:99"]);
   });
 
   it("marks hard-stale drops and suspends quote state", () => {
@@ -740,6 +763,22 @@ function executionProfileSideEffectSpy(): {
       },
       notify(notification) {
         events.push(`notify:${notification.priority}`);
+      }
+    }
+  };
+}
+
+function performanceSpikeLogSideEffectSpy(): {
+  events: string[];
+  handlers: PerformanceSpikeLogSideEffectHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      logPerformance(metrics) {
+        events.push(`log:${metrics.instrumentCode}:${metrics.status}:${metrics.sequence}`);
       }
     }
   };
