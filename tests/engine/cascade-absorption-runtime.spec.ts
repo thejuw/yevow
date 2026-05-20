@@ -3,9 +3,11 @@ import {
   absorptionConfirmedAlertMetadata,
   absorptionConfirmedLogMetadata,
   absorptionConfirmedTelemetryPayload,
+  applyCascadeAbsorptionConfirmedSideEffects,
   buildCascadeAbsorptionObservation,
   cascadeAbsorptionSignedNotional,
-  nextCascadeCvd
+  nextCascadeCvd,
+  type CascadeAbsorptionConfirmedSideEffectHandlers
 } from "../../src/engine/trading/cascade/CascadeAbsorptionRuntime";
 import type { AbsorptionConfirmed } from "../../src/strategy/cascade/types";
 import type { MarketTick } from "../../src/types";
@@ -67,6 +69,19 @@ describe("CascadeAbsorptionRuntime", () => {
       confirmedAt: OBSERVED_AT
     });
   });
+
+  it("emits confirmed absorption side effects in order", () => {
+    const sideEffects = absorptionConfirmedSideEffectSpy();
+
+    applyCascadeAbsorptionConfirmedSideEffects(absorptionConfirmed(), sideEffects.handlers);
+
+    expect(sideEffects.events).toEqual([
+      "record:cascade-1",
+      "log:ABSORPTION_CONFIRMED:cascade-1",
+      "publish:ABSORPTION_CONFIRMED:cascade-1",
+      "alert:CASCADE_ABSORPTION_CONFIRMED:cascade-1:cascade-1"
+    ]);
+  });
 });
 
 function tick(overrides: Partial<MarketTick> = {}): MarketTick {
@@ -110,5 +125,30 @@ function absorptionConfirmed(): AbsorptionConfirmed {
       openInterestStabilized: true
     },
     observations: 12
+  };
+}
+
+function absorptionConfirmedSideEffectSpy(): {
+  events: string[];
+  handlers: CascadeAbsorptionConfirmedSideEffectHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      recordAbsorption(confirmed) {
+        events.push(`record:${confirmed.cascadeId}`);
+      },
+      logInfo(event, _message, metadata) {
+        events.push(`log:${event}:${metadata.cascadeId}`);
+      },
+      publish(telemetryType, payload) {
+        events.push(`publish:${telemetryType}:${payload.cascadeId}`);
+      },
+      emitOperationalAlert(eventType, _title, _message, metadata, dedupeKey) {
+        events.push(`alert:${eventType}:${dedupeKey}:${metadata.cascadeId}`);
+      }
+    }
   };
 }

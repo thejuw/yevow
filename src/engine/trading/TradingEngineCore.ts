@@ -196,9 +196,7 @@ import {
   buildCascadeExitTradeIntent
 } from "./cascade/CascadeTradeIntents";
 import {
-  absorptionConfirmedAlertMetadata,
-  absorptionConfirmedLogMetadata,
-  absorptionConfirmedTelemetryPayload,
+  applyCascadeAbsorptionConfirmedSideEffects,
   buildCascadeAbsorptionObservation,
   nextCascadeCvd
 } from "./cascade/CascadeAbsorptionRuntime";
@@ -1642,20 +1640,14 @@ export class TradingEngine {
       return;
     }
 
-    this.cascadeAbsorptionsById.set(confirmed.cascadeId, confirmed);
-    this.logger.info(
-      "ABSORPTION_CONFIRMED",
-      "Liquidation cascade absorption confirmed",
-      absorptionConfirmedLogMetadata(confirmed)
-    );
-    this.publish("ABSORPTION_CONFIRMED", absorptionConfirmedTelemetryPayload(confirmed));
-    this.emitCascadeOperationalAlert(
-      "CASCADE_ABSORPTION_CONFIRMED",
-      "Cascade absorption confirmed",
-      `${confirmed.instrumentCode} absorption confirmed after ${confirmed.elapsedMs}ms.`,
-      absorptionConfirmedAlertMetadata(confirmed),
-      confirmed.cascadeId
-    );
+    applyCascadeAbsorptionConfirmedSideEffects(confirmed, {
+      recordAbsorption: (confirmedAbsorption) =>
+        this.cascadeAbsorptionsById.set(confirmedAbsorption.cascadeId, confirmedAbsorption),
+      logInfo: (event, message, metadata) => this.logger.info(event, message, metadata),
+      publish: (telemetryType, payload) => this.publish(telemetryType, payload),
+      emitOperationalAlert: (eventType, title, message, metadata, dedupeKey) =>
+        this.emitCascadeOperationalAlert(eventType, title, message, metadata, dedupeKey)
+    });
   }
 
   private recordRejectedCascadeSignal(

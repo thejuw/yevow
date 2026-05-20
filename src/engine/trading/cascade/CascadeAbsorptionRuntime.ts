@@ -7,6 +7,19 @@ export interface CascadeAbsorptionObservationInput {
   readonly cumulativeVolumeDelta: number;
 }
 
+export interface CascadeAbsorptionConfirmedSideEffectHandlers {
+  readonly recordAbsorption: (confirmed: AbsorptionConfirmed) => void;
+  readonly logInfo: (event: string, message: string, metadata: JsonRecord) => void;
+  readonly publish: (telemetryType: "ABSORPTION_CONFIRMED", payload: JsonRecord) => void;
+  readonly emitOperationalAlert: (
+    eventType: "CASCADE_ABSORPTION_CONFIRMED",
+    title: string,
+    message: string,
+    metadata: JsonRecord,
+    dedupeKey: string
+  ) => void;
+}
+
 export function cascadeAbsorptionSignedNotional(
   tick: Pick<MarketTick, "side" | "price" | "size">
 ): number {
@@ -84,4 +97,24 @@ export function absorptionConfirmedAlertMetadata(confirmed: AbsorptionConfirmed)
     price: confirmed.price,
     confirmedAt: confirmed.confirmedAt
   };
+}
+
+export function applyCascadeAbsorptionConfirmedSideEffects(
+  confirmed: AbsorptionConfirmed,
+  handlers: CascadeAbsorptionConfirmedSideEffectHandlers
+): void {
+  handlers.recordAbsorption(confirmed);
+  handlers.logInfo(
+    "ABSORPTION_CONFIRMED",
+    "Liquidation cascade absorption confirmed",
+    absorptionConfirmedLogMetadata(confirmed)
+  );
+  handlers.publish("ABSORPTION_CONFIRMED", absorptionConfirmedTelemetryPayload(confirmed));
+  handlers.emitOperationalAlert(
+    "CASCADE_ABSORPTION_CONFIRMED",
+    "Cascade absorption confirmed",
+    `${confirmed.instrumentCode} absorption confirmed after ${confirmed.elapsedMs}ms.`,
+    absorptionConfirmedAlertMetadata(confirmed),
+    confirmed.cascadeId
+  );
 }
