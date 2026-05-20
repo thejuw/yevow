@@ -47,6 +47,7 @@ import {
   applyOrderBookResetConnectionIds,
   applyOrderBookResetFlow
 } from "./book/OrderBookResetRuntime";
+import { resolveTickBookFlow } from "./book/TickBookResolutionRuntime";
 import { buildDomAnalysisSnapshot, currentDomHeatmapSnapshot } from "./book/DomAnalyzer";
 import {
   applyShadowQueueDecisionFlow,
@@ -462,7 +463,6 @@ import {
   buildMarketKey,
   hydrateLegacyLevel,
   levelsToBookSide,
-  tickToDelta,
   calculateTimeToBookMs,
   resolveTickSize,
   resolveDomBinSize,
@@ -556,7 +556,7 @@ import {
   mergeRiskLimits,
   resolveMaxLatencyMs
 } from "./state/EngineStateDefaults";
-import { isInformationalTick, isTradeTick } from "./state/TickClassification";
+import { isTradeTick } from "./state/TickClassification";
 import { evaluateTickTargetPreflight } from "./state/TickPreflightRuntime";
 import {
   applyAcceptedDecisionPipelineFlow,
@@ -2582,53 +2582,49 @@ export class TradingEngine {
     wakeUpTimeMs: number | null,
     hotPathStartedAt: number
   ): Promise<TickBookResolution> {
-    let orderBookUpdateMs = 0;
-
-    if (isInformationalTick(tick)) {
-      metrics.timeToBookMs = null;
-      const book = currentBookForMarketTick(this.orderBook, tick);
-
-      if (!book) {
-        return {
-          kind: "EARLY_RETURN",
-          result: await this.handleInformationalBookNotReady(
-            tick,
-            metrics,
-            wakeUpTimeMs,
-            orderBookUpdateMs,
-            hotPathStartedAt
-          )
-        };
-      }
-
-      return { kind: "BOOK", book, orderBookUpdateMs };
-    }
-
-    const orderBookStartedAt = highResolutionNow();
-    const applied = await this.applyDelta(tickToDelta(tick), metrics.brainTimestamp);
-    orderBookUpdateMs = roundLatency(highResolutionNow() - orderBookStartedAt);
-    metrics.timeToBookMs = applied.timeToBookMs;
-
-    if (!applied.accepted) {
-      return {
-        kind: "EARLY_RETURN",
-        result: await this.handleRejectedBookDelta(
-          tick,
-          metrics,
-          applied,
-          wakeUpTimeMs,
+    return resolveTickBookFlow(
+      {
+        tick,
+        metrics,
+        wakeUpTimeMs,
+        hotPathStartedAt
+      },
+      {
+        currentBookForMarketTick: (marketTick) =>
+          currentBookForMarketTick(this.orderBook, marketTick),
+        applyDelta: (delta, observedAt) => this.applyDelta(delta, observedAt),
+        handleInformationalBookNotReady: (
+          telemetryTick,
+          telemetryMetrics,
+          wakeUp,
           orderBookUpdateMs,
-          hotPathStartedAt
-        )
-      };
-    }
-
-    const book = applied.book;
-    if (!book) {
-      throw new Error("ORDER_BOOK_APPLY_FAILED");
-    }
-
-    return { kind: "BOOK", book, orderBookUpdateMs };
+          telemetryStartedAt
+        ) =>
+          this.handleInformationalBookNotReady(
+            telemetryTick,
+            telemetryMetrics,
+            wakeUp,
+            orderBookUpdateMs,
+            telemetryStartedAt
+          ),
+        handleRejectedBookDelta: (
+          rejectedTick,
+          rejectedMetrics,
+          applied,
+          wakeUp,
+          orderBookUpdateMs,
+          telemetryStartedAt
+        ) =>
+          this.handleRejectedBookDelta(
+            rejectedTick,
+            rejectedMetrics,
+            applied,
+            wakeUp,
+            orderBookUpdateMs,
+            telemetryStartedAt
+          )
+      }
+    );
   }
 
   private async preparePostBookTickContext(
