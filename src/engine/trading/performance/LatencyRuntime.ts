@@ -599,6 +599,31 @@ export interface NativeHyperliquidLatencyPullStorageInput {
   readonly processingLatencySamples: readonly number[];
 }
 
+export interface NativeHyperliquidLatencyPullArtifactsInput extends NativeHyperliquidLatencyPullInput {
+  readonly existingLatencyHistory: readonly LatencyMetrics[];
+  readonly latencyHistoryLimit: number;
+  readonly engineStateKey: string;
+  readonly performanceHistoryKey: string;
+  readonly processingLatencySamplesKey: string;
+  readonly processingLatencySamples: readonly number[];
+}
+
+export interface NativeHyperliquidLatencyPullArtifacts extends NativeHyperliquidLatencyPullResult {
+  readonly latencyHistory: readonly LatencyMetrics[];
+  readonly storageWrites: Record<string, unknown>;
+}
+
+export interface NativeHyperliquidLatencyPullSideEffectHandlers {
+  readonly applyState: (state: EngineState) => void;
+  readonly persistStorage: (
+    writes: Record<string, unknown>,
+    reason: "NATIVE_HL_LATENCY_PULL"
+  ) => Promise<unknown>;
+  readonly schedule: (work: Promise<unknown>) => void;
+  readonly logPerformance: (metrics: LatencyMetrics) => void;
+  readonly publish: (type: "STALE_DATA_KILL_SWITCH", payload: Record<string, unknown>) => void;
+}
+
 export interface LatencySnapshotStorageInput {
   readonly engineStateKey: string;
   readonly state: EngineState;
@@ -659,6 +684,38 @@ export function nativeHyperliquidLatencyPullStorageWrites(
   input: NativeHyperliquidLatencyPullStorageInput
 ): Record<string, unknown> {
   return latencySnapshotStorageWrites(input);
+}
+
+export function nativeHyperliquidLatencyPullArtifacts(
+  input: NativeHyperliquidLatencyPullArtifactsInput
+): NativeHyperliquidLatencyPullArtifacts {
+  const pull = stateAfterNativeHyperliquidLatencyPull(input);
+  const latencyHistory = [...input.existingLatencyHistory, pull.metrics].slice(
+    -input.latencyHistoryLimit
+  );
+
+  return {
+    ...pull,
+    latencyHistory,
+    storageWrites: nativeHyperliquidLatencyPullStorageWrites({
+      engineStateKey: input.engineStateKey,
+      state: pull.state,
+      performanceHistoryKey: input.performanceHistoryKey,
+      latencyHistory,
+      processingLatencySamplesKey: input.processingLatencySamplesKey,
+      processingLatencySamples: input.processingLatencySamples
+    })
+  };
+}
+
+export function applyNativeHyperliquidLatencyPullSideEffects(
+  artifacts: NativeHyperliquidLatencyPullArtifacts,
+  handlers: NativeHyperliquidLatencyPullSideEffectHandlers
+): void {
+  handlers.applyState(artifacts.state);
+  handlers.schedule(handlers.persistStorage(artifacts.storageWrites, "NATIVE_HL_LATENCY_PULL"));
+  handlers.logPerformance(artifacts.metrics);
+  handlers.publish(artifacts.telemetryType, artifacts.telemetryPayload);
 }
 
 export function latencySnapshotStorageWrites(

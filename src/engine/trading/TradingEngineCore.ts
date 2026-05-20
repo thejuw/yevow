@@ -147,6 +147,7 @@ import { calculateAssetMatrix as calculateRuntimeAssetMatrix } from "./state/Ass
 import {
   applyExecutionProfileSideEffects,
   applyHardStaleTickDropSideEffects,
+  applyNativeHyperliquidLatencyPullSideEffects,
   applyPerformanceSpikeLogSideEffect,
   applyStaleDataKillSwitchSideEffects,
   appendLatencyHistory,
@@ -154,13 +155,12 @@ import {
   buildPerformanceMetricsText,
   buildStaleDataKillSwitchArtifacts,
   latencySnapshotStorageWrites,
-  nativeHyperliquidLatencyPullStorageWrites,
+  nativeHyperliquidLatencyPullArtifacts,
   hydrateLatencyMetricsFromState,
   nextLatencyAverage,
   prepareTickLatencyRuntime,
   recordProcessingLatencySample,
   stateAfterLatencyBaselineReset,
-  stateAfterNativeHyperliquidLatencyPull,
   stateAfterHardStaleTickDrop,
   stateAfterStaleDataKillSwitch,
   type ExecutionTraceInput
@@ -1934,32 +1934,29 @@ export class TradingEngine {
   ): void {
     this.updateLatencyAverage(metrics.totalLatencyMs);
     this.applyLocationLatency(metrics.totalLatencyMs, observedAt);
-    const stalePull = stateAfterNativeHyperliquidLatencyPull({
+    const artifacts = nativeHyperliquidLatencyPullArtifacts({
       currentState: this.engineState,
       metrics,
       instrumentCode,
       sequence,
-      observedAt
+      observedAt,
+      existingLatencyHistory: this.latencyHistory,
+      latencyHistoryLimit: PERFORMANCE_HISTORY_LIMIT,
+      engineStateKey: ENGINE_STATE_KEY,
+      performanceHistoryKey: PERFORMANCE_HISTORY_KEY,
+      processingLatencySamplesKey: PROCESSING_LATENCY_SAMPLES_KEY,
+      processingLatencySamples: this.processingLatencySamples
     });
-    this.latencyHistory = [...this.latencyHistory, stalePull.metrics].slice(
-      -PERFORMANCE_HISTORY_LIMIT
-    );
-    this.engineState = stalePull.state;
-    this.state.waitUntil(
-      this.persistHotStorageSnapshot(
-        nativeHyperliquidLatencyPullStorageWrites({
-          engineStateKey: ENGINE_STATE_KEY,
-          state: this.engineState,
-          performanceHistoryKey: PERFORMANCE_HISTORY_KEY,
-          latencyHistory: this.latencyHistory,
-          processingLatencySamplesKey: PROCESSING_LATENCY_SAMPLES_KEY,
-          processingLatencySamples: this.processingLatencySamples
-        }),
-        "NATIVE_HL_LATENCY_PULL"
-      )
-    );
-    this.logPerformance(stalePull.metrics);
-    this.publish(stalePull.telemetryType, stalePull.telemetryPayload);
+    this.latencyHistory = [...artifacts.latencyHistory];
+    applyNativeHyperliquidLatencyPullSideEffects(artifacts, {
+      applyState: (state) => {
+        this.engineState = state;
+      },
+      persistStorage: (writes, reason) => this.persistHotStorageSnapshot(writes, reason),
+      schedule: (work) => this.state.waitUntil(work),
+      logPerformance: (pullMetrics) => this.logPerformance(pullMetrics),
+      publish: (type, payload) => this.publish(type, payload)
+    });
   }
 
   private enqueueOrderBookReset(payload: Partial<OrderBookResetRequest>): Promise<void> {

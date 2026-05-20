@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyExecutionProfileSideEffects,
   applyHardStaleTickDropSideEffects,
+  applyNativeHyperliquidLatencyPullSideEffects,
   applyPerformanceSpikeLogSideEffect,
   applyStaleDataKillSwitchSideEffects,
   appendLatencyHistory,
@@ -15,6 +16,7 @@ import {
   hardStaleTickDropLogMetadata,
   hydrateLatencyMetricsFromState,
   latencySnapshotStorageWrites,
+  nativeHyperliquidLatencyPullArtifacts,
   nativeHyperliquidLatencyPullStorageWrites,
   nextExecutionProfile,
   nextLatencyAverage,
@@ -32,6 +34,7 @@ import {
   stateAfterHardStaleTickDrop,
   type ExecutionProfileSideEffectHandlers,
   type HardStaleTickDropSideEffectHandlers,
+  type NativeHyperliquidLatencyPullSideEffectHandlers,
   type PerformanceSpikeLogSideEffectHandlers,
   type StaleDataKillSwitchSideEffectHandlers
 } from "../../src/engine/trading/performance/LatencyRuntime";
@@ -631,6 +634,45 @@ describe("LatencyRuntime", () => {
     });
   });
 
+  it("assembles and applies native Hyperliquid latency-pull artifacts", async () => {
+    const state = defaultEngineState("native-latency-artifacts");
+    state.averageLatency = 151;
+    state.latencySampleCount = 22;
+    const existingLatencyHistory = [latencyMetrics({ sequence: 1, totalLatencyMs: 90 })];
+    const artifacts = nativeHyperliquidLatencyPullArtifacts({
+      currentState: state,
+      metrics: latencyMetrics({ sequence: 2, totalLatencyMs: 180, maxLatencyMs: 150 }),
+      instrumentCode: "btc-usd",
+      sequence: 2,
+      observedAt: "2026-05-18T15:00:01.000Z",
+      existingLatencyHistory,
+      latencyHistoryLimit: 2,
+      engineStateKey: "engine:state",
+      performanceHistoryKey: "latency:history",
+      processingLatencySamplesKey: "latency:samples",
+      processingLatencySamples: [2, 3]
+    });
+    const sideEffects = nativeLatencyPullSideEffectSpy();
+
+    applyNativeHyperliquidLatencyPullSideEffects(artifacts, sideEffects.handlers);
+
+    expect(artifacts.latencyHistory).toEqual([existingLatencyHistory[0], artifacts.metrics]);
+    expect(artifacts.storageWrites).toEqual({
+      "engine:state": artifacts.state,
+      "latency:history": artifacts.latencyHistory,
+      "latency:samples": [2, 3]
+    });
+    expect(sideEffects.events).toEqual([
+      "state:1",
+      "persist:NATIVE_HL_LATENCY_PULL:3",
+      "schedule",
+      "performance:180",
+      "publish:STALE_DATA_KILL_SWITCH:PULL_CURRENT_QUOTES"
+    ]);
+
+    await Promise.all(sideEffects.scheduled);
+  });
+
   it("builds generic latency snapshot storage writes with optional extra entries", () => {
     const state = defaultEngineState("latency-storage");
     const latencyHistory = [latencyMetrics({ totalLatencyMs: 90 })];
@@ -911,6 +953,39 @@ function staleDataKillSwitchSideEffectSpy(): {
       cancelAllQuotes(instrumentCode, reason) {
         events.push(`cancel:${instrumentCode}:${reason}`);
         return Promise.resolve();
+      }
+    }
+  };
+}
+
+function nativeLatencyPullSideEffectSpy(): {
+  events: string[];
+  scheduled: Promise<unknown>[];
+  handlers: NativeHyperliquidLatencyPullSideEffectHandlers;
+} {
+  const events: string[] = [];
+  const scheduled: Promise<unknown>[] = [];
+
+  return {
+    events,
+    scheduled,
+    handlers: {
+      applyState(state) {
+        events.push(`state:${state.staleTickCount}`);
+      },
+      persistStorage(writes, reason) {
+        events.push(`persist:${reason}:${Object.keys(writes).length}`);
+        return Promise.resolve();
+      },
+      schedule(work) {
+        events.push("schedule");
+        scheduled.push(work);
+      },
+      logPerformance(metrics) {
+        events.push(`performance:${metrics.totalLatencyMs}`);
+      },
+      publish(type, payload) {
+        events.push(`publish:${type}:${payload.action}`);
       }
     }
   };
