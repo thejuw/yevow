@@ -226,6 +226,7 @@ import {
 import { OrderBookReconstructor, type OrderBookStores } from "./book/OrderBookReconstructor";
 import type { AppliedBookUpdate, BookDeltaWithTicker, BookSyncState } from "./book/BookTypes";
 import {
+  applyHyperliquidIngestConnectionSideEffects,
   buildHyperliquidL2BookTick,
   buildHyperliquidL2BookTickFromBook,
   dispatchHyperliquidL2BookDecision,
@@ -1962,10 +1963,19 @@ export class TradingEngine {
       return registration as unknown as Record<string, unknown>;
     }
 
-    this.engineState = stateAfterHealthHeartbeat(this.engineState, registration.observedAt);
-    this.waitUntilStoragePut(ENGINE_STATE_KEY, this.engineState, "INGEST_CONNECTION_REGISTERED");
-
-    return registration as unknown as Record<string, unknown>;
+    return applyHyperliquidIngestConnectionSideEffects(
+      {
+        registration,
+        currentState: this.engineState,
+        engineStateKey: ENGINE_STATE_KEY
+      },
+      {
+        applyState: (state) => {
+          this.engineState = state;
+        },
+        persistState: (key, state, reason) => this.waitUntilStoragePut(key, state, reason)
+      }
+    );
   }
 
   private async resetOrderBook(payload: Partial<OrderBookResetRequest>): Promise<void> {

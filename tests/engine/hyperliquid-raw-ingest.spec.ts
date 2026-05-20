@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyHyperliquidIngestConnectionSideEffects,
   buildHyperliquidL2BookSnapshotBundle,
   buildHyperliquidL2BookLatencyMetrics,
   buildHyperliquidL2BookTick,
@@ -612,6 +613,38 @@ describe("hyperliquid raw ingest helpers", () => {
       connectionId: "conn-default"
     });
     expect(active.get("hyperliquid:default")).toBe("conn-default");
+  });
+
+  it("applies active ingest connection heartbeat side effects", () => {
+    const state = defaultEngineState("ingest-side-effects");
+    const observedAt = "2026-05-18T13:00:00.000Z";
+    const registration = registerHyperliquidIngestConnection(
+      new Map<string, string>(),
+      { source_exchange: "HyperLiquid", streamId: "book", connectionId: "conn-book" },
+      observedAt
+    );
+    const events: string[] = [];
+    let appliedState = state;
+
+    const response = applyHyperliquidIngestConnectionSideEffects(
+      { registration, currentState: state, engineStateKey: "engineState" },
+      {
+        applyState(nextState) {
+          appliedState = nextState;
+          events.push(`state:${nextState.heartbeatAt}`);
+        },
+        persistState(key, nextState, reason) {
+          events.push(`persist:${key}:${reason}:${nextState.updatedAt}`);
+        }
+      }
+    );
+
+    expect(response).toMatchObject({ registered: true, connectionId: "conn-book" });
+    expect(appliedState).toMatchObject({ heartbeatAt: observedAt, updatedAt: observedAt });
+    expect(events).toEqual([
+      "state:2026-05-18T13:00:00.000Z",
+      "persist:engineState:INGEST_CONNECTION_REGISTERED:2026-05-18T13:00:00.000Z"
+    ]);
   });
 
   it("drops stale batches and stops processing on terminal statuses", async () => {

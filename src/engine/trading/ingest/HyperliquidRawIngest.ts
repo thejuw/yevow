@@ -26,6 +26,7 @@ import { resolveNativeHyperliquidMaxLatencyMs } from "../performance/LatencyRunt
 import type { TickIngestResult } from "../TradingEngineRouteTypes";
 import type { BookSyncState } from "../book/BookTypes";
 import type {
+  EngineState,
   EngineLocation,
   InternalOrderBook,
   JsonRecord,
@@ -77,6 +78,17 @@ export type HyperliquidIngestConnectionRegistration =
       readonly reason: unknown;
       readonly observedAt: string;
     };
+
+export interface HyperliquidIngestConnectionSideEffectInput {
+  readonly registration: HyperliquidIngestConnectionRegistration;
+  readonly currentState: EngineState;
+  readonly engineStateKey: string;
+}
+
+export interface HyperliquidIngestConnectionSideEffectHandlers {
+  readonly applyState: (state: EngineState) => void;
+  readonly persistState: (key: string, state: EngineState, reason: string) => void;
+}
 
 export type HyperliquidRawMessageRoute =
   | {
@@ -378,6 +390,25 @@ export function registerHyperliquidIngestConnection(
     reason: payload.reason ?? "INGEST_CONNECTION_REGISTERED",
     observedAt
   };
+}
+
+export function applyHyperliquidIngestConnectionSideEffects(
+  input: HyperliquidIngestConnectionSideEffectInput,
+  handlers: HyperliquidIngestConnectionSideEffectHandlers
+): Record<string, unknown> {
+  if (!input.registration.registered) {
+    return input.registration;
+  }
+
+  const nextState = {
+    ...input.currentState,
+    heartbeatAt: input.registration.observedAt,
+    updatedAt: input.registration.observedAt
+  };
+  handlers.applyState(nextState);
+  handlers.persistState(input.engineStateKey, nextState, "INGEST_CONNECTION_REGISTERED");
+
+  return input.registration;
 }
 
 export function hyperliquidRawMessages(
