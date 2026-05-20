@@ -153,7 +153,6 @@ import {
   nextLatencyAverage,
   prepareTickLatencyRuntime,
   recordProcessingLatencySample,
-  resolveNativeHyperliquidMaxLatencyMs,
   shouldLogHardStaleTickDrop,
   shouldLogPerformanceSpikeEvent,
   stateAfterLatencyBaselineReset,
@@ -217,7 +216,7 @@ import type { AppliedBookUpdate, BookDeltaWithTicker, BookSyncState } from "./bo
 import {
   buildHyperliquidL2BookTick,
   buildHyperliquidL2BookTickFromBook,
-  evaluateHyperliquidL2BookHotPath,
+  evaluateHyperliquidL2BookRuntime,
   handleHyperliquidRawBatch,
   hyperliquidBookDesyncLogMetadata,
   processHyperliquidAssetContext,
@@ -445,8 +444,6 @@ import {
   CONFIG_KEY,
   DEFAULT_MAX_LATENCY_MS,
   DEFAULT_HARD_STALE_DROP_MS,
-  DEFAULT_HL_BOOK_TIMESTAMP_MAX_DRIFT_MS,
-  DEFAULT_HL_SEQUENCE_GAP_MS,
   PERFORMANCE_HISTORY_LIMIT,
   CONFIG_ALARM_INTERVAL_MS,
   WARM_UP_INTERVAL_MS,
@@ -1361,23 +1358,15 @@ export class TradingEngine {
     wakeUpTimeMs: number | null
   ): Promise<TickIngestResult> {
     const hotPathStartedAt = highResolutionNow();
-    const nativeMaxLatencyMs = resolveNativeHyperliquidMaxLatencyMs({
-      transport: payload.transport,
-      streamId: payload.streamId,
-      dwellirMaxLatencyMs: this.env.DWELLIR_MAX_LATENCY_MS,
-      hlStaleAfterMs: this.env.HL_STALE_AFTER_MS,
-      currentMaxLatencyMs: this.maxLatencyMs
-    });
-    const l2Decision = evaluateHyperliquidL2BookHotPath({
+    const l2Decision = evaluateHyperliquidL2BookRuntime({
       raw,
       payload,
       resolveExistingSync: (marketKey) => this.bookSync.get(marketKey),
-      maxTimestampDriftMs: readPositiveNumber(
-        this.env.HL_BOOK_TIMESTAMP_MAX_DRIFT_MS,
-        DEFAULT_HL_BOOK_TIMESTAMP_MAX_DRIFT_MS
-      ),
-      sequenceGapMs: readPositiveNumber(this.env.HL_SEQUENCE_GAP_MS, DEFAULT_HL_SEQUENCE_GAP_MS),
-      nativeMaxLatencyMs,
+      dwellirMaxLatencyMs: this.env.DWELLIR_MAX_LATENCY_MS,
+      hlStaleAfterMs: this.env.HL_STALE_AFTER_MS,
+      hlBookTimestampMaxDriftMs: this.env.HL_BOOK_TIMESTAMP_MAX_DRIFT_MS,
+      hlSequenceGapMs: this.env.HL_SEQUENCE_GAP_MS,
+      currentMaxLatencyMs: this.maxLatencyMs,
       averageLatencyMs: this.engineState.averageLatency,
       sampleCount: this.engineState.latencySampleCount,
       location: this.engineState.location

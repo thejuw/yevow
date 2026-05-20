@@ -1,5 +1,9 @@
 import { buildMarketKey } from "../book/BookRuntimeHelpers";
 import {
+  DEFAULT_HL_BOOK_TIMESTAMP_MAX_DRIFT_MS,
+  DEFAULT_HL_SEQUENCE_GAP_MS
+} from "../../../TradingEngineConstants";
+import {
   createNativeHyperliquidBookTick,
   hyperliquidNativeInstrumentCode,
   isNativeRecord,
@@ -17,6 +21,8 @@ import {
   createNativeHyperliquidTradeTick
 } from "../helpers/NativeHyperliquidRuntime";
 import { parseTimestampMs } from "../helpers/RuntimeClock";
+import { readPositiveNumber } from "../helpers/RuntimeParsing";
+import { resolveNativeHyperliquidMaxLatencyMs } from "../performance/LatencyRuntime";
 import type { TickIngestResult } from "../TradingEngineRouteTypes";
 import type { BookSyncState } from "../book/BookTypes";
 import type {
@@ -425,6 +431,17 @@ export interface HyperliquidL2BookHotPathInput {
   readonly brainTimestamp?: string;
 }
 
+export interface HyperliquidL2BookRuntimeInput extends Omit<
+  HyperliquidL2BookHotPathInput,
+  "maxTimestampDriftMs" | "sequenceGapMs" | "nativeMaxLatencyMs"
+> {
+  readonly dwellirMaxLatencyMs?: string;
+  readonly hlStaleAfterMs?: string;
+  readonly hlBookTimestampMaxDriftMs?: string;
+  readonly hlSequenceGapMs?: string;
+  readonly currentMaxLatencyMs: number;
+}
+
 export type HyperliquidL2BookHotPathDecision =
   | {
       readonly kind: "DUPLICATE_OR_OUT_OF_ORDER";
@@ -638,6 +655,33 @@ export function evaluateHyperliquidL2BookHotPath(
     totalLatencyMs,
     nativeMaxLatencyMs: input.nativeMaxLatencyMs
   };
+}
+
+export function evaluateHyperliquidL2BookRuntime(
+  input: HyperliquidL2BookRuntimeInput
+): HyperliquidL2BookHotPathDecision {
+  return evaluateHyperliquidL2BookHotPath({
+    raw: input.raw,
+    payload: input.payload,
+    resolveExistingSync: input.resolveExistingSync,
+    maxTimestampDriftMs: readPositiveNumber(
+      input.hlBookTimestampMaxDriftMs,
+      DEFAULT_HL_BOOK_TIMESTAMP_MAX_DRIFT_MS
+    ),
+    sequenceGapMs: readPositiveNumber(input.hlSequenceGapMs, DEFAULT_HL_SEQUENCE_GAP_MS),
+    nativeMaxLatencyMs: resolveNativeHyperliquidMaxLatencyMs({
+      transport: input.payload.transport,
+      streamId: input.payload.streamId,
+      dwellirMaxLatencyMs: input.dwellirMaxLatencyMs,
+      hlStaleAfterMs: input.hlStaleAfterMs,
+      currentMaxLatencyMs: input.currentMaxLatencyMs
+    }),
+    averageLatencyMs: input.averageLatencyMs,
+    sampleCount: input.sampleCount,
+    location: input.location,
+    fallbackReceivedAt: input.fallbackReceivedAt,
+    brainTimestamp: input.brainTimestamp
+  });
 }
 
 export function hyperliquidBookDesyncLogMetadata(

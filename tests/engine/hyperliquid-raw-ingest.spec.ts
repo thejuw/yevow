@@ -6,6 +6,7 @@ import {
   buildHyperliquidL2BookTickFromBook,
   calculateHyperliquidBookTotalLatencyMs,
   evaluateHyperliquidL2BookHotPath,
+  evaluateHyperliquidL2BookRuntime,
   evaluateHyperliquidBookSequence,
   handleHyperliquidRawBatch,
   hyperliquidBookDesyncLogMetadata,
@@ -334,6 +335,20 @@ describe("hyperliquid raw ingest helpers", () => {
       evaluateHyperliquidL2BookHotPath({
         ...baseInput,
         sequenceGapMs: 15,
+        resolveExistingSync: () => bookSync(10)
+      })
+    ).toMatchObject({
+      kind: "ACCEPTED",
+      totalLatencyMs: 100,
+      nativeMaxLatencyMs: 150
+    });
+    expect(
+      evaluateHyperliquidL2BookRuntime({
+        ...baseInput,
+        hlSequenceGapMs: "15",
+        hlBookTimestampMaxDriftMs: "5000",
+        hlStaleAfterMs: "150",
+        currentMaxLatencyMs: 250,
         resolveExistingSync: () => bookSync(10)
       })
     ).toMatchObject({
