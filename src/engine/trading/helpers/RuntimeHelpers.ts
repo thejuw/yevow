@@ -1,5 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unused-vars, @typescript-eslint/prefer-nullish-coalescing, @typescript-eslint/no-unnecessary-type-conversion, @typescript-eslint/no-unnecessary-boolean-literal-compare, @typescript-eslint/no-unnecessary-type-parameters, @typescript-eslint/no-unnecessary-type-assertion */
-import { decode as msgpackDecode } from "@msgpack/msgpack";
+/* eslint-disable @typescript-eslint/no-unused-vars, @typescript-eslint/prefer-nullish-coalescing, @typescript-eslint/no-unnecessary-type-conversion, @typescript-eslint/no-unnecessary-boolean-literal-compare, @typescript-eslint/no-unnecessary-type-parameters */
 import { defaultConfig } from "../../../ConfigManager";
 import { neutralMacroBias } from "../../../Governor";
 import { defaultLiquidationHeatmapState } from "../../../agents/HeatmapAgent";
@@ -156,6 +155,30 @@ import {
   DEFAULT_ORDER_ACK_TIMEOUT_MS,
   AGGREGATED_BUS_TELEMETRY_TYPES
 } from "../../../TradingEngineConstants";
+import {
+  finiteNumber,
+  readBoundedNumber,
+  readPositiveInteger,
+  readPositiveNumber
+} from "./RuntimeParsing";
+export {
+  assertAgentSignal,
+  assertMarketTick,
+  clampInteger,
+  decodeWebSocketMessage,
+  finiteNumber,
+  isPlainObject,
+  json,
+  parseJson,
+  readBoundedNumber,
+  readHyperliquidRawIngestPayload,
+  readJsonOrNull,
+  readNumber,
+  readPositiveInteger,
+  readPositiveNumber,
+  readTelemetryNumber,
+  shouldAggregateBusTelemetry
+} from "./RuntimeParsing";
 
 interface HyperliquidRawIngestPayload {
   streamId?: string;
@@ -2468,16 +2491,6 @@ export function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export function readNumber(value: string | undefined, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-export function readPositiveNumber(value: string | undefined, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
 export function applyReplayScenarioToTick(
   tick: MarketTick,
   scenario: ReplayScenario,
@@ -2768,36 +2781,6 @@ export function buildReplayAblation(
   };
 }
 
-export function readPositiveInteger(
-  value: string | undefined,
-  fallback: number,
-  minimum: number,
-  maximum: number
-): number {
-  const parsed = Number(value);
-
-  if (!Number.isSafeInteger(parsed)) {
-    return fallback;
-  }
-
-  return Math.min(maximum, Math.max(minimum, parsed));
-}
-
-export function readBoundedNumber(
-  value: string | undefined,
-  fallback: number,
-  minimum: number,
-  maximum: number
-): number {
-  const parsed = Number(value);
-
-  if (!Number.isFinite(parsed)) {
-    return fallback;
-  }
-
-  return Math.min(maximum, Math.max(minimum, parsed));
-}
-
 export function resolveGhostBookConfig(env: Env): GhostBookConfig {
   return {
     capacity: readPositiveInteger(
@@ -2830,102 +2813,6 @@ export function resolveGhostBookConfig(env: Env): GhostBookConfig {
   };
 }
 
-export function clampInteger(
-  value: string | null,
-  fallback: number,
-  minimum: number,
-  maximum: number
-): number {
-  const parsed = Number(value);
-
-  if (!Number.isFinite(parsed)) {
-    return fallback;
-  }
-
-  return Math.min(maximum, Math.max(minimum, Math.round(parsed)));
-}
-
-export function assertMarketTick(value: MarketTick): MarketTick {
-  if (
-    value?.schemaVersion !== "universal-tick.v1" ||
-    typeof value.source !== "string" ||
-    typeof value.source_exchange !== "string" ||
-    typeof value.instrumentCode !== "string" ||
-    typeof value.exchangeCode !== "string" ||
-    typeof value.price !== "number" ||
-    !Number.isFinite(value.price) ||
-    value.price < 0 ||
-    typeof value.size !== "number" ||
-    !Number.isFinite(value.size) ||
-    value.size < 0 ||
-    typeof value.sequence !== "number" ||
-    typeof value.exchangeTimestamp !== "string" ||
-    typeof value.synchronizedExchangeTimestamp !== "string" ||
-    typeof value.clockOffsetMs !== "number" ||
-    typeof value.receivedAt !== "string"
-  ) {
-    throw new Error("INVALID_MARKET_TICK");
-  }
-
-  return value;
-}
-
-export function assertAgentSignal(value: AgentSignal): AgentSignal {
-  const agentNames: AgentName[] = [
-    "ORACLE",
-    "SENTIMENT",
-    "PROFILER",
-    "CROUPIER",
-    "PIT_BOSS",
-    "JANITOR",
-    "EXECUTIONER",
-    "MOLTWORKER",
-    "RISK",
-    "SYSTEM"
-  ];
-  const actions = [
-    "BUY",
-    "SELL",
-    "HOLD",
-    "CANCEL",
-    "REDUCE",
-    "QUOTE",
-    "EXECUTE",
-    "PAUSE",
-    "RESUME",
-    "SUPERVISOR_ACTION"
-  ];
-
-  if (
-    typeof value?.signalId !== "string" ||
-    typeof value.traceId !== "string" ||
-    !agentNames.includes(value.sourceAgent) ||
-    !agentNames.includes(value.targetAgent) ||
-    !actions.includes(value.action) ||
-    typeof value.instrumentCode !== "string" ||
-    typeof value.confidence !== "number" ||
-    value.confidence < 0 ||
-    value.confidence > 1
-  ) {
-    throw new Error("INVALID_AGENT_SIGNAL");
-  }
-
-  return value;
-}
-
-export function readTelemetryNumber(value: unknown): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return null;
-  }
-
-  return value;
-}
-
-export function finiteNumber(value: unknown): number | null {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
 export function isInformationalTick(tick: MarketTick): boolean {
   const eventType = typeof tick.raw?.eventType === "string" ? tick.raw.eventType.toLowerCase() : "";
   const commodity = typeof tick.raw?.commodity === "string" ? tick.raw.commodity.toUpperCase() : "";
@@ -2954,63 +2841,4 @@ export function extractTickStreamId(tick: MarketTick): string | null {
 
   const rawStreamId = tick.raw?.streamId;
   return typeof rawStreamId === "string" && rawStreamId.trim() ? rawStreamId.trim() : null;
-}
-
-export async function readHyperliquidRawIngestPayload(
-  request: Request
-): Promise<HyperliquidRawIngestPayload> {
-  const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
-
-  if (contentType.includes("application/x-msgpack")) {
-    const decoded = msgpackDecode(new Uint8Array(await request.arrayBuffer()));
-
-    if (!isPlainObject(decoded)) {
-      throw new Error("INVALID_HYPERLIQUID_MSGPACK_PAYLOAD");
-    }
-
-    return decoded as unknown as HyperliquidRawIngestPayload;
-  }
-
-  return request.json<HyperliquidRawIngestPayload>();
-}
-
-export function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-export function shouldAggregateBusTelemetry(type: string): boolean {
-  return AGGREGATED_BUS_TELEMETRY_TYPES.has(type);
-}
-
-export function decodeWebSocketMessage(data: string | ArrayBuffer): string | null {
-  if (typeof data === "string") {
-    return data;
-  }
-
-  return new TextDecoder().decode(data);
-}
-
-export function parseJson<T>(value: string): T | null {
-  try {
-    return JSON.parse(value) as T;
-  } catch {
-    return null;
-  }
-}
-
-export async function readJsonOrNull<T>(request: Request): Promise<T | null> {
-  try {
-    return await request.json<T>();
-  } catch {
-    return null;
-  }
-}
-
-export function json(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "content-type": "application/json;charset=UTF-8"
-    }
-  });
 }
