@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { defaultConfig } from "../../src/ConfigManager";
 import {
+  applyDrawdownKillSwitchSideEffects,
   buildDrawdownKillSwitchTransition,
-  calculatePortfolioRisk
+  calculatePortfolioRisk,
+  type DrawdownKillSwitchSideEffectHandlers
 } from "../../src/engine/trading/risk/PortfolioRiskRuntime";
 import type { Position } from "../../src/types";
 
@@ -105,6 +107,40 @@ describe("PortfolioRiskRuntime", () => {
     expect(transition.notification.message).toContain("30.00%");
     expect(transition.notification.message).toContain("20.00%");
   });
+
+  it("applies drawdown kill-switch side effects in durable-object order", async () => {
+    const transition = buildDrawdownKillSwitchTransition({
+      cachedConfig: {
+        ...defaultConfig,
+        TRADING_ENABLED: true,
+        MAX_DRAWDOWN_PCT: 0.2,
+        version: "risk-v1"
+      },
+      metrics: {
+        highWaterMark: 1_000,
+        rollingDrawdownPct: 0.3,
+        var99OneHour: 0,
+        isTradingEnabled: false,
+        updatedAt: OBSERVED_AT
+      },
+      equity: 700,
+      observedAt: OBSERVED_AT
+    });
+    const sideEffects = drawdownKillSwitchSideEffectSpy();
+
+    applyDrawdownKillSwitchSideEffects(transition, sideEffects.handlers);
+
+    expect(sideEffects.events).toEqual([
+      "config:false:risk-v1:drawdown",
+      "write:false",
+      "schedule",
+      "cancel:ALL:MAX_DRAWDOWN_BREACH",
+      "schedule",
+      "notify:risk:max-drawdown"
+    ]);
+
+    await Promise.all(sideEffects.scheduled);
+  });
 });
 
 function position(
@@ -122,5 +158,39 @@ function position(
     unrealizedPnl: 0,
     realizedPnl: 0,
     updatedAt: OBSERVED_AT
+  };
+}
+
+function drawdownKillSwitchSideEffectSpy(): {
+  events: string[];
+  scheduled: Promise<unknown>[];
+  handlers: DrawdownKillSwitchSideEffectHandlers;
+} {
+  const events: string[] = [];
+  const scheduled: Promise<unknown>[] = [];
+
+  return {
+    events,
+    scheduled,
+    handlers: {
+      applyConfig(config) {
+        events.push(`config:${config.TRADING_ENABLED}:${config.version}`);
+      },
+      writeConfig(config) {
+        events.push(`write:${config.TRADING_ENABLED}`);
+        return Promise.resolve();
+      },
+      cancelAllQuotes(instrumentCode, reason) {
+        events.push(`cancel:${instrumentCode}:${reason}`);
+        return Promise.resolve();
+      },
+      schedule(work) {
+        events.push("schedule");
+        scheduled.push(work);
+      },
+      notify(notification) {
+        events.push(`notify:${notification.dedupeKey}`);
+      }
+    }
   };
 }

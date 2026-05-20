@@ -31,6 +31,17 @@ export interface DrawdownKillSwitchTransition {
   readonly notification: NotifierEvent;
 }
 
+export interface DrawdownKillSwitchSideEffectHandlers {
+  readonly applyConfig: (config: GlobalRiskConfig) => void;
+  readonly writeConfig: (config: GlobalRiskConfig) => Promise<unknown>;
+  readonly cancelAllQuotes: (
+    instrumentCode: "ALL",
+    reason: "MAX_DRAWDOWN_BREACH"
+  ) => Promise<unknown>;
+  readonly schedule: (work: Promise<unknown>) => void;
+  readonly notify: (notification: NotifierEvent) => void;
+}
+
 export function calculatePortfolioRisk(input: PortfolioRiskInput): PortfolioRiskResult {
   const equity = Math.max(input.equity, 0);
   const priorHighWaterMark = Math.max(input.priorHighWaterMark, equity);
@@ -92,4 +103,14 @@ export function buildDrawdownKillSwitchTransition(
       }
     }
   };
+}
+
+export function applyDrawdownKillSwitchSideEffects(
+  transition: DrawdownKillSwitchTransition,
+  handlers: DrawdownKillSwitchSideEffectHandlers
+): void {
+  handlers.applyConfig(transition.config);
+  handlers.schedule(handlers.writeConfig(transition.config));
+  handlers.schedule(handlers.cancelAllQuotes("ALL", transition.cancelReason));
+  handlers.notify(transition.notification);
 }

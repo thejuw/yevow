@@ -89,6 +89,7 @@ import {
   resolveInventoryStateConfig
 } from "./inventory/InventoryRuntime";
 import {
+  applyDrawdownKillSwitchSideEffects,
   buildDrawdownKillSwitchTransition,
   calculatePortfolioRisk as calculatePortfolioRuntimeRisk
 } from "./risk/PortfolioRiskRuntime";
@@ -3558,10 +3559,15 @@ export class TradingEngine {
         equity: this.engineState.bankroll.equity,
         observedAt
       });
-      this.cachedConfig = killSwitch.config;
-      this.state.waitUntil(this.configManager.writeConfig(this.cachedConfig));
-      this.state.waitUntil(this.cancelAllQuotes("ALL", killSwitch.cancelReason));
-      this.notifier.notify(killSwitch.notification);
+      applyDrawdownKillSwitchSideEffects(killSwitch, {
+        applyConfig: (config) => {
+          this.cachedConfig = config;
+        },
+        writeConfig: (config) => this.configManager.writeConfig(config),
+        cancelAllQuotes: (instrumentCode, reason) => this.cancelAllQuotes(instrumentCode, reason),
+        schedule: (work) => this.state.waitUntil(work),
+        notify: (notification) => this.notifier.notify(notification)
+      });
     }
 
     return metrics;
