@@ -7,6 +7,7 @@ import {
   adminRecoveryRuntimeArtifacts,
   adminRecoveryResponse,
   adminRecoveryStorageEntries,
+  applyAdminRecoveryCompletionSideEffects,
   dispatchAdminRecoveryOrderBookResets,
   resolveAdminRecoveryPaperBankroll,
   stateAfterAdminControlledRecovery
@@ -352,6 +353,58 @@ describe("RecoveryRuntime", () => {
       prunedProfilerStorageKeyCount: 1,
       resetPaperPortfolio: true
     });
+  });
+
+  it("applies admin recovery completion side effects", async () => {
+    const state = defaultEngineState("recovery-side-effects");
+    const completion = adminRecoveryCompletionArtifacts({
+      plan: adminRecoveryPlan(
+        { resetPaperPortfolio: true, instrumentCode: "btc-usd" },
+        OBSERVED_AT
+      ),
+      recovery: stateAfterAdminControlledRecovery({
+        currentState: state,
+        payload: { resetPaperPortfolio: true },
+        cachedConfig: defaultConfig,
+        macroBias: neutralMacroBias(),
+        observedAt: OBSERVED_AT,
+        shadowMode: true,
+        paperBankroll: 300,
+        shadowQueue: state.shadowQueue,
+        reason: "manual-reset",
+        resetInstruments: ["btc-usd"],
+        sourceExchange: "hyperliquid",
+        prunedProfilerStorageKeys: []
+      }),
+      engineStateKey: "engine:state",
+      performanceHistoryKey: "latency:history",
+      latencyHistory: [],
+      processingLatencySamplesKey: "latency:samples",
+      processingLatencySamples: [1]
+    });
+    const calls: string[] = [];
+
+    await applyAdminRecoveryCompletionSideEffects(completion, {
+      async persistStorageEntries(entries) {
+        calls.push(`persist:${Object.keys(entries).join(",")}`);
+      },
+      putPaperSessionStartedAt(observedAt) {
+        calls.push(`paper-session:${observedAt}`);
+      },
+      logRecovery(metadata) {
+        calls.push(`log:${metadata.reason as string}`);
+      },
+      publishRecovery(payload) {
+        calls.push(`publish:${payload.reason as string}`);
+      }
+    });
+
+    expect(calls).toEqual([
+      "persist:engine:state,latency:history,latency:samples",
+      `paper-session:${OBSERVED_AT}`,
+      "log:manual-reset",
+      "publish:manual-reset"
+    ]);
   });
 });
 

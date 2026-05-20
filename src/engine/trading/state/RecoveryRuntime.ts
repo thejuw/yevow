@@ -114,6 +114,13 @@ export interface AdminRecoveryRuntimeArtifacts {
   readonly completion: AdminRecoveryCompletionArtifacts;
 }
 
+export interface AdminRecoveryCompletionSideEffectHandlers {
+  readonly persistStorageEntries: (entries: Record<string, unknown>) => Promise<void>;
+  readonly putPaperSessionStartedAt: (observedAt: string) => void;
+  readonly logRecovery: (metadata: JsonRecord) => void;
+  readonly publishRecovery: (payload: JsonRecord) => void;
+}
+
 export interface AdminRecoveryOrderBookResetDispatcherInput {
   readonly resetInstruments: readonly string[];
   readonly reason: string;
@@ -344,4 +351,18 @@ export function adminRecoveryRuntimeArtifacts(
       processingLatencySamples: input.processingLatencySamples
     })
   };
+}
+
+export async function applyAdminRecoveryCompletionSideEffects(
+  completion: AdminRecoveryCompletionArtifacts,
+  handlers: AdminRecoveryCompletionSideEffectHandlers
+): Promise<void> {
+  await handlers.persistStorageEntries(completion.storageEntries);
+
+  if (completion.paperSessionStartedAt) {
+    handlers.putPaperSessionStartedAt(completion.paperSessionStartedAt);
+  }
+
+  handlers.logRecovery(completion.logMetadata);
+  handlers.publishRecovery(completion.publishPayload);
 }

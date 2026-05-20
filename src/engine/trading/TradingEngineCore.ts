@@ -324,6 +324,7 @@ import {
 import {
   adminRecoveryPlan,
   adminRecoveryRuntimeArtifacts,
+  applyAdminRecoveryCompletionSideEffects,
   dispatchAdminRecoveryOrderBookResets,
   resolveAdminRecoveryPaperBankroll
 } from "./state/RecoveryRuntime";
@@ -2106,18 +2107,16 @@ export class TradingEngine {
     this.engineState = recoveryArtifacts.recovery.state;
     const completion = recoveryArtifacts.completion;
 
-    await this.safeStoragePut(completion.storageEntries, "ADMIN_CONTROLLED_RECOVERY");
-
-    if (completion.paperSessionStartedAt) {
-      this.state.waitUntil(
-        this.env.CONFIG_STORE.put(PAPER_SESSION_STARTED_AT_KEY, completion.paperSessionStartedAt)
-      );
-    }
-
-    this.logger.warn("ADMIN_CONTROLLED_RECOVERY", "Admin controlled recovery applied", {
-      ...completion.logMetadata
+    await applyAdminRecoveryCompletionSideEffects(completion, {
+      persistStorageEntries: (entries) => this.safeStoragePut(entries, "ADMIN_CONTROLLED_RECOVERY"),
+      putPaperSessionStartedAt: (observedAt) =>
+        this.state.waitUntil(this.env.CONFIG_STORE.put(PAPER_SESSION_STARTED_AT_KEY, observedAt)),
+      logRecovery: (metadata) =>
+        this.logger.warn("ADMIN_CONTROLLED_RECOVERY", "Admin controlled recovery applied", {
+          ...metadata
+        }),
+      publishRecovery: (publishPayload) => this.publish("ADMIN_CONTROLLED_RECOVERY", publishPayload)
     });
-    this.publish("ADMIN_CONTROLLED_RECOVERY", completion.publishPayload);
 
     return completion.response;
   }
