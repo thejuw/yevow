@@ -129,7 +129,6 @@ import {
   applyLatencyBaselineResetSideEffects,
   applyNativeHyperliquidLatencyPullSideEffects,
   applyPerformanceSpikeLogSideEffect,
-  applyPreparedTickLatencySideEffects,
   applySoftStaleTickFlow,
   buildPerformanceMetricsText,
   latencySnapshotStorageWrites,
@@ -137,7 +136,7 @@ import {
   nativeHyperliquidLatencyPullArtifacts,
   hydrateLatencyMetricsFromState,
   nextLatencyAverage,
-  prepareTickLatencyRuntime,
+  prepareTickLatencyFlow,
   type ExecutionTraceInput
 } from "./performance/LatencyRuntime";
 import {
@@ -2549,26 +2548,18 @@ export class TradingEngine {
     hardStaleDropMs: number;
     isHardStale: boolean;
   } {
-    const latency = prepareTickLatencyRuntime({
-      tick,
-      brainTimestamp: new Date().toISOString(),
-      maxLatencyMs: this.maxLatencyMs,
-      averageLatencyMs: this.engineState.averageLatency,
-      sampleCount: this.engineState.latencySampleCount,
-      location: this.engineState.location,
-      shadowReplay,
-      dwellirMaxLatencyMs: this.env.DWELLIR_MAX_LATENCY_MS,
-      hlStaleAfterMs: this.env.HL_STALE_AFTER_MS,
-      currentMaxLatencyMs: this.maxLatencyMs
-    });
-
-    if (latency.isHardStale) {
-      return latency;
-    }
-
-    return applyPreparedTickLatencySideEffects(
+    return prepareTickLatencyFlow(
       {
-        latency,
+        tick,
+        brainTimestamp: new Date().toISOString(),
+        maxLatencyMs: this.maxLatencyMs,
+        averageLatencyMs: this.engineState.averageLatency,
+        sampleCount: this.engineState.latencySampleCount,
+        location: this.engineState.location,
+        shadowReplay,
+        dwellirMaxLatencyMs: this.env.DWELLIR_MAX_LATENCY_MS,
+        hlStaleAfterMs: this.env.HL_STALE_AFTER_MS,
+        currentMaxLatencyMs: this.maxLatencyMs,
         history: this.latencyHistory,
         historyLimit: PERFORMANCE_HISTORY_LIMIT
       },

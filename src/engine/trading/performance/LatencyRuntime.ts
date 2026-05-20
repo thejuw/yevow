@@ -68,6 +68,11 @@ export interface PreparedTickLatencySideEffectsInput {
   readonly historyLimit: number;
 }
 
+export interface TickLatencyFlowInput extends TickLatencyPreparationInput {
+  readonly history: readonly LatencyMetrics[];
+  readonly historyLimit: number;
+}
+
 export interface PreparedTickLatencySideEffectHandlers {
   readonly resetLatencyBaseline: (observedAt: string, reason: string) => void;
   readonly updateLatencyAverage: (totalLatencyMs: number) => void;
@@ -239,6 +244,26 @@ export function applyPreparedTickLatencySideEffects(
   handlers.setLatencyHistory(appendLatencyHistory(input.history, metrics, input.historyLimit));
 
   return { ...input.latency, metrics };
+}
+
+export function prepareTickLatencyFlow(
+  input: TickLatencyFlowInput,
+  handlers: PreparedTickLatencySideEffectHandlers
+): TickLatencyPreparationResult {
+  const latency = prepareTickLatencyRuntime(input);
+
+  if (latency.isHardStale) {
+    return latency;
+  }
+
+  return applyPreparedTickLatencySideEffects(
+    {
+      latency,
+      history: input.history,
+      historyLimit: input.historyLimit
+    },
+    handlers
+  );
 }
 
 export function nextLatencyAverage(

@@ -26,6 +26,7 @@ import {
   nativeHyperliquidLatencyPullStorageWrites,
   nextExecutionProfile,
   nextLatencyAverage,
+  prepareTickLatencyFlow,
   prepareTickLatencyRuntime,
   recordProcessingLatencySample,
   resolveNativeHyperliquidMaxLatencyMs,
@@ -263,6 +264,59 @@ describe("LatencyRuntime", () => {
       }
     );
 
+    expect(result.metrics.sampleCount).toBe(11);
+    expect(events).toEqual([
+      "reset:2026-05-18T12:00:00.020Z:FRESH_SAMPLE_AFTER_BACKLOG",
+      "average:20",
+      "hydrate:20",
+      "location:20:2026-05-18T12:00:00.020Z",
+      "hydrate:20",
+      "history:2:11"
+    ]);
+  });
+
+  it("orchestrates tick latency preparation through runtime and side effects", () => {
+    const events: string[] = [];
+
+    const result = prepareTickLatencyFlow(
+      {
+        tick: tick({
+          exchangeTimestamp: "2026-05-18T12:00:00.000Z",
+          synchronizedExchangeTimestamp: "2026-05-18T12:00:00.000Z",
+          receivedAt: "2026-05-18T12:00:00.000Z"
+        }),
+        brainTimestamp: "2026-05-18T12:00:00.020Z",
+        maxLatencyMs: 50,
+        averageLatencyMs: 500,
+        sampleCount: 10,
+        location: defaultEngineState("latency-flow").location,
+        shadowReplay: false,
+        currentMaxLatencyMs: 50,
+        dwellirMaxLatencyMs: "250",
+        history: [latencyMetrics({ sequence: 1 })],
+        historyLimit: 2
+      },
+      {
+        resetLatencyBaseline(observedAt, reason) {
+          events.push(`reset:${observedAt}:${reason}`);
+        },
+        updateLatencyAverage(totalLatencyMs) {
+          events.push(`average:${totalLatencyMs}`);
+        },
+        hydrateMetrics(metrics) {
+          events.push(`hydrate:${metrics.totalLatencyMs}`);
+          return { ...metrics, averageLatencyMs: 20, sampleCount: 11 };
+        },
+        applyLocationLatency(totalLatencyMs, observedAt) {
+          events.push(`location:${totalLatencyMs}:${observedAt}`);
+        },
+        setLatencyHistory(history) {
+          events.push(`history:${history.length}:${history.at(-1)?.sampleCount}`);
+        }
+      }
+    );
+
+    expect(result.isHardStale).toBe(false);
     expect(result.metrics.sampleCount).toBe(11);
     expect(events).toEqual([
       "reset:2026-05-18T12:00:00.020Z:FRESH_SAMPLE_AFTER_BACKLOG",
