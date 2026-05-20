@@ -10,9 +10,10 @@ import type {
 } from "../../../types";
 import { aggregateQuoteState, suspendAssetQuoteStates } from "../state/AssetStateRuntime";
 import { defaultMicrostructure, defaultPriceDiscovery } from "../state/EngineStateDefaults";
-import type { BookSyncState } from "./BookTypes";
+import type { AppliedBookUpdate, BookSyncState } from "./BookTypes";
 import { microstructureFromBook } from "./BookReconstruction";
 import type { AppliedBookSnapshot } from "./OrderBookReconstructor";
+import type { TickIngestResult } from "../TradingEngineRouteTypes";
 
 export interface BookResetStateInput {
   readonly currentState: EngineState;
@@ -191,6 +192,21 @@ export function stateAfterRejectedBookDelta(input: RejectedBookDeltaStateInput):
     maxLatencyMs: input.maxLatencyMs,
     heartbeatAt: input.observedAt,
     updatedAt: input.observedAt
+  };
+}
+
+export function rejectedBookDeltaIngestResult(input: {
+  readonly applied: AppliedBookUpdate;
+  readonly metrics: LatencyMetrics;
+}): TickIngestResult {
+  return {
+    accepted: false,
+    status:
+      input.applied.reason === "SEQUENCE_GAP" || input.applied.reason === "CROSSED_BOOK"
+        ? "DESYNC"
+        : "DUPLICATE_OR_OUT_OF_ORDER",
+    reason: input.applied.reason,
+    metrics: input.metrics
   };
 }
 

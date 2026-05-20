@@ -4,6 +4,7 @@ import {
   bookSnapshotTelemetry,
   bookSnapshotStorageWrites,
   markBookSyncDesynced,
+  rejectedBookDeltaIngestResult,
   shouldEmitBookSnapshotTelemetry,
   stateAfterAcceptedBookDelta,
   stateAfterBookSnapshot,
@@ -281,6 +282,43 @@ describe("BookRuntimeState", () => {
       updatedAt: OBSERVED_AT
     });
     expect(next.microstructure).toBe(currentState.microstructure);
+  });
+
+  it("maps rejected book deltas to ingest statuses", () => {
+    const metrics = latencyMetrics({ sequence: 11 });
+
+    expect(
+      rejectedBookDeltaIngestResult({
+        applied: {
+          accepted: false,
+          reason: "SEQUENCE_GAP",
+          expectedSequence: 10,
+          actualSequence: 11,
+          timeToBookMs: null
+        },
+        metrics
+      })
+    ).toMatchObject({
+      accepted: false,
+      status: "DESYNC",
+      reason: "SEQUENCE_GAP",
+      metrics
+    });
+    expect(
+      rejectedBookDeltaIngestResult({
+        applied: {
+          accepted: false,
+          reason: "DUPLICATE_OR_OUT_OF_ORDER",
+          actualSequence: 11,
+          timeToBookMs: null
+        },
+        metrics
+      })
+    ).toMatchObject({
+      accepted: false,
+      status: "DUPLICATE_OR_OUT_OF_ORDER",
+      reason: "DUPLICATE_OR_OUT_OF_ORDER"
+    });
   });
 
   it("marks book sync and visible microstructure desynced without changing unrelated state", () => {

@@ -52,6 +52,7 @@ import {
   stateAfterInformationalBookNotReady,
   stateAfterOrderBookReset,
   stateAfterRejectedBookDelta,
+  rejectedBookDeltaIngestResult,
   bookSnapshotTelemetry,
   bookSnapshotStorageWrites
 } from "./book/BookRuntimeState";
@@ -2637,12 +2638,7 @@ export class TradingEngine {
     });
 
     if (applied.reason === "DUPLICATE_OR_OUT_OF_ORDER") {
-      return {
-        accepted: false,
-        status: "DUPLICATE_OR_OUT_OF_ORDER",
-        reason: applied.reason,
-        metrics
-      };
+      return rejectedBookDeltaIngestResult({ applied, metrics });
     }
 
     this.engineState = stateAfterRejectedBookDelta({
@@ -2667,15 +2663,7 @@ export class TradingEngine {
 
     this.publishTickTelemetry(tick, metrics, "FRESH", hotPathStartedAt);
 
-    return {
-      accepted: false,
-      status:
-        applied.reason === "SEQUENCE_GAP" || applied.reason === "CROSSED_BOOK"
-          ? "DESYNC"
-          : "DUPLICATE_OR_OUT_OF_ORDER",
-      reason: applied.reason,
-      metrics
-    };
+    return rejectedBookDeltaIngestResult({ applied, metrics });
   }
 
   private async handleAnomalyEmergencyPause(
