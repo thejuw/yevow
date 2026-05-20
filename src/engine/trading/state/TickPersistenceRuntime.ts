@@ -39,6 +39,11 @@ export interface HotPathTickSnapshotWritesInput {
   readonly profilerState: ProfilerState;
 }
 
+export interface HotPathTickSnapshotSideEffectHandlers {
+  readonly persistSnapshot: (writes: Record<string, unknown>, reason: string) => Promise<void>;
+  readonly schedule: (work: Promise<void>) => void;
+}
+
 export interface AcceptedTickJournalArtifactsInput {
   readonly tick: MarketTick;
   readonly metrics: LatencyMetrics;
@@ -86,6 +91,15 @@ export function buildHotPathTickSnapshotWrites(
     }
   }
 
+  return writes;
+}
+
+export function scheduleHotPathTickSnapshotSideEffects(
+  input: HotPathTickSnapshotWritesInput,
+  handlers: HotPathTickSnapshotSideEffectHandlers
+): Record<string, unknown> {
+  const writes = buildHotPathTickSnapshotWrites(input);
+  handlers.schedule(handlers.persistSnapshot(writes, "HOT_PATH_TICK_SNAPSHOT"));
   return writes;
 }
 

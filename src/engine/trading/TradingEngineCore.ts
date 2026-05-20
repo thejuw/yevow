@@ -319,7 +319,7 @@ import { evaluateTickAvailability } from "./state/TickAvailabilityRuntime";
 import {
   applyAcceptedTickJournalSideEffects,
   buildAcceptedTickJournalArtifacts,
-  buildHotPathTickSnapshotWrites
+  scheduleHotPathTickSnapshotSideEffects
 } from "./state/TickPersistenceRuntime";
 import {
   adminRecoveryPlan,
@@ -2647,19 +2647,23 @@ export class TradingEngine {
     anomalyResult: AnomalyDetectionResult,
     profilerResult: ProfilerEvaluation
   ): void {
-    const writes = buildHotPathTickSnapshotWrites({
-      engineState: this.engineState,
-      latencyHistory: this.latencyHistory,
-      processingLatencySamples: this.processingLatencySamples,
-      domWallHistory: this.domWallHistory,
-      anomalyDetectorState: anomalyResult.state,
-      book,
-      tick,
-      profilerProcessed: profilerResult.processed,
-      profilerState: profilerResult.state
-    });
-
-    this.state.waitUntil(this.persistHotStorageSnapshot(writes, "HOT_PATH_TICK_SNAPSHOT"));
+    scheduleHotPathTickSnapshotSideEffects(
+      {
+        engineState: this.engineState,
+        latencyHistory: this.latencyHistory,
+        processingLatencySamples: this.processingLatencySamples,
+        domWallHistory: this.domWallHistory,
+        anomalyDetectorState: anomalyResult.state,
+        book,
+        tick,
+        profilerProcessed: profilerResult.processed,
+        profilerState: profilerResult.state
+      },
+      {
+        persistSnapshot: (writes, reason) => this.persistHotStorageSnapshot(writes, reason),
+        schedule: (work) => this.state.waitUntil(work)
+      }
+    );
   }
 
   private journalAcceptedTick(

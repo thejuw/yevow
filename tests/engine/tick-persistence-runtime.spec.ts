@@ -12,6 +12,7 @@ import {
   applyAcceptedTickJournalSideEffects,
   buildAcceptedTickJournalArtifacts,
   buildHotPathTickSnapshotWrites,
+  scheduleHotPathTickSnapshotSideEffects,
   shouldJournalMarketTick
 } from "../../src/engine/trading/state/TickPersistenceRuntime";
 import { profilerStorageKey } from "../../src/engine/trading/book/BookRuntimeHelpers";
@@ -70,6 +71,43 @@ describe("TickPersistenceRuntime", () => {
 
     expect(writes[profilerStorageKey("eth-usd")]).toBeUndefined();
     expect(writes[PROFILER_STATE_STORAGE_KEY]).toBeUndefined();
+  });
+
+  it("schedules hot-path snapshot persistence through durable-object handlers", async () => {
+    const scheduled: Promise<void>[] = [];
+    const calls: string[] = [];
+    const book = orderBook();
+    const tick = marketTick("btc-usd");
+    const profilerState = { schemaVersion: "profiler.v1" } as ProfilerState;
+
+    const writes = scheduleHotPathTickSnapshotSideEffects(
+      {
+        engineState: defaultEngineState("persist-schedule"),
+        latencyHistory: [],
+        processingLatencySamples: [1],
+        domWallHistory: [],
+        anomalyDetectorState: {} as AnomalyDetectorState,
+        book,
+        tick,
+        profilerProcessed: true,
+        profilerState
+      },
+      {
+        persistSnapshot(snapshotWrites, reason) {
+          calls.push(`persist:${reason}:${Object.keys(snapshotWrites).length}`);
+          return Promise.resolve();
+        },
+        schedule(work) {
+          calls.push("schedule");
+          scheduled.push(work);
+        }
+      }
+    );
+
+    expect(writes[`${ORDER_BOOK_PREFIX}${book.marketKey}`]).toBe(book);
+    expect(calls).toEqual(["persist:HOT_PATH_TICK_SNAPSHOT:9", "schedule"]);
+
+    await Promise.all(scheduled);
   });
 
   it("resolves market tick journal cadence from config with safe defaults", () => {
