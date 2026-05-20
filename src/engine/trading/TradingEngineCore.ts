@@ -131,7 +131,7 @@ import {
   evaluateCroupierRuntime,
   type OracleTickResult
 } from "./agents/AgentEvaluationRuntime";
-import { applyIntentPaperExecutionBudget } from "./execution/PaperExecutionBudgetRuntime";
+import { applyIntentPaperExecutionBudgetSideEffects } from "./execution/PaperExecutionBudgetRuntime";
 import {
   buildExecutionQueueEnqueuePlan,
   executionQueueDeferralLogMetadata,
@@ -3878,30 +3878,33 @@ export class TradingEngine {
   }
 
   private reservePaperExecutionBudget(intent: TradeIntent): boolean {
-    const budget = applyIntentPaperExecutionBudget({
-      intent,
-      shadowMode: isShadowMode(this.env),
-      nowMs: Date.now(),
-      maxPerMinuteValue: this.env.PAPER_MAX_GHOST_FILLS_PER_MINUTE,
-      windowStartedAtMs: this.paperExecutionWindowStartedAtMs,
-      windowCount: this.paperExecutionWindowCount,
-      windowDropped: this.paperExecutionWindowDropped,
-      throttleLoggedAtMs: this.paperExecutionThrottleLoggedAtMs
-    });
-
-    this.paperExecutionWindowStartedAtMs = budget.state.windowStartedAtMs;
-    this.paperExecutionWindowCount = budget.state.windowCount;
-    this.paperExecutionWindowDropped = budget.state.windowDropped;
-    this.paperExecutionThrottleLoggedAtMs = budget.state.throttleLoggedAtMs;
-
-    if (budget.shouldLogThrottle) {
-      this.logger.warn(
-        "SHADOW_PAPER_CADENCE_THROTTLED",
-        "Paper execution cadence capped",
-        budget.logMetadata ?? {}
-      );
-      this.publish("SHADOW_PAPER_CADENCE_THROTTLED", budget.publishPayload ?? {});
-    }
+    const budget = applyIntentPaperExecutionBudgetSideEffects(
+      {
+        intent,
+        shadowMode: isShadowMode(this.env),
+        nowMs: Date.now(),
+        maxPerMinuteValue: this.env.PAPER_MAX_GHOST_FILLS_PER_MINUTE,
+        windowStartedAtMs: this.paperExecutionWindowStartedAtMs,
+        windowCount: this.paperExecutionWindowCount,
+        windowDropped: this.paperExecutionWindowDropped,
+        throttleLoggedAtMs: this.paperExecutionThrottleLoggedAtMs
+      },
+      {
+        applyState: (state) => {
+          this.paperExecutionWindowStartedAtMs = state.windowStartedAtMs;
+          this.paperExecutionWindowCount = state.windowCount;
+          this.paperExecutionWindowDropped = state.windowDropped;
+          this.paperExecutionThrottleLoggedAtMs = state.throttleLoggedAtMs;
+        },
+        warnThrottle: (metadata) =>
+          this.logger.warn(
+            "SHADOW_PAPER_CADENCE_THROTTLED",
+            "Paper execution cadence capped",
+            metadata
+          ),
+        publishThrottle: (payload) => this.publish("SHADOW_PAPER_CADENCE_THROTTLED", payload)
+      }
+    );
 
     return budget.allowed;
   }

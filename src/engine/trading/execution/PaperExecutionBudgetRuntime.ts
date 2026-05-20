@@ -36,6 +36,12 @@ export interface IntentPaperExecutionBudgetResult extends PaperExecutionBudgetRe
   readonly publishPayload: JsonRecord | null;
 }
 
+export interface IntentPaperExecutionBudgetSideEffectHandlers {
+  readonly applyState: (state: PaperExecutionBudgetState) => void;
+  readonly warnThrottle: (metadata: JsonRecord) => void;
+  readonly publishThrottle: (payload: JsonRecord) => void;
+}
+
 const DEFAULT_WINDOW_MS = 60_000;
 const DEFAULT_THROTTLE_LOG_INTERVAL_MS = 10_000;
 
@@ -142,4 +148,20 @@ export function applyIntentPaperExecutionBudget(
       windowDropped: budget.state.windowDropped
     }
   };
+}
+
+export function applyIntentPaperExecutionBudgetSideEffects(
+  input: IntentPaperExecutionBudgetInput,
+  handlers: IntentPaperExecutionBudgetSideEffectHandlers
+): IntentPaperExecutionBudgetResult {
+  const budget = applyIntentPaperExecutionBudget(input);
+
+  handlers.applyState(budget.state);
+
+  if (budget.shouldLogThrottle) {
+    handlers.warnThrottle(budget.logMetadata ?? {});
+    handlers.publishThrottle(budget.publishPayload ?? {});
+  }
+
+  return budget;
 }

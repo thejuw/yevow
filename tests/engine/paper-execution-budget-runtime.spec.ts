@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   applyIntentPaperExecutionBudget,
+  applyIntentPaperExecutionBudgetSideEffects,
   applyPaperExecutionBudget,
+  type IntentPaperExecutionBudgetSideEffectHandlers,
   resolvePaperMaxGhostFillsPerMinute
 } from "../../src/engine/trading/execution/PaperExecutionBudgetRuntime";
 
@@ -141,4 +143,47 @@ describe("PaperExecutionBudgetRuntime", () => {
       }
     });
   });
+
+  it("applies budget state and emits throttle side effects", () => {
+    const sideEffects = paperBudgetSideEffectSpy();
+
+    const result = applyIntentPaperExecutionBudgetSideEffects(
+      {
+        intent: { intentId: "intent-1", instrumentCode: "btc-usd" },
+        shadowMode: true,
+        nowMs: 10_000,
+        maxPerMinuteValue: "1",
+        windowStartedAtMs: 0,
+        windowCount: 1,
+        windowDropped: 0,
+        throttleLoggedAtMs: 0
+      },
+      sideEffects.handlers
+    );
+
+    expect(result.allowed).toBe(false);
+    expect(sideEffects.events).toEqual(["state:1:1", "warn:intent-1", "publish:btc-usd"]);
+  });
 });
+
+function paperBudgetSideEffectSpy(): {
+  events: string[];
+  handlers: IntentPaperExecutionBudgetSideEffectHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      applyState(state) {
+        events.push(`state:${state.windowCount}:${state.windowDropped}`);
+      },
+      warnThrottle(metadata) {
+        events.push(`warn:${String(metadata.intentId)}`);
+      },
+      publishThrottle(payload) {
+        events.push(`publish:${String(payload.instrumentCode)}`);
+      }
+    }
+  };
+}
