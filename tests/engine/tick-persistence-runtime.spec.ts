@@ -12,6 +12,7 @@ import {
   applyAcceptedTickJournalSideEffects,
   buildAcceptedTickJournalArtifacts,
   buildHotPathTickSnapshotWrites,
+  recordAcceptedTickJournalSideEffects,
   scheduleHotPathTickSnapshotSideEffects,
   shouldJournalMarketTick
 } from "../../src/engine/trading/state/TickPersistenceRuntime";
@@ -195,6 +196,43 @@ describe("TickPersistenceRuntime", () => {
       "record:btc-usd",
       "log:BAYESIAN_POSTERIOR_UPDATED:Oracle posterior PDF updated:instrumentCode",
       "log:MARKET_TICK_ACCEPTED:Market tick processed:processedTicks"
+    ]);
+  });
+
+  it("builds and applies accepted tick journal artifacts in one runtime call", () => {
+    const calls: string[] = [];
+    const artifacts = recordAcceptedTickJournalSideEffects(
+      {
+        tick: marketTick("btc-usd"),
+        metrics: latencyMetrics(),
+        bayesianTrace: {
+          priorBullishProbability: 0.5,
+          posteriorBullishProbability: 0.55,
+          delta: 0.05,
+          evidence: { source: "unit-test" },
+          updatedAt: OBSERVED_AT
+        },
+        processedTicks: 1_000,
+        averageLatencyMs: 12,
+        marketTickJournalInterval: "1_000",
+        bayesianSnapshotInterval: 1_000
+      },
+      {
+        recordMarketTick(recordedTick) {
+          calls.push(`record:${recordedTick.instrumentCode}`);
+        },
+        logInfo(eventType, message) {
+          calls.push(`log:${eventType}:${message}`);
+        }
+      }
+    );
+
+    expect(artifacts.shouldRecordMarketTick).toBe(true);
+    expect(artifacts.bayesianPosteriorLog?.eventType).toBe("BAYESIAN_POSTERIOR_UPDATED");
+    expect(calls).toEqual([
+      "record:btc-usd",
+      "log:BAYESIAN_POSTERIOR_UPDATED:Oracle posterior PDF updated",
+      "log:MARKET_TICK_ACCEPTED:Market tick processed"
     ]);
   });
 });

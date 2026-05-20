@@ -179,3 +179,12 @@ export function applyAcceptedTickJournalSideEffects(
     handlers.logInfo(log.eventType, log.message, log.metadata);
   }
 }
+
+export function recordAcceptedTickJournalSideEffects(
+  input: AcceptedTickJournalArtifactsInput,
+  handlers: AcceptedTickJournalSideEffectHandlers
+): AcceptedTickJournalArtifacts {
+  const artifacts = buildAcceptedTickJournalArtifacts(input);
+  applyAcceptedTickJournalSideEffects(input.tick, artifacts, handlers);
+  return artifacts;
+}

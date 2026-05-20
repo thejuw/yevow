@@ -317,8 +317,7 @@ import {
 } from "./state/TickStateRuntime";
 import { evaluateTickAvailability } from "./state/TickAvailabilityRuntime";
 import {
-  applyAcceptedTickJournalSideEffects,
-  buildAcceptedTickJournalArtifacts,
+  recordAcceptedTickJournalSideEffects,
   scheduleHotPathTickSnapshotSideEffects
 } from "./state/TickPersistenceRuntime";
 import {
@@ -2671,20 +2670,21 @@ export class TradingEngine {
     metrics: LatencyMetrics,
     bayesianTrace: BayesianUpdateTrace | null
   ): void {
-    const artifacts = buildAcceptedTickJournalArtifacts({
-      tick,
-      metrics,
-      bayesianTrace,
-      processedTicks: this.engineState.processedTicks,
-      averageLatencyMs: this.engineState.averageLatency,
-      marketTickJournalInterval: this.env.MARKET_TICK_JOURNAL_INTERVAL,
-      bayesianSnapshotInterval: AGENT_SNAPSHOT_TICK_INTERVAL
-    });
-
-    applyAcceptedTickJournalSideEffects(tick, artifacts, {
-      recordMarketTick: (marketTick) => this.logger.recordMarketTick(marketTick),
-      logInfo: (eventType, message, metadata) => this.logger.info(eventType, message, metadata)
-    });
+    recordAcceptedTickJournalSideEffects(
+      {
+        tick,
+        metrics,
+        bayesianTrace,
+        processedTicks: this.engineState.processedTicks,
+        averageLatencyMs: this.engineState.averageLatency,
+        marketTickJournalInterval: this.env.MARKET_TICK_JOURNAL_INTERVAL,
+        bayesianSnapshotInterval: AGENT_SNAPSHOT_TICK_INTERVAL
+      },
+      {
+        recordMarketTick: (marketTick) => this.logger.recordMarketTick(marketTick),
+        logInfo: (eventType, message, metadata) => this.logger.info(eventType, message, metadata)
+      }
+    );
   }
 
   private applyQuoteSuppression(
