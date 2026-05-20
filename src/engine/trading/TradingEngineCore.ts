@@ -249,7 +249,6 @@ import {
 import { buildAgentStateSnapshot } from "./telemetry/AgentSnapshotRuntime";
 import {
   buildCascadeOperationalAlertTelemetry,
-  buildCascadeSignalTelemetry,
   cascadeEntryAgentSignal,
   cascadeEntryDecisionTrace,
   cascadeHeatCapAlertMetadata,
@@ -257,7 +256,8 @@ import {
   cascadeSignalRejectionAgentSignal,
   cascadeSignalRejectionLogMetadata,
   cascadeSignalEmittedAlertMetadata,
-  cascadeSizeRejectedLogMetadata
+  cascadeSizeRejectedLogMetadata,
+  recordCascadeUiSignalSideEffects
 } from "./telemetry/CascadeSignalTelemetryRuntime";
 import {
   applyProfilerSignalSideEffects,
@@ -4898,17 +4898,26 @@ export class TradingEngine {
     signal: AgentSignal,
     outcome: "TAKEN" | "SKIPPED" | "CLOSED"
   ): void {
-    recordAgentSignalInBuffers({
-      signals: this.signals,
-      latestAgentSignals: this.latestAgentSignals,
-      signal,
-      signalBufferLimit: SIGNAL_BUFFER_LIMIT
-    });
-    this.state.waitUntil(
-      this.safeStoragePut(agentSignalStorageKey(signal), signal, "CASCADE_SIGNAL")
+    recordCascadeUiSignalSideEffects(
+      {
+        signals: this.signals,
+        latestAgentSignals: this.latestAgentSignals,
+        signal,
+        outcome,
+        signalBufferLimit: SIGNAL_BUFFER_LIMIT
+      },
+      {
+        schedule: (work) => this.state.waitUntil(work),
+        persistSignal: (signalToPersist) =>
+          this.safeStoragePut(
+            agentSignalStorageKey(signalToPersist),
+            signalToPersist,
+            "CASCADE_SIGNAL"
+          ),
+        publish: (telemetryType, payload, correlationId) =>
+          this.publish(telemetryType, payload, correlationId)
+      }
     );
-    const event = buildCascadeSignalTelemetry(signal, outcome);
-    this.publish(event.telemetryType, event.payload, event.correlationId);
   }
 
   private async applyConfigUpdate(update: AdminConfigUpdate): Promise<void> {

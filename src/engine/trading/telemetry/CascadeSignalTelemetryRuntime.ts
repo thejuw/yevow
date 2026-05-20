@@ -1,7 +1,14 @@
 import type { CascadeAlertEventType } from "../../../strategy/cascade/OperationalSafeguards";
 import { cascadeAlertPolicy } from "../../../strategy/cascade/OperationalSafeguards";
-import type { AgentDecisionTrace, AgentSignal, JsonRecord, TradeIntent } from "../../../types";
+import type {
+  AgentDecisionTrace,
+  AgentName,
+  AgentSignal,
+  JsonRecord,
+  TradeIntent
+} from "../../../types";
 import type { NotifierEvent } from "../../../utils/Notifier";
+import { recordAgentSignalInBuffers } from "./AgentSignalRuntime";
 import type { CascadeAssetProfile } from "../../../strategy/cascade/AssetProfiles";
 import type {
   CascadeOpenPosition,
@@ -17,6 +24,24 @@ export interface CascadeSignalTelemetry {
   readonly telemetryType: "CASCADE_SIGNAL";
   readonly payload: Record<string, unknown>;
   readonly correlationId: string;
+}
+
+export interface CascadeUiSignalSideEffectInput {
+  readonly signals: AgentSignal[];
+  readonly latestAgentSignals: Map<AgentName, AgentSignal>;
+  readonly signal: AgentSignal;
+  readonly outcome: CascadeSignalOutcome;
+  readonly signalBufferLimit: number;
+}
+
+export interface CascadeUiSignalSideEffectHandlers {
+  readonly schedule: (work: Promise<void>) => void;
+  readonly persistSignal: (signal: AgentSignal) => Promise<void>;
+  readonly publish: (
+    telemetryType: CascadeSignalTelemetry["telemetryType"],
+    payload: CascadeSignalTelemetry["payload"],
+    correlationId: string
+  ) => void;
 }
 
 export interface CascadeOperationalAlertTelemetry {
@@ -84,6 +109,22 @@ export function buildCascadeSignalTelemetry(
     },
     correlationId: signal.signalId
   };
+}
+
+export function recordCascadeUiSignalSideEffects(
+  input: CascadeUiSignalSideEffectInput,
+  handlers: CascadeUiSignalSideEffectHandlers
+): void {
+  recordAgentSignalInBuffers({
+    signals: input.signals,
+    latestAgentSignals: input.latestAgentSignals,
+    signal: input.signal,
+    signalBufferLimit: input.signalBufferLimit
+  });
+
+  handlers.schedule(handlers.persistSignal(input.signal));
+  const event = buildCascadeSignalTelemetry(input.signal, input.outcome);
+  handlers.publish(event.telemetryType, event.payload, event.correlationId);
 }
 
 export function cascadeSignalRejectionLogMetadata(

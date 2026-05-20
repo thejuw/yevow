@@ -12,9 +12,11 @@ import {
   cascadeSignalRejectionAgentSignal,
   cascadeSignalRejectionLogMetadata,
   cascadeSignalEmittedAlertMetadata,
-  cascadeSizeRejectedLogMetadata
+  cascadeSizeRejectedLogMetadata,
+  recordCascadeUiSignalSideEffects,
+  type CascadeUiSignalSideEffectHandlers
 } from "../../src/engine/trading/telemetry/CascadeSignalTelemetryRuntime";
-import type { AgentSignal, TradeIntent } from "../../src/types";
+import type { AgentName, AgentSignal, TradeIntent } from "../../src/types";
 import type { CascadeAssetProfile } from "../../src/strategy/cascade/AssetProfiles";
 import type {
   CascadeOpenPosition,
@@ -63,6 +65,29 @@ describe("CascadeSignalTelemetryRuntime", () => {
       outcome: "SKIPPED",
       cascadeId: "cascade-risk"
     });
+  });
+
+  it("records cascade UI signals, schedules persistence, and publishes telemetry", async () => {
+    const signals: AgentSignal[] = [];
+    const latestAgentSignals = new Map<AgentName, AgentSignal>();
+    const sideEffects = cascadeUiSignalSideEffectSpy();
+
+    recordCascadeUiSignalSideEffects(
+      {
+        signals,
+        latestAgentSignals,
+        signal: signal({ sourceAgent: "PIT_BOSS" }),
+        outcome: "TAKEN",
+        signalBufferLimit: 5
+      },
+      sideEffects.handlers
+    );
+
+    await Promise.all(sideEffects.scheduled);
+
+    expect(signals.map((item) => item.signalId)).toEqual(["signal-1"]);
+    expect(latestAgentSignals.get("PIT_BOSS")?.signalId).toBe("signal-1");
+    expect(sideEffects.events).toEqual(["persist:signal-1", "publish:CASCADE_SIGNAL:signal-1"]);
   });
 
   it("builds dashboard-only operational alerts without external notifications", () => {
@@ -261,6 +286,32 @@ describe("CascadeSignalTelemetryRuntime", () => {
     ).toBeNull();
   });
 });
+
+function cascadeUiSignalSideEffectSpy(): {
+  events: string[];
+  scheduled: Promise<void>[];
+  handlers: CascadeUiSignalSideEffectHandlers;
+} {
+  const events: string[] = [];
+  const scheduled: Promise<void>[] = [];
+
+  return {
+    events,
+    scheduled,
+    handlers: {
+      schedule(work) {
+        scheduled.push(work);
+      },
+      persistSignal(signalToPersist) {
+        events.push(`persist:${signalToPersist.signalId}`);
+        return Promise.resolve();
+      },
+      publish(telemetryType, _payload, correlationId) {
+        events.push(`publish:${telemetryType}:${correlationId}`);
+      }
+    }
+  };
+}
 
 function signal(overrides: Partial<AgentSignal> = {}): AgentSignal {
   return {
