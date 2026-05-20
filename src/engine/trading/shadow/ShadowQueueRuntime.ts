@@ -128,6 +128,15 @@ export interface ShadowQueueGhostFillRecord {
   readonly trade: TradeExecution | null;
 }
 
+export interface ShadowQueueGhostFillSideEffectHandlers {
+  readonly recordExecution: (trade: TradeExecution) => void;
+  readonly publish: (
+    type: "SHADOW_QUEUE_GHOST_FILL",
+    payload: Record<string, unknown>,
+    correlationId: string
+  ) => void;
+}
+
 export interface ShadowQueueNoEdgeThrottleInput {
   readonly lastLoggedAtByInstrument: Map<string, number>;
   readonly instrumentCode: string;
@@ -337,6 +346,18 @@ export function buildShadowQueueGhostFillRuntimeRecord(
     paperSizeCap,
     executablePaperSize
   });
+}
+
+export function emitShadowQueueGhostFillSideEffects(
+  fillId: string,
+  record: ShadowQueueGhostFillRecord,
+  handlers: ShadowQueueGhostFillSideEffectHandlers
+): void {
+  if (record.trade) {
+    handlers.recordExecution(record.trade);
+  }
+
+  handlers.publish("SHADOW_QUEUE_GHOST_FILL", record.eventPayload, fillId);
 }
 
 export function resolveShadowQueueGhostFillConfig(

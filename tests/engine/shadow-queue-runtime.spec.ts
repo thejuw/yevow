@@ -9,6 +9,7 @@ import {
   buildShadowQueueNoEdgeTelemetry,
   buildShadowQueueTradeIntent,
   buildShadowQueueTradeIntentFromDecision,
+  emitShadowQueueGhostFillSideEffects,
   enforceShadowQueueDecisionLatency,
   resolveShadowQueueGhostFillConfig,
   resolveShadowQueueNoEdgeLogInterval,
@@ -16,7 +17,8 @@ import {
   shouldLogShadowQueueNoEdge,
   shouldProcessShadowQueueTick,
   shadowQueueKellySize,
-  shadowQueuePostOnlyPrice
+  shadowQueuePostOnlyPrice,
+  type ShadowQueueGhostFillSideEffectHandlers
 } from "../../src/engine/trading/shadow/ShadowQueueRuntime";
 import { defaultConfig } from "../../src/ConfigManager";
 import type {
@@ -116,6 +118,45 @@ describe("ShadowQueueRuntime", () => {
       }
     });
     expect(record.eventPayload).toBe(record.trade);
+  });
+
+  it("emits ghost fill side effects with execution recording when a paper trade exists", () => {
+    const tradeRecord = buildShadowQueueGhostFillRecord({
+      fill: shadowFill(),
+      tick: marketTick(),
+      book: book(),
+      observedAt: OBSERVED_AT,
+      participationRate: 0.35,
+      adverseBps: 1.5,
+      makerFeeBps: 1,
+      fillModelSource: "bootstrap",
+      paperFillPrice: 99.5,
+      paperSizeCap: 0.5,
+      executablePaperSize: 0.5
+    });
+    const zeroSizeRecord = buildShadowQueueGhostFillRecord({
+      fill: shadowFill({ fillId: "fill-zero" }),
+      tick: marketTick(),
+      book: book(),
+      observedAt: OBSERVED_AT,
+      participationRate: 0.35,
+      adverseBps: 1.5,
+      makerFeeBps: 1,
+      fillModelSource: "bootstrap",
+      paperFillPrice: 99.5,
+      paperSizeCap: 0,
+      executablePaperSize: 0
+    });
+    const sideEffects = shadowQueueGhostFillSideEffectSpy();
+
+    emitShadowQueueGhostFillSideEffects("fill-1", tradeRecord, sideEffects.handlers);
+    emitShadowQueueGhostFillSideEffects("fill-zero", zeroSizeRecord, sideEffects.handlers);
+
+    expect(sideEffects.events).toEqual([
+      "record:shadow-queue:fill-1:1779094800000",
+      "publish:SHADOW_QUEUE_GHOST_FILL:fill-1",
+      "publish:SHADOW_QUEUE_GHOST_FILL:fill-zero"
+    ]);
   });
 
   it("models runtime ghost fills from slippage, participation, and Kelly caps", () => {
@@ -629,6 +670,25 @@ describe("ShadowQueueRuntime", () => {
     ).toEqual({ maxPositionPct: 0.1, kellyFraction: 1 });
   });
 });
+
+function shadowQueueGhostFillSideEffectSpy(): {
+  events: string[];
+  handlers: ShadowQueueGhostFillSideEffectHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      recordExecution(trade) {
+        events.push(`record:${trade.tradeId}`);
+      },
+      publish(type, _payload, correlationId) {
+        events.push(`publish:${type}:${correlationId}`);
+      }
+    }
+  };
+}
 
 function book(overrides: Partial<InternalOrderBook> = {}): InternalOrderBook {
   return {

@@ -58,6 +58,7 @@ import {
   buildShadowQueueGhostFillRuntimeRecord,
   buildShadowQueueLatencyBreachTelemetry,
   buildShadowQueueNoEdgeTelemetry,
+  emitShadowQueueGhostFillSideEffects,
   enforceShadowQueueDecisionLatency,
   resolveShadowQueueGhostFillConfig,
   resolveShadowQueueNoEdgeLogInterval,
@@ -3342,13 +3343,10 @@ export class TradingEngine {
       positionSizeMultiplier: this.engineState.location.positionSizeMultiplier
     });
 
-    if (!ghostFillRecord.trade) {
-      this.publish("SHADOW_QUEUE_GHOST_FILL", ghostFillRecord.eventPayload, fill.fillId);
-      return;
-    }
-
-    this.logger.recordExecution(ghostFillRecord.trade);
-    this.publish("SHADOW_QUEUE_GHOST_FILL", ghostFillRecord.eventPayload, fill.fillId);
+    emitShadowQueueGhostFillSideEffects(fill.fillId, ghostFillRecord, {
+      recordExecution: (trade) => this.logger.recordExecution(trade),
+      publish: (type, payload, correlationId) => this.publish(type, payload, correlationId)
+    });
   }
 
   private handleShadowQueueNoEdgeDecision(decision: ShadowQueueDecision): ShadowQueueDecision {
