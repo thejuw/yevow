@@ -3,6 +3,7 @@ import type { CroupierDecision } from "../../src/agents/CroupierAgent";
 import type { ProfilerEvaluation } from "../../src/agents/ProfilerAgent";
 import type { OracleTickResult } from "../../src/engine/trading/agents/AgentEvaluationRuntime";
 import {
+  buildAcceptedDecisionPipelineLifecycle,
   buildAcceptedTickFinalizationArtifacts,
   buildAcceptedTickLifecycleArtifacts,
   buildAcceptedTickStateTransition
@@ -92,6 +93,13 @@ describe("AcceptedTickRuntime", () => {
       decisionContext,
       executionContext
     });
+    const pipelineArtifacts = buildAcceptedDecisionPipelineLifecycle(pipeline, {
+      evaluateProfiler: () => ({ profilerResult, profilerLatencyMs: 2.5 }),
+      evaluateOracle: () => ({ oracleResult, oracleLatencyMs: 1.5 }),
+      buildDecisionContext: () => decisionContext,
+      evaluateCroupier: () => ({ croupierDecision, croupierLatencyMs: 3.5 }),
+      prepareExecutionContext: () => executionContext
+    });
 
     expect(artifacts.commitInput).toMatchObject({
       tick: pipeline.tick,
@@ -107,6 +115,7 @@ describe("AcceptedTickRuntime", () => {
       shadowReplay: true,
       observedAt: OBSERVED_AT
     });
+    expect(pipelineArtifacts).toEqual(artifacts);
     expect(artifacts.sideEffectsInput).toMatchObject({
       tick: pipeline.tick,
       metrics: pipeline.metrics,

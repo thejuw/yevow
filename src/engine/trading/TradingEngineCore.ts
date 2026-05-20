@@ -596,8 +596,8 @@ import {
 import { isInformationalTick, isTradeTick } from "./state/TickClassification";
 import { evaluateTickTargetPreflight } from "./state/TickPreflightRuntime";
 import {
+  buildAcceptedDecisionPipelineLifecycle,
   buildAcceptedTickFinalizationArtifacts,
-  buildAcceptedTickLifecycleArtifacts,
   buildAcceptedTickStateTransition
 } from "./pipelines/AcceptedTickRuntime";
 import type {
@@ -3292,56 +3292,53 @@ export class TradingEngine {
   private async processAcceptedDecisionPipeline(
     input: AcceptedDecisionPipelineInput
   ): Promise<void> {
-    const { profilerResult, profilerLatencyMs } = this.evaluateProfilerForTick(
-      input.tick,
-      input.book,
-      input.domSnapshot,
-      input.metrics.brainTimestamp,
-      input.volatilitySnapshot?.jumpDetected ?? false,
-      input.metrics,
-      input.wakeUpTimeMs,
-      input.orderBookUpdateMs,
-      input.hotPathStartedAt
-    );
-
-    const { oracleResult, oracleLatencyMs } = this.evaluateOracleForTick(
-      input.tick,
-      input.book,
-      input.metrics.brainTimestamp
-    );
-    const decisionContext = this.buildTickDecisionContext(
-      input.tick,
-      oracleResult.state,
-      profilerResult,
-      input.metrics.brainTimestamp
-    );
-    const { croupierDecision, croupierLatencyMs } = this.evaluateCroupierForTick(
-      input.book,
-      oracleResult.state,
-      decisionContext.sentimentForDecision,
-      profilerResult,
-      decisionContext.inventory,
-      decisionContext.leadLag,
-      input.volatilitySnapshot,
-      input.metrics.brainTimestamp
-    );
-    const executionContext = this.prepareAcceptedExecutionContext(
-      input,
-      profilerResult,
-      oracleResult.state,
-      croupierDecision,
-      decisionContext
-    );
-    const lifecycle = buildAcceptedTickLifecycleArtifacts({
-      pipeline: input,
-      profilerResult,
-      profilerLatencyMs,
-      oracleResult,
-      oracleLatencyMs,
-      croupierDecision,
-      croupierLatencyMs,
-      decisionContext,
-      executionContext
+    const lifecycle = buildAcceptedDecisionPipelineLifecycle(input, {
+      evaluateProfiler: (pipeline) =>
+        this.evaluateProfilerForTick(
+          pipeline.tick,
+          pipeline.book,
+          pipeline.domSnapshot,
+          pipeline.metrics.brainTimestamp,
+          pipeline.volatilitySnapshot?.jumpDetected ?? false,
+          pipeline.metrics,
+          pipeline.wakeUpTimeMs,
+          pipeline.orderBookUpdateMs,
+          pipeline.hotPathStartedAt
+        ),
+      evaluateOracle: (pipeline) =>
+        this.evaluateOracleForTick(pipeline.tick, pipeline.book, pipeline.metrics.brainTimestamp),
+      buildDecisionContext: (pipeline, oracle, profilerResult) =>
+        this.buildTickDecisionContext(
+          pipeline.tick,
+          oracle,
+          profilerResult,
+          pipeline.metrics.brainTimestamp
+        ),
+      evaluateCroupier: (pipeline, oracle, profilerResult, decisionContext) =>
+        this.evaluateCroupierForTick(
+          pipeline.book,
+          oracle,
+          decisionContext.sentimentForDecision,
+          profilerResult,
+          decisionContext.inventory,
+          decisionContext.leadLag,
+          pipeline.volatilitySnapshot,
+          pipeline.metrics.brainTimestamp
+        ),
+      prepareExecutionContext: (
+        pipeline,
+        profilerResult,
+        oracle,
+        croupierDecision,
+        decisionContext
+      ) =>
+        this.prepareAcceptedExecutionContext(
+          pipeline,
+          profilerResult,
+          oracle,
+          croupierDecision,
+          decisionContext
+        )
     });
 
     this.commitAcceptedTickState(lifecycle.commitInput);

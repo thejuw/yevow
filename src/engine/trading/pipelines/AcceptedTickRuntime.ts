@@ -26,6 +26,46 @@ export interface BuildAcceptedTickLifecycleInput {
   readonly executionContext: AcceptedExecutionContext;
 }
 
+export interface AcceptedProfilerRuntimeResult {
+  readonly profilerResult: ProfilerEvaluation;
+  readonly profilerLatencyMs: number;
+}
+
+export interface AcceptedOracleRuntimeResult {
+  readonly oracleResult: OracleTickResult;
+  readonly oracleLatencyMs: number;
+}
+
+export interface AcceptedCroupierRuntimeResult {
+  readonly croupierDecision: CroupierDecision;
+  readonly croupierLatencyMs: number;
+}
+
+export interface AcceptedDecisionPipelineLifecycleDependencies {
+  readonly evaluateProfiler: (
+    input: AcceptedDecisionPipelineInput
+  ) => AcceptedProfilerRuntimeResult;
+  readonly evaluateOracle: (input: AcceptedDecisionPipelineInput) => AcceptedOracleRuntimeResult;
+  readonly buildDecisionContext: (
+    input: AcceptedDecisionPipelineInput,
+    oracle: EngineState["oracle"],
+    profilerResult: ProfilerEvaluation
+  ) => TickDecisionContext;
+  readonly evaluateCroupier: (
+    input: AcceptedDecisionPipelineInput,
+    oracle: EngineState["oracle"],
+    profilerResult: ProfilerEvaluation,
+    decisionContext: TickDecisionContext
+  ) => AcceptedCroupierRuntimeResult;
+  readonly prepareExecutionContext: (
+    input: AcceptedDecisionPipelineInput,
+    profilerResult: ProfilerEvaluation,
+    oracle: EngineState["oracle"],
+    croupierDecision: CroupierDecision,
+    decisionContext: TickDecisionContext
+  ) => AcceptedExecutionContext;
+}
+
 export interface AcceptedTickLifecycleArtifacts {
   readonly commitInput: AcceptedTickStateCommitInput;
   readonly sideEffectsInput: AcceptedTickSideEffectsInput;
@@ -72,6 +112,44 @@ export function buildAcceptedTickLifecycleArtifacts(
     commitInput: buildAcceptedTickStateCommitInput(input),
     sideEffectsInput: buildAcceptedTickSideEffectsInput(input)
   };
+}
+
+export function buildAcceptedDecisionPipelineLifecycle(
+  input: AcceptedDecisionPipelineInput,
+  dependencies: AcceptedDecisionPipelineLifecycleDependencies
+): AcceptedTickLifecycleArtifacts {
+  const { profilerResult, profilerLatencyMs } = dependencies.evaluateProfiler(input);
+  const { oracleResult, oracleLatencyMs } = dependencies.evaluateOracle(input);
+  const decisionContext = dependencies.buildDecisionContext(
+    input,
+    oracleResult.state,
+    profilerResult
+  );
+  const { croupierDecision, croupierLatencyMs } = dependencies.evaluateCroupier(
+    input,
+    oracleResult.state,
+    profilerResult,
+    decisionContext
+  );
+  const executionContext = dependencies.prepareExecutionContext(
+    input,
+    profilerResult,
+    oracleResult.state,
+    croupierDecision,
+    decisionContext
+  );
+
+  return buildAcceptedTickLifecycleArtifacts({
+    pipeline: input,
+    profilerResult,
+    profilerLatencyMs,
+    oracleResult,
+    oracleLatencyMs,
+    croupierDecision,
+    croupierLatencyMs,
+    decisionContext,
+    executionContext
+  });
 }
 
 export function buildAcceptedTickStateTransition(
