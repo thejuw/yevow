@@ -10,6 +10,7 @@ import {
   buildShadowQueueTradeIntent,
   buildShadowQueueTradeIntentFromDecision,
   enforceShadowQueueDecisionLatency,
+  resolveShadowQueueGhostFillConfig,
   resolveShadowQueueNoEdgeLogInterval,
   resolveShadowQueueSizingConfig,
   shouldLogShadowQueueNoEdge,
@@ -150,6 +151,25 @@ describe("ShadowQueueRuntime", () => {
         makerFeeBps: 1,
         sizeCapped: true
       }
+    });
+  });
+
+  it("resolves shadow queue ghost-fill config from bounded environment values", () => {
+    expect(
+      resolveShadowQueueGhostFillConfig({
+        paperFillParticipationRate: "1.5",
+        paperFillAdverseBps: "-4",
+        paperMakerFeeBps: undefined,
+        exchangeFeeBps: "2",
+        maxPositionPct: "0.2",
+        kellyFraction: "0.7"
+      })
+    ).toEqual({
+      participationRate: 1,
+      fallbackAdverseBps: 0,
+      makerFeeBps: 2,
+      envMaxPositionPct: 0.2,
+      envKellyFraction: 0.7
     });
   });
 

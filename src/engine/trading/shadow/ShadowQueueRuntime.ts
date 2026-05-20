@@ -17,10 +17,18 @@ import {
   roundCrypto
 } from "../book/SortedBookSide";
 import {
+  DEFAULT_MAX_POSITION_PCT,
+  DEFAULT_PAPER_FILL_ADVERSE_BPS,
+  DEFAULT_PAPER_FILL_PARTICIPATION_RATE,
+  DEFAULT_PAPER_MAKER_FEE_BPS,
   DEFAULT_SHADOW_QUEUE_NO_EDGE_LOG_INTERVAL_MS,
   DEFAULT_SHADOW_VLO_MIN_SIZE
 } from "../../../TradingEngineConstants";
-import { readPositiveInteger } from "../helpers/RuntimeParsing";
+import {
+  readBoundedNumber,
+  readPositiveInteger,
+  readPositiveNumber
+} from "../helpers/RuntimeParsing";
 import { adverseAdjustedPaperFillPrice } from "../state/AssetStateRuntime";
 import { bootstrapPaperAdverseSelection } from "../../PaperReplayModel";
 
@@ -96,6 +104,23 @@ export interface ShadowQueueGhostFillRuntimeInput {
   readonly equity: number;
   readonly inventory: InventoryState;
   readonly positionSizeMultiplier: number;
+}
+
+export interface ShadowQueueGhostFillConfigInput {
+  readonly paperFillParticipationRate?: string;
+  readonly paperFillAdverseBps?: string;
+  readonly paperMakerFeeBps?: string;
+  readonly exchangeFeeBps?: string;
+  readonly maxPositionPct?: string;
+  readonly kellyFraction?: string;
+}
+
+export interface ShadowQueueGhostFillConfig {
+  readonly participationRate: number;
+  readonly fallbackAdverseBps: number;
+  readonly makerFeeBps: number;
+  readonly envMaxPositionPct: number;
+  readonly envKellyFraction: number;
 }
 
 export interface ShadowQueueGhostFillRecord {
@@ -312,6 +337,33 @@ export function buildShadowQueueGhostFillRuntimeRecord(
     paperSizeCap,
     executablePaperSize
   });
+}
+
+export function resolveShadowQueueGhostFillConfig(
+  input: ShadowQueueGhostFillConfigInput
+): ShadowQueueGhostFillConfig {
+  return {
+    participationRate: readBoundedNumber(
+      input.paperFillParticipationRate,
+      DEFAULT_PAPER_FILL_PARTICIPATION_RATE,
+      0,
+      1
+    ),
+    fallbackAdverseBps: readBoundedNumber(
+      input.paperFillAdverseBps,
+      DEFAULT_PAPER_FILL_ADVERSE_BPS,
+      0,
+      100
+    ),
+    makerFeeBps: readBoundedNumber(
+      input.paperMakerFeeBps ?? input.exchangeFeeBps,
+      DEFAULT_PAPER_MAKER_FEE_BPS,
+      0,
+      100
+    ),
+    envMaxPositionPct: readPositiveNumber(input.maxPositionPct, DEFAULT_MAX_POSITION_PCT),
+    envKellyFraction: readPositiveNumber(input.kellyFraction, 0.5)
+  };
 }
 
 export function shouldLogShadowQueueNoEdge(input: ShadowQueueNoEdgeThrottleInput): boolean {

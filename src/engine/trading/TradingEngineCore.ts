@@ -65,6 +65,7 @@ import {
   buildShadowQueueLatencyBreachTelemetry,
   buildShadowQueueNoEdgeTelemetry,
   enforceShadowQueueDecisionLatency,
+  resolveShadowQueueGhostFillConfig,
   resolveShadowQueueNoEdgeLogInterval,
   resolveShadowQueueSizingConfig,
   type ShadowQueueDecisionAction,
@@ -486,9 +487,6 @@ import {
   DEFAULT_HEATMAP_CLUSTER_NOTIONAL_USD,
   DEFAULT_CASCADE_DISTANCE_PCT,
   DEFAULT_PAPER_BANKROLL_USD,
-  DEFAULT_PAPER_FILL_PARTICIPATION_RATE,
-  DEFAULT_PAPER_FILL_ADVERSE_BPS,
-  DEFAULT_PAPER_MAKER_FEE_BPS,
   DEFAULT_CROSS_ASSET_CANCEL_LEAD_BPS,
   DEFAULT_CROSS_ASSET_CANCEL_COOLDOWN_MS,
   DEFAULT_MARKET_TICK_MAX_ROWS,
@@ -3543,36 +3541,26 @@ export class TradingEngine {
     book: InternalOrderBook,
     observedAt: string
   ): void {
-    const participationRate = readBoundedNumber(
-      this.env.PAPER_FILL_PARTICIPATION_RATE,
-      DEFAULT_PAPER_FILL_PARTICIPATION_RATE,
-      0,
-      1
-    );
-    const fallbackAdverseBps = readBoundedNumber(
-      this.env.PAPER_FILL_ADVERSE_BPS,
-      DEFAULT_PAPER_FILL_ADVERSE_BPS,
-      0,
-      100
-    );
-    const makerFeeBps = readBoundedNumber(
-      this.env.PAPER_MAKER_FEE_BPS ?? this.env.EXCHANGE_FEE_BPS,
-      DEFAULT_PAPER_MAKER_FEE_BPS,
-      0,
-      100
-    );
+    const fillConfig = resolveShadowQueueGhostFillConfig({
+      paperFillParticipationRate: this.env.PAPER_FILL_PARTICIPATION_RATE,
+      paperFillAdverseBps: this.env.PAPER_FILL_ADVERSE_BPS,
+      paperMakerFeeBps: this.env.PAPER_MAKER_FEE_BPS,
+      exchangeFeeBps: this.env.EXCHANGE_FEE_BPS,
+      maxPositionPct: this.env.MAX_POSITION_PCT,
+      kellyFraction: this.env.KELLY_FRACTION
+    });
     const ghostFillRecord = buildShadowQueueGhostFillRuntimeRecord({
       fill,
       tick,
       book,
       observedAt,
       slippage: this.engineState.slippage,
-      fallbackAdverseBps,
-      participationRate,
-      makerFeeBps,
+      fallbackAdverseBps: fillConfig.fallbackAdverseBps,
+      participationRate: fillConfig.participationRate,
+      makerFeeBps: fillConfig.makerFeeBps,
       cachedConfig: this.cachedConfig,
-      envMaxPositionPct: readPositiveNumber(this.env.MAX_POSITION_PCT, DEFAULT_MAX_POSITION_PCT),
-      envKellyFraction: readPositiveNumber(this.env.KELLY_FRACTION, 0.5),
+      envMaxPositionPct: fillConfig.envMaxPositionPct,
+      envKellyFraction: fillConfig.envKellyFraction,
       equity: this.engineState.bankroll.equity,
       inventory: this.engineState.inventory,
       positionSizeMultiplier: this.engineState.location.positionSizeMultiplier
