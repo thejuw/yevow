@@ -64,6 +64,26 @@ export interface OrderBookResetSideEffectHandlers {
   readonly publishReset: (telemetry: JsonRecord) => void;
 }
 
+export interface OrderBookResetFlowInput {
+  readonly payload: Partial<OrderBookResetRequest>;
+  readonly currentState: EngineState;
+  readonly orderBookPrefix: string;
+  readonly engineStateKey: string;
+  readonly stores: OrderBookResetStores;
+  readonly orderBookSize: number;
+  readonly internalOrderBookDepth: number;
+}
+
+export interface OrderBookResetFlowHandlers extends OrderBookResetSideEffectHandlers {
+  readonly listPersistedBooks: (prefix: string) => Promise<Map<string, InternalOrderBook>>;
+  readonly handleListFailure: (error: unknown) => void;
+  readonly calculatePriceDiscovery: (
+    instrumentCode: string,
+    observedAt: string
+  ) => PriceDiscoveryMetrics;
+  readonly applyState: (state: EngineState) => void;
+}
+
 export function resolveOrderBookReset(
   payload: Partial<OrderBookResetRequest>,
   now = new Date().toISOString()
@@ -229,4 +249,37 @@ export async function applyOrderBookResetSideEffects(
 
   handlers.logReset(artifacts.telemetry);
   handlers.publishReset(artifacts.telemetry);
+}
+
+export async function applyOrderBookResetFlow(
+  input: OrderBookResetFlowInput,
+  handlers: OrderBookResetFlowHandlers
+): Promise<OrderBookResetRuntimeArtifacts> {
+  const reset = resolveOrderBookReset(input.payload);
+  let persistedBooks = new Map<string, InternalOrderBook>();
+
+  try {
+    persistedBooks = await handlers.listPersistedBooks(input.orderBookPrefix);
+  } catch (error) {
+    handlers.handleListFailure(error);
+  }
+
+  const artifacts = orderBookResetRuntimeArtifacts({
+    reset,
+    currentState: input.currentState,
+    persistedBooks,
+    orderBookPrefix: input.orderBookPrefix,
+    engineStateKey: input.engineStateKey,
+    stores: input.stores,
+    orderBookSize: input.orderBookSize,
+    internalOrderBookDepth: input.internalOrderBookDepth,
+    priceDiscovery: reset.resetInstrument
+      ? handlers.calculatePriceDiscovery(reset.resetInstrument, reset.now)
+      : null
+  });
+
+  handlers.applyState(artifacts.state);
+  await applyOrderBookResetSideEffects(reset, artifacts, handlers);
+
+  return artifacts;
 }

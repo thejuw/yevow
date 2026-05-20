@@ -44,10 +44,8 @@ import {
   stateAfterDesyncedBook
 } from "./book/BookRuntimeState";
 import {
-  applyOrderBookResetSideEffects,
   applyOrderBookResetConnectionIds,
-  orderBookResetRuntimeArtifacts,
-  resolveOrderBookReset
+  applyOrderBookResetFlow
 } from "./book/OrderBookResetRuntime";
 import { buildDomAnalysisSnapshot, currentDomHeatmapSnapshot } from "./book/DomAnalyzer";
 import {
@@ -1849,48 +1847,43 @@ export class TradingEngine {
   }
 
   private async resetOrderBook(payload: Partial<OrderBookResetRequest>): Promise<void> {
-    const reset = resolveOrderBookReset(payload);
-    let persistedBooks = new Map<string, InternalOrderBook>();
-    try {
-      persistedBooks = await this.state.storage.list<InternalOrderBook>({
-        prefix: ORDER_BOOK_PREFIX
-      });
-    } catch (error) {
-      this.handleStorageWriteFailure("ORDER_BOOK_RESET_LIST", error);
-    }
-    const artifacts = orderBookResetRuntimeArtifacts({
-      reset,
-      currentState: this.engineState,
-      persistedBooks,
-      orderBookPrefix: ORDER_BOOK_PREFIX,
-      engineStateKey: ENGINE_STATE_KEY,
-      stores: this.orderBookStores(),
-      orderBookSize: this.orderBook.size,
-      internalOrderBookDepth: countBookLevels(this.bids, this.asks),
-      priceDiscovery: reset.resetInstrument
-        ? calculateOrderBookPriceDiscovery(this.orderBook, reset.resetInstrument, reset.now)
-        : null
-    });
-    this.engineState = artifacts.state;
-
-    await applyOrderBookResetSideEffects(reset, artifacts, {
-      resetLatencyBaseline: (observedAt, reason) => this.resetLatencyBaseline(observedAt, reason),
-      applyConnectionIds: (connectionId, connectionKeys) =>
-        applyOrderBookResetConnectionIds(
-          this.activeIngestConnections,
-          connectionId,
-          connectionKeys
-        ),
-      persistWrites: (writes) => this.safeStoragePut(writes, "ORDER_BOOK_RESET"),
-      deleteStorageKeys: (keys) => this.safeStorageDelete([...keys], "ORDER_BOOK_RESET_DELETE"),
-      logReset: (telemetry) =>
-        this.logger.warn(
-          "ORDER_BOOK_RESET",
-          "Internal order book purged after stream recovery",
-          telemetry
-        ),
-      publishReset: (telemetry) => this.publish("ORDER_BOOK_RESET", telemetry)
-    });
+    await applyOrderBookResetFlow(
+      {
+        payload,
+        currentState: this.engineState,
+        orderBookPrefix: ORDER_BOOK_PREFIX,
+        engineStateKey: ENGINE_STATE_KEY,
+        stores: this.orderBookStores(),
+        orderBookSize: this.orderBook.size,
+        internalOrderBookDepth: countBookLevels(this.bids, this.asks)
+      },
+      {
+        listPersistedBooks: (prefix) => this.state.storage.list<InternalOrderBook>({ prefix }),
+        handleListFailure: (error) =>
+          this.handleStorageWriteFailure("ORDER_BOOK_RESET_LIST", error),
+        calculatePriceDiscovery: (instrumentCode, observedAt) =>
+          calculateOrderBookPriceDiscovery(this.orderBook, instrumentCode, observedAt),
+        applyState: (state) => {
+          this.engineState = state;
+        },
+        resetLatencyBaseline: (observedAt, reason) => this.resetLatencyBaseline(observedAt, reason),
+        applyConnectionIds: (connectionId, connectionKeys) =>
+          applyOrderBookResetConnectionIds(
+            this.activeIngestConnections,
+            connectionId,
+            connectionKeys
+          ),
+        persistWrites: (writes) => this.safeStoragePut(writes, "ORDER_BOOK_RESET"),
+        deleteStorageKeys: (keys) => this.safeStorageDelete([...keys], "ORDER_BOOK_RESET_DELETE"),
+        logReset: (telemetry) =>
+          this.logger.warn(
+            "ORDER_BOOK_RESET",
+            "Internal order book purged after stream recovery",
+            telemetry
+          ),
+        publishReset: (telemetry) => this.publish("ORDER_BOOK_RESET", telemetry)
+      }
+    );
   }
 
   private clearRecoveryShadowQueue(): void {
