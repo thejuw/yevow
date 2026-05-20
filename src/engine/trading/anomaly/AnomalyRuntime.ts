@@ -77,6 +77,12 @@ export interface AnomalyEmergencyPauseArtifacts {
   readonly result: TickIngestResult;
 }
 
+export interface AnomalyEmergencyPauseSideEffectHandlers {
+  readonly applyState: (state: EngineState) => void;
+  readonly persistStorageWrites: (writes: Record<string, unknown>) => Promise<void>;
+  readonly emitEmergencyPause: (event: AnomalyEmergencyPauseTelemetry) => void;
+}
+
 export function stateAfterAnomalyEmergencyPause(
   input: AnomalyEmergencyPauseStateInput
 ): EngineState {
@@ -224,4 +230,13 @@ export function anomalyEmergencyPauseArtifacts(
       book: input.book
     }
   };
+}
+
+export async function applyAnomalyEmergencyPauseSideEffects(
+  artifacts: AnomalyEmergencyPauseArtifacts,
+  handlers: AnomalyEmergencyPauseSideEffectHandlers
+): Promise<void> {
+  handlers.applyState(artifacts.state);
+  await handlers.persistStorageWrites(artifacts.storageWrites);
+  handlers.emitEmergencyPause(artifacts.event);
 }

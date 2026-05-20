@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyAnomalyEmergencyPauseSideEffects,
   anomalyEmergencyPauseArtifacts,
   anomalyEmergencyPauseStorageWrites,
   buildAnomalyEmergencyPauseTelemetry,
-  stateAfterAnomalyEmergencyPause
+  stateAfterAnomalyEmergencyPause,
+  type AnomalyEmergencyPauseSideEffectHandlers
 } from "../../src/engine/trading/anomaly/AnomalyRuntime";
 import type { AnomalyDetectionResult } from "../../src/agents/AnomalyDetector";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
@@ -183,7 +185,57 @@ describe("AnomalyRuntime", () => {
       book: book()
     });
   });
+
+  it("applies emergency pause side effects in durable-object order", async () => {
+    const artifacts = anomalyEmergencyPauseArtifacts({
+      currentState: defaultEngineState("anomaly-side-effects"),
+      engineStateKey: "engine:state",
+      performanceHistoryKey: "latency:history",
+      latencyHistory: [latency()],
+      processingLatencySamplesKey: "latency:samples",
+      processingLatencySamples: [1],
+      domWallHistoryKey: "dom:walls",
+      domWallHistory: dom().walls,
+      anomalyDetectorStorageKey: "anomaly:state",
+      anomalyResult: anomalyResult(),
+      orderBookPrefix: "book:",
+      book: book(),
+      tick: tick(),
+      domSnapshot: dom(),
+      metrics: latency(),
+      internalOrderBookDepth: 4,
+      observedAt: OBSERVED_AT
+    });
+    const sideEffects = anomalySideEffectSpy();
+
+    await applyAnomalyEmergencyPauseSideEffects(artifacts, sideEffects.handlers);
+
+    expect(sideEffects.events).toEqual(["state:HALTED", "persist:8", "emit:anomaly-1"]);
+  });
 });
+
+function anomalySideEffectSpy(): {
+  events: string[];
+  handlers: AnomalyEmergencyPauseSideEffectHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      applyState(state) {
+        events.push(`state:${state.mode}`);
+      },
+      persistStorageWrites(writes) {
+        events.push(`persist:${Object.keys(writes).length}`);
+        return Promise.resolve();
+      },
+      emitEmergencyPause(event) {
+        events.push(`emit:${event.correlationId}`);
+      }
+    }
+  };
+}
 
 function anomaly(): AnomalyStatus {
   return {

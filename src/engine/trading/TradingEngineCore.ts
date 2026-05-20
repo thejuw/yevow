@@ -66,6 +66,7 @@ import {
   shouldProcessShadowQueueTick
 } from "./shadow/ShadowQueueRuntime";
 import {
+  applyAnomalyEmergencyPauseSideEffects,
   anomalyEmergencyPauseArtifacts,
   type AnomalyEmergencyPauseTelemetry
 } from "./anomaly/AnomalyRuntime";
@@ -2466,11 +2467,13 @@ export class TradingEngine {
       observedAt: metrics.brainTimestamp
     });
 
-    this.engineState = artifacts.state;
-
-    await this.safeStoragePut(artifacts.storageWrites, "ANOMALY_EMERGENCY_PAUSE");
-
-    this.triggerEmergencyPause(artifacts.event);
+    await applyAnomalyEmergencyPauseSideEffects(artifacts, {
+      applyState: (state) => {
+        this.engineState = state;
+      },
+      persistStorageWrites: (writes) => this.safeStoragePut(writes, "ANOMALY_EMERGENCY_PAUSE"),
+      emitEmergencyPause: (event) => this.triggerEmergencyPause(event)
+    });
     this.publishTickTelemetry(tick, metrics, "FRESH", hotPathStartedAt);
 
     return artifacts.result;
