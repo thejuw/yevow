@@ -1,4 +1,3 @@
-import { defaultSentimentState } from "../../../agents/SentimentAgent";
 import type { Logger } from "../../../Logger";
 import type { Backtester } from "../../../strategy/cascade/Backtester";
 import type { NewsCalendar } from "../../../strategy/cascade/NewsCalendar";
@@ -6,7 +5,9 @@ import type { AppliedBookUpdate } from "../book/BookTypes";
 import type { ReplayOptions, ReplayStatus } from "./ReplayAdminRoutes";
 import { handleBookAdminRoute } from "./BookAdminRoutes";
 import { handleCascadeAdminRoute } from "./CascadeAdminRoutes";
+import { handleMaintenanceRoute } from "./MaintenanceRoutes";
 import { handleReplayAdminRoute } from "./ReplayAdminRoutes";
+import { handleSentimentRoute } from "./SentimentRoutes";
 import type {
   AdminConfigUpdate,
   AgentSignal,
@@ -25,27 +26,17 @@ import type {
   OrderBookSnapshot,
   ReplayResult
 } from "../../../types";
-import { logPruneReportToJson, type LogPruneReport } from "../../LogRetention";
+import type { LogPruneReport } from "../../LogRetention";
 import {
   assertAgentSignal,
   assertMarketTick,
   json,
-  readHyperliquidRawIngestPayload,
-  readJsonOrNull
+  readHyperliquidRawIngestPayload
 } from "../helpers/RuntimeParsing";
-import {
-  aggregateQuoteState,
-  resumeExpiredAssetQuoteStates,
-  suspendAssetQuoteStates
-} from "../state/AssetStateRuntime";
-import { touchAgentHealth } from "../state/AgentStateDefaults";
 import {
   BOOK_SNAPSHOT_TOP_LEVELS,
   CASCADE_LAST_BACKTEST_REPORT_KEY,
-  ENGINE_STATE_KEY,
-  PERFORMANCE_HISTORY_KEY,
   PERFORMANCE_HISTORY_LIMIT,
-  PROCESSING_LATENCY_SAMPLES_KEY,
   SIGNAL_BUFFER_LIMIT
 } from "../../../TradingEngineConstants";
 import type { TickIngestResult, GrpcFatalDropPayload } from "../TradingEngineRouteTypes";
@@ -282,157 +273,6 @@ export async function handleTradingEngineHttpRoute(
   }
 
   return json({ ok: false, error: "Not found" }, 404);
-}
-
-async function handleMaintenanceRoute(
-  request: Request,
-  url: URL,
-  context: EngineHttpRouteContext
-): Promise<Response | null> {
-  if (request.method === "POST" && url.pathname === "/maintenance/reset-latency") {
-    const observedAt = new Date().toISOString();
-    const engineState = context.getEngineState();
-    const shouldClearQuoteSuspension =
-      engineState.quoteState.status === "SUSPENDED" &&
-      (engineState.quoteState.reason === "HARD_STALE_DROP" ||
-        engineState.quoteState.reason === "NATIVE_HL_LATENCY" ||
-        engineState.quoteState.reason === "GRPC_FATAL_DROP" ||
-        engineState.quoteState.reason === "STALE_DATA_KILL_SWITCH");
-    context.resetLatencyBaseline(observedAt, "ADMIN_MAINTENANCE");
-    const recoveredAssetQuoteStates = shouldClearQuoteSuspension
-      ? resumeExpiredAssetQuoteStates(
-          suspendAssetQuoteStates(engineState.assetQuoteStates, "ADMIN_RESET_LATENCY", observedAt, {
-            suspendedUntil: observedAt
-          }),
-          observedAt
-        )
-      : engineState.assetQuoteStates;
-    const recoveredQuoteState = shouldClearQuoteSuspension
-      ? aggregateQuoteState(recoveredAssetQuoteStates, engineState.quoteState, observedAt)
-      : engineState.quoteState;
-    const nextState = {
-      ...engineState,
-      staleTickCount: 0,
-      quoteState: recoveredQuoteState,
-      assetQuoteStates: recoveredAssetQuoteStates,
-      updatedAt: observedAt
-    };
-    context.setEngineState(nextState);
-    if (shouldClearQuoteSuspension) {
-      context.publish("RESUME_QUOTES", {
-        reason: "ADMIN_RESET_LATENCY",
-        observedAt
-      });
-    }
-    await context.safeStoragePutEntries(
-      {
-        [ENGINE_STATE_KEY]: nextState,
-        [PERFORMANCE_HISTORY_KEY]: context.getLatencyHistory(),
-        [PROCESSING_LATENCY_SAMPLES_KEY]: context.getProcessingLatencySamples()
-      },
-      "ADMIN_RESET_LATENCY"
-    );
-    return json({ ok: true, state: nextState });
-  }
-
-  if (request.method === "POST" && url.pathname === "/maintenance/recover") {
-    const payload =
-      (await readJsonOrNull<{
-        reason?: string;
-        resetInstruments?: string[] | string;
-        instrumentCode?: string;
-        source_exchange?: string;
-        clearCitadel?: boolean;
-        clearQuoteState?: boolean;
-        clearLatency?: boolean;
-        resetPaperPortfolio?: boolean;
-        clearShadowQueue?: boolean;
-      }>(request)) ?? {};
-    const recovery = await context.recoverEngineState(payload);
-
-    return json(recovery);
-  }
-
-  if (request.method === "POST" && url.pathname === "/maintenance/prune-logs") {
-    const report = await context.pruneOperationalLogs();
-    context.logger.warn("ADMIN_LOG_PRUNE_APPLIED", "Admin-triggered stale log cleanup completed", {
-      report: logPruneReportToJson(report)
-    });
-
-    return json({ ok: true, report });
-  }
-
-  return null;
-}
-
-async function handleSentimentRoute(
-  request: Request,
-  context: EngineHttpRouteContext
-): Promise<Response> {
-  const payload = await request.json<{
-    headline?: string;
-    source?: string;
-    url?: string | null;
-    publishedAt?: string | null;
-    id?: string;
-  }>();
-  const engineState = context.getEngineState();
-  if (!context.getCachedConfig().SENTIMENT_ENABLED) {
-    const observedAt = new Date().toISOString();
-    const sentiment = {
-      ...defaultSentimentState(),
-      updatedAt: observedAt
-    };
-    const nextState = {
-      ...engineState,
-      sentiment,
-      agentHealth: touchAgentHealth(
-        engineState.agentHealth,
-        "SENTIMENT",
-        "DISABLED",
-        observedAt,
-        0
-      ),
-      heartbeatAt: observedAt,
-      updatedAt: observedAt
-    };
-    context.setEngineState(nextState);
-    await context.safeStoragePutKey(ENGINE_STATE_KEY, nextState, "SENTIMENT_DISABLED");
-    return json({ ok: true, skipped: true, reason: "SENTIMENT_AGENT_DISABLED", sentiment });
-  }
-
-  const sentiment = await context.analyzeSentimentHeadline(payload.headline ?? "");
-  const observedAt = sentiment.updatedAt ?? new Date().toISOString();
-  const nextState = {
-    ...engineState,
-    sentiment,
-    agentHealth: touchAgentHealth(
-      engineState.agentHealth,
-      "SENTIMENT",
-      "GREEN",
-      observedAt,
-      sentiment.latencyMs ?? 0
-    ),
-    heartbeatAt: observedAt,
-    updatedAt: observedAt
-  };
-  context.setEngineState(nextState);
-  await context.safeStoragePutKey(ENGINE_STATE_KEY, nextState, "SENTIMENT_UPDATED");
-  context.logger.info("SENTIMENT_ANALYZED", "Sentiment agent updated headline bias", {
-    score: sentiment.score,
-    bias: sentiment.bias,
-    model: sentiment.model,
-    provider: sentiment.provider ?? null,
-    fallbackUsed: sentiment.fallbackUsed ?? null,
-    latencyMs: sentiment.latencyMs ?? null,
-    estimatedCostUsd: sentiment.estimatedCostUsd ?? 0,
-    ablation: sentiment.ablation ?? null,
-    source: payload.source ?? "manual",
-    url: payload.url ?? null,
-    publishedAt: payload.publishedAt ?? null,
-    newsId: payload.id ?? null
-  });
-  return json({ ok: true, sentiment });
 }
 
 async function handleTickBatchRoute(
