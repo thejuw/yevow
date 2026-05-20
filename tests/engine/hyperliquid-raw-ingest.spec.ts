@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyHyperliquidIngestConnectionSideEffects,
+  applyStaleHyperliquidL2BookSideEffects,
   buildHyperliquidL2BookSnapshotBundle,
   buildHyperliquidL2BookLatencyMetrics,
   buildHyperliquidL2BookTick,
@@ -22,7 +23,7 @@ import {
   resolveHyperliquidBookTimestamp,
   routeHyperliquidRawMessage
 } from "../../src/engine/trading/ingest/HyperliquidRawIngest";
-import type { MarketTick } from "../../src/types";
+import type { InternalOrderBook, MarketTick } from "../../src/types";
 import type { BookSyncState } from "../../src/engine/trading/book/BookTypes";
 import type { TickIngestResult } from "../../src/engine/trading/TradingEngineRouteTypes";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
@@ -401,6 +402,94 @@ describe("hyperliquid raw ingest helpers", () => {
     });
   });
 
+  it("applies stale native L2 side effects and returns a stale ingest result", async () => {
+    const decision = evaluateHyperliquidL2BookHotPath({
+      raw: {
+        data: {
+          coin: "BTC",
+          time: Date.parse("2026-01-01T00:00:00.000Z"),
+          sequence: 20,
+          levels: [[{ px: "100", sz: "1" }], [{ px: "101", sz: "1" }]]
+        }
+      },
+      payload: {
+        source_exchange: "hyperliquid",
+        exchangeCode: "HL",
+        instrumentCode: "btc-usd",
+        receivedAt: "2026-01-01T00:00:00.050Z"
+      },
+      resolveExistingSync: () => bookSync(10),
+      maxTimestampDriftMs: 5_000,
+      sequenceGapMs: 15,
+      nativeMaxLatencyMs: 50,
+      averageLatencyMs: 40,
+      sampleCount: 10,
+      location: defaultEngineState("test").location,
+      brainTimestamp: "2026-01-01T00:00:00.100Z"
+    });
+
+    if (decision.kind !== "STALE") {
+      throw new Error("expected stale decision");
+    }
+
+    const events: string[] = [];
+    const book = internalBook();
+    const result = await applyStaleHyperliquidL2BookSideEffects(
+      {
+        decision,
+        payload: { source_exchange: "hyperliquid", exchangeCode: "HL" },
+        wakeUpTimeMs: 3,
+        hotPathStartedAt: 12,
+        tradingEnabled: true
+      },
+      {
+        applySnapshot: async () => {
+          events.push("snapshot");
+          return book;
+        },
+        handleCrossedBookSnapshot: async () => {
+          events.push("crossed");
+        },
+        markLatencyDesyncedBook: (marketKey, staleBook, observedAt) => {
+          events.push(`desync:${marketKey}:${staleBook.midPrice}:${observedAt}`);
+        },
+        quoteStateStalePull: (instrumentCode, sequence, metrics, observedAt) => {
+          events.push(`pull:${instrumentCode}:${sequence}:${metrics.status}:${observedAt}`);
+        },
+        observeExecutionProfile: (metrics, trace) => {
+          events.push(`profile:${metrics.totalLatencyMs}:${trace.wakeUpTimeMs}`);
+        },
+        schedule: () => events.push("schedule"),
+        cancelAllQuotes: async (instrumentCode, reason) => {
+          events.push(`cancel:${instrumentCode}:${reason}`);
+        },
+        publishTickTelemetry: (tick, metrics, status, hotPathStartedAt) => {
+          events.push(
+            `telemetry:${tick.instrumentCode}:${metrics.status}:${status}:${hotPathStartedAt}`
+          );
+        }
+      }
+    );
+
+    expect(result).toMatchObject({
+      accepted: false,
+      status: "STALE",
+      reason: "NATIVE_HL_LATENCY_EXCEEDED",
+      metrics: { totalLatencyMs: 100 },
+      book,
+      processedCount: 0
+    });
+    expect(events).toEqual([
+      "snapshot",
+      "desync:hyperliquid:btc-usd:100:2026-01-01T00:00:00.100Z",
+      "pull:btc-usd:20:STALE:2026-01-01T00:00:00.100Z",
+      "profile:100:3",
+      "cancel:btc-usd:NATIVE_HL_LATENCY",
+      "schedule",
+      "telemetry:btc-usd:STALE:STALE:12"
+    ]);
+  });
+
   it("dispatches native L2 hot-path decisions through typed handlers", async () => {
     const raw = {
       data: {
@@ -706,6 +795,32 @@ function freshResult(): TickIngestResult {
     accepted: true,
     status: "FRESH",
     processedCount: 1
+  };
+}
+
+function internalBook(): InternalOrderBook {
+  return {
+    marketKey: "hyperliquid:btc-usd",
+    source: "HYPERLIQUID",
+    source_exchange: "hyperliquid",
+    sourceWeight: 1,
+    instrumentCode: "btc-usd",
+    exchangeCode: "hl",
+    bids: [{ price: 99, size: 1, updatedAt: "2026-01-01T00:00:00.100Z" }],
+    asks: [{ price: 101, size: 1, updatedAt: "2026-01-01T00:00:00.100Z" }],
+    bestBid: 99,
+    bestAsk: 101,
+    midPrice: 100,
+    spread: 2,
+    spreadBps: 200,
+    weightedImbalance: 0,
+    lastSequence: 20,
+    tickSize: 1,
+    ttbLatencyMs: 100,
+    isSynced: true,
+    desyncReason: null,
+    sequence: 20,
+    updatedAt: "2026-01-01T00:00:00.100Z"
   };
 }
 

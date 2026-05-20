@@ -225,7 +225,7 @@ import { OrderBookReconstructor, type OrderBookStores } from "./book/OrderBookRe
 import type { AppliedBookUpdate, BookDeltaWithTicker, BookSyncState } from "./book/BookTypes";
 import {
   applyHyperliquidIngestConnectionSideEffects,
-  buildHyperliquidL2BookTick,
+  applyStaleHyperliquidL2BookSideEffects,
   buildHyperliquidL2BookTickFromBook,
   dispatchHyperliquidL2BookDecision,
   dispatchHyperliquidRawMessageRoute,
@@ -1222,72 +1222,48 @@ export class TradingEngine {
     wakeUpTimeMs: number | null,
     hotPathStartedAt: number
   ): Promise<TickIngestResult> {
-    const { instrumentCode, sequence, snapshot } = l2Decision.bundle;
-    const { brainTimestamp, totalLatencyMs } = l2Decision;
-    const book =
-      snapshot.bids.length > 0 || snapshot.asks.length > 0
-        ? await this.applySnapshot(snapshot, { telemetry: false, persist: false })
-        : undefined;
-
-    if (book) {
-      if (isCrossedBook(book)) {
-        await this.orderBookReconstructor.handleCrossedBookSnapshot(
-          book,
-          sequence,
-          totalLatencyMs,
-          brainTimestamp
-        );
-      } else {
-        const syncState = this.bookSync.get(l2Decision.bundle.marketKey);
-        markBookSyncDesynced({
-          syncState,
-          reason: "NATIVE_HL_LATENCY",
-          observedAt: brainTimestamp
-        });
-        const staleBook = stateAfterDesyncedBook({
-          currentState: this.engineState,
-          book,
-          reason: "NATIVE_HL_LATENCY"
-        });
-        this.orderBook.set(l2Decision.bundle.marketKey, staleBook.book);
-        this.engineState = staleBook.state;
-      }
-    }
-
-    const metrics = l2Decision.metrics;
-    this.quoteStateStalePull(instrumentCode, sequence, metrics, brainTimestamp);
-    this.observeExecutionProfile(metrics, {
-      wakeUpTimeMs,
-      orderBookUpdateMs: null,
-      agentLogicMs: null,
-      hotPathStartedAt,
-      observedAt: brainTimestamp
-    });
-    if (this.cachedConfig.TRADING_ENABLED) {
-      this.state.waitUntil(this.cancelAllQuotes(instrumentCode, "NATIVE_HL_LATENCY"));
-    }
-    this.publishTickTelemetry(
-      buildHyperliquidL2BookTick({
+    return applyStaleHyperliquidL2BookSideEffects(
+      {
+        decision: l2Decision,
         payload,
-        bundle: l2Decision.bundle,
-        price: 0,
-        bestBid: undefined,
-        bestAsk: undefined,
-        rawEventType: "native-l2Book"
-      }),
-      metrics,
-      "STALE",
-      hotPathStartedAt
+        wakeUpTimeMs,
+        hotPathStartedAt,
+        tradingEnabled: this.cachedConfig.TRADING_ENABLED
+      },
+      {
+        applySnapshot: (snapshot) =>
+          this.applySnapshot(snapshot, { telemetry: false, persist: false }),
+        handleCrossedBookSnapshot: (book, sequence, totalLatencyMs, observedAt) =>
+          this.orderBookReconstructor.handleCrossedBookSnapshot(
+            book,
+            sequence,
+            totalLatencyMs,
+            observedAt
+          ),
+        markLatencyDesyncedBook: (marketKey, book, observedAt) => {
+          const syncState = this.bookSync.get(marketKey);
+          markBookSyncDesynced({
+            syncState,
+            reason: "NATIVE_HL_LATENCY",
+            observedAt
+          });
+          const staleBook = stateAfterDesyncedBook({
+            currentState: this.engineState,
+            book,
+            reason: "NATIVE_HL_LATENCY"
+          });
+          this.orderBook.set(marketKey, staleBook.book);
+          this.engineState = staleBook.state;
+        },
+        quoteStateStalePull: (instrumentCode, sequence, metrics, observedAt) =>
+          this.quoteStateStalePull(instrumentCode, sequence, metrics, observedAt),
+        observeExecutionProfile: (metrics, trace) => this.observeExecutionProfile(metrics, trace),
+        schedule: (work) => this.state.waitUntil(work),
+        cancelAllQuotes: (instrumentCode, reason) => this.cancelAllQuotes(instrumentCode, reason),
+        publishTickTelemetry: (tick, metrics, status, telemetryStartedAt) =>
+          this.publishTickTelemetry(tick, metrics, status, telemetryStartedAt)
+      }
     );
-
-    return {
-      accepted: false,
-      status: "STALE",
-      reason: "NATIVE_HL_LATENCY_EXCEEDED",
-      metrics,
-      book,
-      processedCount: 0
-    };
   }
 
   private async handleAcceptedHyperliquidL2Book(

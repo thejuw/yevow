@@ -25,6 +25,8 @@ import { readPositiveNumber } from "../helpers/RuntimeParsing";
 import { resolveNativeHyperliquidMaxLatencyMs } from "../performance/LatencyRuntime";
 import type { TickIngestResult } from "../TradingEngineRouteTypes";
 import type { BookSyncState } from "../book/BookTypes";
+import { isCrossedBook } from "../book/BookReconstruction";
+import type { ExecutionTraceInput } from "../performance/LatencyRuntime";
 import type {
   EngineState,
   EngineLocation,
@@ -540,6 +542,44 @@ export interface HyperliquidL2BookTickInput {
   readonly rawEventType?: string;
 }
 
+export interface StaleHyperliquidL2BookSideEffectsInput {
+  readonly decision: Extract<HyperliquidL2BookHotPathDecision, { kind: "STALE" }>;
+  readonly payload: HyperliquidRawIngestPayload;
+  readonly wakeUpTimeMs: number | null;
+  readonly hotPathStartedAt: number;
+  readonly tradingEnabled: boolean;
+}
+
+export interface StaleHyperliquidL2BookSideEffectHandlers {
+  readonly applySnapshot: (snapshot: OrderBookSnapshot) => Promise<InternalOrderBook | undefined>;
+  readonly handleCrossedBookSnapshot: (
+    book: InternalOrderBook,
+    sequence: number,
+    totalLatencyMs: number,
+    observedAt: string
+  ) => Promise<void>;
+  readonly markLatencyDesyncedBook: (
+    marketKey: string,
+    book: InternalOrderBook,
+    observedAt: string
+  ) => void;
+  readonly quoteStateStalePull: (
+    instrumentCode: string,
+    sequence: number,
+    metrics: LatencyMetrics,
+    observedAt: string
+  ) => void;
+  readonly observeExecutionProfile: (metrics: LatencyMetrics, trace: ExecutionTraceInput) => void;
+  readonly schedule: (work: Promise<unknown>) => void;
+  readonly cancelAllQuotes: (instrumentCode: string, reason: string) => Promise<unknown>;
+  readonly publishTickTelemetry: (
+    tick: MarketTick,
+    metrics: LatencyMetrics,
+    status: LatencyMetrics["status"],
+    hotPathStartedAt: number
+  ) => void;
+}
+
 export interface HyperliquidL2BookHotPathInput {
   readonly raw: Record<string, unknown>;
   readonly payload: HyperliquidRawIngestPayload;
@@ -656,6 +696,62 @@ export function buildHyperliquidL2BookTickFromBook(input: {
     bestAsk: input.book.bestAsk ?? undefined,
     rawEventType: input.rawEventType
   });
+}
+
+export async function applyStaleHyperliquidL2BookSideEffects(
+  input: StaleHyperliquidL2BookSideEffectsInput,
+  handlers: StaleHyperliquidL2BookSideEffectHandlers
+): Promise<TickIngestResult> {
+  const { instrumentCode, sequence, snapshot } = input.decision.bundle;
+  const { brainTimestamp, totalLatencyMs, metrics } = input.decision;
+  const book =
+    snapshot.bids.length > 0 || snapshot.asks.length > 0
+      ? await handlers.applySnapshot(snapshot)
+      : undefined;
+
+  if (book) {
+    if (isCrossedBook(book)) {
+      await handlers.handleCrossedBookSnapshot(book, sequence, totalLatencyMs, brainTimestamp);
+    } else {
+      handlers.markLatencyDesyncedBook(input.decision.bundle.marketKey, book, brainTimestamp);
+    }
+  }
+
+  handlers.quoteStateStalePull(instrumentCode, sequence, metrics, brainTimestamp);
+  handlers.observeExecutionProfile(metrics, {
+    wakeUpTimeMs: input.wakeUpTimeMs,
+    orderBookUpdateMs: null,
+    agentLogicMs: null,
+    hotPathStartedAt: input.hotPathStartedAt,
+    observedAt: brainTimestamp
+  });
+
+  if (input.tradingEnabled) {
+    handlers.schedule(handlers.cancelAllQuotes(instrumentCode, "NATIVE_HL_LATENCY"));
+  }
+
+  handlers.publishTickTelemetry(
+    buildHyperliquidL2BookTick({
+      payload: input.payload,
+      bundle: input.decision.bundle,
+      price: 0,
+      bestBid: undefined,
+      bestAsk: undefined,
+      rawEventType: "native-l2Book"
+    }),
+    metrics,
+    "STALE",
+    input.hotPathStartedAt
+  );
+
+  return {
+    accepted: false,
+    status: "STALE",
+    reason: "NATIVE_HL_LATENCY_EXCEEDED",
+    metrics,
+    book,
+    processedCount: 0
+  };
 }
 
 export type HyperliquidBookSequenceDecision =
