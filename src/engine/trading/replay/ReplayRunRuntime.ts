@@ -51,6 +51,32 @@ export interface HistoricalReplayRuntimeHandlers {
   readonly recordCompletedReplay: (input: HistoricalReplayCompletionInput) => Promise<ReplayResult>;
 }
 
+export interface ShadowReplayRestoreRuntimeHandlers {
+  readonly runShadowReplay: (
+    input: ShadowReplayWithRestoreInput
+  ) => Promise<ShadowReplayLoopResult>;
+  readonly restoreReplaySnapshot: (snapshot: EngineReplaySnapshot) => Promise<void>;
+}
+
+export async function runShadowReplayWithRestoreRuntime(
+  input: ShadowReplayWithRestoreInput,
+  handlers: ShadowReplayRestoreRuntimeHandlers
+): Promise<ShadowReplayLoopResult> {
+  let replayLoop: ShadowReplayLoopResult | undefined;
+
+  try {
+    replayLoop = await handlers.runShadowReplay(input);
+  } finally {
+    await handlers.restoreReplaySnapshot(input.liveSnapshot);
+  }
+
+  if (!replayLoop) {
+    throw new Error("REPLAY_LOOP_DID_NOT_COMPLETE");
+  }
+
+  return replayLoop;
+}
+
 export async function runHistoricalReplayRuntime(
   input: HistoricalReplayRuntimeInput,
   handlers: HistoricalReplayRuntimeHandlers

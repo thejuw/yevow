@@ -252,7 +252,10 @@ import {
   recordCompletedReplaySideEffects,
   writeReplayRunningStatusSideEffect
 } from "./replay/ReplayResultRuntime";
-import { runHistoricalReplayRuntime } from "./replay/ReplayRunRuntime";
+import {
+  runHistoricalReplayRuntime,
+  runShadowReplayWithRestoreRuntime
+} from "./replay/ReplayRunRuntime";
 import {
   captureEngineReplaySnapshot,
   restoreReplaySnapshotSideEffects,
@@ -4001,31 +4004,24 @@ export class TradingEngine {
   private async runShadowReplayWithRestore(
     input: ShadowReplayWithRestoreInput
   ): Promise<ShadowReplayLoopResult> {
-    let replayLoop: ShadowReplayLoopResult | null = null;
-    try {
-      replayLoop = await runShadowReplayLoop({
-        replayId: input.replayId,
-        ticks: input.ticks,
-        replayOptions: input.replayOptions,
-        speedMultiplier: input.speedMultiplier,
-        initialShadowBankroll: input.initialShadowBankroll,
-        dateFrom: input.dateFrom,
-        dateTo: input.dateTo,
-        startedAt: input.startedAt,
-        enqueueShadowReplayTick: (tick) => this.enqueueTick(tick, null, { shadowReplay: true }),
-        lastTradeIntent: () => this.engineState.lastTradeIntent,
-        oracleRegime: () => this.engineState.oracle.regime,
-        writeStatus: (status) => this.replayJournal.writeStatus(status)
-      });
-    } finally {
-      await this.restoreReplaySnapshot(input.liveSnapshot);
-    }
-
-    if (!replayLoop) {
-      throw new Error("REPLAY_LOOP_DID_NOT_COMPLETE");
-    }
-
-    return replayLoop;
+    return runShadowReplayWithRestoreRuntime(input, {
+      runShadowReplay: (replayInput) =>
+        runShadowReplayLoop({
+          replayId: replayInput.replayId,
+          ticks: replayInput.ticks,
+          replayOptions: replayInput.replayOptions,
+          speedMultiplier: replayInput.speedMultiplier,
+          initialShadowBankroll: replayInput.initialShadowBankroll,
+          dateFrom: replayInput.dateFrom,
+          dateTo: replayInput.dateTo,
+          startedAt: replayInput.startedAt,
+          enqueueShadowReplayTick: (tick) => this.enqueueTick(tick, null, { shadowReplay: true }),
+          lastTradeIntent: () => this.engineState.lastTradeIntent,
+          oracleRegime: () => this.engineState.oracle.regime,
+          writeStatus: (status) => this.replayJournal.writeStatus(status)
+        }),
+      restoreReplaySnapshot: (snapshot) => this.restoreReplaySnapshot(snapshot)
+    });
   }
 
   private async runHistoricalReplay(

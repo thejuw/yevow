@@ -1,13 +1,54 @@
 import { describe, expect, it } from "vitest";
-import { runHistoricalReplayRuntime } from "../../src/engine/trading/replay/ReplayRunRuntime";
+import {
+  runHistoricalReplayRuntime,
+  runShadowReplayWithRestoreRuntime
+} from "../../src/engine/trading/replay/ReplayRunRuntime";
 import type { ReplayOptions } from "../../src/engine/trading/routes/ReplayAdminRoutes";
 import type { EngineReplaySnapshot } from "../../src/engine/trading/replay/ReplaySnapshotRuntime";
+import type { ShadowReplayWithRestoreInput } from "../../src/engine/trading/pipelines/TickPipelineTypes";
 import type { MarketTick, ReplayResult } from "../../src/types";
 
 const STARTED_AT = "2026-05-18T10:00:00.000Z";
 const UPDATED_AT = "2026-05-18T10:00:01.000Z";
 
 describe("ReplayRunRuntime", () => {
+  it("restores the live snapshot after successful and failed shadow replay loops", async () => {
+    const liveSnapshot = { engineState: { engineId: "live" } } as unknown as EngineReplaySnapshot;
+    const input = shadowReplayWithRestoreInput(liveSnapshot);
+    const successCalls: string[] = [];
+
+    const success = await runShadowReplayWithRestoreRuntime(input, {
+      runShadowReplay: async (replayInput) => {
+        successCalls.push(`loop:${replayInput.replayId}`);
+        return {
+          ticksReplayed: 1,
+          generatedIntentCount: 1,
+          modeledTrades: [trade({ tradeId: "modeled-success" })]
+        };
+      },
+      restoreReplaySnapshot: async (snapshot) => {
+        successCalls.push(`restore:${snapshot === liveSnapshot}`);
+      }
+    });
+
+    expect(success.generatedIntentCount).toBe(1);
+    expect(successCalls).toEqual(["loop:replay-runtime", "restore:true"]);
+
+    const failureCalls: string[] = [];
+    await expect(
+      runShadowReplayWithRestoreRuntime(input, {
+        runShadowReplay: async (replayInput) => {
+          failureCalls.push(`loop:${replayInput.replayId}`);
+          throw new Error("loop failed");
+        },
+        restoreReplaySnapshot: async (snapshot) => {
+          failureCalls.push(`restore:${snapshot === liveSnapshot}`);
+        }
+      })
+    ).rejects.toThrow("loop failed");
+    expect(failureCalls).toEqual(["loop:replay-runtime", "restore:true"]);
+  });
+
   it("orchestrates historical replay setup, shadow run, and completion recording", async () => {
     const calls: string[] = [];
     const ticks = [tick("2026-05-01T00:00:00.000Z", 100), tick("2026-05-01T00:00:01.000Z", 101)];
@@ -112,6 +153,22 @@ function replayOptions(overrides: Partial<ReplayOptions> = {}): ReplayOptions {
     strategyVersionId: "strategy-v1",
     actor: "test",
     ...overrides
+  };
+}
+
+function shadowReplayWithRestoreInput(
+  liveSnapshot: EngineReplaySnapshot
+): ShadowReplayWithRestoreInput {
+  return {
+    replayId: "replay-runtime",
+    ticks: [tick("2026-05-01T00:00:00.000Z", 100)],
+    replayOptions: replayOptions(),
+    speedMultiplier: 4,
+    initialShadowBankroll: 300,
+    dateFrom: "2026-05-01",
+    dateTo: "2026-05-02",
+    startedAt: STARTED_AT,
+    liveSnapshot
   };
 }
 
