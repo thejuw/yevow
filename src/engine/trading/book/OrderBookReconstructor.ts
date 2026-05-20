@@ -13,6 +13,12 @@ import {
   type RebuiltBookSnapshot
 } from "./BookReconstruction";
 import type { AppliedBookUpdate, BookDeltaWithTicker, BookSyncState } from "./BookTypes";
+import {
+  applyDeltaBookSyncState,
+  applySnapshotBookSyncState,
+  getOrCreateBookSyncState,
+  markBookDesynced
+} from "./BookSyncRuntime";
 import { SortedBookSide } from "./SortedBookSide";
 
 export interface AppliedBookSnapshot {
@@ -97,17 +103,15 @@ export class OrderBookReconstructor {
       source,
       sourceWeight
     );
-    syncState.exchangeCode = exchangeCode;
-    syncState.source_exchange = sourceExchange;
-    syncState.sourceWeight = sourceWeight;
-    syncState.lastSequence = snapshot.sequence;
-    syncState.lastSnapshotAt = updatedAt;
-    syncState.lastDeltaAt = null;
-    syncState.lastDesyncAt = null;
-    syncState.desyncReason = null;
-    syncState.isSynced = true;
-    syncState.tickSize = tickSize;
-    syncState.ttbLatencyMs = timeToBookMs;
+    applySnapshotBookSyncState(syncState, {
+      exchangeCode,
+      sourceExchange,
+      sourceWeight,
+      sequence: snapshot.sequence,
+      observedAt: updatedAt,
+      tickSize,
+      timeToBookMs
+    });
 
     const { book } = this.rebuildBookSnapshot(
       marketKey,
@@ -203,15 +207,16 @@ export class OrderBookReconstructor {
 
     bookSide.upsert(delta.price, delta.size, updatedAt, tickSize);
 
-    syncState.exchangeCode = exchangeCode;
-    syncState.source_exchange = sourceExchange;
-    syncState.sourceWeight = sourceWeight;
-    syncState.lastSequence = delta.sequence;
-    syncState.lastDeltaAt = updatedAt;
-    syncState.desyncReason = wasSnapshotSeeded ? null : "AWAITING_SNAPSHOT";
-    syncState.isSynced = wasSnapshotSeeded;
-    syncState.tickSize = tickSize;
-    syncState.ttbLatencyMs = timeToBookMs;
+    applyDeltaBookSyncState(syncState, {
+      exchangeCode,
+      sourceExchange,
+      sourceWeight,
+      sequence: delta.sequence,
+      observedAt: updatedAt,
+      wasSnapshotSeeded,
+      tickSize,
+      timeToBookMs
+    });
 
     const { book } = this.rebuildBookSnapshot(
       marketKey,
@@ -262,10 +267,7 @@ export class OrderBookReconstructor {
       book.sourceWeight
     );
 
-    syncState.isSynced = false;
-    syncState.desyncReason = "CROSSED_BOOK";
-    syncState.lastDesyncAt = observedAt;
-    syncState.ttbLatencyMs = timeToBookMs;
+    markBookDesynced(syncState, "CROSSED_BOOK", observedAt, timeToBookMs);
 
     this.logCrossedBook(
       "Crossed snapshot detected; purging local book",
@@ -335,37 +337,16 @@ export class OrderBookReconstructor {
     source: MarketDataSource,
     sourceWeight: number
   ): BookSyncState {
-    const existing = this.stores.sync.get(marketKey);
-
-    if (existing) {
-      existing.exchangeCode = exchangeCode ?? existing.exchangeCode;
-      existing.source_exchange =
-        sourceExchange.length > 0 ? sourceExchange : existing.source_exchange;
-      existing.tickSize = tickSize;
-      existing.sourceWeight = sourceWeight;
-      return existing;
-    }
-
-    const created: BookSyncState = {
+    return getOrCreateBookSyncState({
+      sync: this.stores.sync,
       marketKey,
-      source,
-      source_exchange: sourceExchange,
-      sourceWeight,
       instrumentCode,
       exchangeCode,
-      lastSequence: null,
-      lastSnapshotAt: null,
-      lastDeltaAt: null,
-      lastDesyncAt: null,
-      desyncReason: null,
-      isSynced: false,
+      sourceExchange,
       tickSize,
-      ttbLatencyMs: null,
-      lastCrossCheckAt: 0
-    };
-
-    this.stores.sync.set(marketKey, created);
-    return created;
+      source,
+      sourceWeight
+    });
   }
 
   private async handleSequenceGap(
@@ -392,10 +373,7 @@ export class OrderBookReconstructor {
       this.config.normalizeSourceWeight(delta.sourceWeight)
     );
 
-    syncState.isSynced = false;
-    syncState.desyncReason = "SEQUENCE_GAP";
-    syncState.lastDesyncAt = observedAt;
-    syncState.ttbLatencyMs = timeToBookMs;
+    markBookDesynced(syncState, "SEQUENCE_GAP", observedAt, timeToBookMs);
 
     this.config.error("ORDER_BOOK_DESYNC", "Sequence gap detected; purging local book", {
       instrumentCode,
@@ -441,10 +419,7 @@ export class OrderBookReconstructor {
       book.sourceWeight
     );
 
-    syncState.isSynced = false;
-    syncState.desyncReason = "CROSSED_BOOK";
-    syncState.lastDesyncAt = observedAt;
-    syncState.ttbLatencyMs = timeToBookMs;
+    markBookDesynced(syncState, "CROSSED_BOOK", observedAt, timeToBookMs);
 
     this.logCrossedBook(
       "Crossed book detected; purging local book",
@@ -507,9 +482,12 @@ export class OrderBookReconstructor {
       return;
     }
 
-    syncState.isSynced = false;
-    syncState.desyncReason = "TOP_OF_BOOK_MISMATCH";
-    syncState.lastDesyncAt = new Date().toISOString();
+    markBookDesynced(
+      syncState,
+      "TOP_OF_BOOK_MISMATCH",
+      new Date().toISOString(),
+      syncState.ttbLatencyMs
+    );
 
     this.config.error("ORDER_BOOK_CROSS_CHECK_FAILED", "Top-of-book mismatch detected", {
       instrumentCode: book.instrumentCode,
