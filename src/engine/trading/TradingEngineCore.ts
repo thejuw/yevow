@@ -119,10 +119,9 @@ import {
   type ApprovedExecutionPlan
 } from "./execution/ExecutionPlanRuntime";
 import {
-  buildExecutionDispatchRuntimeDecision,
   dispatchExecutionPlanSideEffects,
-  dispatchTradeIntentToExecutioner,
-  emitExecutionDispatchBlockLog
+  dispatchTradeIntentSideEffects,
+  dispatchTradeIntentToExecutioner
 } from "./execution/ExecutionDispatchRuntime";
 import { buildExecutionReportRuntimeUpdate } from "./execution/ExecutionReportRuntime";
 import {
@@ -3840,46 +3839,43 @@ export class TradingEngine {
   ): Promise<void> {
     const inventoryHedge = isInventoryHedgeIntent(intent);
     const executioner = this.env.EXECUTIONER;
-    const dispatch = buildExecutionDispatchRuntimeDecision({
-      intent,
-      hasExecutioner: Boolean(executioner),
-      tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-      hedgeEnabled: this.cachedConfig.HEDGE_ENABLED,
-      inventoryHedge,
-      instrumentSelected: isInstrumentSelectedByMoltworker(intent.instrumentCode, this.macroBias),
-      selectedInstruments: [...selectedMoltworkerInstruments(this.macroBias)]
-    });
-    if (dispatch.blockLog) {
-      emitExecutionDispatchBlockLog(this.logger, dispatch.blockLog);
-      return;
-    }
-
-    if (!dispatch.gate.allowed || !executioner) {
-      return;
-    }
-
-    if (!this.reservePaperExecutionBudget(intent)) {
-      return;
-    }
-
-    if (initialDelayMs > 0) {
-      await wait(initialDelayMs);
-    }
-
-    const priority = "NEW";
-    const reservation = this.rateLimiter.reserve(intent.source_exchange ?? "default", priority);
-    this.waitUntilStoragePut(
-      RATE_LIMIT_STATE_KEY,
-      this.rateLimiter.exportState(),
-      "EXECUTION_RATE_LIMIT"
+    await dispatchTradeIntentSideEffects(
+      {
+        intent,
+        hasExecutioner: Boolean(executioner),
+        tradingEnabled: this.cachedConfig.TRADING_ENABLED,
+        hedgeEnabled: this.cachedConfig.HEDGE_ENABLED,
+        inventoryHedge,
+        instrumentSelected: isInstrumentSelectedByMoltworker(intent.instrumentCode, this.macroBias),
+        selectedInstruments: [...selectedMoltworkerInstruments(this.macroBias)],
+        initialDelayMs
+      },
+      {
+        logger: this.logger,
+        reservePaperExecutionBudget: (tradeIntent) => this.reservePaperExecutionBudget(tradeIntent),
+        wait,
+        reserveExecutionCapacity: (exchangeKey, priority) =>
+          this.rateLimiter.reserve(exchangeKey, priority),
+        persistRateLimitState: () =>
+          this.waitUntilStoragePut(
+            RATE_LIMIT_STATE_KEY,
+            this.rateLimiter.exportState(),
+            "EXECUTION_RATE_LIMIT"
+          ),
+        enqueueExecutionIntent: (tradeIntent, priority, waitMs) =>
+          this.enqueueExecutionIntent(tradeIntent, priority, waitMs),
+        dispatchTradeIntent: (tradeIntent) => {
+          if (!executioner) {
+            return Promise.resolve();
+          }
+          return dispatchTradeIntentToExecutioner({
+            executioner,
+            logger: this.logger,
+            intent: tradeIntent
+          });
+        }
+      }
     );
-
-    if (!reservation.allowed) {
-      await this.enqueueExecutionIntent(intent, priority, reservation.waitMs);
-      return;
-    }
-
-    await dispatchTradeIntentToExecutioner({ executioner, logger: this.logger, intent });
   }
 
   private reservePaperExecutionBudget(intent: TradeIntent): boolean {

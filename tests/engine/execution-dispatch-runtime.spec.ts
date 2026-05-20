@@ -5,9 +5,11 @@ import {
   buildExecutionPlanDispatchAction,
   dispatchExecutionPlanSideEffects,
   dispatchTradeIntentToExecutioner,
+  dispatchTradeIntentSideEffects,
   emitExecutionDispatchBlockLog,
   type ExecutionDispatchBlockLogger,
   type ExecutionDispatchLogger,
+  type TradeIntentDispatchSideEffectHandlers,
   evaluateExecutionDispatchGate,
   shadowTradeIntentAuthorizedLogMetadata,
   tradeIntentAuthorizedLogMetadata,
@@ -366,6 +368,101 @@ describe("ExecutionDispatchRuntime", () => {
     expect(dispatched).toEqual(["intent-child-1:25", "intent-child-2:25"]);
   });
 
+  it("emits block logs and skips trade intent dispatch side effects", async () => {
+    const sideEffects = tradeDispatchSideEffectSpy();
+
+    const decision = await dispatchTradeIntentSideEffects(
+      {
+        intent: tradeIntent({ instrumentCode: "eth-usd" }),
+        hasExecutioner: true,
+        tradingEnabled: true,
+        hedgeEnabled: false,
+        inventoryHedge: false,
+        instrumentSelected: false,
+        selectedInstruments: ["btc-usd"],
+        initialDelayMs: 0
+      },
+      sideEffects.handlers
+    );
+
+    expect(decision.gate).toEqual({ allowed: false, reason: "MOLTWORKER_NOT_SELECTED" });
+    expect(sideEffects.events).toEqual(["info:EXECUTION_DISPATCH_BLOCKED"]);
+  });
+
+  it("skips dispatch when the paper execution budget rejects the intent", async () => {
+    const sideEffects = tradeDispatchSideEffectSpy({ paperBudgetAllowed: false });
+
+    const decision = await dispatchTradeIntentSideEffects(
+      {
+        intent: tradeIntent(),
+        hasExecutioner: true,
+        tradingEnabled: true,
+        hedgeEnabled: false,
+        inventoryHedge: false,
+        instrumentSelected: true,
+        selectedInstruments: ["btc-usd"],
+        initialDelayMs: 0
+      },
+      sideEffects.handlers
+    );
+
+    expect(decision.gate).toEqual({ allowed: true, reason: null });
+    expect(sideEffects.events).toEqual(["paper:intent-1"]);
+  });
+
+  it("waits, persists rate limits, and dispatches allowed trade intents", async () => {
+    const sideEffects = tradeDispatchSideEffectSpy();
+
+    await dispatchTradeIntentSideEffects(
+      {
+        intent: tradeIntent({ source_exchange: "hyperliquid" }),
+        hasExecutioner: true,
+        tradingEnabled: true,
+        hedgeEnabled: false,
+        inventoryHedge: false,
+        instrumentSelected: true,
+        selectedInstruments: ["btc-usd"],
+        initialDelayMs: 25
+      },
+      sideEffects.handlers
+    );
+
+    expect(sideEffects.events).toEqual([
+      "paper:intent-1",
+      "wait:25",
+      "reserve:hyperliquid:NEW",
+      "persist",
+      "dispatch:intent-1"
+    ]);
+  });
+
+  it("enqueues trade intents when execution rate limits are exhausted", async () => {
+    const sideEffects = tradeDispatchSideEffectSpy({
+      reservation: { allowed: false, waitMs: 375 }
+    });
+
+    await dispatchTradeIntentSideEffects(
+      {
+        intent: tradeIntent({ source_exchange: undefined }),
+        hasExecutioner: true,
+        tradingEnabled: true,
+        hedgeEnabled: false,
+        inventoryHedge: false,
+        instrumentSelected: true,
+        selectedInstruments: ["btc-usd"],
+        initialDelayMs: 0
+      },
+      sideEffects.handlers
+    );
+
+    expect(sideEffects.events).toEqual([
+      "paper:intent-1",
+      "reserve:default:NEW",
+      "persist",
+      "enqueue:intent-1:NEW:375"
+    ]);
+  });
+
   it("dispatches trade intents to the executioner binding", async () => {
     const requests: Request[] = [];
     const { logger } = loggerSpy();
@@ -406,6 +503,57 @@ describe("ExecutionDispatchRuntime", () => {
     });
   });
 });
+
+function tradeDispatchSideEffectSpy(
+  options: {
+    paperBudgetAllowed?: boolean;
+    reservation?: { allowed: boolean; waitMs: number };
+  } = {}
+): {
+  events: string[];
+  handlers: TradeIntentDispatchSideEffectHandlers;
+} {
+  const events: string[] = [];
+  const paperBudgetAllowed = options.paperBudgetAllowed ?? true;
+  const reservation = options.reservation ?? { allowed: true, waitMs: 0 };
+
+  return {
+    events,
+    handlers: {
+      logger: {
+        info(eventType) {
+          events.push(`info:${eventType}`);
+        },
+        warn(eventType) {
+          events.push(`warn:${eventType}`);
+        }
+      },
+      reservePaperExecutionBudget(intent) {
+        events.push(`paper:${intent.intentId}`);
+        return paperBudgetAllowed;
+      },
+      wait(ms) {
+        events.push(`wait:${ms}`);
+        return Promise.resolve();
+      },
+      reserveExecutionCapacity(exchangeKey, priority) {
+        events.push(`reserve:${exchangeKey}:${priority}`);
+        return reservation;
+      },
+      persistRateLimitState() {
+        events.push("persist");
+      },
+      enqueueExecutionIntent(intent, priority, waitMs) {
+        events.push(`enqueue:${intent.intentId}:${priority}:${waitMs}`);
+        return Promise.resolve();
+      },
+      dispatchTradeIntent(intent) {
+        events.push(`dispatch:${intent.intentId}`);
+        return Promise.resolve();
+      }
+    }
+  };
+}
 
 function loggerSpy(): {
   logger: ExecutionDispatchLogger;
