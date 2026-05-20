@@ -33,10 +33,10 @@ import {
   normalizeAssetMatrix,
   normalizeAssetQuoteStates
 } from "./AssetStateRuntime";
+import { defaultEnsembleState } from "./AgentStateDefaults";
 import {
   defaultCitadelState,
   defaultEngineState,
-  defaultEnsembleState,
   defaultInventoryGuardState,
   defaultJanitorState,
   defaultLeadLagMetrics,

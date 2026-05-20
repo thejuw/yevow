@@ -1,5 +1,5 @@
 import { aggregateQuoteState, suspendAssetQuoteStates } from "../state/AssetStateRuntime";
-import { hawkesEvacuationSignal, inferSignalBias } from "../state/EngineStateDefaults";
+import { hawkesEvacuationSignal, inferSignalBias } from "../state/AgentStateDefaults";
 import type { AgentHealth, AgentName, AgentSignal, EngineState } from "../../../types";
 
 export interface AcceptedAgentSignalInput {

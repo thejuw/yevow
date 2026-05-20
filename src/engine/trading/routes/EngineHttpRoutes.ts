@@ -38,7 +38,7 @@ import {
   resumeExpiredAssetQuoteStates,
   suspendAssetQuoteStates
 } from "../state/AssetStateRuntime";
-import { touchAgentHealth } from "../state/EngineStateDefaults";
+import { touchAgentHealth } from "../state/AgentStateDefaults";
 import {
   BOOK_SNAPSHOT_TOP_LEVELS,
   CASCADE_LAST_BACKTEST_REPORT_KEY,

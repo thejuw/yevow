@@ -544,12 +544,14 @@ import {
   quotePriceMovedTicks
 } from "./state/AssetStateRuntime";
 import {
-  defaultEngineState,
   defaultEnsembleState,
+  disabledCroupierDecision,
+  touchAgentHealth
+} from "./state/AgentStateDefaults";
+import {
+  defaultEngineState,
   normalizePaperBankroll,
   parseDeltaNormalizationWeights,
-  touchAgentHealth,
-  disabledCroupierDecision,
   defaultAnomalyStatus,
   normalizeExecutionProfile,
   defaultMicrostructure,

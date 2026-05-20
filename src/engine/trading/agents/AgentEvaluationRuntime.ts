@@ -1,6 +1,6 @@
 import type { CroupierDecision, CroupierInput } from "../../../agents/CroupierAgent";
 import type { ProfilerContext, ProfilerEvaluation } from "../../../agents/ProfilerAgent";
-import { disabledProfilerEvaluation } from "../state/EngineStateDefaults";
+import { disabledProfilerEvaluation } from "../state/AgentStateDefaults";
 import type { AdverseSelectionModel } from "../../AdverseSelectionModel";
 import { adversePenaltyForQuoteSide } from "../../AdverseSelectionModel";
 import type {
