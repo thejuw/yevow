@@ -11,6 +11,7 @@ import {
   stateAfterHealthHeartbeat,
   syncStateMicrostructureFromBook
 } from "../../src/engine/trading/state/EngineDiagnostics";
+import { hydrateEngineBootCollections } from "../../src/engine/trading/state/EngineBootState";
 import {
   applyHotStorageSnapshotSideEffects,
   evaluateHotStorageSnapshotDecision,
@@ -28,6 +29,7 @@ import type {
   Env,
   InternalOrderBook,
   LatencyMetrics,
+  LiquidityWall,
   MacroBias,
   MarketTick,
   TemporaryGovernanceOverride
@@ -594,6 +596,34 @@ describe("storage write guard", () => {
     expect(events).toEqual(["mark:1500:15", "persist:HOT_SNAPSHOT:engineState"]);
   });
 
+  it("hydrates boot collections with bounded histories and filtered order books", () => {
+    const staleBook = orderBook("hyperliquid:old-usd", "old-usd", true, 1, 2, 0.1);
+    const activeBook = orderBook("hyperliquid:btc-usd", "btc-usd", true, 100, 101, 1);
+    const collections = hydrateEngineBootCollections({
+      persistedBooks: new Map([
+        [staleBook.marketKey, staleBook],
+        [activeBook.marketKey, activeBook]
+      ]),
+      persistedLatencyHistory: [latencyMetric({ sequence: 1 }), latencyMetric({ sequence: 2 })],
+      persistedProcessingLatencySamples: [1, -1, Number.NaN, 2, 3],
+      persistedDomWallHistory: [
+        liquidityWall("wall-1", { instrumentCode: "btc-usd", side: "bid" }),
+        liquidityWall("wall-2", { instrumentCode: "eth-usd", side: "ask" })
+      ],
+      performanceHistoryLimit: 1,
+      jitterSampleWindow: 2,
+      domWallHistoryLimit: 1,
+      filterTargetOrderBooks: (books) =>
+        new Map([...books].filter(([marketKey]) => marketKey === activeBook.marketKey))
+    });
+
+    expect([...collections.hydratedBooks.snapshots.keys()]).toEqual([activeBook.marketKey]);
+    expect(collections.latencyHistory.map((metric) => metric.sequence)).toEqual([2]);
+    expect(collections.processingLatencySamples).toEqual([2, 3]);
+    expect(collections.domWallHistory).toHaveLength(1);
+    expect(collections.domWallHistory[0]?.instrumentCode).toBe("eth-usd");
+  });
+
   it("resolves hot snapshot cadence from bounded env input", () => {
     expect(resolveHotStorageSnapshotIntervalMs("2500")).toBe(2_500);
     expect(resolveHotStorageSnapshotIntervalMs("10")).toBe(1_000);
@@ -746,7 +776,7 @@ function agentSignal(): AgentSignal {
   };
 }
 
-function latencyMetric(): LatencyMetrics {
+function latencyMetric(overrides: Partial<LatencyMetrics> = {}): LatencyMetrics {
   return {
     instrumentCode: "btc-usd",
     sequence: 42,
@@ -758,7 +788,32 @@ function latencyMetric(): LatencyMetrics {
     processingLatencyMs: 1,
     totalLatencyMs: 3,
     maxLatencyMs: 150,
-    status: "FRESH"
+    status: "FRESH",
+    ...overrides
+  };
+}
+
+function liquidityWall(wallId: string, overrides: Partial<LiquidityWall> = {}): LiquidityWall {
+  return {
+    wallId,
+    instrumentCode: "btc-usd",
+    exchangeCode: "hyperliquid",
+    side: "ask",
+    priceStart: 101,
+    priceEnd: 102,
+    centerPrice: 101.5,
+    volume: 10,
+    meanVolume: 1,
+    sigmaVolume: 1,
+    zScore: 9,
+    levelCount: 1,
+    status: "ACTIVE",
+    firstSeenAt: "2026-05-18T07:59:00.000Z",
+    lastSeenAt: "2026-05-18T07:59:00.000Z",
+    lastSequence: 7,
+    distanceFromMidBps: 150,
+    spoofingSuspected: false,
+    ...overrides
   };
 }
 

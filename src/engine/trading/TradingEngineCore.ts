@@ -304,7 +304,7 @@ import {
   createBootProfilerAgent,
   resolveEngineBootRuntimeSettings
 } from "./state/EngineBootConfig";
-import { buildHydratedEngineState } from "./state/EngineBootState";
+import { buildHydratedEngineState, hydrateEngineBootCollections } from "./state/EngineBootState";
 import {
   createTradingEngineBootServices,
   tradingEngineLoggerRuntimeContext
@@ -502,7 +502,6 @@ import {
   resolveBookSide,
   resolveCurrentInstrument,
   buildMarketKey,
-  hydrateOrderBooks,
   hydrateLegacyLevel,
   levelsToBookSide,
   tickToDelta,
@@ -512,7 +511,6 @@ import {
   parseTickSizeMap,
   parsePositiveNumberMap
 } from "./book/BookRuntimeHelpers";
-import { sanitizeWallHistory } from "./book/DomRuntimeHelpers";
 import {
   cascadeInstrumentSet,
   latestAbsorptionForInstrument,
@@ -789,7 +787,17 @@ export class TradingEngine {
       const baseState = persistedState ?? defaultEngineState(this.state.id.toString());
       const now = new Date().toISOString();
 
-      const hydratedBooks = hydrateOrderBooks(filterTargetOrderBooks(persistedBooks));
+      const bootCollections = hydrateEngineBootCollections({
+        persistedBooks,
+        persistedLatencyHistory,
+        persistedProcessingLatencySamples,
+        persistedDomWallHistory,
+        performanceHistoryLimit: PERFORMANCE_HISTORY_LIMIT,
+        jitterSampleWindow: this.jitterSampleWindow,
+        domWallHistoryLimit: this.domWallHistoryLimit,
+        filterTargetOrderBooks
+      });
+      const hydratedBooks = bootCollections.hydratedBooks;
 
       this.orderBook = hydratedBooks.snapshots;
       this.bids = hydratedBooks.bids;
@@ -805,13 +813,9 @@ export class TradingEngine {
       this.oracleAgent.hydrate(baseState.oracle);
       this.sentimentAgent.hydrate(baseState.sentiment);
       this.lastTickTimestamp = baseState.microstructure?.updatedAt ?? baseState.updatedAt ?? null;
-      this.latencyHistory = (persistedLatencyHistory ?? []).slice(-PERFORMANCE_HISTORY_LIMIT);
-      this.processingLatencySamples = (persistedProcessingLatencySamples ?? [])
-        .filter((sample) => Number.isFinite(sample) && sample >= 0)
-        .slice(-this.jitterSampleWindow);
-      this.domWallHistory = sanitizeWallHistory(persistedDomWallHistory).slice(
-        -this.domWallHistoryLimit
-      );
+      this.latencyHistory = bootCollections.latencyHistory;
+      this.processingLatencySamples = bootCollections.processingLatencySamples;
+      this.domWallHistory = bootCollections.domWallHistory;
       this.maxLatencyMs = resolveMaxLatencyMs(kvConfig, baseState.maxLatencyMs);
       const effectiveGovernance = await this.governor.readEffectiveConfig(
         await this.configManager.fetchConfig()

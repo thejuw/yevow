@@ -7,7 +7,9 @@ import {
 import { isShadowMode } from "../../../utils/CitadelProtocol";
 import { applyLocationRisk, defaultEngineLocation } from "../helpers/PlacementResolver";
 import { countBookLevels } from "../book/BookReconstruction";
+import { hydrateOrderBooks } from "../book/BookRuntimeHelpers";
 import { calculateOrderBookPriceDiscovery } from "../book/BookViews";
+import { sanitizeWallHistory } from "../book/DomRuntimeHelpers";
 import type { SortedBookSide } from "../book/SortedBookSide";
 import type {
   AdminConfigUpdate,
@@ -16,7 +18,9 @@ import type {
   Env,
   GlobalRiskConfig,
   InternalOrderBook,
+  LatencyMetrics,
   LiquidationHeatmapState,
+  LiquidityWall,
   MacroBias,
   ProfilerState,
   RiskLimits,
@@ -66,6 +70,41 @@ export interface HydratedEngineStateInput {
   readonly jitterSampleWindow: number;
   readonly jitterComputeIntervalTicks: number;
   readonly processingLatencySampleCount: number;
+}
+
+export interface EngineBootCollectionsInput {
+  readonly persistedBooks: Map<string, InternalOrderBook>;
+  readonly persistedLatencyHistory: LatencyMetrics[] | undefined;
+  readonly persistedProcessingLatencySamples: number[] | undefined;
+  readonly persistedDomWallHistory: LiquidityWall[] | undefined;
+  readonly performanceHistoryLimit: number;
+  readonly jitterSampleWindow: number;
+  readonly domWallHistoryLimit: number;
+  readonly filterTargetOrderBooks: (
+    records: Map<string, InternalOrderBook>
+  ) => Map<string, InternalOrderBook>;
+}
+
+export interface EngineBootCollections {
+  readonly hydratedBooks: ReturnType<typeof hydrateOrderBooks>;
+  readonly latencyHistory: LatencyMetrics[];
+  readonly processingLatencySamples: number[];
+  readonly domWallHistory: LiquidityWall[];
+}
+
+export function hydrateEngineBootCollections(
+  input: EngineBootCollectionsInput
+): EngineBootCollections {
+  return {
+    hydratedBooks: hydrateOrderBooks(input.filterTargetOrderBooks(input.persistedBooks)),
+    latencyHistory: (input.persistedLatencyHistory ?? []).slice(-input.performanceHistoryLimit),
+    processingLatencySamples: (input.persistedProcessingLatencySamples ?? [])
+      .filter((sample) => Number.isFinite(sample) && sample >= 0)
+      .slice(-input.jitterSampleWindow),
+    domWallHistory: sanitizeWallHistory(input.persistedDomWallHistory).slice(
+      -input.domWallHistoryLimit
+    )
+  };
 }
 
 export function buildHydratedEngineState(input: HydratedEngineStateInput): EngineState {
