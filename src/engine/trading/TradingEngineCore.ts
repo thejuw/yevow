@@ -165,13 +165,11 @@ import {
   type ExecutionTraceInput
 } from "./performance/LatencyRuntime";
 import {
-  buildJanitorReport,
+  buildJanitorRunArtifacts,
   cancelJanitorOrder,
   fetchJanitorExchangeOpenOrders,
-  janitorCleanupRequiredLogMetadata,
   reconcileJanitorOrders,
-  recordPostOnlyDustCloseSkip,
-  stateAfterJanitorRun
+  recordPostOnlyDustCloseSkip
 } from "./janitor/JanitorRuntime";
 import {
   currentCascadeActiveSnapshot as buildCurrentCascadeActiveSnapshot,
@@ -4417,7 +4415,6 @@ export class TradingEngine {
       zombieOrders: baseReport.zombieOrders,
       observedAt
     });
-    const nextOrderMap = reconciliation.orderMap;
 
     for (const request of reconciliation.cancellationRequests) {
       await this.cancelOrder(request.orderId, request.reason, request.instrumentCode);
@@ -4426,31 +4423,25 @@ export class TradingEngine {
     const dustCloseIntents = this.recordJanitorDustCloseSkips(baseReport.dustPositions, observedAt);
 
     const pruneReport = await this.pruneOperationalLogs();
-    const janitorResult = buildJanitorReport({
+    const artifacts = buildJanitorRunArtifacts({
+      source,
+      state: this.engineState,
       baseReport,
       reconciliation,
       dustCloseIntents,
-      pruneReport
+      pruneReport,
+      observedAt
     });
 
-    if (janitorResult.shouldWarn) {
+    if (artifacts.warningMetadata) {
       this.logger.warn(
         "JANITOR_CLEANUP_REQUIRED",
         "Janitor found state hygiene work",
-        janitorCleanupRequiredLogMetadata({
-          source,
-          report: janitorResult.report,
-          pruneReport
-        })
+        artifacts.warningMetadata
       );
     }
 
-    this.engineState = stateAfterJanitorRun({
-      state: this.engineState,
-      orderMap: nextOrderMap,
-      report: janitorResult.report,
-      observedAt
-    });
+    this.engineState = artifacts.state;
     await this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "JANITOR_REPORT");
   }
 

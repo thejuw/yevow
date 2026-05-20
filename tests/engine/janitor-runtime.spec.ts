@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildJanitorReport,
+  buildJanitorRunArtifacts,
   cancelJanitorOrder,
   fetchJanitorExchangeOpenOrders,
   janitorCleanupRequiredLogMetadata,
@@ -308,6 +309,57 @@ describe("JanitorRuntime", () => {
       janitor: report,
       updatedAt: OBSERVED_AT,
       heartbeatAt: OBSERVED_AT
+    });
+  });
+
+  it("assembles janitor run artifacts with warning metadata and next state", () => {
+    const state = {
+      orderMap: {
+        "client-1": order({ clientId: "client-1", status: "OPEN" })
+      },
+      janitor: janitorState(),
+      updatedAt: "2026-05-18T15:00:00.000Z",
+      heartbeatAt: "2026-05-18T15:00:00.000Z"
+    } as EngineState;
+    const reconciliation = reconcileJanitorOrders({
+      orderMap: state.orderMap,
+      exchangeOpenOrders: [
+        exchangeOrder({
+          clientId: null,
+          exchangeOrderId: "orphan-1"
+        })
+      ],
+      zombieOrders: [],
+      observedAt: OBSERVED_AT
+    });
+
+    const artifacts = buildJanitorRunArtifacts({
+      source: "ADMIN",
+      state,
+      baseReport: janitorState({ dustPositions: ["dust-1"] }),
+      reconciliation,
+      dustCloseIntents: [],
+      pruneReport: logPruneReport({ totalRows: 1 }),
+      observedAt: OBSERVED_AT
+    });
+
+    expect(artifacts.orderMap).toBe(reconciliation.orderMap);
+    expect(artifacts.report).toMatchObject({
+      orphanExchangeOrders: ["orphan-1"],
+      dustPositions: ["dust-1"],
+      prunedTelemetryCount: 1
+    });
+    expect(artifacts.state).toMatchObject({
+      orderMap: reconciliation.orderMap,
+      janitor: artifacts.report,
+      updatedAt: OBSERVED_AT,
+      heartbeatAt: OBSERVED_AT
+    });
+    expect(artifacts.warningMetadata).toMatchObject({
+      source: "ADMIN",
+      orphanExchangeOrders: ["orphan-1"],
+      dustPositions: ["dust-1"],
+      prunedTelemetryCount: 1
     });
   });
 });

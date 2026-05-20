@@ -49,6 +49,23 @@ export interface JanitorCleanupWarningInput {
   readonly pruneReport: LogPruneReport;
 }
 
+export interface JanitorRunArtifactsInput {
+  readonly source: "ALARM" | "ADMIN";
+  readonly state: EngineState;
+  readonly baseReport: JanitorState;
+  readonly reconciliation: JanitorOrderReconciliation;
+  readonly dustCloseIntents: readonly string[];
+  readonly pruneReport: LogPruneReport;
+  readonly observedAt: string;
+}
+
+export interface JanitorRunArtifacts {
+  readonly report: JanitorState;
+  readonly orderMap: EngineState["orderMap"];
+  readonly state: EngineState;
+  readonly warningMetadata: JsonRecord | null;
+}
+
 export interface JanitorExecutionerFetcher {
   fetch(request: Request): Promise<Response>;
 }
@@ -276,6 +293,33 @@ export function janitorCleanupRequiredLogMetadata(input: JanitorCleanupWarningIn
     dustCloseIntents: input.report.dustCloseIntents,
     prunedTelemetryCount: input.report.prunedTelemetryCount,
     pruneReport: logPruneReportToJson(input.pruneReport)
+  };
+}
+
+export function buildJanitorRunArtifacts(input: JanitorRunArtifactsInput): JanitorRunArtifacts {
+  const janitorResult = buildJanitorReport({
+    baseReport: input.baseReport,
+    reconciliation: input.reconciliation,
+    dustCloseIntents: input.dustCloseIntents,
+    pruneReport: input.pruneReport
+  });
+
+  return {
+    report: janitorResult.report,
+    orderMap: input.reconciliation.orderMap,
+    state: stateAfterJanitorRun({
+      state: input.state,
+      orderMap: input.reconciliation.orderMap,
+      report: janitorResult.report,
+      observedAt: input.observedAt
+    }),
+    warningMetadata: janitorResult.shouldWarn
+      ? janitorCleanupRequiredLogMetadata({
+          source: input.source,
+          report: janitorResult.report,
+          pruneReport: input.pruneReport
+        })
+      : null
   };
 }
 
