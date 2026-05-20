@@ -5,7 +5,13 @@ import {
   normalizePriceToTick,
   roundMetric
 } from "../book/SortedBookSide";
-import type { AssetRuntimeState, EngineState, GlobalRiskConfig, InternalOrderBook, MacroBias } from "../../../types";
+import type {
+  AssetRuntimeState,
+  EngineState,
+  GlobalRiskConfig,
+  InternalOrderBook,
+  MacroBias
+} from "../../../types";
 
 export function defaultQuoteState(): EngineState["quoteState"] {
   return {

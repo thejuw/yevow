@@ -14,7 +14,7 @@ import {
 } from "../../src/TradingEngineConstants";
 import { PROFILER_STATE_STORAGE_KEY } from "../../src/agents/ProfilerAgent";
 import { ANOMALY_DETECTOR_STORAGE_KEY } from "../../src/agents/AnomalyDetector";
-import { defaultEngineState } from "../../src/engine/trading/helpers/RuntimeHelpers";
+import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { InternalOrderBook, LatencyMetrics } from "../../src/types";
 
 const OBSERVED_AT = "2026-05-18T20:00:00.000Z";

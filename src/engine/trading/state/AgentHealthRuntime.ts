@@ -1,4 +1,4 @@
-import { touchAgentHealth } from "../helpers/RuntimeHelpers";
+import { touchAgentHealth } from "./EngineStateDefaults";
 import type { EngineState, GlobalRiskConfig } from "../../../types";
 
 export interface TickAgentHealthInput {

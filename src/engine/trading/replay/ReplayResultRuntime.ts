@@ -7,6 +7,7 @@ import type {
   ReplayResult,
   SentimentState
 } from "../../../types";
+import { defaultEngineState } from "../state/EngineStateDefaults";
 import {
   buildReplayAblation,
   buildReplayAttribution,
@@ -15,9 +16,8 @@ import {
   buildStressSummary,
   calculateMaxDrawdown,
   calculateReplaySharpe,
-  calculateWinRate,
-  defaultEngineState
-} from "../helpers/RuntimeHelpers";
+  calculateWinRate
+} from "./ReplayModelRuntime";
 
 export interface ResolveInitialShadowBankrollInput {
   readonly requestedShadowBankroll: number;

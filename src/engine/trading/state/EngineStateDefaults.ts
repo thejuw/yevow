@@ -10,7 +10,11 @@ import { defaultEngineLocation } from "../helpers/PlacementResolver";
 import { roundMetric } from "../book/SortedBookSide";
 import { finiteNumber, readPositiveNumber } from "../helpers/RuntimeParsing";
 import { finiteMetric, nullableFiniteMetric } from "../helpers/RuntimeMetrics";
-import { defaultAssetMatrix, defaultAssetQuoteStates, defaultQuoteState } from "./AssetStateRuntime";
+import {
+  defaultAssetMatrix,
+  defaultAssetQuoteStates,
+  defaultQuoteState
+} from "./AssetStateRuntime";
 import {
   DEFAULT_JITTER_COMPUTE_INTERVAL_TICKS,
   DEFAULT_JITTER_SAMPLE_WINDOW,

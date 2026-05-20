@@ -5,13 +5,12 @@ import type {
   MacroBias,
   ShadowQueueState
 } from "../../../types";
+import { aggregateQuoteState, defaultAssetQuoteStates } from "./AssetStateRuntime";
 import {
-  aggregateQuoteState,
-  defaultAssetQuoteStates,
   defaultCitadelState,
   defaultInventoryState,
   defaultRiskMetrics
-} from "../helpers/RuntimeHelpers";
+} from "./EngineStateDefaults";
 
 export interface AdminRecoveryRuntimePayload {
   readonly clearCitadel?: boolean;

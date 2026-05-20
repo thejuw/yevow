@@ -1,10 +1,7 @@
 import type { EngineState, GlobalRiskConfig, QuoteSignal } from "../../../types";
 import { DEFAULT_QUOTE_HIBERNATE_MS } from "../../../TradingEngineConstants";
-import {
-  aggregateQuoteState,
-  readPositiveInteger,
-  resumeExpiredAssetQuoteStates
-} from "../helpers/RuntimeHelpers";
+import { readPositiveInteger } from "../helpers/RuntimeParsing";
+import { aggregateQuoteState, resumeExpiredAssetQuoteStates } from "../state/AssetStateRuntime";
 
 export interface NextQuoteStateInput {
   readonly previous: EngineState["quoteState"];

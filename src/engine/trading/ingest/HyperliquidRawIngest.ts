@@ -1,5 +1,5 @@
+import { buildMarketKey } from "../book/BookRuntimeHelpers";
 import {
-  buildMarketKey,
   createNativeHyperliquidBookTick,
   hyperliquidNativeInstrumentCode,
   isNativeRecord,
@@ -9,14 +9,14 @@ import {
   nativeObject,
   nativeSequence,
   nativeString,
-  parseTimestampMs,
   normalizeSourceExchange,
   normalizeSourceWeight,
   parseHyperliquidNativeLevels,
   requireNativeString,
   createNativeHyperliquidFundingTick,
   createNativeHyperliquidTradeTick
-} from "../helpers/RuntimeHelpers";
+} from "../helpers/NativeHyperliquidRuntime";
+import { parseTimestampMs } from "../helpers/RuntimeClock";
 import type { TickIngestResult } from "../TradingEngineRouteTypes";
 import type { BookSyncState } from "../book/BookTypes";
 import type {

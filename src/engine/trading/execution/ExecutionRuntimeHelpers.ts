@@ -1,6 +1,13 @@
 import { roundCrypto } from "../book/SortedBookSide";
 import { pearson } from "../helpers/RuntimeMath";
-import type { AgentName, EngineState, ExecutionReport, ManagedOrder, TradeExecution, TradeIntent } from "../../../types";
+import type {
+  AgentName,
+  EngineState,
+  ExecutionReport,
+  ManagedOrder,
+  TradeExecution,
+  TradeIntent
+} from "../../../types";
 
 export function mapManagedStatusToTradeStatus(
   status: ManagedOrder["status"]

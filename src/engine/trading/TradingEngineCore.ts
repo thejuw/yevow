@@ -37,16 +37,8 @@ import {
   stateAfterLocationLatency,
   stateAfterTopologyObservation
 } from "./helpers/PlacementResolver";
-import {
-  DEFAULT_ORDER_BOOK_TICK_SIZE,
-  priceKey,
-  SortedBookSide
-} from "./book/SortedBookSide";
-import {
-  countBookLevels,
-  isCrossedBook,
-  microstructureFromBook
-} from "./book/BookReconstruction";
+import { DEFAULT_ORDER_BOOK_TICK_SIZE, priceKey, SortedBookSide } from "./book/SortedBookSide";
+import { countBookLevels, isCrossedBook, microstructureFromBook } from "./book/BookReconstruction";
 import {
   calculateOrderBookPriceDiscovery,
   currentMarkPriceForInstrument,
@@ -75,10 +67,7 @@ import {
   orderBookResetTelemetry,
   resolveOrderBookReset
 } from "./book/OrderBookResetRuntime";
-import {
-  buildDomAnalysisSnapshot,
-  currentDomHeatmapSnapshot
-} from "./book/DomAnalyzer";
+import { buildDomAnalysisSnapshot, currentDomHeatmapSnapshot } from "./book/DomAnalyzer";
 import {
   buildShadowQueueDecisionAction,
   buildShadowQueueGhostFillRuntimeRecord,
@@ -134,10 +123,7 @@ import {
   quoteRefreshThrottleLogMetadata,
   type CroupierQuoteAction
 } from "./quotes/QuoteDispatchRuntime";
-import {
-  dispatchQuoteCancelAll,
-  evaluateQuoteCancelDispatch
-} from "./quotes/QuoteCancelRuntime";
+import { dispatchQuoteCancelAll, evaluateQuoteCancelDispatch } from "./quotes/QuoteCancelRuntime";
 import {
   buildApprovedExecutionPlan,
   shouldSkipExecutionPlanForQuoteSuspension,
@@ -239,15 +225,8 @@ import {
   cascadeDetectorConfig as buildCascadeDetectorConfig,
   cascadeRecoverySignalConfig as buildCascadeRecoverySignalConfig
 } from "./cascade/CascadeConfigRuntime";
-import {
-  OrderBookReconstructor,
-  type OrderBookStores
-} from "./book/OrderBookReconstructor";
-import type {
-  AppliedBookUpdate,
-  BookDeltaWithTicker,
-  BookSyncState
-} from "./book/BookTypes";
+import { OrderBookReconstructor, type OrderBookStores } from "./book/OrderBookReconstructor";
+import type { AppliedBookUpdate, BookDeltaWithTicker, BookSyncState } from "./book/BookTypes";
 import {
   buildHyperliquidL2BookTick,
   buildHyperliquidL2BookTickFromBook,
@@ -316,10 +295,7 @@ import {
   type ReplayJournal,
   type ReplayTradeRow
 } from "./replay/ReplayJournal";
-import {
-  runShadowReplayLoop,
-  type ShadowReplayLoopResult
-} from "./replay/ReplayLoopRuntime";
+import { runShadowReplayLoop, type ShadowReplayLoopResult } from "./replay/ReplayLoopRuntime";
 import {
   buildHistoricalReplayResult,
   buildReplayStatus,
@@ -332,10 +308,7 @@ import {
   hydrateReplayOrderBooks,
   type EngineReplaySnapshot
 } from "./replay/ReplaySnapshotRuntime";
-import type {
-  GrpcFatalDropPayload,
-  TickIngestResult
-} from "./TradingEngineRouteTypes";
+import type { GrpcFatalDropPayload, TickIngestResult } from "./TradingEngineRouteTypes";
 import {
   buildHealthReport,
   engineDiagnostics as buildEngineDiagnostics,
@@ -562,22 +535,85 @@ import {
   AGGREGATED_BUS_TELEMETRY_TYPES
 } from "../../TradingEngineConstants";
 import {
+  resolveBookSide,
+  resolveCurrentInstrument,
+  buildMarketKey,
+  hydrateOrderBooks,
+  hydrateLegacyLevel,
+  levelsToBookSide,
+  tickToDelta,
+  calculateTimeToBookMs,
+  resolveTickSize,
+  resolveDomBinSize,
+  parseTickSizeMap,
+  parsePositiveNumberMap
+} from "./book/BookRuntimeHelpers";
+import { sanitizeWallHistory } from "./book/DomRuntimeHelpers";
+import {
+  cascadeInstrumentSet,
+  latestAbsorptionForInstrument,
+  latestCascadeAtForInstrument,
+  isOpenCascadePosition,
+  recentSwingLow,
+  recentSwingHigh
+} from "./cascade/CascadeSelectionRuntime";
+import { hasRuntimeConfigUpdate } from "./config/RuntimeConfigUpdateDetection";
+import {
   epochMillis,
   nativeHashSequence,
   normalizeNativeCoin,
   normalizeNativeInstrumentCode,
   splitNativeInstrument,
   baseAssetFromInstrument,
-  cascadeInstrumentSet,
-  latestAbsorptionForInstrument,
-  latestCascadeAtForInstrument,
-  isOpenCascadePosition,
-  recentSwingLow,
-  recentSwingHigh,
   nativeBookSideLevels,
   nativeNumber,
   nativeSide,
-  hasRuntimeConfigUpdate,
+  normalizeSourceExchange,
+  normalizeSourceWeight
+} from "./helpers/NativeHyperliquidRuntime";
+import { highResolutionNow, roundLatency } from "./helpers/RuntimeClock";
+import { wait } from "./helpers/RuntimeMath";
+import {
+  prometheusLabels,
+  escapePrometheusLabel,
+  finiteMetric,
+  nullableFiniteMetric
+} from "./helpers/RuntimeMetrics";
+import {
+  readNumber,
+  readPositiveNumber,
+  readPositiveInteger,
+  readBoundedNumber,
+  clampInteger,
+  assertAgentSignal,
+  finiteNumber,
+  isPlainObject,
+  readHyperliquidRawIngestPayload,
+  readJsonOrNull,
+  json
+} from "./helpers/RuntimeParsing";
+import { deepClone } from "./helpers/RuntimeSerialization";
+import { applyReplayScenarioToTick } from "./replay/ReplayModelRuntime";
+import { resolveGhostBookConfig } from "./shadow/GhostBookConfigRuntime";
+import {
+  defaultQuoteState,
+  defaultAssetQuoteStates,
+  selectedMoltworkerInstruments,
+  isTargetInstrument,
+  isInstrumentSelectedByMoltworker,
+  normalizeAssetMatrix,
+  filterTargetOrderBooks,
+  defaultAssetMatrix,
+  normalizeAssetQuoteStates,
+  reconcileAssetQuoteStatesForConfig,
+  quoteStateForInstrumentState,
+  isQuoteSuspendedAt,
+  suspendAssetQuoteStates,
+  aggregateQuoteState,
+  quotePriceMovedTicks,
+  normalizeMarketKey
+} from "./state/AssetStateRuntime";
+import {
   defaultEngineState,
   defaultEnsembleState,
   normalizePaperBankroll,
@@ -593,8 +629,6 @@ import {
   defaultInventoryState,
   normalizeInventoryState,
   defaultRiskMetrics,
-  defaultQuoteState,
-  defaultAssetQuoteStates,
   defaultShadowQueueState,
   defaultCitadelState,
   maintenanceRecoveryInstruments,
@@ -604,61 +638,9 @@ import {
   defaultSlippageAnalytics,
   defaultRiskLimits,
   mergeRiskLimits,
-  resolveMaxLatencyMs,
-  prometheusLabels,
-  escapePrometheusLabel,
-  finiteMetric,
-  nullableFiniteMetric,
-  highResolutionNow,
-  roundLatency,
-  resolveBookSide,
-  resolveCurrentInstrument,
-  buildMarketKey,
-  selectedMoltworkerInstruments,
-  isTargetInstrument,
-  isInstrumentSelectedByMoltworker,
-  normalizeAssetMatrix,
-  filterTargetOrderBooks,
-  defaultAssetMatrix,
-  normalizeAssetQuoteStates,
-  reconcileAssetQuoteStatesForConfig,
-  quoteStateForInstrumentState,
-  isQuoteSuspendedAt,
-  suspendAssetQuoteStates,
-  aggregateQuoteState,
-  quotePriceMovedTicks,
-  normalizeMarketKey,
-  normalizeSourceExchange,
-  normalizeSourceWeight,
-  sanitizeWallHistory,
-  deepClone,
-  hydrateOrderBooks,
-  hydrateLegacyLevel,
-  levelsToBookSide,
-  tickToDelta,
-  calculateTimeToBookMs,
-  resolveTickSize,
-  resolveDomBinSize,
-  parseTickSizeMap,
-  parsePositiveNumberMap,
-  wait,
-  readNumber,
-  readPositiveNumber,
-  applyReplayScenarioToTick,
-  readPositiveInteger,
-  readBoundedNumber,
-  resolveGhostBookConfig,
-  clampInteger,
-  assertAgentSignal,
-  finiteNumber,
-  isInformationalTick,
-  isTradeTick,
-  extractTickStreamId,
-  isPlainObject,
-  readHyperliquidRawIngestPayload,
-  readJsonOrNull,
-  json
-} from "./helpers/RuntimeHelpers";
+  resolveMaxLatencyMs
+} from "./state/EngineStateDefaults";
+import { isInformationalTick, isTradeTick, extractTickStreamId } from "./state/TickClassification";
 
 interface TickHandlingOptions {
   shadowReplay?: boolean;

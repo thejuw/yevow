@@ -1,4 +1,4 @@
-import { isOpenCascadePosition } from "../helpers/RuntimeHelpers";
+import { isOpenCascadePosition } from "./CascadeSelectionRuntime";
 import { roundMetric } from "../book/SortedBookSide";
 import type { AgentSignal, JsonRecord } from "../../../types";
 import type {

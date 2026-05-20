@@ -5,10 +5,7 @@ import {
   DEFAULT_MAX_INVENTORY_UNITS
 } from "../../../TradingEngineConstants";
 import { isShadowMode } from "../../../utils/CitadelProtocol";
-import {
-  applyLocationRisk,
-  defaultEngineLocation
-} from "../helpers/PlacementResolver";
+import { applyLocationRisk, defaultEngineLocation } from "../helpers/PlacementResolver";
 import { countBookLevels } from "../book/BookReconstruction";
 import { calculateOrderBookPriceDiscovery } from "../book/BookViews";
 import type { SortedBookSide } from "../book/SortedBookSide";
@@ -26,6 +23,12 @@ import type {
   ShadowQueueState,
   TemporaryGovernanceOverride
 } from "../../../types";
+import { readPositiveNumber } from "../helpers/RuntimeParsing";
+import {
+  defaultQuoteState,
+  normalizeAssetMatrix,
+  normalizeAssetQuoteStates
+} from "./AssetStateRuntime";
 import {
   defaultCitadelState,
   defaultEngineState,
@@ -34,17 +37,13 @@ import {
   defaultJanitorState,
   defaultLeadLagMetrics,
   defaultMicrostructure,
-  defaultQuoteState,
   defaultRiskMetrics,
   defaultSlippageAnalytics,
   mergeRiskLimits,
-  normalizeAssetMatrix,
-  normalizeAssetQuoteStates,
   normalizeExecutionProfile,
   normalizeInventoryState,
-  normalizePaperBankroll,
-  readPositiveNumber
-} from "../helpers/RuntimeHelpers";
+  normalizePaperBankroll
+} from "./EngineStateDefaults";
 
 export interface HydratedEngineStateInput {
   readonly baseState: EngineState;
@@ -72,7 +71,10 @@ export interface HydratedEngineStateInput {
 export function buildHydratedEngineState(input: HydratedEngineStateInput): EngineState {
   const location = input.baseState.location ?? defaultEngineLocation();
   const risk = applyLocationRisk(
-    mergeRiskLimits(mergeRiskLimits(input.baseState.risk, input.kvRiskLimits), input.kvConfig?.risk),
+    mergeRiskLimits(
+      mergeRiskLimits(input.baseState.risk, input.kvRiskLimits),
+      input.kvConfig?.risk
+    ),
     input.cachedConfig,
     location,
     input.now

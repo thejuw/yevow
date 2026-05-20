@@ -8,11 +8,11 @@ import type {
   PriceDiscoveryMetrics
 } from "../../../types";
 import {
-  buildMarketKey,
   normalizeInstrumentSelector,
-  normalizeMarketKey,
   normalizeNativeInstrumentCode
-} from "../helpers/RuntimeHelpers";
+} from "../helpers/NativeHyperliquidRuntime";
+import { normalizeMarketKey } from "../state/AssetStateRuntime";
+import { buildMarketKey } from "./BookRuntimeHelpers";
 import { roundCrypto, type SortedBookSide } from "./SortedBookSide";
 import { getInstrumentBook } from "./BookReconstruction";
 import type { BookSyncState } from "./BookTypes";

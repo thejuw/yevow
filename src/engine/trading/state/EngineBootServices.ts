@@ -1,8 +1,4 @@
-import {
-  Logger,
-  createLogSink,
-  structuredConsoleLogsEnabled
-} from "../../../Logger";
+import { Logger, createLogSink, structuredConsoleLogsEnabled } from "../../../Logger";
 import { Notifier } from "../../../utils/Notifier";
 import { ReplayJournal } from "../replay/ReplayJournal";
 import { StorageWriteGuard } from "./StorageWriteGuard";
@@ -51,7 +47,11 @@ export function createEngineReplayJournal(input: {
   readonly logger: Logger;
   readonly readStorage: <T>(key: string) => Promise<T | undefined>;
   readonly writeStorage: (key: string, value: unknown, reason: string) => Promise<void>;
-  readonly publish: (type: string, payload: Record<string, unknown>, correlationId?: string) => void;
+  readonly publish: (
+    type: string,
+    payload: Record<string, unknown>,
+    correlationId?: string
+  ) => void;
   readonly onStorageReadFailure: (reason: string, error: unknown) => void;
 }): ReplayJournal {
   return new ReplayJournal({

@@ -34,7 +34,7 @@ import {
   readNumber,
   readPositiveInteger,
   readPositiveNumber
-} from "../helpers/RuntimeHelpers";
+} from "../helpers/RuntimeParsing";
 
 export interface EngineBootRuntimeSettings {
   readonly jitterSampleWindow: number;
@@ -60,14 +60,8 @@ export function resolveEngineBootRuntimeSettings(env: Env): EngineBootRuntimeSet
       1,
       10_000
     ),
-    jitterThresholdMs: readPositiveNumber(
-      env.JITTER_THRESHOLD_MS,
-      DEFAULT_JITTER_THRESHOLD_MS
-    ),
-    domPriceBinSize: readPositiveNumber(
-      env.DOM_PRICE_BIN_SIZE_DEFAULT,
-      DEFAULT_DOM_PRICE_BIN_SIZE
-    ),
+    jitterThresholdMs: readPositiveNumber(env.JITTER_THRESHOLD_MS, DEFAULT_JITTER_THRESHOLD_MS),
+    domPriceBinSize: readPositiveNumber(env.DOM_PRICE_BIN_SIZE_DEFAULT, DEFAULT_DOM_PRICE_BIN_SIZE),
     domScanRangePct: readBoundedNumber(
       env.DOM_SCAN_RANGE_PCT,
       DEFAULT_DOM_SCAN_RANGE_PCT,
@@ -222,10 +216,7 @@ export function createBootCroupierAgent(env: Env): CroupierAgent {
   return new CroupierAgent({
     minEvThreshold: readNumber(env.MIN_EV_THRESHOLD, DEFAULT_MIN_EV_THRESHOLD),
     exchangeFeeBps: readPositiveNumber(env.EXCHANGE_FEE_BPS, DEFAULT_EXCHANGE_FEE_BPS),
-    riskAversionFactor: readPositiveNumber(
-      env.RISK_AVERSION_FACTOR,
-      DEFAULT_RISK_AVERSION_FACTOR
-    ),
+    riskAversionFactor: readPositiveNumber(env.RISK_AVERSION_FACTOR, DEFAULT_RISK_AVERSION_FACTOR),
     minTickChange: readPositiveNumber(env.AMM_MIN_TICK_CHANGE, DEFAULT_AMM_MIN_TICK_CHANGE)
   });
 }

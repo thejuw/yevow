@@ -1,11 +1,6 @@
-import {
-  aggregateQuoteState,
-  nativeIso,
-  nativeNumber,
-  nativeString,
-  suspendAssetQuoteStates,
-  touchAgentHealth
-} from "../helpers/RuntimeHelpers";
+import { nativeIso, nativeNumber, nativeString } from "../helpers/NativeHyperliquidRuntime";
+import { aggregateQuoteState, suspendAssetQuoteStates } from "../state/AssetStateRuntime";
+import { touchAgentHealth } from "../state/EngineStateDefaults";
 import type { CitadelDropDecision } from "../../../utils/CitadelProtocol";
 import { evaluateGrpcDrop } from "../../../utils/CitadelProtocol";
 import type { EngineState, JsonRecord } from "../../../types";

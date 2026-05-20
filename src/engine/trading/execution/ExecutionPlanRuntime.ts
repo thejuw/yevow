@@ -1,10 +1,7 @@
 import { camouflageIntent, type CamouflageResult } from "../../../utils/Camouflage";
 import { planSmartOrderRoute, type SorPlan } from "../../../utils/SOR";
 import type { PitBossDecision } from "../../../agents/PitBossAgent";
-import {
-  isQuoteSuspendedAt,
-  quoteStateForInstrumentState
-} from "../helpers/RuntimeHelpers";
+import { isQuoteSuspendedAt, quoteStateForInstrumentState } from "../state/AssetStateRuntime";
 import type {
   EngineState,
   InternalOrderBook,

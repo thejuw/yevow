@@ -4,7 +4,7 @@ import {
   nextFundingRatesAfterTick,
   stateAfterFundingTick
 } from "../../src/engine/trading/funding/FundingRuntime";
-import { defaultEngineState } from "../../src/engine/trading/helpers/RuntimeHelpers";
+import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { EngineState, InternalOrderBook, MarketTick } from "../../src/types";
 
 const OBSERVED_AT = "2026-05-18T16:00:00.000Z";

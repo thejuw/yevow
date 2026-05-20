@@ -4,7 +4,11 @@ import { buildMicrostructureSnapshot } from "./BookReconstruction";
 import { DEFAULT_ORDER_BOOK_TICK_SIZE, roundCrypto, SortedBookSide } from "./SortedBookSide";
 import type { BookDeltaWithTicker, BookSyncState } from "./BookTypes";
 import { normalizeMarketKey } from "../state/AssetStateRuntime";
-import { normalizeNativeInstrumentCode, normalizeSourceExchange, normalizeSourceWeight } from "../helpers/NativeHyperliquidRuntime";
+import {
+  normalizeNativeInstrumentCode,
+  normalizeSourceExchange,
+  normalizeSourceWeight
+} from "../helpers/NativeHyperliquidRuntime";
 import { parseTimestampMs } from "../helpers/RuntimeClock";
 import { readPositiveNumber } from "../helpers/RuntimeParsing";
 import type { Env, InternalOrderBook, MarketTick, OrderBookSide, PriceLevel } from "../../../types";
@@ -49,7 +53,6 @@ export function profilerInstrumentFromStorageKey(storageKey: string): string {
       : storageKey
   );
 }
-
 
 export function hydrateOrderBooks(records: Map<string, InternalOrderBook>): {
   snapshots: Map<string, InternalOrderBook>;

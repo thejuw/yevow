@@ -2,13 +2,13 @@ import {
   DEFAULT_TELEMETRY_FLUSH_INTERVAL_MS,
   TELEMETRY_BUFFER_LIMIT
 } from "../../../TradingEngineConstants";
+import { roundLatency } from "../helpers/RuntimeClock";
 import {
   readPositiveInteger,
   readTelemetryNumber,
-  roundLatency,
-  shouldAggregateBusTelemetry,
-  toJsonValue
-} from "../helpers/RuntimeHelpers";
+  shouldAggregateBusTelemetry
+} from "../helpers/RuntimeParsing";
+import { toJsonValue } from "../helpers/RuntimeSerialization";
 import type { Env } from "../../../types";
 
 export interface BusMessage {

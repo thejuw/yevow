@@ -1,6 +1,6 @@
 import type { Logger } from "../../../Logger";
 import { REPLAY_STATUS_KEY } from "../../../TradingEngineConstants";
-import { safeParseJson } from "../helpers/RuntimeHelpers";
+import { safeParseJson } from "../helpers/RuntimeMath";
 import type { Env, MarketTick, ReplayResult } from "../../../types";
 import type { ReplayOptions, ReplayStatus } from "../routes/ReplayAdminRoutes";
 

@@ -21,7 +21,7 @@ import {
 import type { MarketTick } from "../../src/types";
 import type { BookSyncState } from "../../src/engine/trading/book/BookTypes";
 import type { TickIngestResult } from "../../src/engine/trading/TradingEngineRouteTypes";
-import { defaultEngineState } from "../../src/engine/trading/helpers/RuntimeHelpers";
+import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 
 describe("hyperliquid raw ingest helpers", () => {
   it("normalizes connection keys and active connection checks", () => {

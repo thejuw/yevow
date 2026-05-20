@@ -22,7 +22,7 @@ import {
   stateAfterStaleDataKillSwitch,
   stateAfterHardStaleTickDrop
 } from "../../src/engine/trading/performance/LatencyRuntime";
-import { defaultEngineState } from "../../src/engine/trading/helpers/RuntimeHelpers";
+import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { EngineState, ExecutionProfile, LatencyMetrics, MarketTick } from "../../src/types";
 
 describe("LatencyRuntime", () => {

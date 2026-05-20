@@ -7,7 +7,7 @@ import {
   quoteDispatchBlockedLogMetadata,
   quoteRefreshThrottleLogMetadata
 } from "../../src/engine/trading/quotes/QuoteDispatchRuntime";
-import { defaultEngineState } from "../../src/engine/trading/helpers/RuntimeHelpers";
+import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { QuoteSignal } from "../../src/types";
 
 describe("QuoteDispatchRuntime", () => {

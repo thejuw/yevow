@@ -9,7 +9,7 @@ import {
   stateAfterAcceptedTick,
   stateAfterShadowModeAutoResume
 } from "../../src/engine/trading/state/TickStateRuntime";
-import { defaultEngineState } from "../../src/engine/trading/helpers/RuntimeHelpers";
+import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { DomAnalysisSnapshot, InternalOrderBook, ManagedOrder } from "../../src/types";
 
 const OBSERVED_AT = "2026-05-18T19:00:00.000Z";

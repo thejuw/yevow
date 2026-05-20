@@ -11,14 +11,10 @@ import {
   DEFAULT_WHALE_PRINT_Z_THRESHOLD,
   TARGET_ASSET_MATRIX
 } from "../TradingEngineConstants";
-import {
-  isTargetInstrument,
-  normalizeNativeInstrumentCode,
-  profilerInstrumentFromStorageKey,
-  readBoundedNumber,
-  readPositiveInteger,
-  readPositiveNumber
-} from "../engine/trading/helpers/RuntimeHelpers";
+import { profilerInstrumentFromStorageKey } from "../engine/trading/book/BookRuntimeHelpers";
+import { normalizeNativeInstrumentCode } from "../engine/trading/helpers/NativeHyperliquidRuntime";
+import { readBoundedNumber, readPositiveInteger, readPositiveNumber } from "../engine/trading/helpers/RuntimeParsing";
+import { isTargetInstrument } from "../engine/trading/state/AssetStateRuntime";
 import type { Env, GlobalRiskConfig, ProfilerState } from "../types";
 
 export class ProfilerRegistry {

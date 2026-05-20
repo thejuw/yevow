@@ -1,7 +1,7 @@
 import type { EngineState, JsonRecord, QuoteOrder, QuoteSignal, TradeIntent } from "../../../types";
 import type { QueueRefreshAdvice } from "../../QueuePositionModel";
 import { roundCrypto, roundMetric } from "../book/SortedBookSide";
-import { quoteToTelemetry } from "../helpers/RuntimeHelpers";
+import { quoteToTelemetry } from "../execution/ExecutionRuntimeHelpers";
 
 export interface QuoteDispatchIntentInput {
   readonly quote: QuoteSignal;

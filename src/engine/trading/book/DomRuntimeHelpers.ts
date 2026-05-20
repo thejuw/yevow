@@ -265,4 +265,3 @@ export function isLiquidityWallRecord(value: LiquidityWall): boolean {
     Number.isFinite(value.volume)
   );
 }
-

@@ -5,6 +5,7 @@ import type {
   MarketTick,
   MicrostructureMetrics
 } from "../../../types";
+import { normalizeMarketKey } from "../state/AssetStateRuntime";
 import {
   aggregateDomBins,
   classifyMissingWalls,
@@ -12,11 +13,10 @@ import {
   emptyDomSnapshot,
   isLiquidityWall,
   latestActiveWalls,
-  normalizeMarketKey,
   toLiquidityWall,
   volumeStats,
   wallIdForBin
-} from "../helpers/RuntimeHelpers";
+} from "./DomRuntimeHelpers";
 import { roundCrypto, type SortedBookSide } from "./SortedBookSide";
 import { getInstrumentBook } from "./BookReconstruction";
 import { selectOrderBookMarketKey, type BookSelection } from "./BookViews";

@@ -67,4 +67,3 @@ export function finiteMetric(value: number, fallback: number): number {
 export function nullableFiniteMetric(value: number | null): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
-

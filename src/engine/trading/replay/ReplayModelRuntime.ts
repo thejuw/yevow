@@ -1,6 +1,12 @@
 import { roundCrypto, roundMetric } from "../book/SortedBookSide";
 import type { ReplayOptions, ReplayScenario } from "../routes/ReplayAdminRoutes";
-import type { AgentName, MarketTick, ReplayResult, SentimentState, TradeIntent } from "../../../types";
+import type {
+  AgentName,
+  MarketTick,
+  ReplayResult,
+  SentimentState,
+  TradeIntent
+} from "../../../types";
 
 export function applyReplayScenarioToTick(
   tick: MarketTick,

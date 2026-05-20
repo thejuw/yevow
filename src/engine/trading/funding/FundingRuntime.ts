@@ -1,4 +1,5 @@
-import { buildMarketKey, finiteNumber } from "../helpers/RuntimeHelpers";
+import { buildMarketKey } from "../book/BookRuntimeHelpers";
+import { finiteNumber } from "../helpers/RuntimeParsing";
 import type { EngineState, InternalOrderBook, MarketTick } from "../../../types";
 
 export interface FundingTickStateResult {

@@ -6,7 +6,10 @@ import {
   adminRecoveryStorageEntries,
   stateAfterAdminControlledRecovery
 } from "../../src/engine/trading/state/RecoveryRuntime";
-import { defaultEngineState, defaultInventoryState } from "../../src/engine/trading/helpers/RuntimeHelpers";
+import {
+  defaultEngineState,
+  defaultInventoryState
+} from "../../src/engine/trading/state/EngineStateDefaults";
 import type { EngineState } from "../../src/types";
 
 const OBSERVED_AT = "2026-05-18T19:00:00.000Z";

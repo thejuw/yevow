@@ -1,7 +1,5 @@
 import { decode as msgpackDecode } from "@msgpack/msgpack";
-import {
-  AGGREGATED_BUS_TELEMETRY_TYPES
-} from "../../../TradingEngineConstants";
+import { AGGREGATED_BUS_TELEMETRY_TYPES } from "../../../TradingEngineConstants";
 import type { AgentName, AgentSignal, MarketTick } from "../../../types";
 
 export interface HyperliquidRawIngestPayload {

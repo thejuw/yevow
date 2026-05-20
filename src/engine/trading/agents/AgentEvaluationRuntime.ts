@@ -20,7 +20,7 @@ import {
   DEFAULT_FUNDING_INVENTORY_BIAS,
   DEFAULT_PREDATORY_ORDER_OFFSET_BPS
 } from "../../../TradingEngineConstants";
-import { readPositiveNumber } from "../helpers/RuntimeHelpers";
+import { readPositiveNumber } from "../helpers/RuntimeParsing";
 import type { DomAnalysisSnapshot } from "../../../types";
 import type { MultiScaleVolatilitySnapshot } from "../../MultiScaleVolatility";
 

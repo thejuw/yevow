@@ -7,11 +7,8 @@ import type {
   MacroBias,
   TemporaryGovernanceOverride
 } from "../../../types";
-import {
-  mergeRiskLimits,
-  resolveMaxLatencyMs,
-  toJsonValue
-} from "../helpers/RuntimeHelpers";
+import { toJsonValue } from "../helpers/RuntimeSerialization";
+import { mergeRiskLimits, resolveMaxLatencyMs } from "../state/EngineStateDefaults";
 import { applyLocationRisk } from "../helpers/PlacementResolver";
 
 export interface RuntimeConfigUpdateInput {

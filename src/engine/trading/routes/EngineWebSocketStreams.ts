@@ -12,11 +12,7 @@ import {
   PERFORMANCE_HISTORY_LIMIT,
   SIGNAL_BUFFER_LIMIT
 } from "../../../TradingEngineConstants";
-import {
-  assertMarketTick,
-  decodeWebSocketMessage,
-  parseJson
-} from "../helpers/RuntimeHelpers";
+import { assertMarketTick, decodeWebSocketMessage, parseJson } from "../helpers/RuntimeParsing";
 
 export interface EngineStreamContext {
   adminSockets: Set<WebSocket>;

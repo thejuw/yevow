@@ -20,10 +20,8 @@ import {
   DEFAULT_SHADOW_QUEUE_NO_EDGE_LOG_INTERVAL_MS,
   DEFAULT_SHADOW_VLO_MIN_SIZE
 } from "../../../TradingEngineConstants";
-import {
-  adverseAdjustedPaperFillPrice,
-  readPositiveInteger
-} from "../helpers/RuntimeHelpers";
+import { readPositiveInteger } from "../helpers/RuntimeParsing";
+import { adverseAdjustedPaperFillPrice } from "../state/AssetStateRuntime";
 import { bootstrapPaperAdverseSelection } from "../../PaperReplayModel";
 
 export interface ShadowQueueSizingInput {

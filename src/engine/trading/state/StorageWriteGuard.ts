@@ -2,7 +2,7 @@ import {
   DEFAULT_HOT_STORAGE_SNAPSHOT_INTERVAL_MS,
   DEFAULT_HOT_STORAGE_SNAPSHOT_TICK_INTERVAL
 } from "../../../TradingEngineConstants";
-import { readPositiveInteger } from "../helpers/RuntimeHelpers";
+import { readPositiveInteger } from "../helpers/RuntimeParsing";
 
 export interface HotStorageSnapshotDecisionInput {
   readonly lastSnapshotAtMs: number;

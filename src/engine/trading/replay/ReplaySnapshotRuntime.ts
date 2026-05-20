@@ -8,7 +8,7 @@ import {
   PROCESSING_LATENCY_SAMPLES_KEY,
   RATE_LIMIT_STATE_KEY
 } from "../../../TradingEngineConstants";
-import { hydrateOrderBooks, profilerStorageKey } from "../helpers/RuntimeHelpers";
+import { hydrateOrderBooks, profilerStorageKey } from "../book/BookRuntimeHelpers";
 import type { RateLimitBucketSnapshot } from "../../../utils/RateLimiter";
 import type {
   AgentName,

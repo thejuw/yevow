@@ -8,7 +8,7 @@ import {
   shouldSkipExecutionPlanForQuoteSuspension,
   sorResidualLiquidityShortfallLogMetadata
 } from "../../src/engine/trading/execution/ExecutionPlanRuntime";
-import { defaultEngineState } from "../../src/engine/trading/helpers/RuntimeHelpers";
+import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { CamouflageResult } from "../../src/utils/Camouflage";
 import type { SorPlan } from "../../src/utils/SOR";
 import type { TradeIntent } from "../../src/types";

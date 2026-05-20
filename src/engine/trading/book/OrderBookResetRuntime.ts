@@ -1,4 +1,5 @@
-import { buildMarketKey, normalizeSourceExchange } from "../helpers/RuntimeHelpers";
+import { normalizeSourceExchange } from "../helpers/NativeHyperliquidRuntime";
+import { buildMarketKey } from "./BookRuntimeHelpers";
 import type { InternalOrderBook, JsonRecord, OrderBookResetRequest } from "../../../types";
 import type { BookSyncState } from "./BookTypes";
 import type { SortedBookSide } from "./SortedBookSide";

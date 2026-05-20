@@ -8,12 +8,8 @@ import type {
   MicrostructureMetrics,
   PriceDiscoveryMetrics
 } from "../../../types";
-import {
-  aggregateQuoteState,
-  defaultMicrostructure,
-  defaultPriceDiscovery,
-  suspendAssetQuoteStates
-} from "../helpers/RuntimeHelpers";
+import { aggregateQuoteState, suspendAssetQuoteStates } from "../state/AssetStateRuntime";
+import { defaultMicrostructure, defaultPriceDiscovery } from "../state/EngineStateDefaults";
 import type { BookSyncState } from "./BookTypes";
 import { microstructureFromBook } from "./BookReconstruction";
 import type { AppliedBookSnapshot } from "./OrderBookReconstructor";

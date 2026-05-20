@@ -1,10 +1,10 @@
 import { TARGET_ASSET_MATRIX } from "../../../TradingEngineConstants";
+import { finiteMetric } from "../helpers/RuntimeMetrics";
 import {
-  finiteMetric,
   isInstrumentSelectedByMoltworker,
   isQuoteSuspendedAt,
   quoteStateForInstrumentState
-} from "../helpers/RuntimeHelpers";
+} from "./AssetStateRuntime";
 import type {
   AssetRuntimeState,
   EngineState,
