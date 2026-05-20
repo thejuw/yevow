@@ -219,6 +219,7 @@ import {
   applyCascadeOpenPositionSideEffects,
   applyCascadePositionUpdateSideEffects,
   applyCascadeSignalRejectionSideEffects,
+  applyCascadeSizeRejectionSideEffects,
   processCascadeClosedCandleSignals,
   shouldEvaluateCascadeStrategy
 } from "./cascade/CascadeStrategyRuntime";
@@ -256,9 +257,7 @@ import {
 import { emitAgentStateSnapshot } from "./telemetry/AgentSnapshotRuntime";
 import {
   buildCascadeOperationalAlertTelemetry,
-  cascadeHeatCapAlertMetadata,
   cascadeSignalEmittedAlertMetadata,
-  cascadeSizeRejectedLogMetadata,
   emitCascadeOperationalAlertSideEffects,
   recordCascadeUiSignalSideEffects
 } from "./telemetry/CascadeSignalTelemetryRuntime";
@@ -1768,25 +1767,19 @@ export class TradingEngine {
     sizeDecision: PositionSizeDecision,
     currentHeat: number
   ): void {
-    this.logger.warn(
-      "CASCADE_SIZE_REJECTED",
-      "Cascade recovery position sizing rejected entry",
-      cascadeSizeRejectedLogMetadata(signal, sizeDecision)
+    applyCascadeSizeRejectionSideEffects(
+      {
+        signal,
+        sizeDecision,
+        currentHeat,
+        heatCapPct: this.cachedConfig.HEAT_CAP_PCT
+      },
+      {
+        logWarn: (event, message, metadata) => this.logger.warn(event, message, metadata),
+        emitOperationalAlert: (eventType, title, message, metadata, dedupeKey) =>
+          this.emitCascadeOperationalAlert(eventType, title, message, metadata, dedupeKey)
+      }
     );
-    if (sizeDecision.limitingFactor === "HEAT") {
-      this.emitCascadeOperationalAlert(
-        "HEAT_CAP_EXCEEDED",
-        "Cascade heat cap blocked entry",
-        `${signal.instrumentCode} cascade entry was rejected by the heat cap.`,
-        cascadeHeatCapAlertMetadata(
-          signal,
-          sizeDecision,
-          currentHeat,
-          this.cachedConfig.HEAT_CAP_PCT
-        ),
-        signal.signalId
-      );
-    }
   }
 
   private openCascadePosition(

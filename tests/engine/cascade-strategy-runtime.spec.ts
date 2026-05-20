@@ -3,10 +3,12 @@ import {
   applyCascadeOpenPositionSideEffects,
   applyCascadePositionUpdateSideEffects,
   applyCascadeSignalRejectionSideEffects,
+  applyCascadeSizeRejectionSideEffects,
   closedOneMinuteCandlesForTick,
   processCascadeClosedCandleSignals,
   type CascadeOpenPositionSideEffectHandlers,
   type CascadeSignalRejectionSideEffectHandlers,
+  type CascadeSizeRejectionSideEffectHandlers,
   shouldEvaluateCascadeStrategy
 } from "../../src/engine/trading/cascade/CascadeStrategyRuntime";
 import type { CascadeAssetProfile } from "../../src/strategy/cascade/AssetProfiles";
@@ -114,6 +116,36 @@ describe("CascadeStrategyRuntime", () => {
     expect(sideEffects.events).toEqual([
       "log:CASCADE_SIGNAL_REJECTED:cascade-rejected",
       "signal:PIT_BOSS:HOLD:SKIPPED:60000:Cascade recovery skipped: TEST_REJECTION"
+    ]);
+  });
+
+  it("emits cascade size rejection logs and heat alerts when applicable", () => {
+    const riskSideEffects = cascadeSizeRejectionSideEffectSpy();
+    applyCascadeSizeRejectionSideEffects(
+      {
+        signal: recoverySignal("signal-risk", "btc-usd"),
+        sizeDecision: positionSizeDecision({ limitingFactor: "RISK", reason: "risk cap" }),
+        currentHeat: 0.2,
+        heatCapPct: 0.25
+      },
+      riskSideEffects.handlers
+    );
+
+    const heatSideEffects = cascadeSizeRejectionSideEffectSpy();
+    applyCascadeSizeRejectionSideEffects(
+      {
+        signal: recoverySignal("signal-heat", "btc-usd"),
+        sizeDecision: positionSizeDecision({ limitingFactor: "HEAT", reason: "heat cap" }),
+        currentHeat: 0.24,
+        heatCapPct: 0.25
+      },
+      heatSideEffects.handlers
+    );
+
+    expect(riskSideEffects.events).toEqual(["warn:CASCADE_SIZE_REJECTED:signal-risk:RISK"]);
+    expect(heatSideEffects.events).toEqual([
+      "warn:CASCADE_SIZE_REJECTED:signal-heat:HEAT",
+      "alert:HEAT_CAP_EXCEEDED:signal-heat:signal-heat:0.24:0.25"
     ]);
   });
 
@@ -283,7 +315,7 @@ function assetProfile(): CascadeAssetProfile {
   };
 }
 
-function positionSizeDecision(): PositionSizeDecision {
+function positionSizeDecision(overrides: Partial<PositionSizeDecision> = {}): PositionSizeDecision {
   return {
     approved: true,
     units: 1,
@@ -298,7 +330,8 @@ function positionSizeDecision(): PositionSizeDecision {
       notionalUnits: 2,
       liquidityUnits: 3,
       heatUnits: 4
-    }
+    },
+    ...overrides
   };
 }
 
@@ -354,6 +387,27 @@ function cascadeSignalRejectionSideEffectSpy(): {
       recordUiSignal(signal, outcome) {
         events.push(
           `signal:${signal.sourceAgent}:${signal.action}:${outcome}:${signal.horizonMs}:${signal.rationale}`
+        );
+      }
+    }
+  };
+}
+
+function cascadeSizeRejectionSideEffectSpy(): {
+  events: string[];
+  handlers: CascadeSizeRejectionSideEffectHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      logWarn(event, _message, metadata) {
+        events.push(`warn:${event}:${metadata.signalId}:${metadata.limitingFactor}`);
+      },
+      emitOperationalAlert(eventType, _title, _message, metadata, dedupeKey) {
+        events.push(
+          `alert:${eventType}:${dedupeKey}:${metadata.signalId}:${metadata.currentHeat}:${metadata.heatCapPct}`
         );
       }
     }

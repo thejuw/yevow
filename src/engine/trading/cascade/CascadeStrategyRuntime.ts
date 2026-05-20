@@ -2,7 +2,9 @@ import {
   cascadeCloseOperationalAlert,
   cascadeEntryAgentSignal,
   cascadeEntryDecisionTrace,
+  cascadeHeatCapAlertMetadata,
   cascadePositionOpenedAlertMetadata,
+  cascadeSizeRejectedLogMetadata,
   cascadeSignalRejectionAgentSignal,
   cascadeSignalRejectionLogMetadata,
   type CascadeCloseOperationalAlert
@@ -73,6 +75,24 @@ export interface CascadeSignalRejectionSideEffectInput {
 export interface CascadeSignalRejectionSideEffectHandlers {
   readonly logInfo: (event: string, message: string, metadata: JsonRecord) => void;
   readonly recordUiSignal: (signal: AgentSignal, outcome: "SKIPPED") => void;
+}
+
+export interface CascadeSizeRejectionSideEffectInput {
+  readonly signal: CascadeRecoverySignal;
+  readonly sizeDecision: PositionSizeDecision;
+  readonly currentHeat: number;
+  readonly heatCapPct: number;
+}
+
+export interface CascadeSizeRejectionSideEffectHandlers {
+  readonly logWarn: (event: string, message: string, metadata: JsonRecord) => void;
+  readonly emitOperationalAlert: (
+    eventType: "HEAT_CAP_EXCEEDED",
+    title: string,
+    message: string,
+    metadata: JsonRecord,
+    dedupeKey: string
+  ) => void;
 }
 
 export interface CascadeClosedCandleSignalHandlers {
@@ -162,6 +182,34 @@ export function applyCascadeSignalRejectionSideEffects(
     cascadeSignalRejectionLogMetadata(input.rejection)
   );
   handlers.recordUiSignal(cascadeSignalRejectionAgentSignal(input), "SKIPPED");
+}
+
+export function applyCascadeSizeRejectionSideEffects(
+  input: CascadeSizeRejectionSideEffectInput,
+  handlers: CascadeSizeRejectionSideEffectHandlers
+): void {
+  handlers.logWarn(
+    "CASCADE_SIZE_REJECTED",
+    "Cascade recovery position sizing rejected entry",
+    cascadeSizeRejectedLogMetadata(input.signal, input.sizeDecision)
+  );
+
+  if (input.sizeDecision.limitingFactor !== "HEAT") {
+    return;
+  }
+
+  handlers.emitOperationalAlert(
+    "HEAT_CAP_EXCEEDED",
+    "Cascade heat cap blocked entry",
+    `${input.signal.instrumentCode} cascade entry was rejected by the heat cap.`,
+    cascadeHeatCapAlertMetadata(
+      input.signal,
+      input.sizeDecision,
+      input.currentHeat,
+      input.heatCapPct
+    ),
+    input.signal.signalId
+  );
 }
 
 export async function processCascadeClosedCandleSignals(
