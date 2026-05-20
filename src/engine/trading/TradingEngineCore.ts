@@ -74,7 +74,7 @@ import {
   referencePriceForBaseAsset as resolveBaseAssetReferencePrice,
   resolveInventoryStateConfig
 } from "./inventory/InventoryRuntime";
-import { applyPortfolioRiskFlow } from "./risk/PortfolioRiskRuntime";
+import { applyPortfolioRiskFlow, resolveMaxPositionPct } from "./risk/PortfolioRiskRuntime";
 import { calculateEnsembleState as calculateRuntimeEnsembleState } from "./ensemble/EnsembleRuntime";
 import {
   currentFundingRate as resolveCurrentFundingRate,
@@ -1021,10 +1021,11 @@ export class TradingEngine {
     profilerStates: Record<string, ProfilerState>,
     assetQuoteStates: EngineState["assetQuoteStates"] = this.engineState.assetQuoteStates
   ): Record<string, AssetRuntimeState> {
-    const maxPositionPct =
-      this.cachedConfig.MAX_POSITION_PCT > 0
-        ? this.cachedConfig.MAX_POSITION_PCT
-        : readPositiveNumber(this.env.MAX_POSITION_PCT, DEFAULT_MAX_POSITION_PCT);
+    const maxPositionPct = resolveMaxPositionPct(
+      this.cachedConfig,
+      this.env.MAX_POSITION_PCT,
+      DEFAULT_MAX_POSITION_PCT
+    );
 
     return calculateRuntimeAssetMatrix({
       observedAt,
@@ -3290,10 +3291,11 @@ export class TradingEngine {
         config: this.cachedConfig,
         observedAt,
         bypassQuoteSuspension: options.bypassQuoteSuspension,
-        maxPositionPct:
-          this.cachedConfig.MAX_POSITION_PCT > 0
-            ? this.cachedConfig.MAX_POSITION_PCT
-            : readPositiveNumber(this.env.MAX_POSITION_PCT, DEFAULT_MAX_POSITION_PCT),
+        maxPositionPct: resolveMaxPositionPct(
+          this.cachedConfig,
+          this.env.MAX_POSITION_PCT,
+          DEFAULT_MAX_POSITION_PCT
+        ),
         kellyFraction: options.kellyFractionOverride ?? this.cachedConfig.KELLY_FRACTION,
         orderBooks: this.orderBook.values(),
         ackTimeoutMs: readPositiveInteger(
@@ -3391,10 +3393,11 @@ export class TradingEngine {
   private async dispatchQuote(
     quote: NonNullable<EngineState["quoteState"]["lastQuote"]>
   ): Promise<void> {
-    const maxPositionPct =
-      this.cachedConfig.MAX_POSITION_PCT > 0
-        ? this.cachedConfig.MAX_POSITION_PCT
-        : readPositiveNumber(this.env.MAX_POSITION_PCT, DEFAULT_MAX_POSITION_PCT);
+    const maxPositionPct = resolveMaxPositionPct(
+      this.cachedConfig,
+      this.env.MAX_POSITION_PCT,
+      DEFAULT_MAX_POSITION_PCT
+    );
     const assetRuntimeState = this.engineState.assetMatrix?.[quote.instrumentCode];
     const assetAllocation =
       this.engineState.assetMatrix?.[quote.instrumentCode]?.capitalAllocationPct ?? 1;

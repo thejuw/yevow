@@ -5,6 +5,7 @@ import {
   applyPortfolioRiskFlow,
   buildDrawdownKillSwitchTransition,
   calculatePortfolioRisk,
+  resolveMaxPositionPct,
   type DrawdownKillSwitchSideEffectHandlers
 } from "../../src/engine/trading/risk/PortfolioRiskRuntime";
 import type { Position } from "../../src/types";
@@ -12,6 +13,12 @@ import type { Position } from "../../src/types";
 const OBSERVED_AT = "2026-05-18T12:00:00.000Z";
 
 describe("PortfolioRiskRuntime", () => {
+  it("resolves max position percent from config before env fallback", () => {
+    expect(resolveMaxPositionPct({ MAX_POSITION_PCT: 0.04 }, "0.1", 0.02)).toBe(0.04);
+    expect(resolveMaxPositionPct({ MAX_POSITION_PCT: 0 }, "0.1", 0.02)).toBe(0.1);
+    expect(resolveMaxPositionPct({ MAX_POSITION_PCT: -1 }, undefined, 0.02)).toBe(0.02);
+  });
+
   it("calculates drawdown, one-hour VaR, and trading eligibility", () => {
     const result = calculatePortfolioRisk({
       mode: "LIVE",

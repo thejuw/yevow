@@ -1,5 +1,6 @@
 import type { EngineState, GlobalRiskConfig, Position } from "../../../types";
 import type { NotifierEvent } from "../../../utils/Notifier";
+import { readPositiveNumber } from "../helpers/RuntimeParsing";
 
 export interface PortfolioRiskInput {
   readonly mode: EngineState["mode"];
@@ -44,6 +45,16 @@ export interface DrawdownKillSwitchSideEffectHandlers {
 
 export interface PortfolioRiskFlowInput extends PortfolioRiskInput {
   readonly cachedConfig: GlobalRiskConfig;
+}
+
+export function resolveMaxPositionPct(
+  config: Pick<GlobalRiskConfig, "MAX_POSITION_PCT">,
+  envValue: string | undefined,
+  fallback: number
+): number {
+  return config.MAX_POSITION_PCT > 0
+    ? config.MAX_POSITION_PCT
+    : readPositiveNumber(envValue, fallback);
 }
 
 export function calculatePortfolioRisk(input: PortfolioRiskInput): PortfolioRiskResult {
