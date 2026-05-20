@@ -324,7 +324,7 @@ import {
   adminRecoveryPlan,
   adminRecoveryRuntimeArtifacts,
   applyAdminRecoveryCompletionSideEffects,
-  dispatchAdminRecoveryOrderBookResets,
+  applyAdminRecoveryPlanSideEffects,
   resolveAdminRecoveryPaperBankroll
 } from "./state/RecoveryRuntime";
 import {
@@ -2040,21 +2040,11 @@ export class TradingEngine {
   }): Promise<JsonRecord> {
     const recoveryPlan = adminRecoveryPlan(payload);
 
-    await dispatchAdminRecoveryOrderBookResets({
-      resetInstruments: recoveryPlan.resetInstruments,
-      reason: recoveryPlan.reason,
-      sourceExchange: recoveryPlan.sourceExchange,
-      observedAt: recoveryPlan.observedAt,
-      resetOrderBook: (resetPayload) => this.resetOrderBook(resetPayload)
+    await applyAdminRecoveryPlanSideEffects(recoveryPlan, {
+      resetOrderBook: (resetPayload) => this.resetOrderBook(resetPayload),
+      resetLatencyBaseline: (observedAt, reason) => this.resetLatencyBaseline(observedAt, reason),
+      clearShadowQueue: () => this.clearRecoveryShadowQueue()
     });
-
-    if (recoveryPlan.shouldClearLatency) {
-      this.resetLatencyBaseline(recoveryPlan.observedAt, recoveryPlan.reason);
-    }
-
-    if (recoveryPlan.shouldClearShadowQueue) {
-      this.clearRecoveryShadowQueue();
-    }
 
     const prunedProfilerStorageKeys = await this.deleteRetiredProfilerStorage();
     const recoveryArtifacts = adminRecoveryRuntimeArtifacts({

@@ -129,6 +129,12 @@ export interface AdminRecoveryOrderBookResetDispatcherInput {
   readonly resetOrderBook: (payload: Partial<OrderBookResetRequest>) => Promise<void>;
 }
 
+export interface AdminRecoveryPlanSideEffectHandlers {
+  readonly resetOrderBook: (payload: Partial<OrderBookResetRequest>) => Promise<void>;
+  readonly resetLatencyBaseline: (observedAt: string, reason: string) => void;
+  readonly clearShadowQueue: () => void;
+}
+
 export function resolveAdminRecoveryPaperBankroll(envValue?: string): number {
   return readPositiveNumber(envValue, DEFAULT_PAPER_BANKROLL_USD);
 }
@@ -146,6 +152,27 @@ export async function dispatchAdminRecoveryOrderBookResets(
       blackoutDurationMs: null,
       recoveredAt: input.observedAt
     });
+  }
+}
+
+export async function applyAdminRecoveryPlanSideEffects(
+  plan: AdminRecoveryPlan,
+  handlers: AdminRecoveryPlanSideEffectHandlers
+): Promise<void> {
+  await dispatchAdminRecoveryOrderBookResets({
+    resetInstruments: plan.resetInstruments,
+    reason: plan.reason,
+    sourceExchange: plan.sourceExchange,
+    observedAt: plan.observedAt,
+    resetOrderBook: handlers.resetOrderBook
+  });
+
+  if (plan.shouldClearLatency) {
+    handlers.resetLatencyBaseline(plan.observedAt, plan.reason);
+  }
+
+  if (plan.shouldClearShadowQueue) {
+    handlers.clearShadowQueue();
   }
 }
 

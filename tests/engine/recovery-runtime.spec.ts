@@ -8,6 +8,7 @@ import {
   adminRecoveryResponse,
   adminRecoveryStorageEntries,
   applyAdminRecoveryCompletionSideEffects,
+  applyAdminRecoveryPlanSideEffects,
   dispatchAdminRecoveryOrderBookResets,
   resolveAdminRecoveryPaperBankroll,
   stateAfterAdminControlledRecovery
@@ -94,6 +95,34 @@ describe("RecoveryRuntime", () => {
         recoveredAt: OBSERVED_AT
       }
     ]);
+  });
+
+  it("applies admin recovery plan side effects in plan order", async () => {
+    const calls: string[] = [];
+
+    await applyAdminRecoveryPlanSideEffects(
+      {
+        observedAt: OBSERVED_AT,
+        reason: "manual-reset",
+        sourceExchange: "hyperliquid",
+        resetInstruments: ["btc-usd"],
+        shouldClearLatency: true,
+        shouldClearShadowQueue: true,
+        shouldResetPaperPortfolio: false
+      },
+      {
+        resetOrderBook: async (payload) => {
+          expect(payload.instrumentCode).toBeDefined();
+          calls.push(`reset:${payload.instrumentCode ?? "missing"}`);
+        },
+        resetLatencyBaseline: (observedAt, reason) => {
+          calls.push(`latency:${reason}:${observedAt}`);
+        },
+        clearShadowQueue: () => calls.push("shadow-queue")
+      }
+    );
+
+    expect(calls).toEqual(["reset:btc-usd", `latency:manual-reset:${OBSERVED_AT}`, "shadow-queue"]);
   });
 
   it("resets paper portfolio, quote state, citadel, and risk gates for admin recovery", () => {
