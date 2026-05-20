@@ -1,12 +1,7 @@
 /* eslint-disable */
-import {
-  ConfigManager,
-  configDefaultsFromEnv,
-  configFromAdminSnapshot,
-  defaultConfig
-} from "../../ConfigManager";
+import { configFromAdminSnapshot, defaultConfig, type ConfigManager } from "../../ConfigManager";
 import { decode as msgpackDecode } from "@msgpack/msgpack";
-import { Governor, neutralMacroBias } from "../../Governor";
+import { neutralMacroBias, type Governor } from "../../Governor";
 import type { Logger } from "../../Logger";
 import {
   ProfilerAgent,
@@ -329,11 +324,7 @@ import {
 } from "./state/EngineBootConfig";
 import { buildHydratedEngineState } from "./state/EngineBootState";
 import {
-  createEngineLogger,
-  createEngineNotifier,
-  createEngineReplayJournal,
-  createEngineStorageGuard,
-  createEngineTelemetryBus,
+  createTradingEngineBootServices,
   tradingEngineLoggerRuntimeContext
 } from "./state/EngineBootServices";
 import { nextTickAgentHealth } from "./state/AgentHealthRuntime";
@@ -373,7 +364,6 @@ import {
   type MultiScaleVolatilitySnapshot
 } from "../MultiScaleVolatility";
 import { QueuePositionModel } from "../QueuePositionModel";
-import { createShadowQueue } from "../ShadowQueue";
 import { isInventoryHedgeIntent } from "../../execution/RiskGuards";
 import {
   HeatmapAgent,
@@ -387,10 +377,10 @@ import { SentimentAgent, defaultSentimentState } from "../../agents/SentimentAge
 import { RateLimiter, type RateLimitBucketSnapshot } from "../../utils/RateLimiter";
 import type { Notifier } from "../../utils/Notifier";
 import { isShadowMode } from "../../utils/CitadelProtocol";
-import { GhostBook, type GhostBookConfig, type GhostBookObservation } from "../../utils/GhostBook";
+import type { GhostBook, GhostBookConfig, GhostBookObservation } from "../../utils/GhostBook";
 import { AbsorptionAnalyzer } from "../../strategy/cascade/AbsorptionAnalyzer";
 import type { CascadeAssetProfile } from "../../strategy/cascade/AssetProfiles";
-import { Backtester } from "../../strategy/cascade/Backtester";
+import type { Backtester } from "../../strategy/cascade/Backtester";
 import { CascadeCandleAggregator } from "../../strategy/cascade/CandleAggregator";
 import { CascadeDetector } from "../../strategy/cascade/CascadeDetector";
 import { CascadeRecoverySignalEngine } from "../../strategy/cascade/CascadeRecoverySignal";
@@ -398,7 +388,7 @@ import { calculateAtr } from "../../strategy/cascade/indicators/ATR";
 import { cumulativeVolumeDelta } from "../../strategy/cascade/indicators/CumulativeVolumeDelta";
 import { HyperliquidLiquidationStream } from "../../strategy/cascade/LiquidationStream";
 import { HeatManager } from "../../strategy/cascade/HeatManager";
-import { NewsCalendar } from "../../strategy/cascade/NewsCalendar";
+import type { NewsCalendar } from "../../strategy/cascade/NewsCalendar";
 import type { CascadeAlertEventType } from "../../strategy/cascade/OperationalSafeguards";
 import { PositionManager } from "../../strategy/cascade/PositionManager";
 import { calculatePositionSize } from "../../strategy/cascade/PositionSizer";
@@ -758,17 +748,32 @@ export class TradingEngine {
     private readonly state: DurableObjectState,
     private readonly env: Env
   ) {
-    this.configManager = new ConfigManager(env.CONFIG_STORE, configDefaultsFromEnv(env));
-    this.governor = new Governor(env.CONFIG_STORE);
-    this.cascadeNewsCalendar = new NewsCalendar(env.CONFIG_STORE);
-    this.cascadeBacktester = new Backtester(env.TRADING_DB);
-    this.ghostBook = createShadowQueue(env);
-    this.storageGuard = createEngineStorageGuard(state.storage);
-    this.telemetryBus = createEngineTelemetryBus({
+    const bootServices = createTradingEngineBootServices({
       env,
+      storage: state.storage,
       adminSockets: this.adminSockets,
-      waitUntil: (promise) => state.waitUntil(promise)
+      waitUntil: (promise) => state.waitUntil(promise),
+      runtimeContext: () =>
+        tradingEngineLoggerRuntimeContext({
+          lastTickTimestamp: this.lastTickTimestamp,
+          engineState: this.engineState
+        }),
+      readStorage: (key) => state.storage.get(key),
+      writeStorage: (key, value, reason) => this.safeStoragePut(key, value, reason),
+      publish: (type, payload, correlationId) => this.publish(type, payload, correlationId),
+      onStorageReadFailure: (reason, error) => this.handleStorageWriteFailure(reason, error)
     });
+    this.configManager = bootServices.configManager;
+    this.governor = bootServices.governor;
+    this.cascadeNewsCalendar = bootServices.cascadeNewsCalendar;
+    this.cascadeBacktester = bootServices.cascadeBacktester;
+    this.ghostBook = bootServices.ghostBook;
+    this.storageGuard = bootServices.storageGuard;
+    this.telemetryBus = bootServices.telemetryBus;
+    this.logger = bootServices.logger;
+    this.notifier = bootServices.notifier;
+    this.replayJournal = bootServices.replayJournal;
+
     const runtimeSettings = resolveEngineBootRuntimeSettings(env);
     this.jitterSampleWindow = runtimeSettings.jitterSampleWindow;
     this.jitterComputeIntervalTicks = runtimeSettings.jitterComputeIntervalTicks;
@@ -785,27 +790,6 @@ export class TradingEngine {
     this.anomalyDetector = createBootAnomalyDetector(env);
     this.croupierAgent = createBootCroupierAgent(env);
     this.rateLimiter.configure("default", 10, 10);
-    this.logger = createEngineLogger({
-      env,
-      waitUntil: (promise) => this.state.waitUntil(promise),
-      runtimeContext: () =>
-        tradingEngineLoggerRuntimeContext({
-          lastTickTimestamp: this.lastTickTimestamp,
-          engineState: this.engineState
-        })
-    });
-    this.notifier = createEngineNotifier({
-      env,
-      waitUntil: (promise) => this.state.waitUntil(promise)
-    });
-    this.replayJournal = createEngineReplayJournal({
-      env,
-      logger: this.logger,
-      readStorage: (key) => this.state.storage.get(key),
-      writeStorage: (key, value, reason) => this.safeStoragePut(key, value, reason),
-      publish: (type, payload, correlationId) => this.publish(type, payload, correlationId),
-      onStorageReadFailure: (reason, error) => this.handleStorageWriteFailure(reason, error)
-    });
     this.orderBookReconstructor = this.createOrderBookReconstructor();
 
     this.initialized = this.state.blockConcurrencyWhile(async () => {
