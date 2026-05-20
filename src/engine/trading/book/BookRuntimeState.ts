@@ -114,6 +114,28 @@ export interface RejectedBookDeltaStateInput {
   readonly observedAt: string;
 }
 
+export interface BookEarlyReturnSideEffectInput {
+  readonly state: EngineState;
+  readonly storageWrites: Record<string, unknown>;
+  readonly tick: MarketTick;
+  readonly metrics: LatencyMetrics;
+  readonly hotPathStartedAt: number;
+}
+
+export interface BookEarlyReturnSideEffectHandlers {
+  readonly applyState: (state: EngineState) => void;
+  readonly persistStorage: (
+    writes: Record<string, unknown>,
+    reason: "INFORMATIONAL_TICK_BOOK_NOT_READY" | "BOOK_DESYNC"
+  ) => Promise<unknown>;
+  readonly publishTickTelemetry: (
+    tick: MarketTick,
+    metrics: LatencyMetrics,
+    status: "FRESH",
+    hotPathStartedAt: number
+  ) => void;
+}
+
 export interface BookSyncDesyncInput {
   readonly syncState: BookSyncState | undefined;
   readonly reason: string;
@@ -279,6 +301,24 @@ export function stateAfterRejectedBookDelta(input: RejectedBookDeltaStateInput):
     heartbeatAt: input.observedAt,
     updatedAt: input.observedAt
   };
+}
+
+export async function applyInformationalBookNotReadySideEffects(
+  input: BookEarlyReturnSideEffectInput,
+  handlers: BookEarlyReturnSideEffectHandlers
+): Promise<void> {
+  handlers.applyState(input.state);
+  await handlers.persistStorage(input.storageWrites, "INFORMATIONAL_TICK_BOOK_NOT_READY");
+  handlers.publishTickTelemetry(input.tick, input.metrics, "FRESH", input.hotPathStartedAt);
+}
+
+export async function applyRejectedBookDeltaSideEffects(
+  input: BookEarlyReturnSideEffectInput,
+  handlers: BookEarlyReturnSideEffectHandlers
+): Promise<void> {
+  handlers.applyState(input.state);
+  await handlers.persistStorage(input.storageWrites, "BOOK_DESYNC");
+  handlers.publishTickTelemetry(input.tick, input.metrics, "FRESH", input.hotPathStartedAt);
 }
 
 export function rejectedBookDeltaIngestResult(input: {

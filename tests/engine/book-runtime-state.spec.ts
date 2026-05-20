@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   applyBookSnapshotSideEffects,
+  applyInformationalBookNotReadySideEffects,
+  applyRejectedBookDeltaSideEffects,
   bookDesyncStorageExtra,
   bookSnapshotRuntimeArtifacts,
   bookSnapshotTelemetry,
@@ -15,6 +17,7 @@ import {
   stateAfterOrderBookReset,
   stateAfterRejectedBookDelta,
   stateAfterRebuiltBookSnapshot,
+  type BookEarlyReturnSideEffectHandlers,
   type BookSnapshotSideEffectHandlers
 } from "../../src/engine/trading/book/BookRuntimeState";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
@@ -398,6 +401,34 @@ describe("BookRuntimeState", () => {
     });
   });
 
+  it("applies book-not-ready early-return side effects", async () => {
+    const state = stateAfterInformationalBookNotReady({
+      currentState: defaultEngineState("book-not-ready-effects"),
+      tradingEnabled: true,
+      instrumentCode: "btc-usd",
+      maxLatencyMs: 150,
+      observedAt: OBSERVED_AT
+    });
+    const sideEffects = bookEarlyReturnSideEffectSpy();
+
+    await applyInformationalBookNotReadySideEffects(
+      {
+        state,
+        storageWrites: { "engine:state": state },
+        tick: marketTick(),
+        metrics: latencyMetrics(),
+        hotPathStartedAt: 12
+      },
+      sideEffects.handlers
+    );
+
+    expect(sideEffects.events).toEqual([
+      "state:1",
+      "persist:INFORMATIONAL_TICK_BOOK_NOT_READY:1",
+      "telemetry:FRESH:12"
+    ]);
+  });
+
   it("updates compact state after rejected book deltas", () => {
     const currentState = defaultEngineState("engine-test");
     currentState.processedTicks = 8;
@@ -418,6 +449,29 @@ describe("BookRuntimeState", () => {
       updatedAt: OBSERVED_AT
     });
     expect(next.microstructure).toBe(currentState.microstructure);
+  });
+
+  it("applies rejected-delta early-return side effects", async () => {
+    const state = stateAfterRejectedBookDelta({
+      currentState: defaultEngineState("book-rejected-effects"),
+      internalOrderBookDepth: 7,
+      maxLatencyMs: 150,
+      observedAt: OBSERVED_AT
+    });
+    const sideEffects = bookEarlyReturnSideEffectSpy();
+
+    await applyRejectedBookDeltaSideEffects(
+      {
+        state,
+        storageWrites: { "engine:state": state, "bookDesync:test": {} },
+        tick: marketTick(),
+        metrics: latencyMetrics(),
+        hotPathStartedAt: 14
+      },
+      sideEffects.handlers
+    );
+
+    expect(sideEffects.events).toEqual(["state:1", "persist:BOOK_DESYNC:2", "telemetry:FRESH:14"]);
   });
 
   it("maps rejected book deltas to ingest statuses", () => {
@@ -689,6 +743,29 @@ function bookSnapshotSideEffectSpy(): {
       },
       publishSnapshotApplied(payload) {
         events.push(`publish:${payload.sequence}`);
+      }
+    }
+  };
+}
+
+function bookEarlyReturnSideEffectSpy(): {
+  events: string[];
+  handlers: BookEarlyReturnSideEffectHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      applyState(state) {
+        events.push(`state:${state.processedTicks}`);
+      },
+      persistStorage(writes, reason) {
+        events.push(`persist:${reason}:${Object.keys(writes).length}`);
+        return Promise.resolve();
+      },
+      publishTickTelemetry(_tick, _metrics, status, hotPathStartedAt) {
+        events.push(`telemetry:${status}:${hotPathStartedAt}`);
       }
     }
   };

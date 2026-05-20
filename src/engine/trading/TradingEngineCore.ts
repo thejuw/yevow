@@ -37,7 +37,9 @@ import {
   nullableMarkPriceForInstrument
 } from "./book/BookViews";
 import {
+  applyInformationalBookNotReadySideEffects,
   applyBookSnapshotSideEffects,
+  applyRejectedBookDeltaSideEffects,
   bookDesyncStorageExtra,
   markBookSyncDesynced,
   stateAfterAcceptedBookDelta,
@@ -2374,7 +2376,7 @@ export class TradingEngine {
       observedAt: metrics.brainTimestamp
     });
 
-    this.engineState = stateAfterInformationalBookNotReady({
+    const nextState = stateAfterInformationalBookNotReady({
       currentState: this.engineState,
       tradingEnabled: this.cachedConfig.TRADING_ENABLED,
       instrumentCode: tick.instrumentCode,
@@ -2382,12 +2384,23 @@ export class TradingEngine {
       observedAt: metrics.brainTimestamp
     });
 
-    await this.persistHotStorageSnapshot(
-      this.latencyStorageWrites(),
-      "INFORMATIONAL_TICK_BOOK_NOT_READY"
+    await applyInformationalBookNotReadySideEffects(
+      {
+        state: nextState,
+        storageWrites: this.latencyStorageWritesForState(nextState),
+        tick,
+        metrics,
+        hotPathStartedAt
+      },
+      {
+        applyState: (state) => {
+          this.engineState = state;
+        },
+        persistStorage: (writes, reason) => this.persistHotStorageSnapshot(writes, reason),
+        publishTickTelemetry: (telemetryTick, telemetryMetrics, status, telemetryStartedAt) =>
+          this.publishTickTelemetry(telemetryTick, telemetryMetrics, status, telemetryStartedAt)
+      }
     );
-
-    this.publishTickTelemetry(tick, metrics, "FRESH", hotPathStartedAt);
 
     return {
       accepted: false,
@@ -2417,27 +2430,39 @@ export class TradingEngine {
       return rejectedBookDeltaIngestResult({ applied, metrics });
     }
 
-    this.engineState = stateAfterRejectedBookDelta({
+    const nextState = stateAfterRejectedBookDelta({
       currentState: this.engineState,
       internalOrderBookDepth: countBookLevels(this.bids, this.asks),
       maxLatencyMs: this.maxLatencyMs,
       observedAt: metrics.brainTimestamp
     });
 
-    await this.persistHotStorageSnapshot(
-      this.latencyStorageWrites(
-        bookDesyncStorageExtra({
-          tick,
-          metrics,
-          reason: applied.reason ?? "BOOK_UPDATE_REJECTED",
-          expectedSequence: applied.expectedSequence,
-          actualSequence: applied.actualSequence
-        })
-      ),
-      "BOOK_DESYNC"
+    await applyRejectedBookDeltaSideEffects(
+      {
+        state: nextState,
+        storageWrites: this.latencyStorageWritesForState(
+          nextState,
+          bookDesyncStorageExtra({
+            tick,
+            metrics,
+            reason: applied.reason ?? "BOOK_UPDATE_REJECTED",
+            expectedSequence: applied.expectedSequence,
+            actualSequence: applied.actualSequence
+          })
+        ),
+        tick,
+        metrics,
+        hotPathStartedAt
+      },
+      {
+        applyState: (state) => {
+          this.engineState = state;
+        },
+        persistStorage: (writes, reason) => this.persistHotStorageSnapshot(writes, reason),
+        publishTickTelemetry: (telemetryTick, telemetryMetrics, status, telemetryStartedAt) =>
+          this.publishTickTelemetry(telemetryTick, telemetryMetrics, status, telemetryStartedAt)
+      }
     );
-
-    this.publishTickTelemetry(tick, metrics, "FRESH", hotPathStartedAt);
 
     return rejectedBookDeltaIngestResult({ applied, metrics });
   }
@@ -4497,9 +4522,16 @@ export class TradingEngine {
   }
 
   private latencyStorageWrites(extra?: Record<string, unknown>): Record<string, unknown> {
+    return this.latencyStorageWritesForState(this.engineState, extra);
+  }
+
+  private latencyStorageWritesForState(
+    state: EngineState,
+    extra?: Record<string, unknown>
+  ): Record<string, unknown> {
     return latencySnapshotStorageWrites({
       engineStateKey: ENGINE_STATE_KEY,
-      state: this.engineState,
+      state,
       performanceHistoryKey: PERFORMANCE_HISTORY_KEY,
       latencyHistory: this.latencyHistory,
       processingLatencySamplesKey: PROCESSING_LATENCY_SAMPLES_KEY,
