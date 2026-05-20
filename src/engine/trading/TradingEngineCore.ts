@@ -557,12 +557,12 @@ import {
   resolveMaxLatencyMs
 } from "./state/EngineStateDefaults";
 import { isTradeTick } from "./state/TickClassification";
-import { evaluateTickTargetPreflight } from "./state/TickPreflightRuntime";
 import {
   applyAcceptedDecisionPipelineFlow,
   buildAcceptedTickFinalizationArtifacts,
   buildAcceptedTickStateTransition
 } from "./pipelines/AcceptedTickRuntime";
+import { handleTickRuntime } from "./pipelines/TickHandlingRuntime";
 import type {
   AcceptedDecisionPipelineInput,
   AcceptedExecutionContext,
@@ -2968,100 +2968,74 @@ export class TradingEngine {
     options: TickHandlingOptions = {}
   ): Promise<TickIngestResult> {
     const hotPathStartedAt = highResolutionNow();
-    const shadowReplay = options.shadowReplay === true;
-    const targetPreflight = evaluateTickTargetPreflight({ tick, shadowReplay });
-
-    if (targetPreflight.rejection) {
-      return targetPreflight.rejection;
-    }
-
-    this.maybeAutoResumeShadowMode(tick, shadowReplay);
-    const tradingAvailability = this.resolveTradingAvailability(tick, shadowReplay);
-    if (tradingAvailability) {
-      return tradingAvailability;
-    }
-
-    this.lastTickTimestamp = tick.receivedAt;
-    this.observeCascadeAbsorption(tick);
-
-    const { metrics, streamId, hardStaleDropMs, isHardStale } = this.prepareTickLatency(
-      tick,
-      shadowReplay
-    );
-
-    if (isHardStale) {
-      return this.handleHardStaleTickDrop(tick, metrics, streamId, hardStaleDropMs);
-    }
-
-    if (metrics.status === "STALE" && !shadowReplay && this.cachedConfig.TRADING_ENABLED) {
-      return this.handleSoftStaleTick(tick, metrics, wakeUpTimeMs, hotPathStartedAt);
-    }
-
-    const fundingState = stateAfterFundingTick(this.engineState, tick, metrics.brainTimestamp);
-    if (fundingState.changed) {
-      this.engineState = fundingState.state;
-    }
-
-    const bookResolution = await this.resolveTickBook(
-      tick,
-      metrics,
-      wakeUpTimeMs,
-      hotPathStartedAt
-    );
-    if (bookResolution.kind === "EARLY_RETURN") {
-      return bookResolution.result;
-    }
-    const { book, orderBookUpdateMs } = bookResolution;
-
-    const { volatilitySnapshot, shadowQueueState, domSnapshot } =
-      await this.preparePostBookTickContext(tick, book, metrics.brainTimestamp, options);
-    const anomalyLogicStartedAt = highResolutionNow();
-    const anomalyResult = this.anomalyDetector.evaluate({
-      tick,
-      book,
-      dom: domSnapshot,
-      observedAt: metrics.brainTimestamp
-    });
-
-    if (
-      anomalyResult.emergencyPause &&
-      this.cachedConfig.TRADING_ENABLED &&
-      !options.shadowReplay &&
-      !isShadowMode(this.env)
-    ) {
-      return this.handleAnomalyEmergencyPause(
+    return handleTickRuntime(
+      {
         tick,
-        book,
-        domSnapshot,
-        anomalyResult,
-        anomalyLogicStartedAt,
-        metrics,
         wakeUpTimeMs,
-        orderBookUpdateMs,
-        hotPathStartedAt
-      );
-    }
-
-    await this.processAcceptedDecisionPipeline({
-      tick,
-      metrics,
-      book,
-      domSnapshot,
-      volatilitySnapshot,
-      shadowQueueState,
-      anomalyResult,
-      wakeUpTimeMs,
-      orderBookUpdateMs,
-      hotPathStartedAt,
-      shadowReplay
-    });
-
-    return {
-      accepted: true,
-      status: metrics.status,
-      metrics,
-      book
-    };
+        options,
+        hotPathStartedAt,
+        tradingEnabled: this.cachedConfig.TRADING_ENABLED,
+        shadowModeActive: isShadowMode(this.env)
+      },
+      {
+        maybeAutoResumeShadowMode: (currentTick, shadowReplay) =>
+          this.maybeAutoResumeShadowMode(currentTick, shadowReplay),
+        resolveTradingAvailability: (currentTick, shadowReplay) =>
+          this.resolveTradingAvailability(currentTick, shadowReplay),
+        rememberLastTickTimestamp: (receivedAt) => {
+          this.lastTickTimestamp = receivedAt;
+        },
+        observeCascadeAbsorption: (currentTick) => this.observeCascadeAbsorption(currentTick),
+        prepareTickLatency: (currentTick, shadowReplay) =>
+          this.prepareTickLatency(currentTick, shadowReplay),
+        handleHardStaleTickDrop: (currentTick, metrics, streamId, hardStaleDropMs) =>
+          this.handleHardStaleTickDrop(currentTick, metrics, streamId, hardStaleDropMs),
+        handleSoftStaleTick: (currentTick, metrics, wakeUp, startedAt) =>
+          this.handleSoftStaleTick(currentTick, metrics, wakeUp, startedAt),
+        applyFundingTick: (currentTick, observedAt) => {
+          const fundingState = stateAfterFundingTick(this.engineState, currentTick, observedAt);
+          if (fundingState.changed) {
+            this.engineState = fundingState.state;
+          }
+        },
+        resolveTickBook: (currentTick, metrics, wakeUp, startedAt) =>
+          this.resolveTickBook(currentTick, metrics, wakeUp, startedAt),
+        preparePostBookTickContext: (currentTick, book, observedAt, tickOptions) =>
+          this.preparePostBookTickContext(currentTick, book, observedAt, tickOptions),
+        evaluateAnomaly: (currentTick, book, domSnapshot, observedAt) =>
+          this.anomalyDetector.evaluate({
+            tick: currentTick,
+            book,
+            dom: domSnapshot,
+            observedAt
+          }),
+        nowMs: () => highResolutionNow(),
+        handleAnomalyEmergencyPause: (
+          currentTick,
+          book,
+          domSnapshot,
+          anomalyResult,
+          anomalyStartedAt,
+          metrics,
+          wakeUp,
+          orderBookUpdateMs,
+          startedAt
+        ) =>
+          this.handleAnomalyEmergencyPause(
+            currentTick,
+            book,
+            domSnapshot,
+            anomalyResult,
+            anomalyStartedAt,
+            metrics,
+            wakeUp,
+            orderBookUpdateMs,
+            startedAt
+          ),
+        processAcceptedDecisionPipeline: (pipeline) =>
+          this.processAcceptedDecisionPipeline(pipeline)
+      }
+    );
   }
 
   private processShadowQueueTick(
