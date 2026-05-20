@@ -1,6 +1,6 @@
 import type { MarketTick } from "../../../types";
 import type { TickIngestResult } from "../TradingEngineRouteTypes";
-import { normalizeNativeInstrumentCode } from "../helpers/NativeHyperliquidRuntime";
+import { normalizeNativeInstrumentCode } from "../helpers/NativeMarketIdentityRuntime";
 import { isTargetInstrument } from "./AssetStateRuntime";
 
 export interface TickTargetPreflightResult {

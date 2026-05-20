@@ -4,12 +4,14 @@ import {
   DEFAULT_HL_SEQUENCE_GAP_MS
 } from "../../../TradingEngineConstants";
 import {
-  hyperliquidNativeInstrumentCode,
   nativeHyperliquidLatencyMetrics,
-  normalizeSourceExchange,
-  normalizeSourceWeight,
   parseHyperliquidNativeLevels
 } from "../helpers/NativeHyperliquidRuntime";
+import {
+  hyperliquidNativeInstrumentCode,
+  normalizeSourceExchange,
+  normalizeSourceWeight
+} from "../helpers/NativeMarketIdentityRuntime";
 import {
   nativeExchangeTimestamp,
   nativeIso,

@@ -10,7 +10,7 @@ import type {
 import {
   normalizeInstrumentSelector,
   normalizeNativeInstrumentCode
-} from "../helpers/NativeHyperliquidRuntime";
+} from "../helpers/NativeMarketIdentityRuntime";
 import { normalizeMarketKey } from "../state/AssetStateRuntime";
 import { buildMarketKey } from "./BookRuntimeHelpers";
 import { roundCrypto, type SortedBookSide } from "./SortedBookSide";

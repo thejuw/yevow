@@ -8,7 +8,7 @@ import {
   normalizeNativeInstrumentCode,
   normalizeSourceExchange,
   normalizeSourceWeight
-} from "../helpers/NativeHyperliquidRuntime";
+} from "../helpers/NativeMarketIdentityRuntime";
 import { parseTimestampMs } from "../helpers/RuntimeClock";
 import { readPositiveNumber } from "../helpers/RuntimeParsing";
 import type { Env, InternalOrderBook, MarketTick, OrderBookSide, PriceLevel } from "../../../types";

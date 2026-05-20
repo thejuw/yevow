@@ -7,7 +7,7 @@ import type {
   ShadowQueueState
 } from "../../../types";
 import { DEFAULT_PAPER_BANKROLL_USD } from "../../../TradingEngineConstants";
-import { normalizeSourceExchange } from "../helpers/NativeHyperliquidRuntime";
+import { normalizeSourceExchange } from "../helpers/NativeMarketIdentityRuntime";
 import { readPositiveNumber } from "../helpers/RuntimeParsing";
 import { aggregateQuoteState, defaultAssetQuoteStates } from "./AssetStateRuntime";
 import {

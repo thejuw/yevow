@@ -7,7 +7,7 @@ import { buildMarketKey, calculateTimeToBookMs, resolveTickSize } from "./BookRu
 import {
   normalizeSourceExchange,
   normalizeSourceWeight
-} from "../helpers/NativeHyperliquidRuntime";
+} from "../helpers/NativeMarketIdentityRuntime";
 import { normalizeMarketKey } from "../state/AssetStateRuntime";
 import type { BookSyncState } from "./BookTypes";
 import { OrderBookReconstructor, type OrderBookStores } from "./OrderBookReconstructor";

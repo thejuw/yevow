@@ -1,8 +1,8 @@
 import {
   createNativeHyperliquidFundingTick,
-  createNativeHyperliquidTradeTick,
-  normalizeSourceExchange
+  createNativeHyperliquidTradeTick
 } from "../helpers/NativeHyperliquidRuntime";
+import { normalizeSourceExchange } from "../helpers/NativeMarketIdentityRuntime";
 import { isNativeRecord, nativeObject, nativeString } from "../helpers/NativeValueRuntime";
 import type { TickIngestResult } from "../TradingEngineRouteTypes";
 import type { EngineState, MarketTick } from "../../../types";

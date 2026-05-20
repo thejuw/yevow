@@ -501,9 +501,9 @@ import {
   normalizeNativeCoin,
   normalizeNativeInstrumentCode,
   splitNativeInstrument,
-  baseAssetFromInstrument,
-  nativeBookSideLevels
-} from "./helpers/NativeHyperliquidRuntime";
+  baseAssetFromInstrument
+} from "./helpers/NativeMarketIdentityRuntime";
+import { nativeBookSideLevels } from "./helpers/NativeHyperliquidRuntime";
 import {
   epochMillis,
   nativeHashSequence,

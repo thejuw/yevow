@@ -1,7 +1,7 @@
 import {
   baseAssetFromInstrument,
   normalizeNativeInstrumentCode
-} from "../helpers/NativeHyperliquidRuntime";
+} from "../helpers/NativeMarketIdentityRuntime";
 import type {
   AbsorptionConfirmed,
   CascadeEvent,

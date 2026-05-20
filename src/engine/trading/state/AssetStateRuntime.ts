@@ -1,5 +1,5 @@
 import { TARGET_ASSET_MATRIX, TARGET_INSTRUMENTS } from "../../../TradingEngineConstants";
-import { normalizeNativeInstrumentCode } from "../helpers/NativeHyperliquidRuntime";
+import { normalizeNativeInstrumentCode } from "../helpers/NativeMarketIdentityRuntime";
 import {
   DEFAULT_ORDER_BOOK_TICK_SIZE,
   normalizePriceToTick,
