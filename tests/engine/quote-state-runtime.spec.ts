@@ -6,6 +6,7 @@ import {
   isProfilerQuoteHaltSignal,
   nextQuoteStateForInstrument,
   quoteSuppressionDecision,
+  quoteSuppressionSideEffects,
   resumeExpiredQuoteStates,
   resolveQuoteHibernateMs,
   strategyQuoteDisabledReason
@@ -325,6 +326,37 @@ describe("QuoteStateRuntime", () => {
     expect(result.suspendTelemetry).toMatchObject({
       reason: "ENSEMBLE_ANOMALY_CIRCUIT_BREAKER"
     });
+  });
+
+  it("materializes quote suppression side effects in execution order", () => {
+    expect(
+      quoteSuppressionSideEffects({
+        instrumentCode: "btc-usd",
+        strategyCancelReason: "MARKET_MAKING_OFF",
+        suppressionCancelReason: "ENSEMBLE_CIRCUIT_BREAKER",
+        suspendTelemetry: {
+          reason: "ENSEMBLE_ANOMALY_CIRCUIT_BREAKER",
+          suspendedUntil: "2026-05-18T13:01:00.000Z"
+        }
+      })
+    ).toEqual([
+      {
+        kind: "CANCEL_QUOTES",
+        reason: "MARKET_MAKING_OFF"
+      },
+      {
+        kind: "PUBLISH_SUSPEND",
+        payload: {
+          instrumentCode: "btc-usd",
+          reason: "ENSEMBLE_ANOMALY_CIRCUIT_BREAKER",
+          suspendedUntil: "2026-05-18T13:01:00.000Z"
+        }
+      },
+      {
+        kind: "CANCEL_QUOTES",
+        reason: "ENSEMBLE_CIRCUIT_BREAKER"
+      }
+    ]);
   });
 });
 

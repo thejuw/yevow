@@ -105,6 +105,7 @@ import {
 import {
   nextQuoteStateForInstrument as nextRuntimeQuoteStateForInstrument,
   applyQuoteSuppressionPolicy,
+  quoteSuppressionSideEffects,
   resolveQuoteHibernateMs,
   resumeExpiredQuoteStates,
   strategyQuoteDisabledReason as runtimeStrategyQuoteDisabledReason
@@ -3055,21 +3056,12 @@ export class TradingEngine {
       observedAt
     });
 
-    if (quotePolicy.strategyCancelReason) {
-      this.state.waitUntil(this.cancelAllQuotes(instrumentCode, quotePolicy.strategyCancelReason));
-    }
-
-    if (quotePolicy.suspendTelemetry) {
-      this.publish("SUSPEND_QUOTES", {
-        instrumentCode,
-        ...quotePolicy.suspendTelemetry
-      });
-    }
-
-    if (quotePolicy.suppressionCancelReason) {
-      this.state.waitUntil(
-        this.cancelAllQuotes(instrumentCode, quotePolicy.suppressionCancelReason)
-      );
+    for (const effect of quoteSuppressionSideEffects({ instrumentCode, ...quotePolicy })) {
+      if (effect.kind === "PUBLISH_SUSPEND") {
+        this.publish("SUSPEND_QUOTES", effect.payload);
+      } else {
+        this.state.waitUntil(this.cancelAllQuotes(instrumentCode, effect.reason));
+      }
     }
 
     return {

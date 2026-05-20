@@ -75,6 +75,23 @@ export interface QuoteSuppressionPolicyResult<TExecutionPlan> {
   readonly isProfilerQuoteHalt: boolean;
 }
 
+export type QuoteSuppressionSideEffect =
+  | {
+      readonly kind: "CANCEL_QUOTES";
+      readonly reason: string;
+    }
+  | {
+      readonly kind: "PUBLISH_SUSPEND";
+      readonly payload: Record<string, unknown>;
+    };
+
+export interface QuoteSuppressionSideEffectsInput {
+  readonly instrumentCode: string;
+  readonly strategyCancelReason: string | null;
+  readonly suppressionCancelReason: string | null;
+  readonly suspendTelemetry: Record<string, unknown> | null;
+}
+
 export function nextQuoteStateForInstrument(input: NextQuoteStateInput): EngineState["quoteState"] {
   if (!input.tradingEnabled) {
     return suspendedQuoteState(input.previous, "TRADING_DISABLED", null, input.observedAt);
@@ -219,6 +236,38 @@ export function applyQuoteSuppressionPolicy<TExecutionPlan>(
     isCascadeShield: suppression.isCascadeShield,
     isProfilerQuoteHalt: suppression.isProfilerQuoteHalt
   };
+}
+
+export function quoteSuppressionSideEffects(
+  input: QuoteSuppressionSideEffectsInput
+): QuoteSuppressionSideEffect[] {
+  const effects: QuoteSuppressionSideEffect[] = [];
+
+  if (input.strategyCancelReason) {
+    effects.push({
+      kind: "CANCEL_QUOTES",
+      reason: input.strategyCancelReason
+    });
+  }
+
+  if (input.suspendTelemetry) {
+    effects.push({
+      kind: "PUBLISH_SUSPEND",
+      payload: {
+        instrumentCode: input.instrumentCode,
+        ...input.suspendTelemetry
+      }
+    });
+  }
+
+  if (input.suppressionCancelReason) {
+    effects.push({
+      kind: "CANCEL_QUOTES",
+      reason: input.suppressionCancelReason
+    });
+  }
+
+  return effects;
 }
 
 export function resumeExpiredQuoteStates(
