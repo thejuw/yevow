@@ -328,7 +328,7 @@ import {
 import { JanitorAgent } from "../../agents/JanitorAgent";
 import { OracleAgent, defaultOracleState } from "../../agents/OracleAgent";
 import { PitBossAgent } from "../../agents/PitBossAgent";
-import { SentimentAgent, defaultSentimentState } from "../../agents/SentimentAgent";
+import { SentimentAgent } from "../../agents/SentimentAgent";
 import { RateLimiter, type RateLimitBucketSnapshot } from "../../utils/RateLimiter";
 import type { Notifier } from "../../utils/Notifier";
 import { isShadowMode } from "../../utils/CitadelProtocol";
@@ -550,7 +550,6 @@ import {
   defaultCitadelState,
   maintenanceRecoveryInstruments,
   defaultInventoryGuardState,
-  passiveInventoryGuardStateFromInventory,
   defaultJanitorState,
   defaultSlippageAnalytics,
   defaultRiskLimits,
@@ -560,6 +559,7 @@ import {
 import { isTradeTick } from "./state/TickClassification";
 import {
   applyAcceptedDecisionPipelineFlow,
+  buildTickDecisionContextFlow,
   buildAcceptedTickStateTransition,
   finalizeAcceptedTickFlow,
   prepareAcceptedExecutionContextFlow
@@ -2705,36 +2705,26 @@ export class TradingEngine {
     profilerResult: ProfilerEvaluation,
     observedAt: string
   ): TickDecisionContext {
-    const leadLag = this.engineState.leadLag;
-    const inventory = this.calculateInventoryState(observedAt);
-    const riskMetrics = this.updatePortfolioRisk(oracle, observedAt);
-    const profilerStates = this.profilerRegistry.snapshot(
-      tick.instrumentCode,
-      profilerResult.state
+    return buildTickDecisionContextFlow(
+      {
+        tick,
+        oracle,
+        profilerResult,
+        observedAt,
+        currentState: this.engineState,
+        sentimentEnabled: this.cachedConfig.SENTIMENT_ENABLED
+      },
+      {
+        calculateInventoryState: (decisionObservedAt) =>
+          this.calculateInventoryState(decisionObservedAt),
+        updatePortfolioRisk: (currentOracle, decisionObservedAt) =>
+          this.updatePortfolioRisk(currentOracle, decisionObservedAt),
+        profilerSnapshot: (instrumentCode, profilerState) =>
+          this.profilerRegistry.snapshot(instrumentCode, profilerState),
+        calculateAssetMatrix: (matrixObservedAt, instrumentCode, currentOracle, profilerStates) =>
+          this.calculateAssetMatrix(matrixObservedAt, instrumentCode, currentOracle, profilerStates)
+      }
     );
-    const assetMatrix = this.calculateAssetMatrix(
-      observedAt,
-      tick.instrumentCode,
-      oracle,
-      profilerStates
-    );
-    const inventoryGuard = passiveInventoryGuardStateFromInventory(inventory, observedAt);
-    const sentimentForDecision = this.cachedConfig.SENTIMENT_ENABLED
-      ? this.engineState.sentiment
-      : {
-          ...defaultSentimentState(),
-          updatedAt: observedAt
-        };
-
-    return {
-      leadLag,
-      inventory,
-      riskMetrics,
-      profilerStates,
-      assetMatrix,
-      inventoryGuard,
-      sentimentForDecision
-    };
   }
 
   private evaluateCroupierForTick(

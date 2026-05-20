@@ -8,6 +8,7 @@ import {
   buildAcceptedTickFinalizationArtifacts,
   buildAcceptedTickLifecycleArtifacts,
   buildAcceptedTickStateTransition,
+  buildTickDecisionContextFlow,
   finalizeAcceptedTickFlow,
   prepareAcceptedExecutionContextFlow
 } from "../../src/engine/trading/pipelines/AcceptedTickRuntime";
@@ -216,6 +217,79 @@ describe("AcceptedTickRuntime", () => {
     });
     expect(transition.agentHealth.PROFILER.latencyMs).toBe(2.5);
     expect(transition.agentHealth.CROUPIER.latencyMs).toBe(3.5);
+  });
+
+  it("builds tick decision context with risk, inventory, asset, and sentiment gates", () => {
+    const state = defaultEngineState("accepted-decision-context-runtime");
+    const profilerResult: ProfilerEvaluation = {
+      processed: true,
+      skippedReason: null,
+      closedBuckets: 0,
+      toxicityScore: 0.2,
+      state: { toxicityState: "NORMAL" } as ProfilerEvaluation["state"],
+      signal: null
+    };
+    const profilerStates = { "btc-usd": profilerResult.state };
+    const assetMatrix = {
+      "btc-usd": {
+        instrumentCode: "btc-usd",
+        active: true
+      }
+    } as unknown as TickDecisionContext["assetMatrix"];
+    const events: string[] = [];
+
+    const context = buildTickDecisionContextFlow(
+      {
+        tick: { instrumentCode: "btc-usd" } as AcceptedDecisionPipelineInput["tick"],
+        oracle: state.oracle,
+        profilerResult,
+        observedAt: OBSERVED_AT,
+        currentState: state,
+        sentimentEnabled: false
+      },
+      {
+        calculateInventoryState(observedAt) {
+          events.push(`inventory:${observedAt}`);
+          return state.inventory;
+        },
+        updatePortfolioRisk(oracle, observedAt) {
+          events.push(`risk:${oracle.updatedAt}:${observedAt}`);
+          return state.riskMetrics;
+        },
+        profilerSnapshot(instrumentCode, profilerState) {
+          events.push(`profiler:${instrumentCode}:${profilerState.toxicityState}`);
+          return profilerStates;
+        },
+        calculateAssetMatrix(observedAt, instrumentCode, oracle, currentProfilerStates) {
+          events.push(
+            `matrix:${observedAt}:${instrumentCode}:${oracle.updatedAt}:${currentProfilerStates === profilerStates}`
+          );
+          return assetMatrix;
+        }
+      }
+    );
+
+    expect(context).toMatchObject({
+      leadLag: state.leadLag,
+      inventory: state.inventory,
+      riskMetrics: state.riskMetrics,
+      profilerStates,
+      assetMatrix,
+      inventoryGuard: {
+        quoteHaltRequired: false,
+        updatedAt: OBSERVED_AT
+      },
+      sentimentForDecision: {
+        updatedAt: OBSERVED_AT
+      }
+    });
+    expect(context.sentimentForDecision).not.toBe(state.sentiment);
+    expect(events).toEqual([
+      `inventory:${OBSERVED_AT}`,
+      `risk:${state.oracle.updatedAt}:${OBSERVED_AT}`,
+      "profiler:btc-usd:NORMAL",
+      `matrix:${OBSERVED_AT}:btc-usd:${state.oracle.updatedAt}:true`
+    ]);
   });
 
   it("prepares accepted execution context from ensemble, Pit Boss, and quote policy", () => {
