@@ -63,11 +63,11 @@ import {
   buildShadowQueueGhostFillRuntimeRecord,
   emitShadowQueueGhostFillSideEffects,
   emitShadowQueueNoEdgeDecisionSideEffects,
+  processShadowQueueTickRuntime,
   resolveShadowQueueGhostFillConfig,
   resolveShadowQueueNoEdgeLogInterval,
   resolveShadowQueueSizingConfig,
-  type ShadowQueueDecisionAction,
-  shouldProcessShadowQueueTick
+  type ShadowQueueDecisionAction
 } from "./shadow/ShadowQueueRuntime";
 import {
   applyAnomalyEmergencyPauseSideEffects,
@@ -362,7 +362,7 @@ import { SentimentAgent, defaultSentimentState } from "../../agents/SentimentAge
 import { RateLimiter, type RateLimitBucketSnapshot } from "../../utils/RateLimiter";
 import type { Notifier } from "../../utils/Notifier";
 import { isShadowMode } from "../../utils/CitadelProtocol";
-import type { GhostBook, GhostBookConfig, GhostBookObservation } from "../../utils/GhostBook";
+import type { GhostBook, GhostBookConfig } from "../../utils/GhostBook";
 import { AbsorptionAnalyzer } from "../../strategy/cascade/AbsorptionAnalyzer";
 import type { CascadeAssetProfile } from "../../strategy/cascade/AssetProfiles";
 import type { Backtester } from "../../strategy/cascade/Backtester";
@@ -3307,34 +3307,21 @@ export class TradingEngine {
     observedAt: string,
     options: TickHandlingOptions
   ): ShadowQueueState {
-    if (!shouldProcessShadowQueueTick({ book, shadowReplay: options.shadowReplay })) {
-      return this.ghostBook.snapshot(observedAt);
-    }
-
-    let observation: GhostBookObservation | null = null;
-
-    if (isTradeTick(tick)) {
-      observation = this.ghostBook.observeTrade(tick, book, observedAt);
-
-      for (const fill of observation.fills) {
-        this.recordShadowQueueGhostFill(fill, tick, book, observedAt);
+    return processShadowQueueTickRuntime(
+      { tick, book, observedAt, shadowReplay: options.shadowReplay },
+      {
+        snapshot: (snapshotObservedAt) => this.ghostBook.snapshot(snapshotObservedAt),
+        observeTrade: (tradeTick, currentBook, tradeObservedAt) =>
+          this.ghostBook.observeTrade(tradeTick, currentBook, tradeObservedAt),
+        recordGhostFill: (fill, fillTick, currentBook, fillObservedAt) =>
+          this.recordShadowQueueGhostFill(fill, fillTick, currentBook, fillObservedAt),
+        handleDecision: (decision, currentBook, decisionObservedAt) =>
+          this.handleShadowQueueDecision(decision, currentBook, decisionObservedAt),
+        recordDecision: (decision) => this.ghostBook.recordDecision(decision),
+        injectBbo: (currentBook, injectionObservedAt) =>
+          this.ghostBook.injectBbo(currentBook, injectionObservedAt)
       }
-
-      for (const decision of observation.decisions) {
-        const updatedDecision = this.handleShadowQueueDecision(decision, book, observedAt);
-        this.ghostBook.recordDecision(updatedDecision);
-      }
-    }
-
-    this.ghostBook.injectBbo(book, observedAt);
-    const snapshot = this.ghostBook.snapshot(observedAt);
-
-    return observation?.decisions.length
-      ? {
-          ...snapshot,
-          lastDecision: this.ghostBook.snapshot(observedAt).lastDecision
-        }
-      : snapshot;
+    );
   }
 
   private recordShadowQueueGhostFill(

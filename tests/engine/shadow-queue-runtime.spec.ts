@@ -14,6 +14,7 @@ import {
   emitShadowQueueGhostFillSideEffects,
   emitShadowQueueNoEdgeDecisionSideEffects,
   enforceShadowQueueDecisionLatency,
+  processShadowQueueTickRuntime,
   resolveShadowQueueGhostFillConfig,
   resolveShadowQueueNoEdgeLogInterval,
   resolveShadowQueueSizingConfig,
@@ -24,7 +25,8 @@ import {
   type ShadowQueueDecisionActionSideEffectHandlers,
   type ShadowQueueGhostFillSideEffectHandlers,
   type ShadowQueueLatencyBreachSideEffectHandlers,
-  type ShadowQueueNoEdgeSideEffectHandlers
+  type ShadowQueueNoEdgeSideEffectHandlers,
+  type ShadowQueueTickRuntimeHandlers
 } from "../../src/engine/trading/shadow/ShadowQueueRuntime";
 import { defaultConfig } from "../../src/ConfigManager";
 import type {
@@ -34,6 +36,7 @@ import type {
   MarketTick,
   ShadowQueueFill,
   ShadowQueueDecision,
+  ShadowQueueState,
   SlippageAnalytics
 } from "../../src/types";
 
@@ -46,6 +49,29 @@ describe("ShadowQueueRuntime", () => {
     expect(shouldProcessShadowQueueTick({ book: book({ isSynced: false }) })).toBe(false);
     expect(shouldProcessShadowQueueTick({ book: book({ midPrice: null }) })).toBe(false);
     expect(shouldProcessShadowQueueTick({ book: book({ midPrice: 0 }) })).toBe(false);
+  });
+
+  it("processes trade ticks through ghost fill and decision handlers", () => {
+    const sideEffects = shadowQueueTickRuntimeSpy();
+    const state = processShadowQueueTickRuntime(
+      {
+        tick: marketTick(),
+        book: book(),
+        observedAt: OBSERVED_AT
+      },
+      sideEffects.handlers
+    );
+
+    expect(state.lastDecision?.decisionId).toBe("decision-updated");
+    expect(sideEffects.events).toEqual([
+      "observe:12",
+      "fill:fill-1",
+      "handle:decision-1",
+      "record:decision-updated",
+      "inject:btc-usd",
+      "snapshot:2026-05-18T09:00:00.000Z",
+      "snapshot:2026-05-18T09:00:00.000Z"
+    ]);
   });
 
   it("builds zero-size ghost fill telemetry when paper risk caps prevent execution", () => {
@@ -851,6 +877,67 @@ function shadowQueueDecisionActionSideEffectSpy(): {
   };
 }
 
+function shadowQueueTickRuntimeSpy(): {
+  events: string[];
+  handlers: ShadowQueueTickRuntimeHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      snapshot(observedAt) {
+        events.push(`snapshot:${observedAt}`);
+        return shadowQueueState({ lastDecision: decision({ decisionId: "decision-updated" }) });
+      },
+      observeTrade(tick) {
+        events.push(`observe:${tick.sequence}`);
+        return {
+          fills: [shadowFill()],
+          decisions: [decision()],
+          state: shadowQueueState()
+        };
+      },
+      recordGhostFill(fill) {
+        events.push(`fill:${fill.fillId}`);
+      },
+      handleDecision(nextDecision) {
+        events.push(`handle:${nextDecision.decisionId}`);
+        return decision({ decisionId: "decision-updated" });
+      },
+      recordDecision(nextDecision) {
+        events.push(`record:${nextDecision.decisionId}`);
+      },
+      injectBbo(currentBook) {
+        events.push(`inject:${currentBook.instrumentCode}`);
+      }
+    }
+  };
+}
+
+function shadowQueueState(overrides: Partial<ShadowQueueState> = {}): ShadowQueueState {
+  return {
+    schemaVersion: "shadow-queue.v1",
+    capacity: 128,
+    activeOrders: 0,
+    pendingDrifts: 0,
+    ghostFills: 0,
+    greenLights: 0,
+    redLights: 0,
+    noEdgeSignals: 0,
+    invertedSignals: 0,
+    confirmedSignals: 0,
+    driftTradeDelay: 3,
+    latencyBudgetMs: 5,
+    baseSpreadBps: 5,
+    queueDepthMultiplier: 1,
+    lastFill: null,
+    lastDecision: null,
+    updatedAt: OBSERVED_AT,
+    ...overrides
+  };
+}
+
 function book(overrides: Partial<InternalOrderBook> = {}): InternalOrderBook {
   return {
     marketKey: "hyperliquid:btc-usd",
@@ -928,6 +1015,7 @@ function marketTick(overrides: Partial<MarketTick> = {}): MarketTick {
     clockOffsetMs: 0,
     receivedAt: OBSERVED_AT,
     sourceWeight: 1,
+    raw: { eventType: "trade" },
     ...overrides
   };
 }
