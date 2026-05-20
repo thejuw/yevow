@@ -47,6 +47,13 @@ export interface CascadeManualCloseRuntimeInput {
   ) => CascadeManualCloseUpdate | null;
 }
 
+export interface CascadeManualCloseSideEffectHandlers {
+  readonly dispatchIntent: (intent: CascadePositionIntent) => void;
+  readonly logManualClose: (metadata: JsonRecord) => void;
+  readonly publishManualClose: (payload: JsonRecord, correlationId: string) => void;
+  readonly persistPositions: () => void;
+}
+
 export type CascadeManualCloseRuntimeResult =
   | {
       readonly ok: false;
@@ -118,6 +125,25 @@ export function buildCascadeManualCloseRuntimeResult(
       observedAt: input.observedAt
     })
   };
+}
+
+export function applyCascadeManualCloseSideEffects(
+  result: CascadeManualCloseRuntimeResult,
+  handlers: CascadeManualCloseSideEffectHandlers
+): CascadeManualCloseResponse {
+  if (!result.ok) {
+    return result.response;
+  }
+
+  for (const intent of result.artifacts.executableIntents) {
+    handlers.dispatchIntent(intent);
+  }
+
+  handlers.logManualClose(result.artifacts.logMetadata);
+  handlers.publishManualClose(result.artifacts.telemetryPayload, result.position.positionId);
+  handlers.persistPositions();
+
+  return result.artifacts.response;
 }
 
 export function cascadeManualCloseArtifacts(

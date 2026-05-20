@@ -516,7 +516,10 @@ import {
   recentSwingLow,
   recentSwingHigh
 } from "./cascade/CascadeSelectionRuntime";
-import { buildCascadeManualCloseRuntimeResult } from "./cascade/CascadeManualCloseRuntime";
+import {
+  applyCascadeManualCloseSideEffects,
+  buildCascadeManualCloseRuntimeResult
+} from "./cascade/CascadeManualCloseRuntime";
 import { hasRuntimeConfigUpdate } from "./config/RuntimeConfigUpdateDetection";
 import {
   epochMillis,
@@ -1557,33 +1560,28 @@ export class TradingEngine {
         this.cascadePositionManager.requestManualClose(id, closeObservedAt, markPrice)
     });
 
-    if (!closeResult.ok) {
-      return closeResult.response;
-    }
-
-    const { artifacts, position } = closeResult;
-
-    for (const intent of artifacts.executableIntents) {
-      this.state.waitUntil(
-        this.dispatchExecution(this.tradeIntentFromCascadePositionIntent(intent, observedAt))
-      );
-    }
-
-    this.logger.warn(
-      "CASCADE_POSITION_MANUAL_CLOSE",
-      "Operator requested cascade position close",
-      artifacts.logMetadata
-    );
-    this.publish("CASCADE_POSITION_MANUAL_CLOSE", artifacts.telemetryPayload, positionId);
-    this.state.waitUntil(
-      this.safeStoragePut(
-        CASCADE_POSITIONS_KEY,
-        this.cascadePositionManager.snapshot(),
-        "CASCADE_POSITION_MANUAL_CLOSE"
-      )
-    );
-
-    return artifacts.response;
+    return applyCascadeManualCloseSideEffects(closeResult, {
+      dispatchIntent: (intent) =>
+        this.state.waitUntil(
+          this.dispatchExecution(this.tradeIntentFromCascadePositionIntent(intent, observedAt))
+        ),
+      logManualClose: (metadata) =>
+        this.logger.warn(
+          "CASCADE_POSITION_MANUAL_CLOSE",
+          "Operator requested cascade position close",
+          metadata
+        ),
+      publishManualClose: (payload, correlationId) =>
+        this.publish("CASCADE_POSITION_MANUAL_CLOSE", payload, correlationId),
+      persistPositions: () =>
+        this.state.waitUntil(
+          this.safeStoragePut(
+            CASCADE_POSITIONS_KEY,
+            this.cascadePositionManager.snapshot(),
+            "CASCADE_POSITION_MANUAL_CLOSE"
+          )
+        )
+    });
   }
 
   private currentCascadeDetectorConfig(instrumentCode: string): CascadeDetectorConfig {

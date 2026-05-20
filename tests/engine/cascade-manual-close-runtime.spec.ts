@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyCascadeManualCloseSideEffects,
   buildCascadeManualCloseRuntimeResult,
   cascadeManualCloseArtifacts,
   cascadeManualCloseResponse,
@@ -106,6 +107,60 @@ describe("CascadeManualCloseRuntime", () => {
         }
       }
     });
+  });
+
+  it("applies manual close side effects only for successful close results", () => {
+    const open = position("position-1", "OPEN");
+    const close = intent("close", "CLOSE", 1);
+    const artifacts = cascadeManualCloseArtifacts({
+      position: open,
+      intents: [close],
+      actor: "operator",
+      reason: "manual-risk-off",
+      markPrice: 101,
+      observedAt: OBSERVED_AT
+    });
+    const calls: string[] = [];
+
+    const response = applyCascadeManualCloseSideEffects(
+      { ok: true, position: open, artifacts },
+      {
+        dispatchIntent(intentToDispatch) {
+          calls.push(`dispatch:${intentToDispatch.intentId}`);
+        },
+        logManualClose(metadata) {
+          calls.push(`log:${metadata.positionId as string}`);
+        },
+        publishManualClose(_payload, correlationId) {
+          calls.push(`publish:${correlationId}`);
+        },
+        persistPositions() {
+          calls.push("persist");
+        }
+      }
+    );
+
+    expect(response).toEqual(artifacts.response);
+    expect(calls).toEqual(["dispatch:close", "log:position-1", "publish:position-1", "persist"]);
+    expect(
+      applyCascadeManualCloseSideEffects(
+        { ok: false, response: cascadePositionNotOpenResponse() },
+        {
+          dispatchIntent() {
+            throw new Error("unexpected dispatch");
+          },
+          logManualClose() {
+            throw new Error("unexpected log");
+          },
+          publishManualClose() {
+            throw new Error("unexpected publish");
+          },
+          persistPositions() {
+            throw new Error("unexpected persist");
+          }
+        }
+      )
+    ).toEqual(cascadePositionNotOpenResponse());
   });
 
   it("returns not-open when the manual close target or manager update is unavailable", () => {
