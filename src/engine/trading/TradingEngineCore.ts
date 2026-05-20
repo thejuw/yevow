@@ -139,26 +139,22 @@ import {
 } from "./execution/ExecutionQueueRuntime";
 import { calculateAssetMatrix as calculateRuntimeAssetMatrix } from "./state/AssetMatrixRuntime";
 import {
+  buildHardStaleTickDropArtifacts,
   buildExecutionPerformanceTransition,
   buildPerformanceMetricsText,
   buildPerformanceSnapshot,
-  hardStalePullTelemetryPayload,
-  hardStaleTickDropLogMetadata,
+  buildStaleDataKillSwitchArtifacts,
   latencySnapshotStorageWrites,
   nativeHyperliquidLatencyPullStorageWrites,
   nextExecutionProfile,
   nextLatencyAverage,
   prepareTickLatencyRuntime,
   recordProcessingLatencySample,
-  shouldLogHardStaleTickDrop,
   shouldLogPerformanceSpikeEvent,
   stateAfterLatencyBaselineReset,
   stateAfterNativeHyperliquidLatencyPull,
   stateAfterHardStaleTickDrop,
   stateAfterStaleDataKillSwitch,
-  staleDataKillSwitchNotification,
-  staleDataKillSwitchStorageExtra,
-  staleDataKillSwitchTelemetryPayload,
   type ExecutionTraceInput
 } from "./performance/LatencyRuntime";
 import {
@@ -2420,30 +2416,26 @@ export class TradingEngine {
 
     await this.persistHotStorageSnapshot(this.latencyStorageWrites(), "HARD_STALE_TICK_DROPPED");
 
-    const staleTelemetry = {
+    const staleArtifacts = buildHardStaleTickDropArtifacts({
       tick,
       metrics: hardStale.metrics,
       streamId,
-      hardStaleDropMs
-    };
+      hardStaleDropMs,
+      nextStaleTickCount: hardStale.nextStaleTickCount
+    });
 
-    if (shouldLogHardStaleTickDrop(hardStale.nextStaleTickCount)) {
+    if (staleArtifacts.shouldLog) {
       this.logger.warn("HARD_STALE_TICK_DROPPED", "Dropped tick beyond hard stale threshold", {
-        ...hardStaleTickDropLogMetadata(staleTelemetry)
+        ...staleArtifacts.logMetadata
       });
     }
     this.logPerformance(hardStale.metrics);
-    this.publish("STALE_DATA_KILL_SWITCH", hardStalePullTelemetryPayload(staleTelemetry));
+    this.publish("STALE_DATA_KILL_SWITCH", staleArtifacts.telemetryPayload);
     if (this.cachedConfig.TRADING_ENABLED) {
       this.state.waitUntil(this.cancelAllQuotes(tick.instrumentCode, "HARD_STALE_DROP"));
     }
 
-    return {
-      accepted: false,
-      status: "STALE_DROPPED",
-      reason: "TICK_EXCEEDED_HARD_STALE_THRESHOLD",
-      metrics: hardStale.metrics
-    };
+    return staleArtifacts.ingestResult;
   }
 
   private async handleSoftStaleTick(
@@ -2468,31 +2460,27 @@ export class TradingEngine {
       quoteHibernateMs: resolveQuoteHibernateMs(this.cachedConfig, this.env.QUOTE_HIBERNATE_MS)
     });
     this.engineState = staleState.state;
-    const staleKillSwitch = {
+    const staleKillSwitch = buildStaleDataKillSwitchArtifacts({
       tick,
       metrics,
       maxLatencyMs: this.maxLatencyMs
-    };
+    });
 
     await this.persistHotStorageSnapshot(
-      this.latencyStorageWrites(staleDataKillSwitchStorageExtra(staleKillSwitch)),
+      this.latencyStorageWrites(staleKillSwitch.storageExtra),
       "STALE_DATA_KILL_SWITCH"
     );
 
     this.logPerformance(metrics);
-    this.publish("STALE_DATA_KILL_SWITCH", staleDataKillSwitchTelemetryPayload(staleKillSwitch));
-    this.notifier.notify(staleDataKillSwitchNotification(staleKillSwitch));
+    this.publish("STALE_DATA_KILL_SWITCH", staleKillSwitch.telemetryPayload);
+    this.notifier.notify(staleKillSwitch.notification);
     if (this.cachedConfig.TRADING_ENABLED) {
       this.state.waitUntil(this.cancelAllQuotes(tick.instrumentCode, "STALE_DATA_KILL_SWITCH"));
     }
     this.publishTickTelemetry(tick, metrics, "STALE", hotPathStartedAt);
     this.maybeRecordAgentSnapshot(metrics.brainTimestamp);
 
-    return {
-      accepted: false,
-      status: "STALE",
-      metrics
-    };
+    return staleKillSwitch.ingestResult;
   }
 
   private async handleInformationalBookNotReady(

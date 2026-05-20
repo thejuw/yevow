@@ -19,6 +19,7 @@ import type {
   MarketTick
 } from "../../../types";
 import type { NotifierEvent } from "../../../utils/Notifier";
+import type { TickIngestResult } from "../TradingEngineRouteTypes";
 
 export interface ExecutionTraceInput {
   wakeUpTimeMs: number | null;
@@ -254,6 +255,17 @@ export interface HardStaleTickDropTelemetryInput {
   readonly hardStaleDropMs: number;
 }
 
+export interface HardStaleTickDropArtifactsInput extends HardStaleTickDropTelemetryInput {
+  readonly nextStaleTickCount: number;
+}
+
+export interface HardStaleTickDropArtifacts {
+  readonly shouldLog: boolean;
+  readonly logMetadata: JsonRecord;
+  readonly telemetryPayload: JsonRecord;
+  readonly ingestResult: TickIngestResult;
+}
+
 export function stateAfterHardStaleTickDrop(
   input: HardStaleTickDropInput
 ): HardStaleTickDropResult {
@@ -294,6 +306,22 @@ export function stateAfterHardStaleTickDrop(
 
 export function shouldLogHardStaleTickDrop(nextStaleTickCount: number): boolean {
   return nextStaleTickCount <= 5 || nextStaleTickCount % 500 === 0;
+}
+
+export function buildHardStaleTickDropArtifacts(
+  input: HardStaleTickDropArtifactsInput
+): HardStaleTickDropArtifacts {
+  return {
+    shouldLog: shouldLogHardStaleTickDrop(input.nextStaleTickCount),
+    logMetadata: hardStaleTickDropLogMetadata(input),
+    telemetryPayload: hardStalePullTelemetryPayload(input),
+    ingestResult: {
+      accepted: false,
+      status: "STALE_DROPPED",
+      reason: "TICK_EXCEEDED_HARD_STALE_THRESHOLD",
+      metrics: input.metrics
+    }
+  };
 }
 
 export function hardStaleTickDropLogMetadata(input: HardStaleTickDropTelemetryInput): JsonRecord {
@@ -345,6 +373,13 @@ export interface StaleDataKillSwitchTelemetryInput {
   readonly maxLatencyMs: number;
 }
 
+export interface StaleDataKillSwitchArtifacts {
+  readonly storageExtra: Record<string, unknown>;
+  readonly telemetryPayload: JsonRecord;
+  readonly notification: NotifierEvent;
+  readonly ingestResult: TickIngestResult;
+}
+
 export function stateAfterStaleDataKillSwitch(
   input: StaleDataKillSwitchInput
 ): StaleDataKillSwitchResult {
@@ -377,6 +412,21 @@ export function stateAfterStaleDataKillSwitch(
       maxLatencyMs: input.maxLatencyMs,
       heartbeatAt: input.metrics.brainTimestamp,
       updatedAt: input.metrics.brainTimestamp
+    }
+  };
+}
+
+export function buildStaleDataKillSwitchArtifacts(
+  input: StaleDataKillSwitchTelemetryInput
+): StaleDataKillSwitchArtifacts {
+  return {
+    storageExtra: staleDataKillSwitchStorageExtra(input),
+    telemetryPayload: staleDataKillSwitchTelemetryPayload(input),
+    notification: staleDataKillSwitchNotification(input),
+    ingestResult: {
+      accepted: false,
+      status: "STALE",
+      metrics: input.metrics
     }
   };
 }

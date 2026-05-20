@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildHardStaleTickDropArtifacts,
   buildExecutionPerformanceTransition,
   buildPerformanceMetricsText,
   buildPerformanceSnapshot,
+  buildStaleDataKillSwitchArtifacts,
   calculateTickLatency,
   hardStalePullTelemetryPayload,
   hardStaleTickDropLogMetadata,
@@ -309,6 +311,17 @@ describe("LatencyRuntime", () => {
       maxLatencyMs: 150,
       totalLatencyMs: 275
     });
+    expect(buildHardStaleTickDropArtifacts({ ...input, nextStaleTickCount: 500 })).toMatchObject({
+      shouldLog: true,
+      logMetadata: hardStaleTickDropLogMetadata(input),
+      telemetryPayload: hardStalePullTelemetryPayload(input),
+      ingestResult: {
+        accepted: false,
+        status: "STALE_DROPPED",
+        reason: "TICK_EXCEEDED_HARD_STALE_THRESHOLD",
+        metrics
+      }
+    });
   });
 
   it("marks soft stale kill-switch state with a quote hibernation window", () => {
@@ -396,6 +409,16 @@ describe("LatencyRuntime", () => {
         sequence: 321,
         totalLatencyMs: 650,
         maxLatencyMs: 250
+      }
+    });
+    expect(buildStaleDataKillSwitchArtifacts(input)).toEqual({
+      storageExtra: staleDataKillSwitchStorageExtra(input),
+      telemetryPayload: staleDataKillSwitchTelemetryPayload(input),
+      notification: staleDataKillSwitchNotification(input),
+      ingestResult: {
+        accepted: false,
+        status: "STALE",
+        metrics
       }
     });
   });
