@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyExecutionQueueDrainSideEffects,
   applyExecutionQueueEnqueueSideEffects,
   buildExecutionQueueEnqueuePlan,
   compareExecutionQueueItems,
+  type ExecutionQueueDrainSideEffectHandlers,
   executionQueueDeferralLogMetadata,
   type ExecutionQueueEnqueueSideEffectHandlers,
   shouldLogExecutionQueueDeferral,
@@ -160,6 +162,42 @@ describe("ExecutionQueueRuntime", () => {
 
     expect(sideEffects.events).toEqual(["read", "persist:queued-now", "alarm:1100"]);
   });
+
+  it("runs drain side effects for due intents and caps the next wake alarm", async () => {
+    const sideEffects = drainSideEffectSpy({
+      queue: [
+        queuedIntent({ id: "pending", priority: "NEW", runAfterMs: 2_000 }),
+        queuedIntent({ id: "due", priority: "NEW", runAfterMs: 900 })
+      ]
+    });
+
+    const plan = await applyExecutionQueueDrainSideEffects(
+      {
+        nowMs: 1_000,
+        alarmCapMs: 500
+      },
+      sideEffects.handlers
+    );
+
+    expect(plan?.due.map((item) => item.intent.intentId)).toEqual(["due"]);
+    expect(sideEffects.events).toEqual(["read", "persist:pending", "dispatch:due", "alarm:1500"]);
+  });
+
+  it("skips drain side effects when the execution queue is empty", async () => {
+    const sideEffects = drainSideEffectSpy({ queue: [] });
+
+    await expect(
+      applyExecutionQueueDrainSideEffects(
+        {
+          nowMs: 1_000,
+          alarmCapMs: 500
+        },
+        sideEffects.handlers
+      )
+    ).resolves.toBeNull();
+
+    expect(sideEffects.events).toEqual(["read"]);
+  });
 });
 
 function enqueueSideEffectSpy(input: { queue: QueuedExecutionIntent[] }): {
@@ -188,6 +226,35 @@ function enqueueSideEffectSpy(input: { queue: QueuedExecutionIntent[] }): {
       },
       warnDeferral(metadata) {
         events.push(`warn:${String(metadata.intentId)}:${String(metadata.queuedCount)}`);
+      }
+    }
+  };
+}
+
+function drainSideEffectSpy(input: { queue: QueuedExecutionIntent[] }): {
+  events: string[];
+  handlers: ExecutionQueueDrainSideEffectHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      readQueue() {
+        events.push("read");
+        return Promise.resolve(input.queue);
+      },
+      persistQueue(queue) {
+        events.push(`persist:${queue.map((item) => item.intent.intentId).join(",")}`);
+        return Promise.resolve();
+      },
+      dispatchExecution(intent) {
+        events.push(`dispatch:${intent.intentId}`);
+        return Promise.resolve();
+      },
+      setAlarm(timestampMs) {
+        events.push(`alarm:${timestampMs}`);
+        return Promise.resolve();
       }
     }
   };

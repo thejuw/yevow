@@ -36,6 +36,18 @@ export interface ExecutionQueueDrainPlan {
   readonly nextWakeMs: number | null;
 }
 
+export interface ExecutionQueueDrainSideEffectsInput {
+  readonly nowMs: number;
+  readonly alarmCapMs: number;
+}
+
+export interface ExecutionQueueDrainSideEffectHandlers {
+  readonly readQueue: () => Promise<QueuedExecutionIntent[]>;
+  readonly persistQueue: (queue: readonly QueuedExecutionIntent[]) => Promise<void>;
+  readonly dispatchExecution: (intent: TradeIntent) => Promise<void>;
+  readonly setAlarm: (timestampMs: number) => Promise<void>;
+}
+
 export interface ExecutionQueueDeferralLogInput {
   readonly nowMs: number;
   readonly lastLoggedAtMs: number;
@@ -184,6 +196,31 @@ export async function applyExecutionQueueEnqueueSideEffects(
         queuedCount: plan.queuedCount
       })
     );
+  }
+
+  return plan;
+}
+
+export async function applyExecutionQueueDrainSideEffects(
+  input: ExecutionQueueDrainSideEffectsInput,
+  handlers: ExecutionQueueDrainSideEffectHandlers
+): Promise<ExecutionQueueDrainPlan | null> {
+  const queue = await handlers.readQueue();
+
+  if (queue.length === 0) {
+    return null;
+  }
+
+  const plan = splitExecutionQueueForDrain({ queue, nowMs: input.nowMs });
+
+  await handlers.persistQueue(plan.pending);
+
+  for (const item of plan.due) {
+    await handlers.dispatchExecution(item.intent);
+  }
+
+  if (plan.nextWakeMs) {
+    await handlers.setAlarm(Math.min(plan.nextWakeMs, input.nowMs + input.alarmCapMs));
   }
 
   return plan;

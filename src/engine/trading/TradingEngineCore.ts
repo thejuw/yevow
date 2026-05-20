@@ -133,8 +133,8 @@ import {
 } from "./agents/AgentEvaluationRuntime";
 import { applyIntentPaperExecutionBudgetSideEffects } from "./execution/PaperExecutionBudgetRuntime";
 import {
+  applyExecutionQueueDrainSideEffects,
   applyExecutionQueueEnqueueSideEffects,
-  splitExecutionQueueForDrain,
   type QueuedExecutionIntent
 } from "./execution/ExecutionQueueRuntime";
 import { calculateAssetMatrix as calculateRuntimeAssetMatrix } from "./state/AssetMatrixRuntime";
@@ -3952,27 +3952,20 @@ export class TradingEngine {
   }
 
   private async drainExecutionQueue(): Promise<void> {
-    const queue = await this.readExecutionQueue("EXECUTION_QUEUE_DRAIN_READ");
-
-    if (queue.length === 0) {
-      return;
-    }
-
     const now = Date.now();
-    const plan = splitExecutionQueueForDrain({ queue, nowMs: now });
-
-    await this.safeStoragePut(EXECUTION_QUEUE_KEY, plan.pending, "EXECUTION_QUEUE_DRAIN");
-
-    for (const item of plan.due) {
-      await this.dispatchExecution(item.intent);
-    }
-
-    if (plan.nextWakeMs) {
-      await this.safeSetAlarm(
-        Math.min(plan.nextWakeMs, Date.now() + CONFIG_ALARM_INTERVAL_MS),
-        "EXECUTION_QUEUE_NEXT_WAKE"
-      );
-    }
+    await applyExecutionQueueDrainSideEffects(
+      {
+        nowMs: now,
+        alarmCapMs: CONFIG_ALARM_INTERVAL_MS
+      },
+      {
+        readQueue: () => this.readExecutionQueue("EXECUTION_QUEUE_DRAIN_READ"),
+        persistQueue: (queue) =>
+          this.safeStoragePut(EXECUTION_QUEUE_KEY, queue, "EXECUTION_QUEUE_DRAIN"),
+        dispatchExecution: (intent) => this.dispatchExecution(intent),
+        setAlarm: (timestampMs) => this.safeSetAlarm(timestampMs, "EXECUTION_QUEUE_NEXT_WAKE")
+      }
+    );
   }
 
   private async cancelAllQuotes(instrumentCode: string, reason: string): Promise<void> {
