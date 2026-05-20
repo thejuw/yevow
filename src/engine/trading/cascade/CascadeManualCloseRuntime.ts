@@ -1,12 +1,32 @@
 import type { JsonRecord } from "../../../types";
 import type { CascadeOpenPosition, CascadePositionIntent } from "../../../strategy/cascade/types";
 import { isOpenCascadePosition } from "./CascadeSelectionRuntime";
+import {
+  cascadeManualCloseLogMetadata,
+  cascadeManualCloseTelemetryPayload
+} from "../telemetry/CascadeSignalTelemetryRuntime";
 
 export interface CascadeManualCloseResponse {
   readonly ok: boolean;
   readonly error?: string;
   readonly position?: JsonRecord;
   readonly intents?: JsonRecord[];
+}
+
+export interface CascadeManualCloseArtifactsInput {
+  readonly position: CascadeOpenPosition;
+  readonly intents: readonly CascadePositionIntent[];
+  readonly actor: string;
+  readonly reason: string;
+  readonly markPrice: number;
+  readonly observedAt: string;
+}
+
+export interface CascadeManualCloseArtifacts {
+  readonly executableIntents: CascadePositionIntent[];
+  readonly logMetadata: JsonRecord;
+  readonly telemetryPayload: JsonRecord;
+  readonly response: CascadeManualCloseResponse;
 }
 
 export function openCascadePositionById(
@@ -38,5 +58,30 @@ export function cascadeManualCloseResponse(input: {
     ok: true,
     position: input.position as unknown as JsonRecord,
     intents: input.intents as unknown as JsonRecord[]
+  };
+}
+
+export function cascadeManualCloseArtifacts(
+  input: CascadeManualCloseArtifactsInput
+): CascadeManualCloseArtifacts {
+  const executableIntents = executableManualCloseIntents(input.intents);
+
+  return {
+    executableIntents,
+    logMetadata: cascadeManualCloseLogMetadata({
+      position: input.position,
+      actor: input.actor,
+      reason: input.reason,
+      markPrice: input.markPrice,
+      observedAt: input.observedAt
+    }),
+    telemetryPayload: cascadeManualCloseTelemetryPayload({
+      position: input.position,
+      actor: input.actor,
+      reason: input.reason,
+      markPrice: input.markPrice,
+      observedAt: input.observedAt
+    }),
+    response: cascadeManualCloseResponse(input)
   };
 }

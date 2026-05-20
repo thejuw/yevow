@@ -267,8 +267,6 @@ import {
   cascadeEntryAgentSignal,
   cascadeEntryDecisionTrace,
   cascadeHeatCapAlertMetadata,
-  cascadeManualCloseLogMetadata,
-  cascadeManualCloseTelemetryPayload,
   cascadePositionOpenedAlertMetadata,
   cascadeSignalRejectionAgentSignal,
   cascadeSignalRejectionLogMetadata,
@@ -546,9 +544,8 @@ import {
   recentSwingHigh
 } from "./cascade/CascadeSelectionRuntime";
 import {
-  cascadeManualCloseResponse,
+  cascadeManualCloseArtifacts,
   cascadePositionNotOpenResponse,
-  executableManualCloseIntents,
   openCascadePositionById
 } from "./cascade/CascadeManualCloseRuntime";
 import { hasRuntimeConfigUpdate } from "./config/RuntimeConfigUpdateDetection";
@@ -1646,7 +1643,16 @@ export class TradingEngine {
       return cascadePositionNotOpenResponse();
     }
 
-    for (const intent of executableManualCloseIntents(update.intents)) {
+    const artifacts = cascadeManualCloseArtifacts({
+      position,
+      intents: update.intents,
+      actor,
+      reason,
+      markPrice,
+      observedAt
+    });
+
+    for (const intent of artifacts.executableIntents) {
       this.state.waitUntil(
         this.dispatchExecution(this.tradeIntentFromCascadePositionIntent(intent, observedAt))
       );
@@ -1655,25 +1661,9 @@ export class TradingEngine {
     this.logger.warn(
       "CASCADE_POSITION_MANUAL_CLOSE",
       "Operator requested cascade position close",
-      cascadeManualCloseLogMetadata({
-        position,
-        actor,
-        reason,
-        markPrice,
-        observedAt
-      })
+      artifacts.logMetadata
     );
-    this.publish(
-      "CASCADE_POSITION_MANUAL_CLOSE",
-      cascadeManualCloseTelemetryPayload({
-        position,
-        actor,
-        reason,
-        markPrice,
-        observedAt
-      }),
-      positionId
-    );
+    this.publish("CASCADE_POSITION_MANUAL_CLOSE", artifacts.telemetryPayload, positionId);
     this.state.waitUntil(
       this.safeStoragePut(
         CASCADE_POSITIONS_KEY,
@@ -1682,7 +1672,7 @@ export class TradingEngine {
       )
     );
 
-    return cascadeManualCloseResponse(update);
+    return artifacts.response;
   }
 
   private currentCascadeDetectorConfig(instrumentCode: string): CascadeDetectorConfig {

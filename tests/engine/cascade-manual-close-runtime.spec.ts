@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  cascadeManualCloseArtifacts,
   cascadeManualCloseResponse,
   cascadePositionNotOpenResponse,
   executableManualCloseIntents,
@@ -39,6 +40,38 @@ describe("CascadeManualCloseRuntime", () => {
       ok: true,
       position: closed,
       intents
+    });
+  });
+
+  it("assembles manual close execution, log, telemetry, and response artifacts", () => {
+    const open = position("position-1", "OPEN");
+    const close = intent("close", "CLOSE", 1);
+    const zeroSize = intent("zero", "CLOSE", 0);
+    const artifacts = cascadeManualCloseArtifacts({
+      position: open,
+      intents: [zeroSize, close],
+      actor: "operator",
+      reason: "manual-risk-off",
+      markPrice: 101,
+      observedAt: OBSERVED_AT
+    });
+
+    expect(artifacts.executableIntents).toEqual([close]);
+    expect(artifacts.logMetadata).toMatchObject({
+      positionId: "position-1",
+      actor: "operator",
+      reason: "manual-risk-off",
+      markPrice: 101
+    });
+    expect(artifacts.telemetryPayload).toMatchObject({
+      positionId: "position-1",
+      actor: "operator",
+      reason: "manual-risk-off"
+    });
+    expect(artifacts.response).toEqual({
+      ok: true,
+      position: open,
+      intents: [zeroSize, close]
     });
   });
 });
