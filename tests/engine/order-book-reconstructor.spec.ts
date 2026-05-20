@@ -3,9 +3,19 @@ import {
   OrderBookReconstructor,
   type OrderBookStores
 } from "../../src/engine/trading/book/OrderBookReconstructor";
+import {
+  buildOrderBookStores,
+  createTradingOrderBookReconstructor
+} from "../../src/engine/trading/book/OrderBookReconstructorFactory";
 import type { SortedBookSide } from "../../src/engine/trading/book/SortedBookSide";
-import type { BookDeltaWithTicker } from "../../src/engine/trading/book/BookTypes";
-import type { JsonRecord, OrderBookResetRequest, OrderBookSnapshot } from "../../src/types";
+import type { BookDeltaWithTicker, BookSyncState } from "../../src/engine/trading/book/BookTypes";
+import type {
+  Env,
+  InternalOrderBook,
+  JsonRecord,
+  OrderBookResetRequest,
+  OrderBookSnapshot
+} from "../../src/types";
 
 const EXCHANGE_AT = "2026-05-18T05:00:00.000Z";
 const OBSERVED_AT = "2026-05-18T05:00:00.002Z";
@@ -226,5 +236,45 @@ describe("OrderBookReconstructor", () => {
     reconstructor.applySnapshot(snapshot({ sequence: 21 }), OBSERVED_AT);
 
     expect(nextStores.orderBook.get("hyperliquid:btc-usd")).toMatchObject({ sequence: 21 });
+  });
+
+  it("builds production reconstructor wiring from shared order book stores", () => {
+    const orderBook = new Map<string, InternalOrderBook>();
+    const bids = new Map<string, SortedBookSide>();
+    const asks = new Map<string, SortedBookSide>();
+    const sync = new Map<string, BookSyncState>();
+    const stores = buildOrderBookStores({ orderBook, bids, asks, sync });
+    const events: string[] = [];
+    const reconstructor = createTradingOrderBookReconstructor({
+      env: {} as Env,
+      stores,
+      logger: {
+        warn(eventType) {
+          events.push(`warn:${eventType}`);
+        },
+        error(eventType) {
+          events.push(`error:${eventType}`);
+        }
+      },
+      publish(type) {
+        events.push(`publish:${type}`);
+      },
+      resetOrderBook: async (payload) => {
+        events.push(`reset:${payload.reason ?? "unknown"}`);
+      }
+    });
+
+    reconstructor.applySnapshot(snapshot({ sequence: 31 }), OBSERVED_AT);
+
+    expect(stores.orderBook).toBe(orderBook);
+    expect(stores.bids).toBe(bids);
+    expect(stores.asks).toBe(asks);
+    expect(stores.sync).toBe(sync);
+    expect(orderBook.get("hyperliquid:btc-usd")).toMatchObject({ sequence: 31 });
+    expect(sync.get("hyperliquid:btc-usd")).toMatchObject({
+      isSynced: true,
+      tickSize: 0.5
+    });
+    expect(events).toEqual([]);
   });
 });

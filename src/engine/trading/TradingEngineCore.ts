@@ -192,6 +192,10 @@ import {
   processAcceptedCascadeSignalFlow
 } from "./cascade/CascadeStrategyRuntime";
 import { OrderBookReconstructor, type OrderBookStores } from "./book/OrderBookReconstructor";
+import {
+  buildOrderBookStores,
+  createTradingOrderBookReconstructor
+} from "./book/OrderBookReconstructorFactory";
 import type { AppliedBookUpdate, BookDeltaWithTicker, BookSyncState } from "./book/BookTypes";
 import {
   applyAcceptedHyperliquidL2BookSideEffects,
@@ -412,8 +416,6 @@ import {
   ADMIN_STREAM_PULSE_INTERVAL_MS,
   AGENT_SNAPSHOT_TICK_INTERVAL,
   STORAGE_WRITE_BACKOFF_MS,
-  BOOK_SNAPSHOT_TOP_LEVELS,
-  TOP_OF_BOOK_CROSS_CHECK_INTERVAL_MS,
   DEFAULT_SOURCE_WEIGHT,
   PROCESSING_LATENCY_SAMPLES_KEY,
   DOM_WALL_HISTORY_KEY,
@@ -461,10 +463,8 @@ import {
 import {
   resolveBookSide,
   resolveCurrentInstrument,
-  buildMarketKey,
   hydrateLegacyLevel,
   levelsToBookSide,
-  calculateTimeToBookMs,
   resolveTickSize,
   resolveDomBinSize,
   parseTickSizeMap,
@@ -490,9 +490,7 @@ import {
   baseAssetFromInstrument,
   nativeBookSideLevels,
   nativeNumber,
-  nativeSide,
-  normalizeSourceExchange,
-  normalizeSourceWeight
+  nativeSide
 } from "./helpers/NativeHyperliquidRuntime";
 import { highResolutionNow, roundLatency } from "./helpers/RuntimeClock";
 import { wait } from "./helpers/RuntimeMath";
@@ -527,8 +525,7 @@ import {
   quoteStateForInstrumentState,
   suspendAssetQuoteStates,
   aggregateQuoteState,
-  quotePriceMovedTicks,
-  normalizeMarketKey
+  quotePriceMovedTicks
 } from "./state/AssetStateRuntime";
 import {
   defaultEngineState,
@@ -717,7 +714,13 @@ export class TradingEngine {
     this.anomalyDetector = createBootAnomalyDetector(env);
     this.croupierAgent = createBootCroupierAgent(env);
     this.rateLimiter.configure("default", 10, 10);
-    this.orderBookReconstructor = this.createOrderBookReconstructor();
+    this.orderBookReconstructor = createTradingOrderBookReconstructor({
+      env,
+      stores: this.orderBookStores(),
+      logger: this.logger,
+      publish: (type, payload) => this.publish(type, payload),
+      resetOrderBook: (payload) => this.resetOrderBook(payload)
+    });
 
     this.initialized = this.state.blockConcurrencyWhile(async () => {
       const {
@@ -823,29 +826,11 @@ export class TradingEngine {
   }
 
   private orderBookStores(): OrderBookStores {
-    return {
+    return buildOrderBookStores({
       orderBook: this.orderBook,
       bids: this.bids,
       asks: this.asks,
       sync: this.bookSync
-    };
-  }
-
-  private createOrderBookReconstructor(): OrderBookReconstructor {
-    return new OrderBookReconstructor(this.orderBookStores(), {
-      topLevels: BOOK_SNAPSHOT_TOP_LEVELS,
-      topOfBookCrossCheckIntervalMs: TOP_OF_BOOK_CROSS_CHECK_INTERVAL_MS,
-      resolveTickSize: (instrumentCode, override) =>
-        resolveTickSize(this.env, instrumentCode, override),
-      normalizeSourceExchange,
-      normalizeMarketKey,
-      buildMarketKey,
-      normalizeSourceWeight,
-      calculateTimeToBookMs,
-      warn: (eventType, message, metadata) => this.logger.warn(eventType, message, metadata),
-      error: (eventType, message, metadata) => this.logger.error(eventType, message, metadata),
-      publish: (type, payload) => this.publish(type, payload),
-      resetOrderBook: (payload) => this.resetOrderBook(payload)
     });
   }
 
