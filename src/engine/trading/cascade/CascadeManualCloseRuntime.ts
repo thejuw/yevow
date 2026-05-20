@@ -29,6 +29,35 @@ export interface CascadeManualCloseArtifacts {
   readonly response: CascadeManualCloseResponse;
 }
 
+export interface CascadeManualCloseUpdate {
+  readonly intents: readonly CascadePositionIntent[];
+}
+
+export interface CascadeManualCloseRuntimeInput {
+  readonly positions: readonly CascadeOpenPosition[];
+  readonly positionId: string;
+  readonly actor: string;
+  readonly reason: string;
+  readonly observedAt: string;
+  readonly markPriceForInstrument: (instrumentCode: string) => number | null;
+  readonly requestManualClose: (
+    positionId: string,
+    observedAt: string,
+    markPrice: number
+  ) => CascadeManualCloseUpdate | null;
+}
+
+export type CascadeManualCloseRuntimeResult =
+  | {
+      readonly ok: false;
+      readonly response: CascadeManualCloseResponse;
+    }
+  | {
+      readonly ok: true;
+      readonly position: CascadeOpenPosition;
+      readonly artifacts: CascadeManualCloseArtifacts;
+    };
+
 export function openCascadePositionById(
   positions: readonly CascadeOpenPosition[],
   positionId: string
@@ -58,6 +87,36 @@ export function cascadeManualCloseResponse(input: {
     ok: true,
     position: input.position as unknown as JsonRecord,
     intents: input.intents as unknown as JsonRecord[]
+  };
+}
+
+export function buildCascadeManualCloseRuntimeResult(
+  input: CascadeManualCloseRuntimeInput
+): CascadeManualCloseRuntimeResult {
+  const position = openCascadePositionById(input.positions, input.positionId);
+
+  if (!position) {
+    return { ok: false, response: cascadePositionNotOpenResponse() };
+  }
+
+  const markPrice = input.markPriceForInstrument(position.instrumentCode) ?? position.entryPrice;
+  const update = input.requestManualClose(input.positionId, input.observedAt, markPrice);
+
+  if (!update) {
+    return { ok: false, response: cascadePositionNotOpenResponse() };
+  }
+
+  return {
+    ok: true,
+    position,
+    artifacts: cascadeManualCloseArtifacts({
+      position,
+      intents: update.intents,
+      actor: input.actor,
+      reason: input.reason,
+      markPrice,
+      observedAt: input.observedAt
+    })
   };
 }
 

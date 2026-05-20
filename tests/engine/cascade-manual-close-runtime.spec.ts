@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildCascadeManualCloseRuntimeResult,
   cascadeManualCloseArtifacts,
   cascadeManualCloseResponse,
   cascadePositionNotOpenResponse,
@@ -72,6 +73,69 @@ describe("CascadeManualCloseRuntime", () => {
       ok: true,
       position: open,
       intents: [zeroSize, close]
+    });
+  });
+
+  it("assembles a manual close runtime result with mark-price fallback and manager callback", () => {
+    const open = position("position-1", "OPEN");
+    const close = intent("close", "CLOSE", 1);
+    const calls: [string, string, number][] = [];
+    const result = buildCascadeManualCloseRuntimeResult({
+      positions: [open],
+      positionId: "position-1",
+      actor: "operator",
+      reason: "manual-risk-off",
+      observedAt: OBSERVED_AT,
+      markPriceForInstrument: () => null,
+      requestManualClose: (positionId, observedAt, markPrice) => {
+        calls.push([positionId, observedAt, markPrice]);
+        return { intents: [close] };
+      }
+    });
+
+    expect(calls).toEqual([["position-1", OBSERVED_AT, 100]]);
+    expect(result).toMatchObject({
+      ok: true,
+      position: open,
+      artifacts: {
+        executableIntents: [close],
+        response: {
+          ok: true,
+          position: open,
+          intents: [close]
+        }
+      }
+    });
+  });
+
+  it("returns not-open when the manual close target or manager update is unavailable", () => {
+    expect(
+      buildCascadeManualCloseRuntimeResult({
+        positions: [position("position-1", "CLOSED")],
+        positionId: "position-1",
+        actor: "operator",
+        reason: "manual-risk-off",
+        observedAt: OBSERVED_AT,
+        markPriceForInstrument: () => 101,
+        requestManualClose: () => ({ intents: [] })
+      })
+    ).toEqual({
+      ok: false,
+      response: cascadePositionNotOpenResponse()
+    });
+    expect(
+      buildCascadeManualCloseRuntimeResult({
+        positions: [position("position-1", "OPEN")],
+        positionId: "position-1",
+        actor: "operator",
+        reason: "manual-risk-off",
+        observedAt: OBSERVED_AT,
+        markPriceForInstrument: () => 101,
+        requestManualClose: () => null
+      })
+    ).toEqual({
+      ok: false,
+      response: cascadePositionNotOpenResponse()
     });
   });
 });

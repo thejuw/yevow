@@ -512,11 +512,7 @@ import {
   recentSwingLow,
   recentSwingHigh
 } from "./cascade/CascadeSelectionRuntime";
-import {
-  cascadeManualCloseArtifacts,
-  cascadePositionNotOpenResponse,
-  openCascadePositionById
-} from "./cascade/CascadeManualCloseRuntime";
+import { buildCascadeManualCloseRuntimeResult } from "./cascade/CascadeManualCloseRuntime";
 import { hasRuntimeConfigUpdate } from "./config/RuntimeConfigUpdateDetection";
 import {
   epochMillis,
@@ -1564,40 +1560,29 @@ export class TradingEngine {
     actor: string,
     reason: string
   ): Promise<{ ok: boolean; error?: string; position?: JsonRecord; intents?: JsonRecord[] }> {
-    const position = openCascadePositionById(this.cascadePositionManager.snapshot(), positionId);
-
-    if (!position) {
-      return cascadePositionNotOpenResponse();
-    }
-
     const observedAt = new Date().toISOString();
-    const markPrice =
-      nullableMarkPriceForInstrument(
-        {
-          orderBook: this.orderBook,
-          assetMatrix: this.engineState.assetMatrix,
-          microstructure: this.engineState.microstructure
-        },
-        position.instrumentCode
-      ) ?? position.entryPrice;
-    const update = this.cascadePositionManager.requestManualClose(
+    const markPriceContext = {
+      orderBook: this.orderBook,
+      assetMatrix: this.engineState.assetMatrix,
+      microstructure: this.engineState.microstructure
+    };
+    const closeResult = buildCascadeManualCloseRuntimeResult({
+      positions: this.cascadePositionManager.snapshot(),
       positionId,
-      observedAt,
-      markPrice
-    );
-
-    if (!update) {
-      return cascadePositionNotOpenResponse();
-    }
-
-    const artifacts = cascadeManualCloseArtifacts({
-      position,
-      intents: update.intents,
       actor,
       reason,
-      markPrice,
-      observedAt
+      observedAt,
+      markPriceForInstrument: (instrumentCode) =>
+        nullableMarkPriceForInstrument(markPriceContext, instrumentCode),
+      requestManualClose: (id, closeObservedAt, markPrice) =>
+        this.cascadePositionManager.requestManualClose(id, closeObservedAt, markPrice)
     });
+
+    if (!closeResult.ok) {
+      return closeResult.response;
+    }
+
+    const { artifacts, position } = closeResult;
 
     for (const intent of artifacts.executableIntents) {
       this.state.waitUntil(
