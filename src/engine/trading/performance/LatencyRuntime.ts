@@ -303,6 +303,21 @@ export interface HardStaleTickDropArtifacts {
   readonly ingestResult: TickIngestResult;
 }
 
+export interface HardStaleTickDropSideEffectInput {
+  readonly tick: MarketTick;
+  readonly metrics: LatencyMetrics;
+  readonly artifacts: HardStaleTickDropArtifacts;
+  readonly tradingEnabled: boolean;
+}
+
+export interface HardStaleTickDropSideEffectHandlers {
+  readonly warnHardStale: (metadata: JsonRecord) => void;
+  readonly logPerformance: (metrics: LatencyMetrics) => void;
+  readonly publishPull: (payload: JsonRecord) => void;
+  readonly schedule: (work: Promise<unknown>) => void;
+  readonly cancelAllQuotes: (instrumentCode: string, reason: "HARD_STALE_DROP") => Promise<unknown>;
+}
+
 export function stateAfterHardStaleTickDrop(
   input: HardStaleTickDropInput
 ): HardStaleTickDropResult {
@@ -389,6 +404,22 @@ export function hardStalePullTelemetryPayload(input: HardStaleTickDropTelemetryI
     action: "PULL_ALL_QUOTES",
     source: "NATIVE_HYPERLIQUID"
   };
+}
+
+export function applyHardStaleTickDropSideEffects(
+  input: HardStaleTickDropSideEffectInput,
+  handlers: HardStaleTickDropSideEffectHandlers
+): void {
+  if (input.artifacts.shouldLog) {
+    handlers.warnHardStale(input.artifacts.logMetadata);
+  }
+
+  handlers.logPerformance(input.metrics);
+  handlers.publishPull(input.artifacts.telemetryPayload);
+
+  if (input.tradingEnabled) {
+    handlers.schedule(handlers.cancelAllQuotes(input.tick.instrumentCode, "HARD_STALE_DROP"));
+  }
 }
 
 export interface StaleDataKillSwitchInput {

@@ -146,6 +146,7 @@ import {
 import { calculateAssetMatrix as calculateRuntimeAssetMatrix } from "./state/AssetMatrixRuntime";
 import {
   applyExecutionProfileSideEffects,
+  applyHardStaleTickDropSideEffects,
   applyPerformanceSpikeLogSideEffect,
   appendLatencyHistory,
   buildHardStaleTickDropArtifacts,
@@ -2283,16 +2284,24 @@ export class TradingEngine {
       nextStaleTickCount: hardStale.nextStaleTickCount
     });
 
-    if (staleArtifacts.shouldLog) {
-      this.logger.warn("HARD_STALE_TICK_DROPPED", "Dropped tick beyond hard stale threshold", {
-        ...staleArtifacts.logMetadata
-      });
-    }
-    this.logPerformance(hardStale.metrics);
-    this.publish("STALE_DATA_KILL_SWITCH", staleArtifacts.telemetryPayload);
-    if (this.cachedConfig.TRADING_ENABLED) {
-      this.state.waitUntil(this.cancelAllQuotes(tick.instrumentCode, "HARD_STALE_DROP"));
-    }
+    applyHardStaleTickDropSideEffects(
+      {
+        tick,
+        metrics: hardStale.metrics,
+        artifacts: staleArtifacts,
+        tradingEnabled: this.cachedConfig.TRADING_ENABLED
+      },
+      {
+        warnHardStale: (metadata) =>
+          this.logger.warn("HARD_STALE_TICK_DROPPED", "Dropped tick beyond hard stale threshold", {
+            ...metadata
+          }),
+        logPerformance: (staleMetrics) => this.logPerformance(staleMetrics),
+        publishPull: (payload) => this.publish("STALE_DATA_KILL_SWITCH", payload),
+        schedule: (work) => this.state.waitUntil(work),
+        cancelAllQuotes: (instrumentCode, reason) => this.cancelAllQuotes(instrumentCode, reason)
+      }
+    );
 
     return staleArtifacts.ingestResult;
   }

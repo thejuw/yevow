@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyExecutionProfileSideEffects,
+  applyHardStaleTickDropSideEffects,
   applyPerformanceSpikeLogSideEffect,
   appendLatencyHistory,
   buildHardStaleTickDropArtifacts,
@@ -29,6 +30,7 @@ import {
   stateAfterStaleDataKillSwitch,
   stateAfterHardStaleTickDrop,
   type ExecutionProfileSideEffectHandlers,
+  type HardStaleTickDropSideEffectHandlers,
   type PerformanceSpikeLogSideEffectHandlers
 } from "../../src/engine/trading/performance/LatencyRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
@@ -369,6 +371,38 @@ describe("LatencyRuntime", () => {
         metrics
       }
     });
+  });
+
+  it("applies hard-stale side effects in warn, telemetry, and cancel order", async () => {
+    const metrics = latencyMetrics({ status: "STALE", totalLatencyMs: 275 });
+    const artifacts = buildHardStaleTickDropArtifacts({
+      tick: tick({ sequence: 777 }),
+      metrics,
+      streamId: "dwellir-main",
+      hardStaleDropMs: 150,
+      nextStaleTickCount: 1
+    });
+    const sideEffects = hardStaleTickDropSideEffectSpy();
+
+    applyHardStaleTickDropSideEffects(
+      {
+        tick: tick({ sequence: 777 }),
+        metrics,
+        artifacts,
+        tradingEnabled: true
+      },
+      sideEffects.handlers
+    );
+
+    expect(sideEffects.events).toEqual([
+      "warn:btc-usd:777",
+      "performance:btc-usd:STALE",
+      "publish:PULL_ALL_QUOTES",
+      "cancel:btc-usd:HARD_STALE_DROP",
+      "schedule"
+    ]);
+
+    await Promise.all(sideEffects.scheduled);
   });
 
   it("marks soft stale kill-switch state with a quote hibernation window", () => {
@@ -779,6 +813,39 @@ function performanceSpikeLogSideEffectSpy(): {
     handlers: {
       logPerformance(metrics) {
         events.push(`log:${metrics.instrumentCode}:${metrics.status}:${metrics.sequence}`);
+      }
+    }
+  };
+}
+
+function hardStaleTickDropSideEffectSpy(): {
+  events: string[];
+  scheduled: Promise<unknown>[];
+  handlers: HardStaleTickDropSideEffectHandlers;
+} {
+  const events: string[] = [];
+  const scheduled: Promise<unknown>[] = [];
+
+  return {
+    events,
+    scheduled,
+    handlers: {
+      warnHardStale(metadata) {
+        events.push(`warn:${metadata.instrumentCode}:${metadata.sequence}`);
+      },
+      logPerformance(metrics) {
+        events.push(`performance:${metrics.instrumentCode}:${metrics.status}`);
+      },
+      publishPull(payload) {
+        events.push(`publish:${payload.action}`);
+      },
+      schedule(work) {
+        events.push("schedule");
+        scheduled.push(work);
+      },
+      cancelAllQuotes(instrumentCode, reason) {
+        events.push(`cancel:${instrumentCode}:${reason}`);
+        return Promise.resolve();
       }
     }
   };
