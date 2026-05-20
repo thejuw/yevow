@@ -43,6 +43,19 @@ export interface DispatchQuoteCancelAllInput {
   readonly payload: QuoteCancelDispatchPayload;
 }
 
+export interface QuoteCancelReservation {
+  readonly allowed: boolean;
+  readonly waitMs: number;
+}
+
+export interface QuoteCancelAllSideEffectHandlers {
+  readonly markDispatch: (dispatchKey: string, dispatchedAtMs: number) => void;
+  readonly reserveCancelCapacity: () => QuoteCancelReservation;
+  readonly persistRateLimitState: () => void;
+  readonly wait: (ms: number) => Promise<void>;
+  readonly dispatch: (payload: QuoteCancelDispatchPayload) => Promise<void>;
+}
+
 export function evaluateQuoteCancelDispatch(
   input: QuoteCancelDispatchInput
 ): QuoteCancelDispatchDecision {
@@ -77,6 +90,29 @@ export function evaluateQuoteCancelDispatch(
     payload,
     blockReason: null
   };
+}
+
+export async function applyQuoteCancelAllSideEffects(
+  input: QuoteCancelDispatchInput,
+  handlers: QuoteCancelAllSideEffectHandlers
+): Promise<QuoteCancelDispatchDecision> {
+  const decision = evaluateQuoteCancelDispatch(input);
+
+  if (!decision.shouldDispatch) {
+    return decision;
+  }
+
+  handlers.markDispatch(decision.dispatchKey, input.nowMs);
+
+  const reservation = handlers.reserveCancelCapacity();
+  handlers.persistRateLimitState();
+
+  if (!reservation.allowed) {
+    await handlers.wait(reservation.waitMs);
+  }
+
+  await handlers.dispatch(decision.payload);
+  return decision;
 }
 
 export async function dispatchQuoteCancelAll(input: DispatchQuoteCancelAllInput): Promise<void> {

@@ -109,7 +109,10 @@ import {
   quoteRefreshThrottleLogMetadata,
   type CroupierQuoteAction
 } from "./quotes/QuoteDispatchRuntime";
-import { dispatchQuoteCancelAll, evaluateQuoteCancelDispatch } from "./quotes/QuoteCancelRuntime";
+import {
+  applyQuoteCancelAllSideEffects,
+  dispatchQuoteCancelAll
+} from "./quotes/QuoteCancelRuntime";
 import {
   buildApprovedExecutionPlan,
   shouldSkipExecutionPlanForQuoteSuspension,
@@ -3986,41 +3989,40 @@ export class TradingEngine {
   private async cancelAllQuotes(instrumentCode: string, reason: string): Promise<void> {
     const executioner = this.env.EXECUTIONER;
     const now = Date.now();
-    const dispatchDecision = evaluateQuoteCancelDispatch({
-      instrumentCode,
-      reason,
-      hasExecutioner: Boolean(executioner),
-      nowMs: now,
-      lastDispatchAtMs: this.cancelAllLogAt.get(`${instrumentCode}:${reason}`),
-      throttleMs: HOT_PATH_LOG_THROTTLE_MS
-    });
-
-    if (!dispatchDecision.shouldDispatch) {
-      return;
-    }
-    if (!executioner) {
-      return;
-    }
-    this.cancelAllLogAt.set(dispatchDecision.dispatchKey, now);
-
-    const reservation = this.rateLimiter.reserve("default", "CANCEL");
-    this.state.waitUntil(
-      this.safeStoragePut(
-        RATE_LIMIT_STATE_KEY,
-        this.rateLimiter.exportState(),
-        "EXECUTION_RATE_LIMIT_DRAIN"
-      )
+    await applyQuoteCancelAllSideEffects(
+      {
+        instrumentCode,
+        reason,
+        hasExecutioner: Boolean(executioner),
+        nowMs: now,
+        lastDispatchAtMs: this.cancelAllLogAt.get(`${instrumentCode}:${reason}`),
+        throttleMs: HOT_PATH_LOG_THROTTLE_MS
+      },
+      {
+        markDispatch: (dispatchKey, dispatchedAtMs) =>
+          this.cancelAllLogAt.set(dispatchKey, dispatchedAtMs),
+        reserveCancelCapacity: () => this.rateLimiter.reserve("default", "CANCEL"),
+        persistRateLimitState: () =>
+          this.state.waitUntil(
+            this.safeStoragePut(
+              RATE_LIMIT_STATE_KEY,
+              this.rateLimiter.exportState(),
+              "EXECUTION_RATE_LIMIT_DRAIN"
+            )
+          ),
+        wait,
+        dispatch: (payload) => {
+          if (!executioner) {
+            return Promise.resolve();
+          }
+          return dispatchQuoteCancelAll({
+            executioner,
+            logger: this.logger,
+            payload
+          });
+        }
+      }
     );
-
-    if (!reservation.allowed) {
-      await wait(reservation.waitMs);
-    }
-
-    await dispatchQuoteCancelAll({
-      executioner,
-      logger: this.logger,
-      payload: dispatchDecision.payload
-    });
   }
 
   private async applyExecutionReport(report: ExecutionReport): Promise<void> {
