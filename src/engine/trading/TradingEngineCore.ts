@@ -260,9 +260,9 @@ import {
   cascadeSizeRejectedLogMetadata
 } from "./telemetry/CascadeSignalTelemetryRuntime";
 import {
+  applyProfilerSignalSideEffects,
   buildAmVpinTelemetry,
-  buildProfilerAlertTelemetry,
-  shouldCancelQuotesForProfilerSignal
+  buildProfilerAlertTelemetry
 } from "./telemetry/ProfilerTelemetryRuntime";
 import { buildTickTelemetryPayload } from "./telemetry/TickTelemetryRuntime";
 import { type ReplayOptions, type ReplayScenario } from "./routes/ReplayAdminRoutes";
@@ -2553,20 +2553,23 @@ export class TradingEngine {
       return;
     }
 
-    this.publishProfilerAlert(profilerResult.signal, profilerResult.state);
-    await this.acceptAgentSignal(profilerResult.signal, profilerLatencyMs);
-
-    if (
-      shouldCancelQuotesForProfilerSignal({
+    await applyProfilerSignalSideEffects(
+      {
         signal: profilerResult.signal,
+        profilerState: profilerResult.state,
+        latencyMs: profilerLatencyMs,
+        instrumentCode,
         profilerQuoteHalt: isProfilerQuoteHalt,
         shadowReplay,
         tradingEnabled: this.cachedConfig.TRADING_ENABLED,
         croupierHasQuote
-      })
-    ) {
-      this.state.waitUntil(this.cancelAllQuotes(instrumentCode, "PROFILER_ALERT"));
-    }
+      },
+      {
+        publishAlert: (signal, profilerState) => this.publishProfilerAlert(signal, profilerState),
+        acceptSignal: (signal, latencyMs) => this.acceptAgentSignal(signal, latencyMs),
+        cancelQuotes: (code, reason) => this.state.waitUntil(this.cancelAllQuotes(code, reason))
+      }
+    );
   }
 
   private maybeAutoResumeShadowMode(tick: MarketTick, shadowReplay: boolean): void {

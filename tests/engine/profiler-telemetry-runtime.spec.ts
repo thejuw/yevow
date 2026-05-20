@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyProfilerSignalSideEffects,
   buildAmVpinTelemetry,
   buildProfilerAlertTelemetry,
   shouldCancelQuotesForProfilerSignal
@@ -90,6 +91,42 @@ describe("ProfilerTelemetryRuntime", () => {
         croupierHasQuote: true
       })
     ).toBe(false);
+  });
+
+  it("applies profiler signal side effects and quote cancellation", async () => {
+    const calls: string[] = [];
+    const profilerSignal = signal();
+    const state = profilerState();
+
+    await applyProfilerSignalSideEffects(
+      {
+        signal: profilerSignal,
+        profilerState: state,
+        latencyMs: 3,
+        instrumentCode: "btc-usd",
+        profilerQuoteHalt: true,
+        shadowReplay: false,
+        tradingEnabled: true,
+        croupierHasQuote: true
+      },
+      {
+        publishAlert(signalToPublish, profilerStateToPublish) {
+          calls.push(`publish:${signalToPublish.signalId}:${profilerStateToPublish.toxicityState}`);
+        },
+        async acceptSignal(signalToAccept, latencyMs) {
+          calls.push(`accept:${signalToAccept.signalId}:${latencyMs}`);
+        },
+        cancelQuotes(instrumentCode, reason) {
+          calls.push(`cancel:${instrumentCode}:${reason}`);
+        }
+      }
+    );
+
+    expect(calls).toEqual([
+      "publish:signal-1:TOXIC",
+      "accept:signal-1:3",
+      "cancel:btc-usd:PROFILER_ALERT"
+    ]);
   });
 });
 

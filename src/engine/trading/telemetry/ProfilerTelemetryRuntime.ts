@@ -14,6 +14,18 @@ export interface ProfilerQuoteCancelInput {
   readonly croupierHasQuote: boolean;
 }
 
+export interface ProfilerSignalSideEffectInput extends ProfilerQuoteCancelInput {
+  readonly instrumentCode: string;
+  readonly profilerState: ProfilerState;
+  readonly latencyMs: number;
+}
+
+export interface ProfilerSignalSideEffectHandlers {
+  readonly publishAlert: (signal: AgentSignal, profilerState: ProfilerState) => void;
+  readonly acceptSignal: (signal: AgentSignal, latencyMs: number) => Promise<void>;
+  readonly cancelQuotes: (instrumentCode: string, reason: "PROFILER_ALERT") => void;
+}
+
 export function shouldCancelQuotesForProfilerSignal(input: ProfilerQuoteCancelInput): boolean {
   const cascadeShield = input.signal.featureVector.signalType === "CASCADE_SHIELD";
   return (
@@ -22,6 +34,18 @@ export function shouldCancelQuotesForProfilerSignal(input: ProfilerQuoteCancelIn
     input.tradingEnabled &&
     (!input.croupierHasQuote || input.profilerQuoteHalt)
   );
+}
+
+export async function applyProfilerSignalSideEffects(
+  input: ProfilerSignalSideEffectInput,
+  handlers: ProfilerSignalSideEffectHandlers
+): Promise<void> {
+  handlers.publishAlert(input.signal, input.profilerState);
+  await handlers.acceptSignal(input.signal, input.latencyMs);
+
+  if (shouldCancelQuotesForProfilerSignal(input)) {
+    handlers.cancelQuotes(input.instrumentCode, "PROFILER_ALERT");
+  }
 }
 
 export function buildProfilerAlertTelemetry(
