@@ -21,8 +21,10 @@ import {
   applyTopologyObservationSideEffects,
   defaultEngineLocation,
   resolveEngineLocation,
+  scheduleTopologyWarmUpSideEffects,
   stateAfterLocationLatency,
-  stateAfterTopologyObservation
+  stateAfterTopologyObservation,
+  topologyWarmUpDecision
 } from "./helpers/PlacementResolver";
 import { priceKey, SortedBookSide } from "./book/SortedBookSide";
 import { countBookLevels, isCrossedBook, microstructureFromBook } from "./book/BookReconstruction";
@@ -4670,36 +4672,30 @@ export class TradingEngine {
   }
 
   private warmUpForTopology(topology: EdgeTopology): void {
-    const colo = topology.colo ?? "UNKNOWN";
-    const now = Date.now();
+    const decision = topologyWarmUpDecision({
+      topology,
+      warmedColo: this.warmedColo,
+      warmedAt: this.warmedAt,
+      intervalMs: WARM_UP_INTERVAL_MS,
+      nowMs: Date.now()
+    });
 
-    if (this.warmedColo === colo && now - this.warmedAt < WARM_UP_INTERVAL_MS) {
+    if (!decision.shouldWarmUp) {
       return;
     }
 
-    this.warmedColo = colo;
-    this.warmedAt = now;
-
-    const warmUp = Promise.all([
-      this.state.storage.get(ENGINE_STATE_KEY),
-      this.configManager.fetchConfig()
-    ])
-      .then(() => {
-        this.logger.info("ENGINE_WARMUP", "Trading engine warm-up completed", {
-          colo: topology.colo,
-          placement: topology.placement,
-          observedAt: topology.observedAt
-        });
-      })
-      .catch((error) => {
-        this.logger.error("ENGINE_WARMUP_FAILED", "Trading engine warm-up failed", {
-          colo: topology.colo,
-          placement: topology.placement,
-          message: error instanceof Error ? error.message : "UNKNOWN_ERROR"
-        });
-      });
-
-    this.state.waitUntil(warmUp);
+    this.warmedColo = decision.colo;
+    this.warmedAt = decision.warmedAt;
+    scheduleTopologyWarmUpSideEffects(
+      { topology, decision },
+      {
+        readEngineState: () => this.state.storage.get(ENGINE_STATE_KEY),
+        fetchConfig: () => this.configManager.fetchConfig(),
+        info: (eventType, message, metadata) => this.logger.info(eventType, message, metadata),
+        error: (eventType, message, metadata) => this.logger.error(eventType, message, metadata),
+        schedule: (work) => this.state.waitUntil(work)
+      }
+    );
   }
 
   private buildRefreshedConfigState(

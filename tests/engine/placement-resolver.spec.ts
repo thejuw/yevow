@@ -12,12 +12,15 @@ import {
   readTopologyHeaders,
   resolveEngineLocation,
   resolveRiskMultiplier,
+  scheduleTopologyWarmUpSideEffects,
   stateAfterLocationLatency,
   stateAfterTopologyObservation,
+  topologyWarmUpDecision,
+  type TopologyWarmUpSideEffectHandlers,
   type TopologyObservationSideEffectHandlers
 } from "../../src/engine/trading/helpers/PlacementResolver";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
-import type { RiskLimits } from "../../src/types";
+import type { EdgeTopology, RiskLimits } from "../../src/types";
 
 const baseRisk: RiskLimits = {
   configVersion: "bootstrap",
@@ -368,6 +371,47 @@ describe("PlacementResolver", () => {
     expect(unchangedSideEffects.events).toEqual(["state:DFW"]);
   });
 
+  it("decides and schedules topology warm-up side effects", async () => {
+    const topology = edgeTopology({ colo: "NRT", placement: "remote-nrt" });
+    const skipped = topologyWarmUpDecision({
+      topology,
+      warmedColo: "NRT",
+      warmedAt: 1_000,
+      intervalMs: 5_000,
+      nowMs: 2_000
+    });
+    const scheduled = topologyWarmUpDecision({
+      topology,
+      warmedColo: "DFW",
+      warmedAt: 1_000,
+      intervalMs: 5_000,
+      nowMs: 2_000
+    });
+
+    expect(skipped).toEqual({ shouldWarmUp: false, colo: "NRT", warmedAt: 2_000 });
+    expect(scheduled).toEqual({ shouldWarmUp: true, colo: "NRT", warmedAt: 2_000 });
+
+    const skippedSideEffects = topologyWarmUpSideEffectSpy();
+    scheduleTopologyWarmUpSideEffects({ topology, decision: skipped }, skippedSideEffects.handlers);
+    expect(skippedSideEffects.events).toEqual([]);
+
+    const scheduledSideEffects = topologyWarmUpSideEffectSpy();
+    scheduleTopologyWarmUpSideEffects(
+      { topology, decision: scheduled },
+      scheduledSideEffects.handlers
+    );
+    expect(scheduledSideEffects.events).toEqual(["read", "config", "schedule"]);
+
+    await Promise.all(scheduledSideEffects.scheduled);
+
+    expect(scheduledSideEffects.events).toEqual([
+      "read",
+      "config",
+      "schedule",
+      "info:ENGINE_WARMUP:NRT"
+    ]);
+  });
+
   it("updates observed location latency without changing the placement identity", () => {
     const state = defaultEngineState("placement-latency");
     state.location = {
@@ -405,6 +449,56 @@ describe("PlacementResolver", () => {
     });
   });
 });
+
+function topologyWarmUpSideEffectSpy(): {
+  events: string[];
+  scheduled: Promise<void>[];
+  handlers: TopologyWarmUpSideEffectHandlers;
+} {
+  const events: string[] = [];
+  const scheduled: Promise<void>[] = [];
+
+  return {
+    events,
+    scheduled,
+    handlers: {
+      readEngineState() {
+        events.push("read");
+        return Promise.resolve({ ok: true });
+      },
+      fetchConfig() {
+        events.push("config");
+        return Promise.resolve({ ok: true });
+      },
+      info(eventType, _message, metadata) {
+        events.push(`info:${eventType}:${metadata.colo}`);
+      },
+      error(eventType, _message, metadata) {
+        events.push(`error:${eventType}:${metadata.message}`);
+      },
+      schedule(work) {
+        events.push("schedule");
+        scheduled.push(work);
+      }
+    }
+  };
+}
+
+function edgeTopology(overrides: Partial<EdgeTopology> = {}): EdgeTopology {
+  return {
+    colo: "NRT",
+    placement: "remote-nrt",
+    country: null,
+    city: null,
+    region: null,
+    timezone: null,
+    latitude: null,
+    longitude: null,
+    requestId: "req-1",
+    observedAt: "2026-05-18T04:00:00.000Z",
+    ...overrides
+  };
+}
 
 function topologySideEffectSpy(): {
   events: string[];
