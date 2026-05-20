@@ -170,10 +170,10 @@ import {
 } from "./performance/LatencyRuntime";
 import {
   applyCancelJanitorOrderSideEffects,
-  applyJanitorRunSideEffects,
   cancelJanitorOrder,
   fetchJanitorExchangeOpenOrders,
-  recordPostOnlyDustCloseSkips
+  recordPostOnlyDustCloseSkips,
+  runJanitorMaintenance
 } from "./janitor/JanitorRuntime";
 import {
   currentCascadeActiveSnapshot as buildCurrentCascadeActiveSnapshot,
@@ -4031,26 +4031,21 @@ export class TradingEngine {
 
   private async runJanitor(source: "ALARM" | "ADMIN" = "ALARM"): Promise<void> {
     const observedAt = new Date().toISOString();
-    const baseReport = this.janitorAgent.run({
-      orderMap: this.engineState.orderMap,
-      positions: this.engineState.openPositions,
-      observedAt,
-      ackTimeoutMs: readPositiveInteger(
-        this.env.ORDER_ACK_TIMEOUT_MS,
-        DEFAULT_ORDER_ACK_TIMEOUT_MS,
-        100,
-        60_000
-      ),
-      dustThreshold: 0.000001
-    });
-    await applyJanitorRunSideEffects(
+    await runJanitorMaintenance(
       {
         source,
         state: this.engineState,
-        baseReport,
-        observedAt
+        observedAt,
+        ackTimeoutMs: readPositiveInteger(
+          this.env.ORDER_ACK_TIMEOUT_MS,
+          DEFAULT_ORDER_ACK_TIMEOUT_MS,
+          100,
+          60_000
+        ),
+        dustThreshold: 0.000001
       },
       {
+        runBaseReport: (input) => this.janitorAgent.run(input),
         fetchExchangeOpenOrders: () =>
           fetchJanitorExchangeOpenOrders({
             executioner: this.env.EXECUTIONER,

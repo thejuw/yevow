@@ -14,6 +14,7 @@ import {
   reconcileJanitorOrders,
   recordPostOnlyDustCloseSkip,
   recordPostOnlyDustCloseSkips,
+  runJanitorMaintenance,
   stateAfterJanitorRun
 } from "../../src/engine/trading/janitor/JanitorRuntime";
 import type { LogPruneReport } from "../../src/engine/LogRetention";
@@ -532,6 +533,52 @@ describe("JanitorRuntime", () => {
       updatedAt: OBSERVED_AT,
       heartbeatAt: OBSERVED_AT
     });
+  });
+
+  it("runs janitor maintenance from an injected base report builder", async () => {
+    const state = {
+      orderMap: {
+        "client-1": order({ clientId: "client-1", exchangeOrderId: "missing", status: "OPEN" })
+      },
+      openPositions: {},
+      janitor: janitorState(),
+      updatedAt: "2026-05-18T15:00:00.000Z",
+      heartbeatAt: "2026-05-18T15:00:00.000Z"
+    } as EngineState;
+    const sideEffects = janitorSideEffectSpy({
+      exchangeOpenOrders: [],
+      pruneReport: logPruneReport({ totalRows: 0 })
+    });
+
+    const artifacts = await runJanitorMaintenance(
+      {
+        source: "ALARM",
+        state,
+        observedAt: OBSERVED_AT,
+        ackTimeoutMs: 2_000,
+        dustThreshold: 0.000001
+      },
+      {
+        ...sideEffects.handlers,
+        runBaseReport: (input) => {
+          sideEffects.events.push(`base:${input.ackTimeoutMs}:${input.dustThreshold}`);
+          expect(input.orderMap).toBe(state.orderMap);
+          expect(input.positions).toBe(state.openPositions);
+          return janitorState({ zombieOrders: ["client-1"] });
+        }
+      }
+    );
+
+    expect(sideEffects.events).toEqual([
+      "base:2000:0.000001",
+      "fetch",
+      "cancel:client-1:JANITOR_ZOMBIE_LOCAL_ORDER:btc-usd",
+      "dust::2026-05-18T16:00:00.000Z",
+      "prune",
+      "warn:ALARM",
+      "apply"
+    ]);
+    expect(artifacts.report.zombieOrders).toEqual(["client-1"]);
   });
 });
 

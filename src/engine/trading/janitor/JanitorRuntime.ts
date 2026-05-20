@@ -74,6 +74,22 @@ export interface JanitorRunSideEffectsInput {
   readonly observedAt: string;
 }
 
+export interface JanitorBaseReportInput {
+  readonly orderMap: EngineState["orderMap"];
+  readonly positions: EngineState["openPositions"];
+  readonly observedAt: string;
+  readonly ackTimeoutMs: number;
+  readonly dustThreshold: number;
+}
+
+export interface JanitorMaintenanceInput {
+  readonly source: "ALARM" | "ADMIN";
+  readonly state: EngineState;
+  readonly observedAt: string;
+  readonly ackTimeoutMs: number;
+  readonly dustThreshold: number;
+}
+
 export interface JanitorRunSideEffectHandlers {
   readonly fetchExchangeOpenOrders: () => Promise<ExchangeOpenOrder[]>;
   readonly cancelOrder: (
@@ -88,6 +104,10 @@ export interface JanitorRunSideEffectHandlers {
   readonly pruneOperationalLogs: () => Promise<LogPruneReport>;
   readonly warnCleanupRequired: (metadata: JsonRecord) => void;
   readonly applyState: (state: EngineState) => Promise<void>;
+}
+
+export interface JanitorMaintenanceSideEffectHandlers extends JanitorRunSideEffectHandlers {
+  readonly runBaseReport: (input: JanitorBaseReportInput) => JanitorState;
 }
 
 export interface DispatchJanitorCancellationRequestsInput {
@@ -466,6 +486,29 @@ export async function applyJanitorRunSideEffects(
 
   await handlers.applyState(artifacts.state);
   return artifacts;
+}
+
+export async function runJanitorMaintenance(
+  input: JanitorMaintenanceInput,
+  handlers: JanitorMaintenanceSideEffectHandlers
+): Promise<JanitorRunArtifacts> {
+  const baseReport = handlers.runBaseReport({
+    orderMap: input.state.orderMap,
+    positions: input.state.openPositions,
+    observedAt: input.observedAt,
+    ackTimeoutMs: input.ackTimeoutMs,
+    dustThreshold: input.dustThreshold
+  });
+
+  return applyJanitorRunSideEffects(
+    {
+      source: input.source,
+      state: input.state,
+      baseReport,
+      observedAt: input.observedAt
+    },
+    handlers
+  );
 }
 
 function hasClientId(order: ExchangeOpenOrder): order is ExchangeOpenOrder & { clientId: string } {
