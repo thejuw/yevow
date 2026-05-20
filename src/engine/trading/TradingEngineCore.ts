@@ -206,6 +206,7 @@ import {
   cascadeDetectorConfig as buildCascadeDetectorConfig,
   cascadeRecoverySignalConfig as buildCascadeRecoverySignalConfig
 } from "./cascade/CascadeConfigRuntime";
+import { ensureCascadePaperModeArmedRuntime } from "./cascade/CascadePaperModeRuntime";
 import {
   applyCascadePositionUpdateSideEffects,
   processCascadeClosedCandleSignals,
@@ -4873,22 +4874,24 @@ export class TradingEngine {
   }
 
   private async ensureCascadePaperModeArmed(observedAt: string): Promise<void> {
-    try {
-      const existing = await this.env.CONFIG_STORE.get(CASCADE_PAPER_ARMED_AT_KEY);
-      if (existing) {
-        return;
+    await ensureCascadePaperModeArmedRuntime(
+      {
+        observedAt,
+        cachedConfig: this.cachedConfig,
+        shadowMode: isShadowMode(this.env)
+      },
+      {
+        getArmedAt: () => this.env.CONFIG_STORE.get(CASCADE_PAPER_ARMED_AT_KEY),
+        putArmedAt: (armedAt) => this.env.CONFIG_STORE.put(CASCADE_PAPER_ARMED_AT_KEY, armedAt),
+        warnArmed: (metadata) =>
+          this.logger.warn(
+            "CASCADE_PAPER_MODE_ARMED",
+            "Cascade recovery paper-mode clock started",
+            metadata
+          ),
+        handleError: (error) => this.handleStorageWriteFailure("CASCADE_PAPER_MODE_ARMING", error)
       }
-
-      await this.env.CONFIG_STORE.put(CASCADE_PAPER_ARMED_AT_KEY, observedAt);
-      this.logger.warn("CASCADE_PAPER_MODE_ARMED", "Cascade recovery paper-mode clock started", {
-        strategyMode: this.cachedConfig.STRATEGY_MODE,
-        tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-        shadowMode: isShadowMode(this.env),
-        observedAt
-      });
-    } catch (error) {
-      this.handleStorageWriteFailure("CASCADE_PAPER_MODE_ARMING", error);
-    }
+    );
   }
 
   private recordCascadeUiSignal(
