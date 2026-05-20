@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildReplayRestoreWrites,
+  captureEngineReplaySnapshot,
   hydrateReplayOrderBooks,
   type EngineReplaySnapshot
 } from "../../src/engine/trading/replay/ReplaySnapshotRuntime";
@@ -20,6 +21,67 @@ import type { InternalOrderBook, LatencyMetrics } from "../../src/types";
 const OBSERVED_AT = "2026-05-18T20:00:00.000Z";
 
 describe("ReplaySnapshotRuntime", () => {
+  it("captures replay snapshots with cloned mutable collections", () => {
+    const engineState = defaultEngineState("capture-snapshot");
+    engineState.bankroll.cash = 123;
+    const inputBook = book();
+    const latencyHistory = [latencyMetrics()];
+    const processingLatencySamples = [1, 2, 3];
+    const domWallHistory = [
+      {
+        wallId: "wall-1",
+        instrumentCode: "btc-usd",
+        exchangeCode: "HL",
+        side: "BID" as const,
+        priceStart: 99,
+        priceEnd: 100,
+        centerPrice: 99.5,
+        volume: 3,
+        meanVolume: 1,
+        sigmaVolume: 0.5,
+        zScore: 4,
+        levelCount: 1,
+        status: "ACTIVE" as const,
+        firstSeenAt: OBSERVED_AT,
+        lastSeenAt: OBSERVED_AT,
+        lastSequence: 42,
+        distanceFromMidBps: 5,
+        spoofingSuspected: false
+      }
+    ];
+    const snapshot = captureEngineReplaySnapshot({
+      engineState,
+      orderBooks: [inputBook],
+      latencyHistory,
+      processingLatencySamples,
+      domWallHistory,
+      leadLagSamples: [["btc-usd", [{ price: 100, observedAt: OBSERVED_AT }]]],
+      cachedConfig: engineState.cachedConfig,
+      maxLatencyMs: 150,
+      lastTickTimestamp: OBSERVED_AT,
+      profilerState: engineState.profilerStates["btc-usd"],
+      profilerStates: [["btc-usd", engineState.profilerStates["btc-usd"]]],
+      anomalyState: replaySnapshot().anomalyState,
+      oracleState: engineState.oracle,
+      sentimentState: engineState.sentiment,
+      rateLimits: {},
+      signals: [],
+      latestAgentSignals: []
+    });
+
+    engineState.bankroll.cash = 0;
+    inputBook.midPrice = 1;
+    latencyHistory[0] = { ...latencyHistory[0], totalLatencyMs: 999 };
+    processingLatencySamples[0] = 999;
+    domWallHistory[0] = { ...domWallHistory[0], volume: 999 };
+
+    expect(snapshot.engineState.bankroll.cash).toBe(123);
+    expect(snapshot.orderBooks[0].midPrice).toBe(100);
+    expect(snapshot.latencyHistory[0].totalLatencyMs).toBe(2);
+    expect(snapshot.processingLatencySamples[0]).toBe(1);
+    expect(snapshot.domWallHistory[0].volume).toBe(3);
+  });
+
   it("hydrates replay order books and assembles restore writes", () => {
     const snapshot = replaySnapshot();
     const hydrated = hydrateReplayOrderBooks(snapshot);

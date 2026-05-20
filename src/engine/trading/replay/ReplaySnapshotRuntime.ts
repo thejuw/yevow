@@ -21,6 +21,7 @@ import type {
   LiquidityWall,
   ProfilerState
 } from "../../../types";
+import { deepClone } from "../helpers/RuntimeSerialization";
 
 export interface EngineReplaySnapshot {
   engineState: EngineState;
@@ -40,6 +41,50 @@ export interface EngineReplaySnapshot {
   rateLimits: Record<string, RateLimitBucketSnapshot>;
   signals: AgentSignal[];
   latestAgentSignals: [AgentName, AgentSignal][];
+}
+
+export interface CaptureEngineReplaySnapshotInput {
+  readonly engineState: EngineState;
+  readonly orderBooks: Iterable<InternalOrderBook>;
+  readonly latencyHistory: readonly LatencyMetrics[];
+  readonly processingLatencySamples: readonly number[];
+  readonly domWallHistory: readonly LiquidityWall[];
+  readonly leadLagSamples: Iterable<[string, { price: number; observedAt: string }[]]>;
+  readonly cachedConfig: GlobalRiskConfig;
+  readonly maxLatencyMs: number;
+  readonly lastTickTimestamp: string | null;
+  readonly profilerState: ProfilerState;
+  readonly profilerStates: Iterable<[string, ProfilerState]>;
+  readonly anomalyState: AnomalyDetectorState;
+  readonly oracleState: EngineState["oracle"];
+  readonly sentimentState: EngineState["sentiment"];
+  readonly rateLimits: Record<string, RateLimitBucketSnapshot>;
+  readonly signals: readonly AgentSignal[];
+  readonly latestAgentSignals: Iterable<[AgentName, AgentSignal]>;
+}
+
+export function captureEngineReplaySnapshot(
+  input: CaptureEngineReplaySnapshotInput
+): EngineReplaySnapshot {
+  return {
+    engineState: deepClone(input.engineState),
+    orderBooks: deepClone([...input.orderBooks]),
+    latencyHistory: deepClone([...input.latencyHistory]),
+    processingLatencySamples: [...input.processingLatencySamples],
+    domWallHistory: deepClone([...input.domWallHistory]),
+    leadLagSamples: deepClone([...input.leadLagSamples]),
+    cachedConfig: deepClone(input.cachedConfig),
+    maxLatencyMs: input.maxLatencyMs,
+    lastTickTimestamp: input.lastTickTimestamp,
+    profilerState: input.profilerState,
+    profilerStates: deepClone([...input.profilerStates]),
+    anomalyState: input.anomalyState,
+    oracleState: input.oracleState,
+    sentimentState: input.sentimentState,
+    rateLimits: input.rateLimits,
+    signals: deepClone([...input.signals]),
+    latestAgentSignals: deepClone([...input.latestAgentSignals])
+  };
 }
 
 export function hydrateReplayOrderBooks(

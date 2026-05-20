@@ -302,6 +302,7 @@ import {
 } from "./replay/ReplayResultRuntime";
 import {
   buildReplayRestoreWrites,
+  captureEngineReplaySnapshot,
   hydrateReplayOrderBooks,
   type EngineReplaySnapshot
 } from "./replay/ReplaySnapshotRuntime";
@@ -595,7 +596,6 @@ import {
   readJsonOrNull,
   json
 } from "./helpers/RuntimeParsing";
-import { deepClone } from "./helpers/RuntimeSerialization";
 import { applyReplayScenarioToTick } from "./replay/ReplayModelRuntime";
 import { resolveGhostBookConfig } from "./shadow/GhostBookConfigRuntime";
 import {
@@ -5007,29 +5007,28 @@ export class TradingEngine {
   }
 
   private captureReplaySnapshot(): EngineReplaySnapshot {
-    return {
-      engineState: deepClone(this.engineState),
-      orderBooks: deepClone([...this.orderBook.values()]),
-      latencyHistory: deepClone(this.latencyHistory),
-      processingLatencySamples: [...this.processingLatencySamples],
-      domWallHistory: deepClone(this.domWallHistory),
-      leadLagSamples: deepClone([...this.leadLagSamples.entries()]),
-      cachedConfig: deepClone(this.cachedConfig),
+    return captureEngineReplaySnapshot({
+      engineState: this.engineState,
+      orderBooks: this.orderBook.values(),
+      latencyHistory: this.latencyHistory,
+      processingLatencySamples: this.processingLatencySamples,
+      domWallHistory: this.domWallHistory,
+      leadLagSamples: this.leadLagSamples.entries(),
+      cachedConfig: this.cachedConfig,
       maxLatencyMs: this.maxLatencyMs,
       lastTickTimestamp: this.lastTickTimestamp,
       profilerState: this.profilerAgent.snapshot(),
-      profilerStates: deepClone(
-        [...this.profilerRegistry.entries()].map(
-          ([instrumentCode, agent]) => [instrumentCode, agent.snapshot()] as [string, ProfilerState]
-        )
-      ),
+      profilerStates: [...this.profilerRegistry.entries()].map(([instrumentCode, agent]) => [
+        instrumentCode,
+        agent.snapshot()
+      ]),
       anomalyState: this.anomalyDetector.snapshot(),
       oracleState: this.oracleAgent.snapshot(),
       sentimentState: this.sentimentAgent.snapshot(),
       rateLimits: this.rateLimiter.exportState(),
-      signals: deepClone(this.signals),
-      latestAgentSignals: deepClone([...this.latestAgentSignals.entries()])
-    };
+      signals: this.signals,
+      latestAgentSignals: this.latestAgentSignals.entries()
+    });
   }
 
   private async restoreReplaySnapshot(snapshot: EngineReplaySnapshot): Promise<void> {
