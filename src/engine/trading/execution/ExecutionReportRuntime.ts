@@ -46,6 +46,20 @@ export interface ExecutionReportSideEffectHandlers {
   ) => void;
 }
 
+export interface ExecutionReportFlowInput {
+  readonly state: EngineState;
+  readonly report: ExecutionReport;
+  readonly oracleRegime: EngineState["oracle"]["regime"];
+}
+
+export interface ExecutionReportFlowHandlers extends ExecutionReportSideEffectHandlers {
+  readonly markPrice: (instrumentCode: string, fallback: number) => number;
+  readonly calculateInventory: (
+    observedAt: string,
+    openPositions: EngineState["openPositions"]
+  ) => InventoryState;
+}
+
 export function buildExecutionReportRuntimeUpdate(
   input: ExecutionReportRuntimeUpdateInput
 ): ExecutionReportRuntimeUpdate {
@@ -87,4 +101,27 @@ export async function applyExecutionReportSideEffects(
   await handlers.applyState(input.update.nextState);
   handlers.recordExecution(input.update.accounting.tradeExecution);
   handlers.publishTradeExecution(input.update.accounting.tradeExecution);
+}
+
+export async function applyExecutionReportFlow(
+  input: ExecutionReportFlowInput,
+  handlers: ExecutionReportFlowHandlers
+): Promise<ExecutionReportRuntimeUpdate> {
+  const update = buildExecutionReportRuntimeUpdate({
+    state: input.state,
+    report: input.report,
+    markPrice: handlers.markPrice,
+    calculateInventory: handlers.calculateInventory
+  });
+
+  await applyExecutionReportSideEffects(
+    {
+      report: input.report,
+      update,
+      oracleRegime: input.oracleRegime
+    },
+    handlers
+  );
+
+  return update;
 }

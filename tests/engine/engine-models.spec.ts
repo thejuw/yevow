@@ -11,8 +11,10 @@ import {
   stateAfterExecutionAccounting
 } from "../../src/engine/ExecutionAccounting";
 import {
+  applyExecutionReportFlow,
   applyExecutionReportSideEffects,
   buildExecutionReportRuntimeUpdate,
+  type ExecutionReportFlowHandlers,
   type ExecutionReportSideEffectHandlers
 } from "../../src/engine/trading/execution/ExecutionReportRuntime";
 import { evaluateIntentDispatchGate } from "../../src/engine/IntentGeneration";
@@ -191,6 +193,55 @@ describe("execution accounting", () => {
     );
 
     expect(sideEffects.events).toEqual([
+      "adverse:order-open:102:REGIME_RANGE",
+      "quality:order-open",
+      "state:FILLED",
+      "record:order-open",
+      "publish:order-open"
+    ]);
+  });
+
+  it("orchestrates execution report flow through accounting and side effects", async () => {
+    const observedAt = "2026-05-18T12:00:00.000Z";
+    const state = engineState({
+      lastTradeIntent: tradeIntent({ intentId: "intent-open" }),
+      orderMap: {
+        "order-open": managedOrder({
+          clientId: "order-open",
+          intentId: "intent-open",
+          side: "BUY",
+          price: 100,
+          size: 1
+        })
+      }
+    });
+    const report: ExecutionReport = {
+      clientId: "order-open",
+      instrumentCode: "btc-usd",
+      side: "BUY",
+      status: "FILLED",
+      filledSize: 0.5,
+      achievedPrice: 101,
+      expectedPrice: 100,
+      fees: 0.05,
+      latencyMs: 12,
+      observedAt
+    };
+    const flow = executionReportFlowSpy(observedAt);
+
+    const update = await applyExecutionReportFlow(
+      {
+        state,
+        report,
+        oracleRegime: "REGIME_RANGE"
+      },
+      flow.handlers
+    );
+
+    expect(update.accounting.tradeExecution.status).toBe("FILLED");
+    expect(update.inventory.netDelta).toBe(0.5);
+    expect(flow.events).toEqual([
+      "inventory:2026-05-18T12:00:00.000Z:0.5",
       "adverse:order-open:102:REGIME_RANGE",
       "quality:order-open",
       "state:FILLED",
@@ -724,6 +775,30 @@ function executionReportSideEffectSpy(): {
       },
       publishTradeExecution(tradeExecution) {
         events.push(`publish:${tradeExecution.orderId}`);
+      }
+    }
+  };
+}
+
+function executionReportFlowSpy(observedAt: string): {
+  events: string[];
+  handlers: ExecutionReportFlowHandlers;
+} {
+  const sideEffects = executionReportSideEffectSpy();
+  const events = sideEffects.events;
+
+  return {
+    events,
+    handlers: {
+      ...sideEffects.handlers,
+      markPrice() {
+        return 102;
+      },
+      calculateInventory(inventoryObservedAt, openPositions) {
+        events.push(
+          `inventory:${inventoryObservedAt}:${openPositions["btc-usd"]?.quantity ?? "missing"}`
+        );
+        return inventoryState({ netDelta: 0.5, updatedAt: observedAt });
       }
     }
   };

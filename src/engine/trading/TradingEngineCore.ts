@@ -114,10 +114,7 @@ import {
   dispatchTradeIntentSideEffects,
   dispatchTradeIntentToExecutioner
 } from "./execution/ExecutionDispatchRuntime";
-import {
-  applyExecutionReportSideEffects,
-  buildExecutionReportRuntimeUpdate
-} from "./execution/ExecutionReportRuntime";
+import { applyExecutionReportFlow } from "./execution/ExecutionReportRuntime";
 import {
   evaluateCroupierRuntime,
   evaluateOracleRuntime,
@@ -3744,29 +3741,24 @@ export class TradingEngine {
   }
 
   private async applyExecutionReport(report: ExecutionReport): Promise<void> {
-    const executionUpdate = buildExecutionReportRuntimeUpdate({
-      state: this.engineState,
-      report,
-      markPrice: (instrumentCode, fallback) =>
-        currentMarkPriceForInstrument(
-          {
-            orderBook: this.orderBook,
-            microstructure: this.engineState.microstructure
-          },
-          instrumentCode,
-          fallback
-        ),
-      calculateInventory: (observedAt, openPositions) =>
-        this.calculateInventoryState(observedAt, openPositions)
-    });
-
-    await applyExecutionReportSideEffects(
+    await applyExecutionReportFlow(
       {
+        state: this.engineState,
         report,
-        update: executionUpdate,
         oracleRegime: this.engineState.oracle.regime
       },
       {
+        markPrice: (instrumentCode, fallback) =>
+          currentMarkPriceForInstrument(
+            {
+              orderBook: this.orderBook,
+              microstructure: this.engineState.microstructure
+            },
+            instrumentCode,
+            fallback
+          ),
+        calculateInventory: (observedAt, openPositions) =>
+          this.calculateInventoryState(observedAt, openPositions),
         observeAdverseSelection: (executionReport, order, markPrice, oracleRegime) =>
           this.adverseSelectionModel.observeExecutionReport(
             executionReport,
