@@ -2,12 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   buildCompletedReplayArtifacts,
   buildHistoricalReplayResult,
+  buildReplayRunningStatus,
   buildReplayStatus,
   buildShadowReplayConfig,
   buildShadowReplayEngineState,
   calculateReplayShadowBankroll,
   recordCompletedReplaySideEffects,
-  resolveInitialShadowBankroll
+  resolveInitialShadowBankroll,
+  writeReplayRunningStatusSideEffect
 } from "../../src/engine/trading/replay/ReplayResultRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { ReplayOptions } from "../../src/engine/trading/routes/ReplayAdminRoutes";
@@ -290,6 +292,43 @@ describe("ReplayResultRuntime", () => {
       shadowBankroll: 302.5,
       error: null,
       completedAt: null
+    });
+  });
+
+  it("writes replay running status through injected journal handlers", async () => {
+    const statuses: unknown[] = [];
+    const input = {
+      replayId: "replay-running",
+      ticksTotal: 40,
+      speedMultiplier: 3,
+      shadowBankroll: 301.5,
+      dateFrom: null,
+      dateTo: "2026-05-02T00:00:00.000Z",
+      scenario: "BASELINE" as const,
+      startedAt: STARTED_AT,
+      updatedAt: COMPLETED_AT
+    };
+
+    expect(buildReplayRunningStatus(input)).toMatchObject({
+      replayId: "replay-running",
+      status: "RUNNING",
+      ticksProcessed: 0,
+      progressPct: 0,
+      shadowBankroll: 301.5,
+      completedAt: null
+    });
+
+    await writeReplayRunningStatusSideEffect(input, {
+      writeStatus: async (status) => {
+        statuses.push(status);
+      }
+    });
+
+    expect(statuses).toHaveLength(1);
+    expect(statuses[0]).toMatchObject({
+      replayId: "replay-running",
+      status: "RUNNING",
+      ticksTotal: 40
     });
   });
 });

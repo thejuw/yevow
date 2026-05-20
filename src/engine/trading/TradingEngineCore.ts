@@ -275,11 +275,11 @@ import {
 } from "./replay/ReplayJournal";
 import { runShadowReplayLoop, type ShadowReplayLoopResult } from "./replay/ReplayLoopRuntime";
 import {
-  buildReplayStatus,
   buildShadowReplayConfig,
   buildShadowReplayEngineState,
   recordCompletedReplaySideEffects,
-  resolveInitialShadowBankroll
+  resolveInitialShadowBankroll,
+  writeReplayRunningStatusSideEffect
 } from "./replay/ReplayResultRuntime";
 import {
   buildReplayRestoreWrites,
@@ -4231,12 +4231,10 @@ export class TradingEngine {
   private async writeHistoricalReplayRunningStatus(
     input: HistoricalReplayStatusInput
   ): Promise<void> {
-    await this.replayJournal.writeStatus(
-      buildReplayStatus({
+    await writeReplayRunningStatusSideEffect(
+      {
         replayId: input.replayId,
-        status: "RUNNING",
         ticksTotal: input.ticksTotal,
-        ticksProcessed: 0,
         speedMultiplier: input.speedMultiplier,
         shadowBankroll: input.shadowBankroll,
         dateFrom: input.dateFrom,
@@ -4244,7 +4242,10 @@ export class TradingEngine {
         scenario: input.scenario,
         startedAt: input.startedAt,
         updatedAt: input.updatedAt
-      })
+      },
+      {
+        writeStatus: (status) => this.replayJournal.writeStatus(status)
+      }
     );
   }
 

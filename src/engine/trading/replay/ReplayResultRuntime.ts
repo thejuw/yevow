@@ -60,6 +60,11 @@ export interface BuildReplayStatusInput {
   readonly progressPct?: number;
 }
 
+export type BuildReplayRunningStatusInput = Omit<
+  BuildReplayStatusInput,
+  "status" | "ticksProcessed"
+>;
+
 export interface BuildReplayResultInput {
   readonly replayId: string;
   readonly replayOptions: ReplayOptions;
@@ -112,6 +117,10 @@ export interface CompletedReplaySideEffectHandlers {
     dateFrom: string | null,
     dateTo: string | null
   ) => Promise<void>;
+  readonly writeStatus: (status: ReplayStatus) => Promise<void>;
+}
+
+export interface ReplayRunningStatusSideEffectHandlers {
   readonly writeStatus: (status: ReplayStatus) => Promise<void>;
 }
 
@@ -185,6 +194,14 @@ export function buildReplayStatus(input: BuildReplayStatusInput): ReplayStatus {
     updatedAt: input.updatedAt,
     completedAt: input.completedAt ?? null
   };
+}
+
+export function buildReplayRunningStatus(input: BuildReplayRunningStatusInput): ReplayStatus {
+  return buildReplayStatus({
+    ...input,
+    status: "RUNNING",
+    ticksProcessed: 0
+  });
 }
 
 export function buildHistoricalReplayResult(
@@ -325,6 +342,13 @@ export async function recordCompletedReplaySideEffects(
   await handlers.writeStatus(replayBuild.status);
 
   return replayBuild.result;
+}
+
+export async function writeReplayRunningStatusSideEffect(
+  input: BuildReplayRunningStatusInput,
+  handlers: ReplayRunningStatusSideEffectHandlers
+): Promise<void> {
+  await handlers.writeStatus(buildReplayRunningStatus(input));
 }
 
 function roundReplayMetric(value: number, decimals: number): number {
