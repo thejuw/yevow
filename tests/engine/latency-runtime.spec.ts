@@ -4,9 +4,7 @@ import {
   applyExecutionProfileSideEffects,
   applyHardStaleTickDropFlow,
   applyHardStaleTickDropSideEffects,
-  applyLatencyBaselineResetSideEffects,
   applyNativeHyperliquidLatencyPullSideEffects,
-  applyPerformanceSpikeLogSideEffect,
   applySoftStaleTickFlow,
   applyStaleDataKillSwitchSideEffects,
   buildHardStaleTickDropArtifacts,
@@ -16,30 +14,36 @@ import {
   buildStaleDataKillSwitchArtifacts,
   hardStalePullTelemetryPayload,
   hardStaleTickDropLogMetadata,
-  latencyBaselineResetArtifacts,
   latencySnapshotStorageWrites,
   nativeHyperliquidLatencyPullArtifacts,
   nativeHyperliquidLatencyPullStorageWrites,
   nextExecutionProfile,
   recordProcessingLatencySample,
   shouldLogHardStaleTickDrop,
-  shouldLogPerformanceSpikeEvent,
   staleDataKillSwitchNotification,
   staleDataKillSwitchStorageExtra,
   staleDataKillSwitchTelemetryPayload,
-  stateAfterLatencyBaselineReset,
   stateAfterNativeHyperliquidLatencyPull,
   stateAfterStaleDataKillSwitch,
   stateAfterHardStaleTickDrop,
   type ExecutionProfileSideEffectHandlers,
   type HardStaleTickDropFlowHandlers,
   type HardStaleTickDropSideEffectHandlers,
-  type LatencyBaselineResetSideEffectHandlers,
   type NativeHyperliquidLatencyPullSideEffectHandlers,
-  type PerformanceSpikeLogSideEffectHandlers,
   type SoftStaleTickFlowHandlers,
   type StaleDataKillSwitchSideEffectHandlers
 } from "../../src/engine/trading/performance/LatencyRuntime";
+import {
+  applyLatencyBaselineResetSideEffects,
+  latencyBaselineResetArtifacts,
+  stateAfterLatencyBaselineReset,
+  type LatencyBaselineResetSideEffectHandlers
+} from "../../src/engine/trading/performance/LatencyBaselineRuntime";
+import {
+  applyPerformanceSpikeLogSideEffect,
+  shouldLogPerformanceSpikeEvent,
+  type PerformanceSpikeLogSideEffectHandlers
+} from "../../src/engine/trading/performance/PerformanceSpikeRuntime";
 import {
   applyPreparedTickLatencySideEffects,
   appendLatencyHistory,
