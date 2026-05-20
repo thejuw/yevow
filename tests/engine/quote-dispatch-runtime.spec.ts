@@ -2,13 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   buildCroupierQuoteAction,
   buildQuoteDispatchIntents,
+  buildQuoteRefreshRuntimeDecision,
   dispatchedQuoteSnapshot,
   evaluateQuoteRefreshThrottle,
   quoteDispatchBlockedLogMetadata,
   quoteRefreshThrottleLogMetadata
 } from "../../src/engine/trading/quotes/QuoteDispatchRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
-import type { QuoteSignal } from "../../src/types";
+import type { InternalOrderBook, QuoteSignal } from "../../src/types";
 
 describe("QuoteDispatchRuntime", () => {
   it("builds risk-capped post-only trade intents from quote orders", () => {
@@ -327,6 +328,42 @@ describe("QuoteDispatchRuntime", () => {
       signalId: "quote-1",
       queuePressure: 0.2346,
       queueReason: "HOLD_FRONT_OF_QUEUE"
+    });
+  });
+
+  it("builds quote refresh runtime decisions from queue-position advice", () => {
+    const previousQuote = { bid: 100, ask: 101, updatedAtMs: Date.parse(quoteSignal().createdAt) };
+    const quote = quoteSignal({ createdAt: "2026-05-18T17:00:00.500Z" });
+    const decision = buildQuoteRefreshRuntimeDecision({
+      previousQuote,
+      quote,
+      book: {
+        tickSize: 0.5
+      } as unknown as InternalOrderBook,
+      nowMs: Date.parse(quote.createdAt),
+      lastLogAtMs: 0,
+      logThrottleMs: 10_000,
+      minIntervalMsValue: "900",
+      minPriceTicksValue: "2",
+      adviseRefresh: (input) => {
+        expect(input.elapsedMs).toBe(500);
+        expect(input.tickSize).toBe(0.5);
+        expect(input.minPriceTicks).toBe(2);
+        return { shouldRefresh: false, reason: "HOLD_FRONT_OF_QUEUE", queuePressure: 0.1 };
+      }
+    });
+
+    expect(decision).toEqual({
+      minIntervalMs: 900,
+      minPriceTicks: 2,
+      throttle: {
+        shouldThrottle: true,
+        shouldLog: true,
+        nextLogAtMs: Date.parse(quote.createdAt),
+        elapsedMs: 500,
+        queuePressure: 0.1,
+        queueReason: "HOLD_FRONT_OF_QUEUE"
+      }
     });
   });
 

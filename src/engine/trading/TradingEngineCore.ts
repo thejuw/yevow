@@ -32,7 +32,7 @@ import {
   stateAfterLocationLatency,
   stateAfterTopologyObservation
 } from "./helpers/PlacementResolver";
-import { DEFAULT_ORDER_BOOK_TICK_SIZE, priceKey, SortedBookSide } from "./book/SortedBookSide";
+import { priceKey, SortedBookSide } from "./book/SortedBookSide";
 import { countBookLevels, isCrossedBook, microstructureFromBook } from "./book/BookReconstruction";
 import {
   calculateOrderBookPriceDiscovery,
@@ -112,8 +112,8 @@ import {
 import {
   buildCroupierQuoteAction,
   buildQuoteDispatchIntents,
+  buildQuoteRefreshRuntimeDecision,
   dispatchedQuoteSnapshot,
-  evaluateQuoteRefreshThrottle,
   quoteDispatchBlockedLogMetadata,
   quoteRefreshThrottleLogMetadata,
   type CroupierQuoteAction
@@ -508,8 +508,6 @@ import {
   DEFAULT_PAPER_FILL_PARTICIPATION_RATE,
   DEFAULT_PAPER_FILL_ADVERSE_BPS,
   DEFAULT_PAPER_MAKER_FEE_BPS,
-  DEFAULT_QUOTE_REFRESH_MIN_INTERVAL_MS,
-  DEFAULT_QUOTE_REFRESH_MIN_PRICE_TICKS,
   DEFAULT_CROSS_ASSET_CANCEL_LEAD_BPS,
   DEFAULT_CROSS_ASSET_CANCEL_COOLDOWN_MS,
   DEFAULT_MARKET_TICK_MAX_ROWS,
@@ -4263,52 +4261,34 @@ export class TradingEngine {
       return false;
     }
 
-    const now = Date.parse(quote.createdAt);
-    const elapsedMs = Number.isFinite(now) ? now - last.updatedAtMs : Date.now() - last.updatedAtMs;
-    const minIntervalMs = readPositiveInteger(
-      this.env.QUOTE_REFRESH_MIN_INTERVAL_MS,
-      DEFAULT_QUOTE_REFRESH_MIN_INTERVAL_MS,
-      0,
-      60_000
-    );
-
-    const minPriceTicks = readPositiveInteger(
-      this.env.QUOTE_REFRESH_MIN_PRICE_TICKS,
-      DEFAULT_QUOTE_REFRESH_MIN_PRICE_TICKS,
-      0,
-      100
-    );
     const book = findBestOrderBookForAsset(this.orderBook, quote.instrumentCode);
-    const tickSize = book?.tickSize ?? DEFAULT_ORDER_BOOK_TICK_SIZE;
-    const advice = this.queuePositionModel.adviseRefresh({
-      previousQuote: last,
-      quote,
-      book: book ?? null,
-      minPriceTicks,
-      elapsedMs,
-      tickSize
-    });
-
     const logKey = quote.instrumentCode;
     const logAt = this.quoteRefreshThrottleLogAt.get(logKey) ?? 0;
     const nowMs = Date.now();
-    const throttle = evaluateQuoteRefreshThrottle({
+    const refresh = buildQuoteRefreshRuntimeDecision({
       previousQuote: last,
       quote,
-      advice,
-      minIntervalMs,
-      minPriceTicks,
+      book: book ?? null,
       nowMs,
       lastLogAtMs: logAt,
-      logThrottleMs: HOT_PATH_LOG_THROTTLE_MS
+      logThrottleMs: HOT_PATH_LOG_THROTTLE_MS,
+      minIntervalMsValue: this.env.QUOTE_REFRESH_MIN_INTERVAL_MS,
+      minPriceTicksValue: this.env.QUOTE_REFRESH_MIN_PRICE_TICKS,
+      adviseRefresh: (input) => this.queuePositionModel.adviseRefresh(input)
     });
+    const throttle = refresh.throttle;
 
     if (throttle.shouldLog) {
       this.quoteRefreshThrottleLogAt.set(logKey, throttle.nextLogAtMs);
       this.logger.info(
         "QUOTE_REFRESH_THROTTLED",
         "Skipped quote refresh inside minimum cadence window",
-        quoteRefreshThrottleLogMetadata({ quote, throttle, minIntervalMs, minPriceTicks })
+        quoteRefreshThrottleLogMetadata({
+          quote,
+          throttle,
+          minIntervalMs: refresh.minIntervalMs,
+          minPriceTicks: refresh.minPriceTicks
+        })
       );
     }
 

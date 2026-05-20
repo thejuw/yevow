@@ -1,7 +1,19 @@
-import type { EngineState, JsonRecord, QuoteOrder, QuoteSignal, TradeIntent } from "../../../types";
+import type {
+  EngineState,
+  InternalOrderBook,
+  JsonRecord,
+  QuoteOrder,
+  QuoteSignal,
+  TradeIntent
+} from "../../../types";
 import type { QueueRefreshAdvice } from "../../QueuePositionModel";
-import { roundCrypto, roundMetric } from "../book/SortedBookSide";
+import { DEFAULT_ORDER_BOOK_TICK_SIZE, roundCrypto, roundMetric } from "../book/SortedBookSide";
 import { quoteToTelemetry } from "../execution/ExecutionRuntimeHelpers";
+import {
+  DEFAULT_QUOTE_REFRESH_MIN_INTERVAL_MS,
+  DEFAULT_QUOTE_REFRESH_MIN_PRICE_TICKS
+} from "../../../TradingEngineConstants";
+import { readPositiveInteger } from "../helpers/RuntimeParsing";
 
 export interface QuoteDispatchIntentInput {
   readonly quote: QuoteSignal;
@@ -65,6 +77,31 @@ export interface QuoteRefreshThrottleDecision {
 
 export interface QuoteRefreshThrottleLogInput {
   readonly quote: QuoteSignal;
+  readonly throttle: QuoteRefreshThrottleDecision;
+  readonly minIntervalMs: number;
+  readonly minPriceTicks: number;
+}
+
+export interface QuoteRefreshRuntimeInput {
+  readonly previousQuote: DispatchedQuoteSnapshot | undefined;
+  readonly quote: QuoteSignal;
+  readonly book: InternalOrderBook | null;
+  readonly nowMs: number;
+  readonly lastLogAtMs: number;
+  readonly logThrottleMs: number;
+  readonly minIntervalMsValue?: string;
+  readonly minPriceTicksValue?: string;
+  readonly adviseRefresh: (input: {
+    readonly previousQuote: DispatchedQuoteSnapshot | null;
+    readonly quote: QuoteSignal;
+    readonly book: InternalOrderBook | null;
+    readonly minPriceTicks: number;
+    readonly elapsedMs: number;
+    readonly tickSize: number;
+  }) => QueueRefreshAdvice;
+}
+
+export interface QuoteRefreshRuntimeResult {
   readonly throttle: QuoteRefreshThrottleDecision;
   readonly minIntervalMs: number;
   readonly minPriceTicks: number;
@@ -249,6 +286,54 @@ export function evaluateQuoteRefreshThrottle(
     elapsedMs,
     queuePressure: input.advice.queuePressure,
     queueReason: input.advice.reason
+  };
+}
+
+export function buildQuoteRefreshRuntimeDecision(
+  input: QuoteRefreshRuntimeInput
+): QuoteRefreshRuntimeResult {
+  const minIntervalMs = readPositiveInteger(
+    input.minIntervalMsValue,
+    DEFAULT_QUOTE_REFRESH_MIN_INTERVAL_MS,
+    0,
+    60_000
+  );
+  const minPriceTicks = readPositiveInteger(
+    input.minPriceTicksValue,
+    DEFAULT_QUOTE_REFRESH_MIN_PRICE_TICKS,
+    0,
+    100
+  );
+  const tickSize = input.book?.tickSize ?? DEFAULT_ORDER_BOOK_TICK_SIZE;
+  const quoteObservedAtMs = Date.parse(input.quote.createdAt);
+  const elapsedMs =
+    input.previousQuote && Number.isFinite(quoteObservedAtMs)
+      ? quoteObservedAtMs - input.previousQuote.updatedAtMs
+      : input.previousQuote
+        ? input.nowMs - input.previousQuote.updatedAtMs
+        : 0;
+  const advice = input.adviseRefresh({
+    previousQuote: input.previousQuote ?? null,
+    quote: input.quote,
+    book: input.book,
+    minPriceTicks,
+    elapsedMs,
+    tickSize
+  });
+
+  return {
+    throttle: evaluateQuoteRefreshThrottle({
+      previousQuote: input.previousQuote,
+      quote: input.quote,
+      advice,
+      minIntervalMs,
+      minPriceTicks,
+      nowMs: input.nowMs,
+      lastLogAtMs: input.lastLogAtMs,
+      logThrottleMs: input.logThrottleMs
+    }),
+    minIntervalMs,
+    minPriceTicks
   };
 }
 
