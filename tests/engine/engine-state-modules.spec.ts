@@ -12,6 +12,7 @@ import {
   syncStateMicrostructureFromBook
 } from "../../src/engine/trading/state/EngineDiagnostics";
 import {
+  applyHotStorageSnapshotSideEffects,
   evaluateHotStorageSnapshotDecision,
   resolveHotStorageSnapshotIntervalMs,
   resolveHotStorageSnapshotTickInterval,
@@ -541,6 +542,56 @@ describe("storage write guard", () => {
       nextSnapshotAtMs: 1_500,
       nextSnapshotTick: 15
     });
+  });
+
+  it("applies hot snapshot side effects only when cadence is due", async () => {
+    const events: string[] = [];
+
+    const skipped = await applyHotStorageSnapshotSideEffects(
+      {
+        entries: { engineState: { processedTicks: 12 } },
+        reason: "HOT_SNAPSHOT",
+        lastSnapshotAtMs: 1_000,
+        lastSnapshotTick: 10,
+        nowMs: 1_500,
+        tickCount: 12,
+        intervalMs: 1_000,
+        tickInterval: 5
+      },
+      {
+        markSnapshot(snapshotAtMs, snapshotTick) {
+          events.push(`mark:${snapshotAtMs}:${snapshotTick}`);
+        },
+        async persistSnapshot(entries, reason) {
+          events.push(`persist:${reason}:${Object.keys(entries).join(",")}`);
+        }
+      }
+    );
+
+    const persisted = await applyHotStorageSnapshotSideEffects(
+      {
+        entries: { engineState: { processedTicks: 15 } },
+        reason: "HOT_SNAPSHOT",
+        lastSnapshotAtMs: 1_000,
+        lastSnapshotTick: 10,
+        nowMs: 1_500,
+        tickCount: 15,
+        intervalMs: 1_000,
+        tickInterval: 5
+      },
+      {
+        markSnapshot(snapshotAtMs, snapshotTick) {
+          events.push(`mark:${snapshotAtMs}:${snapshotTick}`);
+        },
+        async persistSnapshot(entries, reason) {
+          events.push(`persist:${reason}:${Object.keys(entries).join(",")}`);
+        }
+      }
+    );
+
+    expect(skipped.shouldPersist).toBe(false);
+    expect(persisted.shouldPersist).toBe(true);
+    expect(events).toEqual(["mark:1500:15", "persist:HOT_SNAPSHOT:engineState"]);
   });
 
   it("resolves hot snapshot cadence from bounded env input", () => {

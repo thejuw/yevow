@@ -332,7 +332,7 @@ import {
   resolveAdminRecoveryPaperBankroll
 } from "./state/RecoveryRuntime";
 import {
-  evaluateHotStorageSnapshotDecision,
+  applyHotStorageSnapshotSideEffects,
   resolveHotStorageSnapshotIntervalMs,
   resolveHotStorageSnapshotTickInterval,
   type StorageWriteGuard
@@ -1116,24 +1116,28 @@ export class TradingEngine {
     entries: Record<string, unknown>,
     reason: string
   ): Promise<void> {
-    const decision = evaluateHotStorageSnapshotDecision({
-      lastSnapshotAtMs: this.lastHotStorageSnapshotAt,
-      lastSnapshotTick: this.lastHotStorageSnapshotTick,
-      nowMs: Date.now(),
-      tickCount: this.engineState.processedTicks,
-      intervalMs: resolveHotStorageSnapshotIntervalMs(this.env.HOT_STORAGE_SNAPSHOT_INTERVAL_MS),
-      tickInterval: resolveHotStorageSnapshotTickInterval(
-        this.env.HOT_STORAGE_SNAPSHOT_TICK_INTERVAL
-      )
-    });
-
-    if (!decision.shouldPersist) {
-      return;
-    }
-
-    this.lastHotStorageSnapshotAt = decision.nextSnapshotAtMs;
-    this.lastHotStorageSnapshotTick = decision.nextSnapshotTick;
-    await this.safeStoragePut(entries, reason);
+    await applyHotStorageSnapshotSideEffects(
+      {
+        entries,
+        reason,
+        lastSnapshotAtMs: this.lastHotStorageSnapshotAt,
+        lastSnapshotTick: this.lastHotStorageSnapshotTick,
+        nowMs: Date.now(),
+        tickCount: this.engineState.processedTicks,
+        intervalMs: resolveHotStorageSnapshotIntervalMs(this.env.HOT_STORAGE_SNAPSHOT_INTERVAL_MS),
+        tickInterval: resolveHotStorageSnapshotTickInterval(
+          this.env.HOT_STORAGE_SNAPSHOT_TICK_INTERVAL
+        )
+      },
+      {
+        markSnapshot: (snapshotAtMs, snapshotTick) => {
+          this.lastHotStorageSnapshotAt = snapshotAtMs;
+          this.lastHotStorageSnapshotTick = snapshotTick;
+        },
+        persistSnapshot: (snapshotEntries, snapshotReason) =>
+          this.safeStoragePut(snapshotEntries, snapshotReason)
+      }
+    );
   }
 
   private handleStorageWriteFailure(reason: string, error: unknown): void {

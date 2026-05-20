@@ -13,6 +13,16 @@ export interface HotStorageSnapshotDecisionInput {
   readonly tickInterval: number;
 }
 
+export interface HotStorageSnapshotSideEffectsInput extends HotStorageSnapshotDecisionInput {
+  readonly entries: Record<string, unknown>;
+  readonly reason: string;
+}
+
+export interface HotStorageSnapshotSideEffectHandlers {
+  readonly markSnapshot: (snapshotAtMs: number, snapshotTick: number) => void;
+  readonly persistSnapshot: (entries: Record<string, unknown>, reason: string) => Promise<void>;
+}
+
 export type HotStorageSnapshotDecision =
   | {
       readonly shouldPersist: true;
@@ -52,6 +62,21 @@ export function resolveHotStorageSnapshotIntervalMs(envValue?: string): number {
 
 export function resolveHotStorageSnapshotTickInterval(envValue?: string): number {
   return readPositiveInteger(envValue, DEFAULT_HOT_STORAGE_SNAPSHOT_TICK_INTERVAL, 1, 100_000);
+}
+
+export async function applyHotStorageSnapshotSideEffects(
+  input: HotStorageSnapshotSideEffectsInput,
+  handlers: HotStorageSnapshotSideEffectHandlers
+): Promise<HotStorageSnapshotDecision> {
+  const decision = evaluateHotStorageSnapshotDecision(input);
+  if (!decision.shouldPersist) {
+    return decision;
+  }
+
+  handlers.markSnapshot(decision.nextSnapshotAtMs, decision.nextSnapshotTick);
+  await handlers.persistSnapshot(input.entries, input.reason);
+
+  return decision;
 }
 
 export class StorageWriteGuard {
