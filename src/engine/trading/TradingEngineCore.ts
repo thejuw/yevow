@@ -99,6 +99,8 @@ import {
 import {
   nextQuoteStateForInstrument as nextRuntimeQuoteStateForInstrument,
   applyQuoteSuppressionRuntime,
+  applyQuoteSuppressionSideEffects,
+  quoteSuppressionPolicyProjection,
   resolveQuoteHibernateMs,
   resumeExpiredQuoteStates,
   strategyQuoteDisabledReason as runtimeStrategyQuoteDisabledReason
@@ -2952,21 +2954,12 @@ export class TradingEngine {
       observedAt
     });
 
-    for (const effect of quotePolicy.sideEffects) {
-      if (effect.kind === "PUBLISH_SUSPEND") {
-        this.publish("SUSPEND_QUOTES", effect.payload);
-      } else {
-        this.state.waitUntil(this.cancelAllQuotes(instrumentCode, effect.reason));
-      }
-    }
+    applyQuoteSuppressionSideEffects(quotePolicy.sideEffects, {
+      publishSuspend: (payload) => this.publish("SUSPEND_QUOTES", payload),
+      cancelQuotes: (reason) => this.state.waitUntil(this.cancelAllQuotes(instrumentCode, reason))
+    });
 
-    return {
-      executionPlans: quotePolicy.executionPlans,
-      assetQuoteState: quotePolicy.assetQuoteState,
-      strategyQuoteDisableReason: quotePolicy.strategyQuoteDisableReason,
-      isCascadeShield: quotePolicy.isCascadeShield,
-      isProfilerQuoteHalt: quotePolicy.isProfilerQuoteHalt
-    };
+    return quoteSuppressionPolicyProjection(quotePolicy);
   }
 
   private prepareTickLatency(

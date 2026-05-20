@@ -105,6 +105,14 @@ export interface QuoteSuppressionRuntimeResult<
   readonly sideEffects: QuoteSuppressionSideEffect[];
 }
 
+export interface QuoteSuppressionPolicyProjection<TExecutionPlan> {
+  readonly executionPlans: TExecutionPlan[];
+  readonly assetQuoteState: EngineState["quoteState"];
+  readonly strategyQuoteDisableReason: string | null;
+  readonly isCascadeShield: boolean;
+  readonly isProfilerQuoteHalt: boolean;
+}
+
 export type QuoteSuppressionSideEffect =
   | {
       readonly kind: "CANCEL_QUOTES";
@@ -120,6 +128,11 @@ export interface QuoteSuppressionSideEffectsInput {
   readonly strategyCancelReason: string | null;
   readonly suppressionCancelReason: string | null;
   readonly suspendTelemetry: Record<string, unknown> | null;
+}
+
+export interface QuoteSuppressionSideEffectHandlers {
+  readonly publishSuspend: (payload: Record<string, unknown>) => void;
+  readonly cancelQuotes: (reason: string) => void;
 }
 
 export function nextQuoteStateForInstrument(input: NextQuoteStateInput): EngineState["quoteState"] {
@@ -344,6 +357,31 @@ export function applyQuoteSuppressionRuntime<TExecutionPlan>(
       suppressionCancelReason: policy.suppressionCancelReason,
       suspendTelemetry: policy.suspendTelemetry
     })
+  };
+}
+
+export function applyQuoteSuppressionSideEffects(
+  effects: readonly QuoteSuppressionSideEffect[],
+  handlers: QuoteSuppressionSideEffectHandlers
+): void {
+  for (const effect of effects) {
+    if (effect.kind === "PUBLISH_SUSPEND") {
+      handlers.publishSuspend(effect.payload);
+    } else {
+      handlers.cancelQuotes(effect.reason);
+    }
+  }
+}
+
+export function quoteSuppressionPolicyProjection<TExecutionPlan>(
+  result: QuoteSuppressionRuntimeResult<TExecutionPlan>
+): QuoteSuppressionPolicyProjection<TExecutionPlan> {
+  return {
+    executionPlans: result.executionPlans,
+    assetQuoteState: result.assetQuoteState,
+    strategyQuoteDisableReason: result.strategyQuoteDisableReason,
+    isCascadeShield: result.isCascadeShield,
+    isProfilerQuoteHalt: result.isProfilerQuoteHalt
   };
 }
 

@@ -3,9 +3,11 @@ import { defaultConfig } from "../../src/ConfigManager";
 import {
   applyQuoteSuppressionRuntime,
   applyQuoteSuppressionPolicy,
+  applyQuoteSuppressionSideEffects,
   isCascadeShieldSignal,
   isProfilerQuoteHaltSignal,
   nextQuoteStateForInstrument,
+  quoteSuppressionPolicyProjection,
   quoteSuppressionDecision,
   quoteSuppressionSideEffects,
   resumeExpiredQuoteStates,
@@ -330,17 +332,17 @@ describe("QuoteStateRuntime", () => {
   });
 
   it("materializes quote suppression side effects in execution order", () => {
-    expect(
-      quoteSuppressionSideEffects({
-        instrumentCode: "btc-usd",
-        strategyCancelReason: "MARKET_MAKING_OFF",
-        suppressionCancelReason: "ENSEMBLE_CIRCUIT_BREAKER",
-        suspendTelemetry: {
-          reason: "ENSEMBLE_ANOMALY_CIRCUIT_BREAKER",
-          suspendedUntil: "2026-05-18T13:01:00.000Z"
-        }
-      })
-    ).toEqual([
+    const effects = quoteSuppressionSideEffects({
+      instrumentCode: "btc-usd",
+      strategyCancelReason: "MARKET_MAKING_OFF",
+      suppressionCancelReason: "ENSEMBLE_CIRCUIT_BREAKER",
+      suspendTelemetry: {
+        reason: "ENSEMBLE_ANOMALY_CIRCUIT_BREAKER",
+        suspendedUntil: "2026-05-18T13:01:00.000Z"
+      }
+    });
+
+    expect(effects).toEqual([
       {
         kind: "CANCEL_QUOTES",
         reason: "MARKET_MAKING_OFF"
@@ -357,6 +359,17 @@ describe("QuoteStateRuntime", () => {
         kind: "CANCEL_QUOTES",
         reason: "ENSEMBLE_CIRCUIT_BREAKER"
       }
+    ]);
+
+    const emitted: string[] = [];
+    applyQuoteSuppressionSideEffects(effects, {
+      publishSuspend: (payload) => emitted.push(`publish:${payload.reason}`),
+      cancelQuotes: (reason) => emitted.push(`cancel:${reason}`)
+    });
+    expect(emitted).toEqual([
+      "cancel:MARKET_MAKING_OFF",
+      "publish:ENSEMBLE_ANOMALY_CIRCUIT_BREAKER",
+      "cancel:ENSEMBLE_CIRCUIT_BREAKER"
     ]);
   });
 
@@ -410,6 +423,13 @@ describe("QuoteStateRuntime", () => {
         }
       }
     ]);
+    expect(quoteSuppressionPolicyProjection(result)).toEqual({
+      executionPlans: [],
+      assetQuoteState: result.assetQuoteState,
+      strategyQuoteDisableReason: "MARKET_MAKING_OFF",
+      isCascadeShield: false,
+      isProfilerQuoteHalt: true
+    });
   });
 });
 
