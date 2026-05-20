@@ -11,7 +11,7 @@ import {
   defaultCitadelState,
   defaultInventoryState,
   defaultRiskMetrics
-} from "../../../TradingEngineRuntimeHelpers";
+} from "../helpers/RuntimeHelpers";
 
 export interface AdminRecoveryRuntimePayload {
   readonly clearCitadel?: boolean;

@@ -1,16 +1,16 @@
 /* eslint-disable @typescript-eslint/no-unused-vars, @typescript-eslint/prefer-nullish-coalescing, @typescript-eslint/no-unnecessary-type-conversion, @typescript-eslint/no-unnecessary-boolean-literal-compare, @typescript-eslint/no-unnecessary-type-parameters, @typescript-eslint/no-unnecessary-type-assertion */
 import { decode as msgpackDecode } from "@msgpack/msgpack";
-import { defaultConfig } from "./ConfigManager";
-import { neutralMacroBias } from "./Governor";
-import { defaultLiquidationHeatmapState } from "./agents/HeatmapAgent";
-import { defaultOracleState } from "./agents/OracleAgent";
-import { defaultSentimentState } from "./agents/SentimentAgent";
-import type { CroupierDecision } from "./agents/CroupierAgent";
-import { PROFILER_STATE_STORAGE_PREFIX, type ProfilerEvaluation } from "./agents/ProfilerAgent";
-import { isShadowMode } from "./utils/CitadelProtocol";
-import type { GhostBookConfig } from "./utils/GhostBook";
-import { defaultEngineLocation } from "./engine/trading/helpers/PlacementResolver";
-import { buildMicrostructureSnapshot } from "./engine/trading/book/BookReconstruction";
+import { defaultConfig } from "../../../ConfigManager";
+import { neutralMacroBias } from "../../../Governor";
+import { defaultLiquidationHeatmapState } from "../../../agents/HeatmapAgent";
+import { defaultOracleState } from "../../../agents/OracleAgent";
+import { defaultSentimentState } from "../../../agents/SentimentAgent";
+import type { CroupierDecision } from "../../../agents/CroupierAgent";
+import { PROFILER_STATE_STORAGE_PREFIX, type ProfilerEvaluation } from "../../../agents/ProfilerAgent";
+import { isShadowMode } from "../../../utils/CitadelProtocol";
+import type { GhostBookConfig } from "../../../utils/GhostBook";
+import { defaultEngineLocation } from "./PlacementResolver";
+import { buildMicrostructureSnapshot } from "../book/BookReconstruction";
 import {
   DEFAULT_ORDER_BOOK_TICK_SIZE,
   normalizePriceToTick,
@@ -18,9 +18,9 @@ import {
   roundCrypto,
   roundMetric,
   SortedBookSide
-} from "./engine/trading/book/SortedBookSide";
-import type { BookDeltaWithTicker, BookSyncState } from "./engine/trading/book/BookTypes";
-import type { ReplayOptions, ReplayScenario } from "./engine/trading/routes/ReplayAdminRoutes";
+} from "../book/SortedBookSide";
+import type { BookDeltaWithTicker, BookSyncState } from "../book/BookTypes";
+import type { ReplayOptions, ReplayScenario } from "../routes/ReplayAdminRoutes";
 import type {
   AdminConfigUpdate,
   AgentHealth,
@@ -56,12 +56,12 @@ import type {
   ShadowQueueState,
   TradeExecution,
   TradeIntent
-} from "./types";
+} from "../../../types";
 import type {
   AbsorptionConfirmed,
   CascadeEvent,
   CascadeOpenPosition
-} from "./strategy/cascade/types";
+} from "../../../strategy/cascade/types";
 import {
   ENGINE_STATE_KEY,
   ORDER_BOOK_PREFIX,
@@ -155,7 +155,7 @@ import {
   DEFAULT_JANITOR_INTERVAL_MS,
   DEFAULT_ORDER_ACK_TIMEOUT_MS,
   AGGREGATED_BUS_TELEMETRY_TYPES
-} from "./TradingEngineConstants";
+} from "../../../TradingEngineConstants";
 
 interface HyperliquidRawIngestPayload {
   streamId?: string;

@@ -8,7 +8,7 @@ import {
   PERFORMANCE_HISTORY_KEY,
   PROCESSING_LATENCY_SAMPLES_KEY
 } from "../../../TradingEngineConstants";
-import { profilerStorageKey } from "../../../TradingEngineRuntimeHelpers";
+import { profilerStorageKey } from "../helpers/RuntimeHelpers";
 import type {
   AnomalyDetectorState,
   EngineState,

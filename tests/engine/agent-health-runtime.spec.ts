@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { defaultConfig } from "../../src/ConfigManager";
 import { nextTickAgentHealth } from "../../src/engine/trading/state/AgentHealthRuntime";
-import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
+import { defaultEngineState } from "../../src/engine/trading/helpers/RuntimeHelpers";
 
 describe("AgentHealthRuntime", () => {
   it("marks active agents from per-tick outcomes", () => {

@@ -14,7 +14,7 @@ import {
   stateAfterLocationLatency,
   stateAfterTopologyObservation
 } from "../../src/engine/trading/helpers/PlacementResolver";
-import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
+import { defaultEngineState } from "../../src/engine/trading/helpers/RuntimeHelpers";
 import type { RiskLimits } from "../../src/types";
 
 const baseRisk: RiskLimits = {

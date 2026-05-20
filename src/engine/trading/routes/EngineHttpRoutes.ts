@@ -36,7 +36,7 @@ import {
   resumeExpiredAssetQuoteStates,
   suspendAssetQuoteStates,
   touchAgentHealth
-} from "../../../TradingEngineRuntimeHelpers";
+} from "../helpers/RuntimeHelpers";
 import {
   BOOK_SNAPSHOT_TOP_LEVELS,
   CASCADE_LAST_BACKTEST_REPORT_KEY,

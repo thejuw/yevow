@@ -5,7 +5,7 @@ import {
   stateAfterAnomalyEmergencyPause
 } from "../../src/engine/trading/anomaly/AnomalyRuntime";
 import type { AnomalyDetectionResult } from "../../src/agents/AnomalyDetector";
-import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
+import { defaultEngineState } from "../../src/engine/trading/helpers/RuntimeHelpers";
 import type {
   AnomalyStatus,
   DomAnalysisSnapshot,

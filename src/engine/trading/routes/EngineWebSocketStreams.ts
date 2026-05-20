@@ -16,7 +16,7 @@ import {
   assertMarketTick,
   decodeWebSocketMessage,
   parseJson
-} from "../../../TradingEngineRuntimeHelpers";
+} from "../helpers/RuntimeHelpers";
 
 export interface EngineStreamContext {
   adminSockets: Set<WebSocket>;

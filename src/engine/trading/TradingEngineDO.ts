@@ -1,3 +1,3 @@
-import { TradingEngine as LegacyTradingEngine } from "../../TradingEngineLegacy";
+import { TradingEngine as CoreTradingEngine } from "./TradingEngineCore";
 
-export class TradingEngine extends LegacyTradingEngine {}
+export class TradingEngine extends CoreTradingEngine {}

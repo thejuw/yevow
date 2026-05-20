@@ -12,7 +12,7 @@ import {
   buildHotPathTickSnapshotWrites,
   shouldJournalMarketTick
 } from "../../src/engine/trading/state/TickPersistenceRuntime";
-import { defaultEngineState, profilerStorageKey } from "../../src/TradingEngineRuntimeHelpers";
+import { defaultEngineState, profilerStorageKey } from "../../src/engine/trading/helpers/RuntimeHelpers";
 import type {
   AnomalyDetectorState,
   InternalOrderBook,

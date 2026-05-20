@@ -1,4 +1,4 @@
-import { modelReplayIntentTrade, wait } from "../../../TradingEngineRuntimeHelpers";
+import { modelReplayIntentTrade, wait } from "../helpers/RuntimeHelpers";
 import type { ReplayOptions, ReplayStatus } from "../routes/ReplayAdminRoutes";
 import type { TickIngestResult } from "../TradingEngineRouteTypes";
 import type { MarketTick, ReplayResult, TradeIntent } from "../../../types";

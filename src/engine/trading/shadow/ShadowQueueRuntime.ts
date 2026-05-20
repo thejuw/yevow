@@ -23,7 +23,7 @@ import {
 import {
   adverseAdjustedPaperFillPrice,
   readPositiveInteger
-} from "../../../TradingEngineRuntimeHelpers";
+} from "../helpers/RuntimeHelpers";
 import { bootstrapPaperAdverseSelection } from "../../PaperReplayModel";
 
 export interface ShadowQueueSizingInput {

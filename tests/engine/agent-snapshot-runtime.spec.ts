@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildAgentStateSnapshot } from "../../src/engine/trading/telemetry/AgentSnapshotRuntime";
-import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
+import { defaultEngineState } from "../../src/engine/trading/helpers/RuntimeHelpers";
 import type { AgentName, AgentSignal } from "../../src/types";
 
 describe("AgentSnapshotRuntime", () => {

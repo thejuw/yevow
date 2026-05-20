@@ -6,7 +6,7 @@ import {
   recordAgentSignalInBuffers,
   stateAfterAcceptedAgentSignal
 } from "../../src/engine/trading/telemetry/AgentSignalRuntime";
-import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
+import { defaultEngineState } from "../../src/engine/trading/helpers/RuntimeHelpers";
 import type { AgentName, AgentSignal } from "../../src/types";
 
 describe("AgentSignalRuntime", () => {

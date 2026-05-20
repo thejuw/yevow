@@ -1,5 +1,5 @@
 import type { EngineState, JsonRecord } from "../../../types";
-import { pearson, returns } from "../../../TradingEngineRuntimeHelpers";
+import { pearson, returns } from "../helpers/RuntimeHelpers";
 import type { MultiScaleVolatilitySnapshot } from "../../MultiScaleVolatility";
 import { roundMetric } from "../book/SortedBookSide";
 

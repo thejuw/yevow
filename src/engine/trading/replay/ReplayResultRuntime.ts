@@ -17,7 +17,7 @@ import {
   calculateReplaySharpe,
   calculateWinRate,
   defaultEngineState
-} from "../../../TradingEngineRuntimeHelpers";
+} from "../helpers/RuntimeHelpers";
 
 export interface ResolveInitialShadowBankrollInput {
   readonly requestedShadowBankroll: number;

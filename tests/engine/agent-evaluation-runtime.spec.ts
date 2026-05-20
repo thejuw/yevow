@@ -6,7 +6,7 @@ import {
   buildProfilerContext,
   disabledOracleTickResult
 } from "../../src/engine/trading/agents/AgentEvaluationRuntime";
-import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
+import { defaultEngineState } from "../../src/engine/trading/helpers/RuntimeHelpers";
 import type { DomAnalysisSnapshot, InternalOrderBook, MarketTick } from "../../src/types";
 
 const OBSERVED_AT = "2026-05-19T12:00:00.000Z";

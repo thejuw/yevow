@@ -13,7 +13,7 @@ import {
   defaultMicrostructure,
   defaultPriceDiscovery,
   suspendAssetQuoteStates
-} from "../../../TradingEngineRuntimeHelpers";
+} from "../helpers/RuntimeHelpers";
 import type { BookSyncState } from "./BookTypes";
 import { microstructureFromBook } from "./BookReconstruction";
 import type { AppliedBookSnapshot } from "./OrderBookReconstructor";

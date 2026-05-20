@@ -13,7 +13,7 @@ import {
   stateAfterRejectedBookDelta,
   stateAfterRebuiltBookSnapshot
 } from "../../src/engine/trading/book/BookRuntimeState";
-import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
+import { defaultEngineState } from "../../src/engine/trading/helpers/RuntimeHelpers";
 import type {
   DomAnalysisSnapshot,
   InternalOrderBook,

@@ -4,7 +4,7 @@ import {
   aggregateQuoteState,
   readPositiveInteger,
   resumeExpiredAssetQuoteStates
-} from "../../../TradingEngineRuntimeHelpers";
+} from "../helpers/RuntimeHelpers";
 
 export interface NextQuoteStateInput {
   readonly previous: EngineState["quoteState"];

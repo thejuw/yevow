@@ -8,7 +8,7 @@ import {
   stateAfterConfigRefresh,
   stateAfterRuntimeConfigUpdate
 } from "../../src/engine/trading/config/ConfigRuntime";
-import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
+import { defaultEngineState } from "../../src/engine/trading/helpers/RuntimeHelpers";
 import type { AdminConfigUpdate } from "../../src/types";
 
 describe("ConfigRuntime", () => {

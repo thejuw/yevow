@@ -1,32 +1,33 @@
+/* eslint-disable */
 import {
   ConfigManager,
   configDefaultsFromEnv,
   configFromAdminSnapshot,
   defaultConfig
-} from "./ConfigManager";
+} from "../../ConfigManager";
 import { decode as msgpackDecode } from "@msgpack/msgpack";
-import { Governor, neutralMacroBias } from "./Governor";
-import { Logger, createLogSink, structuredConsoleLogsEnabled } from "./Logger";
+import { Governor, neutralMacroBias } from "../../Governor";
+import { Logger, createLogSink, structuredConsoleLogsEnabled } from "../../Logger";
 import {
   ProfilerAgent,
   PROFILER_STATE_STORAGE_KEY,
   PROFILER_STATE_STORAGE_PREFIX,
   type ProfilerEvaluation
-} from "./agents/ProfilerAgent";
-import { ProfilerRegistry, createProfilerAgentFromEnv } from "./agents/ProfilerRegistry";
+} from "../../agents/ProfilerAgent";
+import { ProfilerRegistry, createProfilerAgentFromEnv } from "../../agents/ProfilerRegistry";
 import {
   AnomalyDetector,
   ANOMALY_DETECTOR_STORAGE_KEY,
   type AnomalyDetectionResult
-} from "./agents/AnomalyDetector";
-import { CroupierAgent, type CroupierDecision } from "./agents/CroupierAgent";
+} from "../../agents/AnomalyDetector";
+import { CroupierAgent, type CroupierDecision } from "../../agents/CroupierAgent";
 import {
   applyExecutionAccounting,
   executionQualityFromAccounting,
   stateAfterExecutionAccounting
-} from "./engine/ExecutionAccounting";
-import { evaluateIntentDispatchGate } from "./engine/IntentGeneration";
-import { AdverseSelectionModel, adversePenaltyForQuoteSide } from "./engine/AdverseSelectionModel";
+} from "../ExecutionAccounting";
+import { evaluateIntentDispatchGate } from "../IntentGeneration";
+import { AdverseSelectionModel, adversePenaltyForQuoteSide } from "../AdverseSelectionModel";
 import {
   applyLocationRisk,
   buildTopologyObservationLogEvents,
@@ -35,17 +36,17 @@ import {
   resolveEngineLocation,
   stateAfterLocationLatency,
   stateAfterTopologyObservation
-} from "./engine/trading/helpers/PlacementResolver";
+} from "./helpers/PlacementResolver";
 import {
   DEFAULT_ORDER_BOOK_TICK_SIZE,
   priceKey,
   SortedBookSide
-} from "./engine/trading/book/SortedBookSide";
+} from "./book/SortedBookSide";
 import {
   countBookLevels,
   isCrossedBook,
   microstructureFromBook
-} from "./engine/trading/book/BookReconstruction";
+} from "./book/BookReconstruction";
 import {
   calculateOrderBookPriceDiscovery,
   currentMarkPriceForInstrument,
@@ -53,7 +54,7 @@ import {
   currentOrderBookSnapshot,
   findBestAssetBook as findBestOrderBookForAsset,
   nullableMarkPriceForInstrument
-} from "./engine/trading/book/BookViews";
+} from "./book/BookViews";
 import {
   bookDesyncStorageExtra,
   markBookSyncDesynced,
@@ -66,18 +67,18 @@ import {
   stateAfterRejectedBookDelta,
   bookSnapshotTelemetry,
   bookSnapshotStorageWrites
-} from "./engine/trading/book/BookRuntimeState";
+} from "./book/BookRuntimeState";
 import {
   applyOrderBookResetStores,
   orderBookResetConnectionKeys,
   orderBookResetDeleteKeys,
   orderBookResetTelemetry,
   resolveOrderBookReset
-} from "./engine/trading/book/OrderBookResetRuntime";
+} from "./book/OrderBookResetRuntime";
 import {
   buildDomAnalysisSnapshot,
   currentDomHeatmapSnapshot
-} from "./engine/trading/book/DomAnalyzer";
+} from "./book/DomAnalyzer";
 import {
   buildShadowQueueDecisionAction,
   buildShadowQueueGhostFillRuntimeRecord,
@@ -90,40 +91,40 @@ import {
   resolveShadowQueueSizingConfig,
   shouldLogShadowQueueNoEdge as shouldLogShadowQueueNoEdgeEvent,
   shouldProcessShadowQueueTick
-} from "./engine/trading/shadow/ShadowQueueRuntime";
+} from "./shadow/ShadowQueueRuntime";
 import {
   anomalyEmergencyPauseStorageWrites,
   buildAnomalyEmergencyPauseTelemetry,
   stateAfterAnomalyEmergencyPause
-} from "./engine/trading/anomaly/AnomalyRuntime";
+} from "./anomaly/AnomalyRuntime";
 import {
   crossAssetHypeCancelLogMetadata,
   crossAssetHypeCancelTelemetry,
   evaluateCrossAssetHypeQuoteCancel,
   updateLeadLagMetrics as updateLeadLagRuntimeMetrics
-} from "./engine/trading/leadlag/LeadLagRuntime";
+} from "./leadlag/LeadLagRuntime";
 import {
   buildInventoryHedgeIntent,
   calculateInventoryState as calculateInventoryRuntimeState,
   inventoryHedgeAuthorizedLogMetadata,
   referencePriceForBaseAsset as resolveBaseAssetReferencePrice
-} from "./engine/trading/inventory/InventoryRuntime";
+} from "./inventory/InventoryRuntime";
 import {
   buildDrawdownKillSwitchTransition,
   calculatePortfolioRisk as calculatePortfolioRuntimeRisk
-} from "./engine/trading/risk/PortfolioRiskRuntime";
-import { calculateEnsembleState as calculateRuntimeEnsembleState } from "./engine/trading/ensemble/EnsembleRuntime";
+} from "./risk/PortfolioRiskRuntime";
+import { calculateEnsembleState as calculateRuntimeEnsembleState } from "./ensemble/EnsembleRuntime";
 import {
   currentFundingRate as resolveCurrentFundingRate,
   stateAfterFundingTick
-} from "./engine/trading/funding/FundingRuntime";
+} from "./funding/FundingRuntime";
 import {
   nextQuoteStateForInstrument as nextRuntimeQuoteStateForInstrument,
   quoteSuppressionDecision,
   resolveQuoteHibernateMs,
   resumeExpiredQuoteStates,
   strategyQuoteDisabledReason as runtimeStrategyQuoteDisabledReason
-} from "./engine/trading/quotes/QuoteStateRuntime";
+} from "./quotes/QuoteStateRuntime";
 import {
   buildCroupierQuoteAction,
   buildQuoteDispatchIntents,
@@ -132,38 +133,38 @@ import {
   quoteDispatchBlockedLogMetadata,
   quoteRefreshThrottleLogMetadata,
   type CroupierQuoteAction
-} from "./engine/trading/quotes/QuoteDispatchRuntime";
+} from "./quotes/QuoteDispatchRuntime";
 import {
   dispatchQuoteCancelAll,
   evaluateQuoteCancelDispatch
-} from "./engine/trading/quotes/QuoteCancelRuntime";
+} from "./quotes/QuoteCancelRuntime";
 import {
   buildApprovedExecutionPlan,
   shouldSkipExecutionPlanForQuoteSuspension,
   type ApprovedExecutionPlan
-} from "./engine/trading/execution/ExecutionPlanRuntime";
+} from "./execution/ExecutionPlanRuntime";
 import {
   buildExecutionDispatchBlockLog,
   buildExecutionPlanDispatchAction,
   dispatchTradeIntentToExecutioner,
   evaluateExecutionDispatchGate
-} from "./engine/trading/execution/ExecutionDispatchRuntime";
+} from "./execution/ExecutionDispatchRuntime";
 import {
   buildCroupierEvaluationInput,
   buildOracleTickInput,
   buildProfilerContext,
   disabledOracleTickResult,
   type OracleTickResult
-} from "./engine/trading/agents/AgentEvaluationRuntime";
-import { applyIntentPaperExecutionBudget } from "./engine/trading/execution/PaperExecutionBudgetRuntime";
+} from "./agents/AgentEvaluationRuntime";
+import { applyIntentPaperExecutionBudget } from "./execution/PaperExecutionBudgetRuntime";
 import {
   buildExecutionQueueEnqueuePlan,
   executionQueueDeferralLogMetadata,
   shouldLogExecutionQueueDeferral,
   splitExecutionQueueForDrain,
   type QueuedExecutionIntent
-} from "./engine/trading/execution/ExecutionQueueRuntime";
-import { calculateAssetMatrix as calculateRuntimeAssetMatrix } from "./engine/trading/state/AssetMatrixRuntime";
+} from "./execution/ExecutionQueueRuntime";
+import { calculateAssetMatrix as calculateRuntimeAssetMatrix } from "./state/AssetMatrixRuntime";
 import {
   buildExecutionPerformanceTransition,
   buildPerformanceMetricsText,
@@ -187,7 +188,7 @@ import {
   staleDataKillSwitchStorageExtra,
   staleDataKillSwitchTelemetryPayload,
   type ExecutionTraceInput
-} from "./engine/trading/performance/LatencyRuntime";
+} from "./performance/LatencyRuntime";
 import {
   buildJanitorReport,
   cancelJanitorOrder,
@@ -196,13 +197,13 @@ import {
   reconcileJanitorOrders,
   recordPostOnlyDustCloseSkip,
   stateAfterJanitorRun
-} from "./engine/trading/janitor/JanitorRuntime";
+} from "./janitor/JanitorRuntime";
 import {
   currentCascadeActiveSnapshot as buildCurrentCascadeActiveSnapshot,
   currentCascadeHeatSnapshot as buildCurrentCascadeHeatSnapshot,
   currentCascadePositionSnapshot as buildCurrentCascadePositionSnapshot,
   currentCascadeSignalSnapshot as buildCurrentCascadeSignalSnapshot
-} from "./engine/trading/cascade/CascadeSnapshots";
+} from "./cascade/CascadeSnapshots";
 import {
   cascadeDetectedAlertMetadata,
   cascadeDetectedLogMetadata,
@@ -213,40 +214,40 @@ import {
   persistCascadeLiquidationEvents,
   resolveLiquidationEventContext,
   stateAfterLiquidationHeatmap
-} from "./engine/trading/cascade/CascadeLiquidationRuntime";
+} from "./cascade/CascadeLiquidationRuntime";
 import {
   buildCascadeEntryTradeIntent,
   buildCascadeExitTradeIntent
-} from "./engine/trading/cascade/CascadeTradeIntents";
+} from "./cascade/CascadeTradeIntents";
 import {
   absorptionConfirmedAlertMetadata,
   absorptionConfirmedLogMetadata,
   absorptionConfirmedTelemetryPayload,
   buildCascadeAbsorptionObservation,
   nextCascadeCvd
-} from "./engine/trading/cascade/CascadeAbsorptionRuntime";
+} from "./cascade/CascadeAbsorptionRuntime";
 import {
   buildConfigRefreshLog,
   buildRuntimeConfigAppliedLog,
   shouldLogConfigRefresh,
   stateAfterConfigRefresh,
   stateAfterRuntimeConfigUpdate
-} from "./engine/trading/config/ConfigRuntime";
+} from "./config/ConfigRuntime";
 import {
   absorptionAnalyzerConfig as buildAbsorptionAnalyzerConfig,
   cascadeAssetProfileFromConfig,
   cascadeDetectorConfig as buildCascadeDetectorConfig,
   cascadeRecoverySignalConfig as buildCascadeRecoverySignalConfig
-} from "./engine/trading/cascade/CascadeConfigRuntime";
+} from "./cascade/CascadeConfigRuntime";
 import {
   OrderBookReconstructor,
   type OrderBookStores
-} from "./engine/trading/book/OrderBookReconstructor";
+} from "./book/OrderBookReconstructor";
 import type {
   AppliedBookUpdate,
   BookDeltaWithTicker,
   BookSyncState
-} from "./engine/trading/book/BookTypes";
+} from "./book/BookTypes";
 import {
   buildHyperliquidL2BookTick,
   buildHyperliquidL2BookTickFromBook,
@@ -259,29 +260,29 @@ import {
   routeHyperliquidRawMessage,
   type HyperliquidL2BookHotPathDecision,
   type HyperliquidRawIngestPayload
-} from "./engine/trading/ingest/HyperliquidRawIngest";
+} from "./ingest/HyperliquidRawIngest";
 import {
   buildGrpcFatalDropEventArtifacts,
   resolveGrpcFatalDropPayload,
   stateAfterGrpcFatalDrop
-} from "./engine/trading/ingest/GrpcDropRuntime";
+} from "./ingest/GrpcDropRuntime";
 import {
   handleTradingEngineHttpRoute,
   type EngineHttpRouteContext
-} from "./engine/trading/routes/EngineHttpRoutes";
+} from "./routes/EngineHttpRoutes";
 import {
   acceptMarketStream as acceptTradingMarketStream,
   acceptTelemetryStream as acceptTradingTelemetryStream
-} from "./engine/trading/routes/EngineWebSocketStreams";
-import { TradingTelemetryBus } from "./engine/trading/telemetry/TelemetryBus";
+} from "./routes/EngineWebSocketStreams";
+import { TradingTelemetryBus } from "./telemetry/TelemetryBus";
 import {
   acceptedAgentSignalStorageEntries,
   agentSignalStorageKey,
   buildHawkesEvacuationDispatch,
   recordAgentSignalInBuffers,
   stateAfterAcceptedAgentSignal
-} from "./engine/trading/telemetry/AgentSignalRuntime";
-import { buildAgentStateSnapshot } from "./engine/trading/telemetry/AgentSnapshotRuntime";
+} from "./telemetry/AgentSignalRuntime";
+import { buildAgentStateSnapshot } from "./telemetry/AgentSnapshotRuntime";
 import {
   buildCascadeOperationalAlertTelemetry,
   buildCascadeSignalTelemetry,
@@ -296,52 +297,52 @@ import {
   cascadeSignalRejectionLogMetadata,
   cascadeSignalEmittedAlertMetadata,
   cascadeSizeRejectedLogMetadata
-} from "./engine/trading/telemetry/CascadeSignalTelemetryRuntime";
+} from "./telemetry/CascadeSignalTelemetryRuntime";
 import {
   buildAmVpinTelemetry,
   buildProfilerAlertTelemetry,
   shouldCancelQuotesForProfilerSignal
-} from "./engine/trading/telemetry/ProfilerTelemetryRuntime";
+} from "./telemetry/ProfilerTelemetryRuntime";
 import {
   bayesianPosteriorUpdatedLogMetadata,
   buildTickTelemetryPayload,
   marketTickAcceptedLogMetadata,
   shouldLogBayesianPosteriorUpdate,
   shouldLogMarketTickAccepted
-} from "./engine/trading/telemetry/TickTelemetryRuntime";
-import { type ReplayOptions, type ReplayScenario } from "./engine/trading/routes/ReplayAdminRoutes";
+} from "./telemetry/TickTelemetryRuntime";
+import { type ReplayOptions, type ReplayScenario } from "./routes/ReplayAdminRoutes";
 import {
   markHistoricalReplayTrades,
   ReplayJournal,
   type ReplayTradeRow
-} from "./engine/trading/replay/ReplayJournal";
+} from "./replay/ReplayJournal";
 import {
   runShadowReplayLoop,
   type ShadowReplayLoopResult
-} from "./engine/trading/replay/ReplayLoopRuntime";
+} from "./replay/ReplayLoopRuntime";
 import {
   buildHistoricalReplayResult,
   buildReplayStatus,
   buildShadowReplayConfig,
   buildShadowReplayEngineState,
   resolveInitialShadowBankroll
-} from "./engine/trading/replay/ReplayResultRuntime";
+} from "./replay/ReplayResultRuntime";
 import {
   buildReplayRestoreWrites,
   hydrateReplayOrderBooks,
   type EngineReplaySnapshot
-} from "./engine/trading/replay/ReplaySnapshotRuntime";
+} from "./replay/ReplaySnapshotRuntime";
 import type {
   GrpcFatalDropPayload,
   TickIngestResult
-} from "./engine/trading/TradingEngineRouteTypes";
+} from "./TradingEngineRouteTypes";
 import {
   buildHealthReport,
   engineDiagnostics as buildEngineDiagnostics,
   stateAfterHealthHeartbeat,
   syncStateMicrostructureFromBook as syncEngineStateMicrostructure
-} from "./engine/trading/state/EngineDiagnostics";
-import { nextTickAgentHealth } from "./engine/trading/state/AgentHealthRuntime";
+} from "./state/EngineDiagnostics";
+import { nextTickAgentHealth } from "./state/AgentHealthRuntime";
 import {
   killSwitchActiveLogMetadata,
   shadowModeAutoResumeLogMetadata,
@@ -351,64 +352,64 @@ import {
   shouldLogDisabledTrading,
   stateAfterAcceptedTick,
   stateAfterShadowModeAutoResume
-} from "./engine/trading/state/TickStateRuntime";
+} from "./state/TickStateRuntime";
 import {
   buildHotPathTickSnapshotWrites,
   shouldJournalMarketTick as shouldPersistMarketTick
-} from "./engine/trading/state/TickPersistenceRuntime";
+} from "./state/TickPersistenceRuntime";
 import {
   adminRecoveryResponse,
   adminRecoveryStorageEntries,
   stateAfterAdminControlledRecovery
-} from "./engine/trading/state/RecoveryRuntime";
+} from "./state/RecoveryRuntime";
 import {
   evaluateHotStorageSnapshotDecision,
   resolveHotStorageSnapshotIntervalMs,
   resolveHotStorageSnapshotTickInterval,
   StorageWriteGuard
-} from "./engine/trading/state/StorageWriteGuard";
+} from "./state/StorageWriteGuard";
 import {
   emptyLogPruneReport,
   logRetentionPolicyToJson,
   pruneOperationalLogsFromD1,
   resolveLogRetentionPolicy,
   type LogPruneReport
-} from "./engine/LogRetention";
+} from "../LogRetention";
 import {
   MultiScaleVolatilityModel,
   type MultiScaleVolatilitySnapshot
-} from "./engine/MultiScaleVolatility";
-import { QueuePositionModel } from "./engine/QueuePositionModel";
-import { createShadowQueue } from "./engine/ShadowQueue";
-import { isInventoryHedgeIntent } from "./execution/RiskGuards";
+} from "../MultiScaleVolatility";
+import { QueuePositionModel } from "../QueuePositionModel";
+import { createShadowQueue } from "../ShadowQueue";
+import { isInventoryHedgeIntent } from "../../execution/RiskGuards";
 import {
   HeatmapAgent,
   LIQUIDATION_HEATMAP_STORAGE_KEY,
   defaultLiquidationHeatmapState
-} from "./agents/HeatmapAgent";
-import { JanitorAgent } from "./agents/JanitorAgent";
-import { OracleAgent, defaultOracleState } from "./agents/OracleAgent";
-import { PitBossAgent } from "./agents/PitBossAgent";
-import { SentimentAgent, defaultSentimentState } from "./agents/SentimentAgent";
-import { RateLimiter, type RateLimitBucketSnapshot } from "./utils/RateLimiter";
-import { Notifier } from "./utils/Notifier";
-import { isShadowMode } from "./utils/CitadelProtocol";
-import { GhostBook, type GhostBookConfig, type GhostBookObservation } from "./utils/GhostBook";
-import { AbsorptionAnalyzer } from "./strategy/cascade/AbsorptionAnalyzer";
-import type { CascadeAssetProfile } from "./strategy/cascade/AssetProfiles";
-import { Backtester } from "./strategy/cascade/Backtester";
-import { CascadeCandleAggregator } from "./strategy/cascade/CandleAggregator";
-import { CascadeDetector } from "./strategy/cascade/CascadeDetector";
-import { CascadeRecoverySignalEngine } from "./strategy/cascade/CascadeRecoverySignal";
-import { calculateAtr } from "./strategy/cascade/indicators/ATR";
-import { cumulativeVolumeDelta } from "./strategy/cascade/indicators/CumulativeVolumeDelta";
-import { HyperliquidLiquidationStream } from "./strategy/cascade/LiquidationStream";
-import { HeatManager } from "./strategy/cascade/HeatManager";
-import { NewsCalendar } from "./strategy/cascade/NewsCalendar";
-import type { CascadeAlertEventType } from "./strategy/cascade/OperationalSafeguards";
-import { PositionManager } from "./strategy/cascade/PositionManager";
-import { calculatePositionSize } from "./strategy/cascade/PositionSizer";
-import { calculateVwap } from "./strategy/cascade/indicators/VWAP";
+} from "../../agents/HeatmapAgent";
+import { JanitorAgent } from "../../agents/JanitorAgent";
+import { OracleAgent, defaultOracleState } from "../../agents/OracleAgent";
+import { PitBossAgent } from "../../agents/PitBossAgent";
+import { SentimentAgent, defaultSentimentState } from "../../agents/SentimentAgent";
+import { RateLimiter, type RateLimitBucketSnapshot } from "../../utils/RateLimiter";
+import { Notifier } from "../../utils/Notifier";
+import { isShadowMode } from "../../utils/CitadelProtocol";
+import { GhostBook, type GhostBookConfig, type GhostBookObservation } from "../../utils/GhostBook";
+import { AbsorptionAnalyzer } from "../../strategy/cascade/AbsorptionAnalyzer";
+import type { CascadeAssetProfile } from "../../strategy/cascade/AssetProfiles";
+import { Backtester } from "../../strategy/cascade/Backtester";
+import { CascadeCandleAggregator } from "../../strategy/cascade/CandleAggregator";
+import { CascadeDetector } from "../../strategy/cascade/CascadeDetector";
+import { CascadeRecoverySignalEngine } from "../../strategy/cascade/CascadeRecoverySignal";
+import { calculateAtr } from "../../strategy/cascade/indicators/ATR";
+import { cumulativeVolumeDelta } from "../../strategy/cascade/indicators/CumulativeVolumeDelta";
+import { HyperliquidLiquidationStream } from "../../strategy/cascade/LiquidationStream";
+import { HeatManager } from "../../strategy/cascade/HeatManager";
+import { NewsCalendar } from "../../strategy/cascade/NewsCalendar";
+import type { CascadeAlertEventType } from "../../strategy/cascade/OperationalSafeguards";
+import { PositionManager } from "../../strategy/cascade/PositionManager";
+import { calculatePositionSize } from "../../strategy/cascade/PositionSizer";
+import { calculateVwap } from "../../strategy/cascade/indicators/VWAP";
 import type {
   AdminConfigUpdate,
   AnomalyDetectorState,
@@ -450,7 +451,7 @@ import type {
   ShadowQueueState,
   TemporaryGovernanceOverride,
   TradeIntent
-} from "./types";
+} from "../../types";
 import type {
   AbsorptionAnalyzerConfig,
   AbsorptionConfirmed,
@@ -464,7 +465,7 @@ import type {
   CascadeRecoverySignalResult,
   LiquidationEvent,
   PositionSizeDecision
-} from "./strategy/cascade/types";
+} from "../../strategy/cascade/types";
 
 import {
   ENGINE_STATE_KEY,
@@ -540,7 +541,7 @@ import {
   DEFAULT_JANITOR_INTERVAL_MS,
   DEFAULT_ORDER_ACK_TIMEOUT_MS,
   AGGREGATED_BUS_TELEMETRY_TYPES
-} from "./TradingEngineConstants";
+} from "../../TradingEngineConstants";
 import {
   epochMillis,
   nativeHashSequence,
@@ -638,7 +639,7 @@ import {
   readHyperliquidRawIngestPayload,
   readJsonOrNull,
   json
-} from "./TradingEngineRuntimeHelpers";
+} from "./helpers/RuntimeHelpers";
 
 interface TickHandlingOptions {
   shadowReplay?: boolean;

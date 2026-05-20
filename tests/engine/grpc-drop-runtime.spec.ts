@@ -4,7 +4,7 @@ import {
   resolveGrpcFatalDropPayload,
   stateAfterGrpcFatalDrop
 } from "../../src/engine/trading/ingest/GrpcDropRuntime";
-import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
+import { defaultEngineState } from "../../src/engine/trading/helpers/RuntimeHelpers";
 
 describe("GrpcDropRuntime", () => {
   it("normalizes fatal drop payloads with defensive defaults", () => {

@@ -18,7 +18,7 @@ This repository is not yet fully Phase 61 complete. The safe first pass implemen
   - `PlacementResolver`
 - Converted `src/TradingEngine.ts` into a one-line Durable Object export shell backed by
   `src/engine/trading/TradingEngineDO.ts`; the remaining legacy implementation now sits in
-  `src/TradingEngineLegacy.ts` while it is decomposed in smaller passes.
+  `src/engine/trading/TradingEngineCore.ts` while it is decomposed in smaller passes.
 - Moved colo/topology resolution and high-latency placement risk adjustment into
   `src/engine/trading/helpers/PlacementResolver.ts`.
 - Moved sorted order-book side storage, price-keying, tick normalization, and crypto rounding into
@@ -39,7 +39,7 @@ This repository is not yet fully Phase 61 complete. The safe first pass implemen
 
 ## Still Open
 
-- Continue decomposing `TradingEngineLegacy.ts` into <800-line reviewable modules.
+- Continue decomposing `src/engine/trading/TradingEngineCore.ts` into <800-line reviewable modules.
 - Full `src/index.ts` gateway decomposition into the no-third-party router structure from the spec.
 - Full `ExecutionerWorker.ts` and `IngestWorker.ts` decomposition.
 - Promotion of full-tree lint from visible-only to enforced.

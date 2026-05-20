@@ -12,7 +12,7 @@ import {
   resolveLiquidationEventContext,
   stateAfterLiquidationHeatmap
 } from "../../src/engine/trading/cascade/CascadeLiquidationRuntime";
-import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
+import { defaultEngineState } from "../../src/engine/trading/helpers/RuntimeHelpers";
 import type { CascadeAssetProfile } from "../../src/strategy/cascade/AssetProfiles";
 import type { CascadeEvent, LiquidationEvent } from "../../src/strategy/cascade/types";
 

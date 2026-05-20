@@ -18,7 +18,7 @@ import {
   readBoundedNumber,
   readPositiveInteger,
   readPositiveNumber
-} from "../TradingEngineRuntimeHelpers";
+} from "../engine/trading/helpers/RuntimeHelpers";
 import type { Env, GlobalRiskConfig, ProfilerState } from "../types";
 
 export class ProfilerRegistry {

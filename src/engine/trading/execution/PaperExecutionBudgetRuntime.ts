@@ -1,5 +1,5 @@
 import { DEFAULT_PAPER_MAX_GHOST_FILLS_PER_MINUTE } from "../../../TradingEngineConstants";
-import { readPositiveInteger } from "../../../TradingEngineRuntimeHelpers";
+import { readPositiveInteger } from "../helpers/RuntimeHelpers";
 import type { JsonRecord, TradeIntent } from "../../../types";
 
 export interface PaperExecutionBudgetState {

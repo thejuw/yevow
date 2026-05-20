@@ -4,7 +4,7 @@ import type { PitBossDecision } from "../../../agents/PitBossAgent";
 import {
   isQuoteSuspendedAt,
   quoteStateForInstrumentState
-} from "../../../TradingEngineRuntimeHelpers";
+} from "../helpers/RuntimeHelpers";
 import type {
   EngineState,
   InternalOrderBook,

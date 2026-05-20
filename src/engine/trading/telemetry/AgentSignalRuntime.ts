@@ -3,7 +3,7 @@ import {
   hawkesEvacuationSignal,
   inferSignalBias,
   suspendAssetQuoteStates
-} from "../../../TradingEngineRuntimeHelpers";
+} from "../helpers/RuntimeHelpers";
 import type { AgentHealth, AgentName, AgentSignal, EngineState } from "../../../types";
 
 export interface AcceptedAgentSignalInput {

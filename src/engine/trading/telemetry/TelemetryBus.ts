@@ -8,7 +8,7 @@ import {
   roundLatency,
   shouldAggregateBusTelemetry,
   toJsonValue
-} from "../../../TradingEngineRuntimeHelpers";
+} from "../helpers/RuntimeHelpers";
 import type { Env } from "../../../types";
 
 export interface BusMessage {

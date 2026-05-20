@@ -1,4 +1,4 @@
-import { buildMarketKey, normalizeSourceExchange } from "../../../TradingEngineRuntimeHelpers";
+import { buildMarketKey, normalizeSourceExchange } from "../helpers/RuntimeHelpers";
 import type { InternalOrderBook, JsonRecord, OrderBookResetRequest } from "../../../types";
 import type { BookSyncState } from "./BookTypes";
 import type { SortedBookSide } from "./SortedBookSide";

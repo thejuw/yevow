@@ -12,7 +12,7 @@ import {
   normalizeInstrumentSelector,
   normalizeMarketKey,
   normalizeNativeInstrumentCode
-} from "../../../TradingEngineRuntimeHelpers";
+} from "../helpers/RuntimeHelpers";
 import { roundCrypto, type SortedBookSide } from "./SortedBookSide";
 import { getInstrumentBook } from "./BookReconstruction";
 import type { BookSyncState } from "./BookTypes";

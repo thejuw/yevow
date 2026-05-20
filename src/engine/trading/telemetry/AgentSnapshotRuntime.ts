@@ -1,4 +1,4 @@
-import { inferSignalBias } from "../../../TradingEngineRuntimeHelpers";
+import { inferSignalBias } from "../helpers/RuntimeHelpers";
 import type { AgentName, AgentSignal, EngineState } from "../../../types";
 
 export interface AgentStateSnapshotInput {

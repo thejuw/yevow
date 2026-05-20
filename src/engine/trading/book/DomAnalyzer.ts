@@ -16,7 +16,7 @@ import {
   toLiquidityWall,
   volumeStats,
   wallIdForBin
-} from "../../../TradingEngineRuntimeHelpers";
+} from "../helpers/RuntimeHelpers";
 import { roundCrypto, type SortedBookSide } from "./SortedBookSide";
 import { getInstrumentBook } from "./BookReconstruction";
 import { selectOrderBookMarketKey, type BookSelection } from "./BookViews";

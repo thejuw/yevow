@@ -7,7 +7,7 @@ import {
   shouldLogBayesianPosteriorUpdate,
   shouldLogMarketTickAccepted
 } from "../../src/engine/trading/telemetry/TickTelemetryRuntime";
-import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
+import { defaultEngineState } from "../../src/engine/trading/helpers/RuntimeHelpers";
 import type { AgentSignal, BayesianUpdateTrace, LatencyMetrics, MarketTick } from "../../src/types";
 
 describe("TickTelemetryRuntime", () => {

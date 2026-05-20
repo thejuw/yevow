@@ -7,7 +7,7 @@ import {
   calculateReplayShadowBankroll,
   resolveInitialShadowBankroll
 } from "../../src/engine/trading/replay/ReplayResultRuntime";
-import { defaultEngineState } from "../../src/TradingEngineRuntimeHelpers";
+import { defaultEngineState } from "../../src/engine/trading/helpers/RuntimeHelpers";
 import type { ReplayOptions } from "../../src/engine/trading/routes/ReplayAdminRoutes";
 import type { ReplayResult } from "../../src/types";
 

@@ -8,7 +8,7 @@ import {
   readPositiveNumber,
   roundLatency,
   suspendAssetQuoteStates
-} from "../../../TradingEngineRuntimeHelpers";
+} from "../helpers/RuntimeHelpers";
 import {
   DEFAULT_DWELLIR_NATIVE_HL_MAX_LATENCY_MS,
   DEFAULT_NATIVE_HL_MAX_LATENCY_MS

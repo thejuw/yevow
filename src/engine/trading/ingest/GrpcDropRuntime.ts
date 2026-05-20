@@ -5,7 +5,7 @@ import {
   nativeString,
   suspendAssetQuoteStates,
   touchAgentHealth
-} from "../../../TradingEngineRuntimeHelpers";
+} from "../helpers/RuntimeHelpers";
 import type { CitadelDropDecision } from "../../../utils/CitadelProtocol";
 import { evaluateGrpcDrop } from "../../../utils/CitadelProtocol";
 import type { EngineState, JsonRecord } from "../../../types";

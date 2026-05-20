@@ -16,7 +16,7 @@ import {
   requireNativeString,
   createNativeHyperliquidFundingTick,
   createNativeHyperliquidTradeTick
-} from "../../../TradingEngineRuntimeHelpers";
+} from "../helpers/RuntimeHelpers";
 import type { TickIngestResult } from "../TradingEngineRouteTypes";
 import type { BookSyncState } from "../book/BookTypes";
 import type {

@@ -11,7 +11,7 @@ import {
   mergeRiskLimits,
   resolveMaxLatencyMs,
   toJsonValue
-} from "../../../TradingEngineRuntimeHelpers";
+} from "../helpers/RuntimeHelpers";
 import { applyLocationRisk } from "../helpers/PlacementResolver";
 
 export interface RuntimeConfigUpdateInput {

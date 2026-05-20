@@ -4,7 +4,7 @@ import {
   isInstrumentSelectedByMoltworker,
   isQuoteSuspendedAt,
   quoteStateForInstrumentState
-} from "../../../TradingEngineRuntimeHelpers";
+} from "../helpers/RuntimeHelpers";
 import type {
   AssetRuntimeState,
   EngineState,
