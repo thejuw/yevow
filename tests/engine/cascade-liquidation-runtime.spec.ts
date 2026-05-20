@@ -7,6 +7,7 @@ import {
   cascadeDetectedTelemetryPayload,
   liquidationHeatmapStorageWrites,
   liquidationEventProcessedCount,
+  liquidationEventProcessingResult,
   liquidationEventTelemetry,
   persistCascadeLiquidationEvents,
   resolveLiquidationEventContext,
@@ -142,6 +143,59 @@ describe("CascadeLiquidationRuntime", () => {
         cascadeEventCount: 2
       })
     ).toBe(4);
+  });
+
+  it("builds complete liquidation processing artifacts for the DO", () => {
+    const currentState = defaultEngineState("cascade-liquidation-processing");
+    const heatmap = {
+      ...defaultLiquidationHeatmapState("btc-usd", "hyperliquid", 100, 10_000_000, 0.005),
+      recentEvents: [
+        {
+          eventId: "liq-1",
+          instrumentCode: "btc-usd",
+          side: "LONG" as const,
+          forcedFlowSide: "SELL" as const,
+          price: 99,
+          estimatedNotionalUsd: 12_000_000,
+          baseSize: 1,
+          observedAt: OBSERVED_AT
+        }
+      ],
+      totalEstimatedNotionalUsd: 12_000_000
+    };
+
+    const result = liquidationEventProcessingResult({
+      currentState,
+      context: {
+        observedAt: OBSERVED_AT,
+        instrumentCode: "btc-usd",
+        sourceExchange: "hyperliquid",
+        midPrice: 100
+      },
+      heatmap,
+      previousEventCount: 0,
+      cascadeLiquidationCount: 2,
+      cascadeEventCount: 1,
+      engineStateKey: "engine",
+      liquidationHeatmapKey: "heatmap"
+    });
+
+    expect(result.state).toMatchObject({
+      liquidationHeatmap: heatmap,
+      heartbeatAt: OBSERVED_AT,
+      updatedAt: OBSERVED_AT
+    });
+    expect(result.storageWrites).toEqual({
+      engine: result.state,
+      heatmap
+    });
+    expect(result.shouldPublishTelemetry).toBe(true);
+    expect(result.telemetryPayload).toMatchObject({
+      instrumentCode: "btc-usd",
+      cascadeEventCount: 1,
+      totalEstimatedNotionalUsd: 12_000_000
+    });
+    expect(result.processedCount).toBe(2);
   });
 
   it("builds cascade detected log, telemetry, and alert payloads", () => {

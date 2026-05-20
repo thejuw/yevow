@@ -49,6 +49,25 @@ export interface LiquidationHeatmapStorageInput {
   readonly heatmap: LiquidationHeatmapState;
 }
 
+export interface LiquidationEventProcessingInput {
+  readonly currentState: EngineState;
+  readonly context: LiquidationEventContext;
+  readonly heatmap: LiquidationHeatmapState;
+  readonly previousEventCount: number;
+  readonly cascadeLiquidationCount: number;
+  readonly cascadeEventCount: number;
+  readonly engineStateKey: string;
+  readonly liquidationHeatmapKey: string;
+}
+
+export interface LiquidationEventProcessingResult {
+  readonly state: EngineState;
+  readonly storageWrites: Record<string, unknown>;
+  readonly shouldPublishTelemetry: boolean;
+  readonly telemetryPayload: JsonRecord;
+  readonly processedCount: number;
+}
+
 export interface CascadeLiquidationJournalDb {
   prepare(query: string): D1PreparedStatement;
   batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]>;
@@ -109,6 +128,40 @@ export function liquidationEventProcessedCount(input: LiquidationEventProcessedC
     input.cascadeLiquidationCount,
     input.cascadeEventCount
   );
+}
+
+export function liquidationEventProcessingResult(
+  input: LiquidationEventProcessingInput
+): LiquidationEventProcessingResult {
+  const nextEventCount = input.heatmap.recentEvents.length;
+  const state = stateAfterLiquidationHeatmap({
+    currentState: input.currentState,
+    heatmap: input.heatmap,
+    observedAt: input.context.observedAt
+  });
+
+  return {
+    state,
+    storageWrites: liquidationHeatmapStorageWrites({
+      engineStateKey: input.engineStateKey,
+      state,
+      liquidationHeatmapKey: input.liquidationHeatmapKey,
+      heatmap: input.heatmap
+    }),
+    shouldPublishTelemetry: nextEventCount > input.previousEventCount,
+    telemetryPayload: liquidationEventTelemetry({
+      instrumentCode: input.context.instrumentCode,
+      heatmap: input.heatmap,
+      cascadeEventCount: input.cascadeEventCount,
+      observedAt: input.context.observedAt
+    }),
+    processedCount: liquidationEventProcessedCount({
+      previousEventCount: input.previousEventCount,
+      nextEventCount,
+      cascadeLiquidationCount: input.cascadeLiquidationCount,
+      cascadeEventCount: input.cascadeEventCount
+    })
+  };
 }
 
 export function cascadeLiquidationInsertStatements(

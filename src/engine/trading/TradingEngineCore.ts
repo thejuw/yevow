@@ -194,12 +194,9 @@ import {
   cascadeDetectedAlertMetadata,
   cascadeDetectedLogMetadata,
   cascadeDetectedTelemetryPayload,
-  liquidationHeatmapStorageWrites,
-  liquidationEventProcessedCount,
-  liquidationEventTelemetry,
+  liquidationEventProcessingResult,
   persistCascadeLiquidationEvents,
-  resolveLiquidationEventContext,
-  stateAfterLiquidationHeatmap
+  resolveLiquidationEventContext
 } from "./cascade/CascadeLiquidationRuntime";
 import {
   buildCascadeEntryTradeIntent,
@@ -1487,7 +1484,6 @@ export class TradingEngine {
       midPrice: liquidationContext.midPrice,
       observedAt: liquidationContext.observedAt
     });
-    const nextEventCount = heatmap.recentEvents.length;
     const cascadeLiquidations = this.cascadeLiquidationStream.ingest(raw, {
       instrumentCode: liquidationContext.instrumentCode,
       sourceExchange: liquidationContext.sourceExchange,
@@ -1502,45 +1498,28 @@ export class TradingEngine {
       liquidationContext.observedAt
     );
 
-    this.engineState = stateAfterLiquidationHeatmap({
+    const liquidationResult = liquidationEventProcessingResult({
       currentState: this.engineState,
+      context: liquidationContext,
       heatmap,
-      observedAt: liquidationContext.observedAt
+      previousEventCount,
+      cascadeLiquidationCount: cascadeLiquidations.length,
+      cascadeEventCount: cascadeEvents.length,
+      engineStateKey: ENGINE_STATE_KEY,
+      liquidationHeatmapKey: LIQUIDATION_HEATMAP_STORAGE_KEY
     });
+    this.engineState = liquidationResult.state;
 
-    this.state.waitUntil(
-      this.safeStoragePut(
-        liquidationHeatmapStorageWrites({
-          engineStateKey: ENGINE_STATE_KEY,
-          state: this.engineState,
-          liquidationHeatmapKey: LIQUIDATION_HEATMAP_STORAGE_KEY,
-          heatmap
-        }),
-        "LIQUIDATION_EVENT"
-      )
-    );
+    this.state.waitUntil(this.safeStoragePut(liquidationResult.storageWrites, "LIQUIDATION_EVENT"));
 
-    if (nextEventCount > previousEventCount) {
-      this.publish(
-        "LIQUIDATION_EVENT",
-        liquidationEventTelemetry({
-          instrumentCode: liquidationContext.instrumentCode,
-          heatmap,
-          cascadeEventCount: cascadeEvents.length,
-          observedAt: liquidationContext.observedAt
-        })
-      );
+    if (liquidationResult.shouldPublishTelemetry) {
+      this.publish("LIQUIDATION_EVENT", liquidationResult.telemetryPayload);
     }
 
     return {
       accepted: true,
       status: "FRESH",
-      processedCount: liquidationEventProcessedCount({
-        previousEventCount,
-        nextEventCount,
-        cascadeLiquidationCount: cascadeLiquidations.length,
-        cascadeEventCount: cascadeEvents.length
-      })
+      processedCount: liquidationResult.processedCount
     };
   }
 
