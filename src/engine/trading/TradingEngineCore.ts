@@ -559,8 +559,8 @@ import {
 import { isTradeTick } from "./state/TickClassification";
 import {
   applyAcceptedDecisionPipelineFlow,
-  buildAcceptedTickFinalizationArtifacts,
-  buildAcceptedTickStateTransition
+  buildAcceptedTickStateTransition,
+  finalizeAcceptedTickFlow
 } from "./pipelines/AcceptedTickRuntime";
 import { handleTickRuntime } from "./pipelines/TickHandlingRuntime";
 import type {
@@ -2855,51 +2855,54 @@ export class TradingEngine {
   }
 
   private async finalizeAcceptedTick(input: AcceptedTickSideEffectsInput): Promise<void> {
-    this.scheduleAcceptedTickSnapshot(
-      input.tick,
-      input.book,
-      input.anomalyResult,
-      input.profilerResult
+    await finalizeAcceptedTickFlow(
+      {
+        sideEffects: input,
+        tradingEnabled: this.cachedConfig.TRADING_ENABLED
+      },
+      {
+        scheduleAcceptedTickSnapshot: (sideEffects) =>
+          this.scheduleAcceptedTickSnapshot(
+            sideEffects.tick,
+            sideEffects.book,
+            sideEffects.anomalyResult,
+            sideEffects.profilerResult
+          ),
+        journalAcceptedTick: (sideEffects) =>
+          this.journalAcceptedTick(
+            sideEffects.tick,
+            sideEffects.metrics,
+            sideEffects.oracleBayesianTrace
+          ),
+        handleCroupierQuoteAction: (instrumentCode, action) =>
+          this.handleCroupierQuoteAction(instrumentCode, action),
+        dispatchExecutionPlans: (executionPlans, shadowReplay) =>
+          this.dispatchExecutionPlans(executionPlans, shadowReplay),
+        dispatchInventoryHedgeIfNeeded: (book, inventory, observedAt, shadowReplay) =>
+          this.dispatchInventoryHedgeIfNeeded(book, inventory, observedAt, shadowReplay),
+        handleProfilerSignal: (
+          instrumentCode,
+          profilerResult,
+          profilerLatencyMs,
+          isProfilerQuoteHalt,
+          shadowReplay,
+          hasQuote
+        ) =>
+          this.handleProfilerSignal(
+            instrumentCode,
+            profilerResult,
+            profilerLatencyMs,
+            isProfilerQuoteHalt,
+            shadowReplay,
+            hasQuote
+          ),
+        publishTickTelemetry: (tick, metrics, status, hotPathStartedAt) =>
+          this.publishTickTelemetry(tick, metrics, status, hotPathStartedAt),
+        publishAmVpinTelemetry: (profilerState, instrumentCode, observedAt) =>
+          this.publishAmVpinTelemetry(profilerState, instrumentCode, observedAt),
+        maybeRecordAgentSnapshot: (observedAt) => this.maybeRecordAgentSnapshot(observedAt)
+      }
     );
-    this.journalAcceptedTick(input.tick, input.metrics, input.oracleBayesianTrace);
-
-    const finalization = buildAcceptedTickFinalizationArtifacts({
-      sideEffects: input,
-      tradingEnabled: this.cachedConfig.TRADING_ENABLED
-    });
-
-    this.handleCroupierQuoteAction(input.tick.instrumentCode, finalization.croupierQuoteAction);
-    this.dispatchExecutionPlans(input.executionPlans, input.shadowReplay);
-    this.dispatchInventoryHedgeIfNeeded(
-      input.book,
-      input.inventory,
-      input.metrics.brainTimestamp,
-      input.shadowReplay
-    );
-
-    await this.handleProfilerSignal(
-      input.tick.instrumentCode,
-      input.profilerResult,
-      input.profilerLatencyMs,
-      input.isProfilerQuoteHalt,
-      input.shadowReplay,
-      Boolean(input.croupierDecision.quote)
-    );
-
-    this.publishTickTelemetry(
-      input.tick,
-      input.metrics,
-      input.metrics.status,
-      input.hotPathStartedAt
-    );
-    if (finalization.shouldPublishAmVpinTelemetry) {
-      this.publishAmVpinTelemetry(
-        input.profilerResult.state,
-        input.tick.instrumentCode,
-        input.metrics.brainTimestamp
-      );
-    }
-    this.maybeRecordAgentSnapshot(input.metrics.brainTimestamp);
   }
 
   private async processAcceptedDecisionPipeline(

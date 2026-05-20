@@ -7,11 +7,13 @@ import {
   buildAcceptedDecisionPipelineLifecycle,
   buildAcceptedTickFinalizationArtifacts,
   buildAcceptedTickLifecycleArtifacts,
-  buildAcceptedTickStateTransition
+  buildAcceptedTickStateTransition,
+  finalizeAcceptedTickFlow
 } from "../../src/engine/trading/pipelines/AcceptedTickRuntime";
 import type {
   AcceptedDecisionPipelineInput,
   AcceptedExecutionContext,
+  AcceptedTickSideEffectsInput,
   TickDecisionContext
 } from "../../src/engine/trading/pipelines/TickPipelineTypes";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
@@ -213,5 +215,104 @@ describe("AcceptedTickRuntime", () => {
     });
     expect(transition.agentHealth.PROFILER.latencyMs).toBe(2.5);
     expect(transition.agentHealth.CROUPIER.latencyMs).toBe(3.5);
+  });
+
+  it("finalizes accepted tick side effects in deterministic order", async () => {
+    const state = defaultEngineState("accepted-finalize-runtime");
+    const croupierDecision: CroupierDecision = {
+      intent: null,
+      quote: null,
+      pullAllQuotes: false,
+      adverseSelectionCost: 0.01,
+      minEvThreshold: 0.02
+    };
+    const profilerResult: ProfilerEvaluation = {
+      processed: true,
+      skippedReason: null,
+      closedBuckets: 1,
+      toxicityScore: 0.42,
+      state: { alertThreshold: 0.7 } as ProfilerEvaluation["state"],
+      signal: null
+    };
+    const sideEffects = {
+      tick: { instrumentCode: "btc-usd" },
+      metrics: { status: "FRESH", brainTimestamp: OBSERVED_AT },
+      book: { instrumentCode: "btc-usd" },
+      anomalyResult: { status: state.anomaly },
+      profilerResult,
+      profilerLatencyMs: 4,
+      croupierDecision,
+      executionPlans: [],
+      inventory: state.inventory,
+      strategyQuoteDisableReason: null,
+      isCascadeShield: false,
+      isProfilerQuoteHalt: true,
+      oracleBayesianTrace: null,
+      hotPathStartedAt: 456,
+      shadowReplay: false
+    } as unknown as AcceptedTickSideEffectsInput;
+    const events: string[] = [];
+
+    const finalization = await finalizeAcceptedTickFlow(
+      {
+        sideEffects,
+        tradingEnabled: true
+      },
+      {
+        scheduleAcceptedTickSnapshot(input) {
+          events.push(`snapshot:${input.tick.instrumentCode}`);
+        },
+        journalAcceptedTick(input) {
+          events.push(`journal:${input.metrics.brainTimestamp}`);
+        },
+        handleCroupierQuoteAction(instrumentCode, action) {
+          events.push(`quote:${instrumentCode}:${action.kind}`);
+        },
+        dispatchExecutionPlans(executionPlans, shadowReplay) {
+          events.push(`plans:${executionPlans.length}:${shadowReplay}`);
+        },
+        dispatchInventoryHedgeIfNeeded(_book, _inventory, observedAt, shadowReplay) {
+          events.push(`hedge:${observedAt}:${shadowReplay}`);
+        },
+        handleProfilerSignal(
+          instrumentCode,
+          _profilerResult,
+          profilerLatencyMs,
+          isProfilerQuoteHalt,
+          shadowReplay,
+          hasQuote
+        ) {
+          events.push(
+            `profiler:${instrumentCode}:${profilerLatencyMs}:${isProfilerQuoteHalt}:${shadowReplay}:${hasQuote}`
+          );
+          return Promise.resolve();
+        },
+        publishTickTelemetry(tick, metrics, status, hotPathStartedAt) {
+          events.push(
+            `telemetry:${tick.instrumentCode}:${metrics.brainTimestamp}:${status}:${hotPathStartedAt}`
+          );
+        },
+        publishAmVpinTelemetry(_profilerState, instrumentCode, observedAt) {
+          events.push(`amvpin:${instrumentCode}:${observedAt}`);
+        },
+        maybeRecordAgentSnapshot(observedAt) {
+          events.push(`agents:${observedAt}`);
+        }
+      }
+    );
+
+    expect(finalization.shouldPublishAmVpinTelemetry).toBe(true);
+    expect(finalization.croupierQuoteAction.kind).toBe("NONE");
+    expect(events).toEqual([
+      "snapshot:btc-usd",
+      `journal:${OBSERVED_AT}`,
+      "quote:btc-usd:NONE",
+      "plans:0:false",
+      `hedge:${OBSERVED_AT}:false`,
+      "profiler:btc-usd:4:true:false:false",
+      `telemetry:btc-usd:${OBSERVED_AT}:FRESH:456`,
+      `amvpin:btc-usd:${OBSERVED_AT}`,
+      `agents:${OBSERVED_AT}`
+    ]);
   });
 });
