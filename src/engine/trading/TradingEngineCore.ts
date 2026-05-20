@@ -74,7 +74,11 @@ import {
   referencePriceForBaseAsset as resolveBaseAssetReferencePrice,
   resolveInventoryStateConfig
 } from "./inventory/InventoryRuntime";
-import { applyPortfolioRiskFlow, resolveMaxPositionPct } from "./risk/PortfolioRiskRuntime";
+import {
+  applyPortfolioRiskFlow,
+  resolveMaxPositionPct,
+  resolveVarConfidenceZ
+} from "./risk/PortfolioRiskRuntime";
 import { calculateEnsembleState as calculateRuntimeEnsembleState } from "./ensemble/EnsembleRuntime";
 import {
   currentFundingRate as resolveCurrentFundingRate,
@@ -3209,10 +3213,11 @@ export class TradingEngine {
         priorHighWaterMark: this.engineState.riskMetrics.highWaterMark,
         positions: this.engineState.openPositions,
         oracleVolatility: oracle.volatility,
-        varConfidenceZ:
-          this.cachedConfig.VAR_CONFIDENCE_Z > 0
-            ? this.cachedConfig.VAR_CONFIDENCE_Z
-            : readPositiveNumber(this.env.VAR_CONFIDENCE_Z, DEFAULT_VAR_CONFIDENCE_Z),
+        varConfidenceZ: resolveVarConfidenceZ(
+          this.cachedConfig,
+          this.env.VAR_CONFIDENCE_Z,
+          DEFAULT_VAR_CONFIDENCE_Z
+        ),
         maxDrawdownPct: this.cachedConfig.MAX_DRAWDOWN_PCT,
         tradingEnabled: this.cachedConfig.TRADING_ENABLED,
         observedAt

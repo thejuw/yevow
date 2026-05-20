@@ -6,6 +6,7 @@ import {
   buildDrawdownKillSwitchTransition,
   calculatePortfolioRisk,
   resolveMaxPositionPct,
+  resolveVarConfidenceZ,
   type DrawdownKillSwitchSideEffectHandlers
 } from "../../src/engine/trading/risk/PortfolioRiskRuntime";
 import type { Position } from "../../src/types";
@@ -17,6 +18,12 @@ describe("PortfolioRiskRuntime", () => {
     expect(resolveMaxPositionPct({ MAX_POSITION_PCT: 0.04 }, "0.1", 0.02)).toBe(0.04);
     expect(resolveMaxPositionPct({ MAX_POSITION_PCT: 0 }, "0.1", 0.02)).toBe(0.1);
     expect(resolveMaxPositionPct({ MAX_POSITION_PCT: -1 }, undefined, 0.02)).toBe(0.02);
+  });
+
+  it("resolves VaR confidence from config before env fallback", () => {
+    expect(resolveVarConfidenceZ({ VAR_CONFIDENCE_Z: 2.58 }, "1.5", 2.33)).toBe(2.58);
+    expect(resolveVarConfidenceZ({ VAR_CONFIDENCE_Z: 0 }, "1.5", 2.33)).toBe(1.5);
+    expect(resolveVarConfidenceZ({ VAR_CONFIDENCE_Z: -1 }, undefined, 2.33)).toBe(2.33);
   });
 
   it("calculates drawdown, one-hour VaR, and trading eligibility", () => {

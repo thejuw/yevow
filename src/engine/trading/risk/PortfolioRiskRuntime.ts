@@ -57,6 +57,16 @@ export function resolveMaxPositionPct(
     : readPositiveNumber(envValue, fallback);
 }
 
+export function resolveVarConfidenceZ(
+  config: Pick<GlobalRiskConfig, "VAR_CONFIDENCE_Z">,
+  envValue: string | undefined,
+  fallback: number
+): number {
+  return config.VAR_CONFIDENCE_Z > 0
+    ? config.VAR_CONFIDENCE_Z
+    : readPositiveNumber(envValue, fallback);
+}
+
 export function calculatePortfolioRisk(input: PortfolioRiskInput): PortfolioRiskResult {
   const equity = Math.max(input.equity, 0);
   const priorHighWaterMark = Math.max(input.priorHighWaterMark, equity);
