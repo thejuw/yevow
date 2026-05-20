@@ -66,6 +66,15 @@ export interface JanitorRunArtifacts {
   readonly warningMetadata: JsonRecord | null;
 }
 
+export interface DispatchJanitorCancellationRequestsInput {
+  readonly requests: readonly JanitorCancellationRequest[];
+  readonly cancelOrder: (
+    orderId: string,
+    reason: JanitorCancelReason,
+    instrumentCode?: string
+  ) => Promise<void>;
+}
+
 export interface JanitorExecutionerFetcher {
   fetch(request: Request): Promise<Response>;
 }
@@ -234,6 +243,14 @@ export async function cancelJanitorOrder(input: CancelJanitorOrderInput): Promis
       reason: input.reason,
       error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
     });
+  }
+}
+
+export async function dispatchJanitorCancellationRequests(
+  input: DispatchJanitorCancellationRequestsInput
+): Promise<void> {
+  for (const request of input.requests) {
+    await input.cancelOrder(request.orderId, request.reason, request.instrumentCode);
   }
 }
 

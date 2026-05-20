@@ -3,6 +3,7 @@ import {
   buildJanitorReport,
   buildJanitorRunArtifacts,
   cancelJanitorOrder,
+  dispatchJanitorCancellationRequests,
   fetchJanitorExchangeOpenOrders,
   janitorCleanupRequiredLogMetadata,
   type JanitorExecutionLogger,
@@ -246,6 +247,41 @@ describe("JanitorRuntime", () => {
       instrumentCode: "hype-usd",
       reason: "JANITOR_ORPHAN_EXCHANGE_ORDER"
     });
+  });
+
+  it("dispatches janitor cancellation requests through the supplied rate-limited callback", async () => {
+    const calls: { orderId: string; reason: string; instrumentCode?: string }[] = [];
+
+    await dispatchJanitorCancellationRequests({
+      requests: [
+        {
+          orderId: "orphan-1",
+          reason: "JANITOR_ORPHAN_EXCHANGE_ORDER",
+          instrumentCode: "hype-usd"
+        },
+        {
+          orderId: "zombie-1",
+          reason: "JANITOR_ZOMBIE_LOCAL_ORDER",
+          instrumentCode: undefined
+        }
+      ],
+      async cancelOrder(orderId, reason, instrumentCode) {
+        calls.push({ orderId, reason, instrumentCode });
+      }
+    });
+
+    expect(calls).toEqual([
+      {
+        orderId: "orphan-1",
+        reason: "JANITOR_ORPHAN_EXCHANGE_ORDER",
+        instrumentCode: "hype-usd"
+      },
+      {
+        orderId: "zombie-1",
+        reason: "JANITOR_ZOMBIE_LOCAL_ORDER",
+        instrumentCode: undefined
+      }
+    ]);
   });
 
   it("records post-only dust close skips with position context", () => {

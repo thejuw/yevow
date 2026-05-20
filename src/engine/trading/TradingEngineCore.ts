@@ -161,6 +161,7 @@ import {
 import {
   buildJanitorRunArtifacts,
   cancelJanitorOrder,
+  dispatchJanitorCancellationRequests,
   fetchJanitorExchangeOpenOrders,
   reconcileJanitorOrders,
   recordPostOnlyDustCloseSkips
@@ -4237,9 +4238,11 @@ export class TradingEngine {
       observedAt
     });
 
-    for (const request of reconciliation.cancellationRequests) {
-      await this.cancelOrder(request.orderId, request.reason, request.instrumentCode);
-    }
+    await dispatchJanitorCancellationRequests({
+      requests: reconciliation.cancellationRequests,
+      cancelOrder: (orderId, reason, instrumentCode) =>
+        this.cancelOrder(orderId, reason, instrumentCode)
+    });
 
     const dustCloseIntents = recordPostOnlyDustCloseSkips({
       openPositions: this.engineState.openPositions,
