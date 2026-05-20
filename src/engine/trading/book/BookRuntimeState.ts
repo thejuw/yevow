@@ -6,11 +6,12 @@ import type {
   LatencyMetrics,
   MarketTick,
   MicrostructureMetrics,
+  OrderBookSnapshot,
   PriceDiscoveryMetrics
 } from "../../../types";
 import { aggregateQuoteState, suspendAssetQuoteStates } from "../state/AssetStateRuntime";
 import { defaultMicrostructure, defaultPriceDiscovery } from "../state/EngineStateDefaults";
-import type { AppliedBookUpdate, BookSyncState } from "./BookTypes";
+import type { AppliedBookUpdate, BookDeltaWithTicker, BookSyncState } from "./BookTypes";
 import { microstructureFromBook } from "./BookReconstruction";
 import type { AppliedBookSnapshot } from "./OrderBookReconstructor";
 import type { TickIngestResult } from "../TradingEngineRouteTypes";
@@ -87,10 +88,56 @@ export interface BookSnapshotSideEffectHandlers {
   readonly publishSnapshotApplied: (payload: JsonRecord) => void;
 }
 
+export interface BookSnapshotFlowInput {
+  readonly snapshot: OrderBookSnapshot;
+  readonly currentState: EngineState;
+  readonly updatedAt: string;
+  readonly engineStateKey: string;
+  readonly domWallHistoryKey: string;
+  readonly domWallHistory: unknown;
+  readonly orderBookPrefix: string;
+  readonly telemetryEnabled: boolean;
+  readonly persist: boolean;
+  readonly earlyTickLimit: number;
+  readonly telemetryInterval: number;
+}
+
+export interface BookSnapshotFlowHandlers extends BookSnapshotSideEffectHandlers {
+  readonly applySnapshotToBook: (
+    snapshot: OrderBookSnapshot,
+    updatedAt: string
+  ) => AppliedBookSnapshot;
+  readonly getDomSnapshot: (instrumentCode: string, updatedAt: string) => DomAnalysisSnapshot;
+  readonly countBookLevels: () => number;
+  readonly calculatePriceDiscovery: (
+    instrumentCode: string,
+    updatedAt: string
+  ) => PriceDiscoveryMetrics;
+  readonly applyState: (state: EngineState) => void;
+}
+
 export interface BookDeltaStateInput {
   readonly currentState: EngineState;
   readonly book: InternalOrderBook;
   readonly priceDiscovery: PriceDiscoveryMetrics;
+}
+
+export interface BookDeltaFlowInput {
+  readonly delta: BookDeltaWithTicker;
+  readonly currentState: EngineState;
+  readonly updatedAt: string;
+}
+
+export interface BookDeltaFlowHandlers {
+  readonly applyDeltaToBook: (
+    delta: BookDeltaWithTicker,
+    updatedAt: string
+  ) => Promise<AppliedBookUpdate>;
+  readonly calculatePriceDiscovery: (
+    instrumentCode: string,
+    updatedAt: string
+  ) => PriceDiscoveryMetrics;
+  readonly applyState: (state: EngineState) => void;
 }
 
 export interface RebuiltBookStateInput {
@@ -248,12 +295,66 @@ export async function applyBookSnapshotSideEffects(
   }
 }
 
+export async function applyBookSnapshotFlow(
+  input: BookSnapshotFlowInput,
+  handlers: BookSnapshotFlowHandlers
+): Promise<InternalOrderBook> {
+  const applied = handlers.applySnapshotToBook(input.snapshot, input.updatedAt);
+  const domSnapshot = handlers.getDomSnapshot(applied.instrumentCode, input.updatedAt);
+  const artifacts = bookSnapshotRuntimeArtifacts({
+    currentState: input.currentState,
+    book: applied.book,
+    internalOrderBookDepth: handlers.countBookLevels(),
+    priceDiscovery: handlers.calculatePriceDiscovery(applied.instrumentCode, input.updatedAt),
+    dom: domSnapshot,
+    updatedAt: input.updatedAt,
+    engineStateKey: input.engineStateKey,
+    domWallHistoryKey: input.domWallHistoryKey,
+    domWallHistory: input.domWallHistory,
+    orderBookPrefix: input.orderBookPrefix,
+    marketKey: applied.marketKey,
+    telemetryEnabled: input.telemetryEnabled,
+    snapshotSource: input.snapshot.source,
+    processedTicks: input.currentState.processedTicks,
+    earlyTickLimit: input.earlyTickLimit,
+    telemetryInterval: input.telemetryInterval,
+    applied
+  });
+
+  handlers.applyState(artifacts.state);
+  await applyBookSnapshotSideEffects(artifacts, { persist: input.persist }, handlers);
+
+  return applied.book;
+}
+
 export function stateAfterAcceptedBookDelta(input: BookDeltaStateInput): EngineState {
   return {
     ...input.currentState,
     microstructure: microstructureFromBook(input.book),
     priceDiscovery: input.priceDiscovery
   };
+}
+
+export async function applyBookDeltaFlow(
+  input: BookDeltaFlowInput,
+  handlers: BookDeltaFlowHandlers
+): Promise<AppliedBookUpdate> {
+  const applied = await handlers.applyDeltaToBook(input.delta, input.updatedAt);
+
+  if (applied.accepted && applied.book) {
+    handlers.applyState(
+      stateAfterAcceptedBookDelta({
+        currentState: input.currentState,
+        book: applied.book,
+        priceDiscovery: handlers.calculatePriceDiscovery(
+          applied.book.instrumentCode,
+          input.updatedAt
+        )
+      })
+    );
+  }
+
+  return applied;
 }
 
 export function stateAfterRebuiltBookSnapshot(input: RebuiltBookStateInput): EngineState {

@@ -37,16 +37,15 @@ import {
 } from "./book/BookViews";
 import {
   applyInformationalBookNotReadySideEffects,
-  applyBookSnapshotSideEffects,
+  applyBookDeltaFlow,
+  applyBookSnapshotFlow,
   applyRejectedBookDeltaSideEffects,
   bookDesyncStorageExtra,
   markBookSyncDesynced,
-  stateAfterAcceptedBookDelta,
   stateAfterDesyncedBook,
   stateAfterInformationalBookNotReady,
   stateAfterRejectedBookDelta,
-  rejectedBookDeltaIngestResult,
-  bookSnapshotRuntimeArtifacts
+  rejectedBookDeltaIngestResult
 } from "./book/BookRuntimeState";
 import {
   applyOrderBookResetSideEffects,
@@ -2029,39 +2028,31 @@ export class TradingEngine {
     options: { telemetry?: boolean; persist?: boolean } = {}
   ): Promise<InternalOrderBook> {
     const updatedAt = new Date().toISOString();
-    const applied = this.orderBookReconstructor.applySnapshot(snapshot, updatedAt);
-    const book = applied.book;
-    const domSnapshot = this.getLiquidityWalls(applied.instrumentCode, updatedAt);
-
-    const artifacts = bookSnapshotRuntimeArtifacts({
-      currentState: this.engineState,
-      book,
-      internalOrderBookDepth: countBookLevels(this.bids, this.asks),
-      priceDiscovery: calculateOrderBookPriceDiscovery(
-        this.orderBook,
-        applied.instrumentCode,
-        updatedAt
-      ),
-      dom: domSnapshot,
-      updatedAt,
-      engineStateKey: ENGINE_STATE_KEY,
-      domWallHistoryKey: DOM_WALL_HISTORY_KEY,
-      domWallHistory: this.domWallHistory,
-      orderBookPrefix: ORDER_BOOK_PREFIX,
-      marketKey: applied.marketKey,
-      telemetryEnabled: options.telemetry !== false,
-      snapshotSource: snapshot.source,
-      processedTicks: this.engineState.processedTicks,
-      earlyTickLimit: 5,
-      telemetryInterval: AGENT_SNAPSHOT_TICK_INTERVAL,
-      applied
-    });
-    this.engineState = artifacts.state;
-
-    await applyBookSnapshotSideEffects(
-      artifacts,
-      { persist: options.persist !== false },
+    return applyBookSnapshotFlow(
       {
+        snapshot,
+        currentState: this.engineState,
+        updatedAt,
+        engineStateKey: ENGINE_STATE_KEY,
+        domWallHistoryKey: DOM_WALL_HISTORY_KEY,
+        domWallHistory: this.domWallHistory,
+        orderBookPrefix: ORDER_BOOK_PREFIX,
+        telemetryEnabled: options.telemetry !== false,
+        persist: options.persist !== false,
+        earlyTickLimit: 5,
+        telemetryInterval: AGENT_SNAPSHOT_TICK_INTERVAL
+      },
+      {
+        applySnapshotToBook: (nextSnapshot, snapshotUpdatedAt) =>
+          this.orderBookReconstructor.applySnapshot(nextSnapshot, snapshotUpdatedAt),
+        getDomSnapshot: (instrumentCode, snapshotUpdatedAt) =>
+          this.getLiquidityWalls(instrumentCode, snapshotUpdatedAt),
+        countBookLevels: () => countBookLevels(this.bids, this.asks),
+        calculatePriceDiscovery: (instrumentCode, snapshotUpdatedAt) =>
+          calculateOrderBookPriceDiscovery(this.orderBook, instrumentCode, snapshotUpdatedAt),
+        applyState: (state) => {
+          this.engineState = state;
+        },
         persistStorage: (writes, reason) => this.safeStoragePut(writes, reason),
         logSnapshotApplied: (metadata) =>
           this.logger.info(
@@ -2072,29 +2063,28 @@ export class TradingEngine {
         publishSnapshotApplied: (payload) => this.publish("ORDER_BOOK_SNAPSHOT_APPLIED", payload)
       }
     );
-
-    return book;
   }
 
   private async applyDelta(
     delta: BookDeltaWithTicker,
     updatedAt: string
   ): Promise<AppliedBookUpdate> {
-    const applied = await this.orderBookReconstructor.applyDelta(delta, updatedAt);
-
-    if (applied.accepted && applied.book) {
-      this.engineState = stateAfterAcceptedBookDelta({
+    return applyBookDeltaFlow(
+      {
+        delta,
         currentState: this.engineState,
-        book: applied.book,
-        priceDiscovery: calculateOrderBookPriceDiscovery(
-          this.orderBook,
-          applied.book.instrumentCode,
-          updatedAt
-        )
-      });
-    }
-
-    return applied;
+        updatedAt
+      },
+      {
+        applyDeltaToBook: (nextDelta, deltaUpdatedAt) =>
+          this.orderBookReconstructor.applyDelta(nextDelta, deltaUpdatedAt),
+        calculatePriceDiscovery: (instrumentCode, deltaUpdatedAt) =>
+          calculateOrderBookPriceDiscovery(this.orderBook, instrumentCode, deltaUpdatedAt),
+        applyState: (state) => {
+          this.engineState = state;
+        }
+      }
+    );
   }
 
   private currentBookSnapshot(

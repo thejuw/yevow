@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyBookDeltaFlow,
+  applyBookSnapshotFlow,
   applyBookSnapshotSideEffects,
   applyInformationalBookNotReadySideEffects,
   applyRejectedBookDeltaSideEffects,
@@ -17,9 +19,16 @@ import {
   stateAfterOrderBookReset,
   stateAfterRejectedBookDelta,
   stateAfterRebuiltBookSnapshot,
+  type BookDeltaFlowHandlers,
   type BookEarlyReturnSideEffectHandlers,
+  type BookSnapshotFlowHandlers,
   type BookSnapshotSideEffectHandlers
 } from "../../src/engine/trading/book/BookRuntimeState";
+import type {
+  AppliedBookUpdate,
+  BookDeltaWithTicker
+} from "../../src/engine/trading/book/BookTypes";
+import type { AppliedBookSnapshot } from "../../src/engine/trading/book/OrderBookReconstructor";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type {
   DomAnalysisSnapshot,
@@ -27,6 +36,7 @@ import type {
   LatencyMetrics,
   MarketTick,
   MicrostructureMetrics,
+  OrderBookSnapshot,
   PriceDiscoveryMetrics
 } from "../../src/types";
 
@@ -342,6 +352,79 @@ describe("BookRuntimeState", () => {
     expect(sideEffects.events).toEqual([]);
   });
 
+  it("orchestrates full book snapshot flow through state, storage, and telemetry", async () => {
+    const currentState = defaultEngineState("book-snapshot-flow");
+    const sideEffects = bookSnapshotFlowSideEffectSpy(book({ instrumentCode: "hype-usd" }));
+
+    const result = await applyBookSnapshotFlow(
+      {
+        snapshot: snapshot({ instrumentCode: "hype-usd", source: "ADMIN" }),
+        currentState,
+        updatedAt: OBSERVED_AT,
+        engineStateKey: "engine:state",
+        domWallHistoryKey: "dom:walls",
+        domWallHistory: [],
+        orderBookPrefix: "book:",
+        telemetryEnabled: true,
+        persist: true,
+        earlyTickLimit: 5,
+        telemetryInterval: 1_000
+      },
+      sideEffects.handlers
+    );
+
+    expect(result.instrumentCode).toBe("hype-usd");
+    expect(sideEffects.events).toEqual([
+      "applySnapshot:hype-usd:2026-05-18T07:00:00.000Z",
+      "dom:hype-usd",
+      "depth",
+      "discovery:hype-usd",
+      "state:hype-usd",
+      "persist:ORDER_BOOK_SNAPSHOT_APPLIED:3",
+      "log:42",
+      "publish:42"
+    ]);
+  });
+
+  it("orchestrates accepted book deltas and leaves rejected deltas as-is", async () => {
+    const currentState = defaultEngineState("book-delta-flow");
+    const accepted = bookDeltaFlowSideEffectSpy({
+      accepted: true,
+      book: book({ midPrice: 101, bestBid: 100, bestAsk: 102 }),
+      timeToBookMs: 2,
+      actualSequence: 42
+    });
+    const rejected = bookDeltaFlowSideEffectSpy({
+      accepted: false,
+      reason: "SEQUENCE_GAP",
+      expectedSequence: 41,
+      actualSequence: 42,
+      timeToBookMs: null
+    });
+
+    const acceptedResult = await applyBookDeltaFlow(
+      {
+        delta: delta(),
+        currentState,
+        updatedAt: OBSERVED_AT
+      },
+      accepted.handlers
+    );
+    const rejectedResult = await applyBookDeltaFlow(
+      {
+        delta: delta({ sequence: 43 }),
+        currentState,
+        updatedAt: OBSERVED_AT
+      },
+      rejected.handlers
+    );
+
+    expect(acceptedResult.accepted).toBe(true);
+    expect(accepted.events).toEqual(["applyDelta:42", "discovery:btc-usd", "state:100"]);
+    expect(rejectedResult.accepted).toBe(false);
+    expect(rejected.events).toEqual(["applyDelta:43"]);
+  });
+
   it("marks informational ticks as book-not-ready without mutating quote state when disabled", () => {
     const currentState = defaultEngineState("engine-test");
     currentState.processedTicks = 4;
@@ -608,6 +691,127 @@ function book(overrides: Partial<InternalOrderBook> = {}): InternalOrderBook {
     sequence: 7,
     updatedAt: OBSERVED_AT,
     ...overrides
+  };
+}
+
+function snapshot(overrides: Partial<OrderBookSnapshot> = {}): OrderBookSnapshot {
+  return {
+    schemaVersion: "order-book.snapshot.v1",
+    source: "HYPERLIQUID",
+    source_exchange: "hyperliquid",
+    exchangeCode: "hyperliquid",
+    instrumentCode: "btc-usd",
+    sequence: 42,
+    bids: [{ price: 99, size: 1 }],
+    asks: [{ price: 101, size: 1 }],
+    exchangeTimestamp: OBSERVED_AT,
+    receivedAt: OBSERVED_AT,
+    tickSize: 0.5,
+    ...overrides
+  };
+}
+
+function appliedSnapshot(appliedBook: InternalOrderBook): AppliedBookSnapshot {
+  return {
+    book: appliedBook,
+    marketKey: appliedBook.marketKey,
+    instrumentCode: appliedBook.instrumentCode,
+    exchangeCode: appliedBook.exchangeCode,
+    sourceExchange: appliedBook.source_exchange,
+    source: appliedBook.source,
+    sequence: 42,
+    bidLevels: appliedBook.bids.length,
+    askLevels: appliedBook.asks.length,
+    tickSize: appliedBook.tickSize,
+    timeToBookMs: 2
+  };
+}
+
+function delta(overrides: Partial<BookDeltaWithTicker> = {}): BookDeltaWithTicker {
+  return {
+    schemaVersion: "order-book.delta.v1",
+    source: "HYPERLIQUID",
+    source_exchange: "hyperliquid",
+    marketKey: "hyperliquid:btc-usd",
+    sourceWeight: 1,
+    exchangeCode: "hyperliquid",
+    instrumentCode: "btc-usd",
+    sequence: 42,
+    exchangeTimestamp: OBSERVED_AT,
+    receivedAt: OBSERVED_AT,
+    side: "bid",
+    price: 100,
+    size: 1,
+    bestBid: 100,
+    bestAsk: 102,
+    tickSize: 0.5,
+    ...overrides
+  };
+}
+
+function bookSnapshotFlowSideEffectSpy(appliedBook: InternalOrderBook): {
+  events: string[];
+  handlers: BookSnapshotFlowHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      applySnapshotToBook(nextSnapshot, updatedAt) {
+        events.push(`applySnapshot:${nextSnapshot.instrumentCode}:${updatedAt}`);
+        return appliedSnapshot(appliedBook);
+      },
+      getDomSnapshot(instrumentCode) {
+        events.push(`dom:${instrumentCode}`);
+        return dom(instrumentCode);
+      },
+      countBookLevels() {
+        events.push("depth");
+        return 8;
+      },
+      calculatePriceDiscovery(instrumentCode) {
+        events.push(`discovery:${instrumentCode}`);
+        return priceDiscovery(instrumentCode, appliedBook.midPrice ?? 0);
+      },
+      applyState(state) {
+        events.push(`state:${state.microstructure.instrumentCode}`);
+      },
+      persistStorage(writes, reason) {
+        events.push(`persist:${reason}:${Object.keys(writes).length}`);
+        return Promise.resolve();
+      },
+      logSnapshotApplied(metadata) {
+        events.push(`log:${String(metadata.sequence)}`);
+      },
+      publishSnapshotApplied(payload) {
+        events.push(`publish:${String(payload.sequence)}`);
+      }
+    }
+  };
+}
+
+function bookDeltaFlowSideEffectSpy(applied: AppliedBookUpdate): {
+  events: string[];
+  handlers: BookDeltaFlowHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      applyDeltaToBook(nextDelta) {
+        events.push(`applyDelta:${nextDelta.sequence}`);
+        return Promise.resolve(applied);
+      },
+      calculatePriceDiscovery(instrumentCode) {
+        events.push(`discovery:${instrumentCode}`);
+        return priceDiscovery(instrumentCode, applied.book?.midPrice ?? 0);
+      },
+      applyState(state) {
+        events.push(`state:${String(state.microstructure.midPrice)}`);
+      }
+    }
   };
 }
 
