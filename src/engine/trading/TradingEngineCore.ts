@@ -1,5 +1,5 @@
 /* eslint-disable */
-import { configFromAdminSnapshot, defaultConfig, type ConfigManager } from "../../ConfigManager";
+import { defaultConfig, type ConfigManager } from "../../ConfigManager";
 import { decode as msgpackDecode } from "@msgpack/msgpack";
 import { neutralMacroBias, type Governor } from "../../Governor";
 import type { Logger } from "../../Logger";
@@ -199,12 +199,12 @@ import {
   nextCascadeCvd
 } from "./cascade/CascadeAbsorptionRuntime";
 import {
+  applyAdminConfigUpdateFlow,
   applyConfigRefreshSideEffects,
   applyRuntimeConfigUpdateSideEffects,
   configRefreshQuoteState,
   configRefreshTopologyFromLocation,
-  stateAfterConfigRefresh,
-  stateAfterRuntimeConfigUpdate
+  stateAfterConfigRefresh
 } from "./config/ConfigRuntime";
 import {
   absorptionAnalyzerConfig as buildAbsorptionAnalyzerConfig,
@@ -519,7 +519,6 @@ import {
   applyCascadeManualCloseSideEffects,
   buildCascadeManualCloseRuntimeResult
 } from "./cascade/CascadeManualCloseRuntime";
-import { hasRuntimeConfigUpdate } from "./config/RuntimeConfigUpdateDetection";
 import {
   epochMillis,
   nativeHashSequence,
@@ -4814,42 +4813,33 @@ export class TradingEngine {
   }
 
   private async applyConfigUpdate(update: AdminConfigUpdate): Promise<void> {
-    if (update.signal === "REFRESH_CONFIG" || update.config) {
-      const directConfig = update.config
-        ? configFromAdminSnapshot({
-            currentConfig: this.cachedConfig,
-            snapshot: update.config
+    await applyAdminConfigUpdateFlow(
+      {
+        update,
+        currentState: this.engineState,
+        cachedConfig: this.cachedConfig,
+        macroBias: this.macroBias,
+        temporaryOverride: this.activeTemporaryOverride,
+        currentMaxLatencyMs: this.maxLatencyMs,
+        observedAt: new Date().toISOString()
+      },
+      {
+        refreshConfig: (directConfig) => this.refreshConfig("ADMIN_SIGNAL", directConfig),
+        scheduleConfigRefresh: () => this.scheduleConfigRefresh(),
+        applyRuntimeUpdate: (runtimeUpdate) =>
+          applyRuntimeConfigUpdateSideEffects(runtimeUpdate, {
+            setMaxLatencyMs: (maxLatencyMs) => {
+              this.maxLatencyMs = maxLatencyMs;
+            },
+            applyState: (state) => {
+              this.engineState = state;
+            },
+            persistState: () =>
+              this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "ADMIN_CONFIG_APPLIED"),
+            warnApplied: (metadata) =>
+              this.logger.warn("ADMIN_CONFIG_APPLIED", "Runtime configuration updated", metadata)
           })
-        : undefined;
-      await this.refreshConfig("ADMIN_SIGNAL", directConfig);
-      await this.scheduleConfigRefresh();
-      if (!hasRuntimeConfigUpdate(update)) {
-        return;
       }
-    }
-
-    const now = new Date().toISOString();
-    const runtimeUpdate = stateAfterRuntimeConfigUpdate({
-      currentState: this.engineState,
-      update,
-      cachedConfig: this.cachedConfig,
-      macroBias: this.macroBias,
-      temporaryOverride: this.activeTemporaryOverride,
-      currentMaxLatencyMs: this.maxLatencyMs,
-      observedAt: now
-    });
-
-    await applyRuntimeConfigUpdateSideEffects(runtimeUpdate, {
-      setMaxLatencyMs: (maxLatencyMs) => {
-        this.maxLatencyMs = maxLatencyMs;
-      },
-      applyState: (state) => {
-        this.engineState = state;
-      },
-      persistState: () =>
-        this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "ADMIN_CONFIG_APPLIED"),
-      warnApplied: (metadata) =>
-        this.logger.warn("ADMIN_CONFIG_APPLIED", "Runtime configuration updated", metadata)
-    });
+    );
   }
 }

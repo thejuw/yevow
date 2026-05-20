@@ -8,6 +8,7 @@ import type {
   MacroBias,
   TemporaryGovernanceOverride
 } from "../../../types";
+import { configFromAdminSnapshot } from "../../../ConfigManager";
 import { toJsonValue } from "../helpers/RuntimeSerialization";
 import { mergeRiskLimits, resolveMaxLatencyMs } from "../state/EngineStateDefaults";
 import { applyLocationRisk } from "../helpers/PlacementResolver";
@@ -15,6 +16,7 @@ import {
   aggregateQuoteState,
   reconcileAssetQuoteStatesForConfig
 } from "../state/AssetStateRuntime";
+import { hasRuntimeConfigUpdate } from "./RuntimeConfigUpdateDetection";
 
 export interface RuntimeConfigUpdateInput {
   readonly currentState: EngineState;
@@ -95,6 +97,22 @@ export interface RuntimeConfigUpdateSideEffectHandlers {
   readonly applyState: (state: EngineState) => void;
   readonly persistState: () => Promise<void>;
   readonly warnApplied: (metadata: JsonRecord) => void;
+}
+
+export interface AdminConfigUpdateFlowInput {
+  readonly update: AdminConfigUpdate;
+  readonly currentState: EngineState;
+  readonly cachedConfig: GlobalRiskConfig;
+  readonly macroBias: MacroBias;
+  readonly temporaryOverride: TemporaryGovernanceOverride | null;
+  readonly currentMaxLatencyMs: number;
+  readonly observedAt: string;
+}
+
+export interface AdminConfigUpdateFlowHandlers {
+  readonly refreshConfig: (directConfig?: GlobalRiskConfig) => Promise<void>;
+  readonly scheduleConfigRefresh: () => Promise<void>;
+  readonly applyRuntimeUpdate: (runtimeUpdate: RuntimeConfigUpdateResult) => Promise<void>;
 }
 
 export function stateAfterRuntimeConfigUpdate(
@@ -253,4 +271,38 @@ export async function applyRuntimeConfigUpdateSideEffects(
   handlers.applyState(input.state);
   await handlers.persistState();
   handlers.warnApplied(buildRuntimeConfigAppliedLog(input));
+}
+
+export async function applyAdminConfigUpdateFlow(
+  input: AdminConfigUpdateFlowInput,
+  handlers: AdminConfigUpdateFlowHandlers
+): Promise<RuntimeConfigUpdateResult | null> {
+  if (input.update.signal === "REFRESH_CONFIG" || input.update.config) {
+    const directConfig = input.update.config
+      ? configFromAdminSnapshot({
+          currentConfig: input.cachedConfig,
+          snapshot: input.update.config
+        })
+      : undefined;
+
+    await handlers.refreshConfig(directConfig);
+    await handlers.scheduleConfigRefresh();
+
+    if (!hasRuntimeConfigUpdate(input.update)) {
+      return null;
+    }
+  }
+
+  const runtimeUpdate = stateAfterRuntimeConfigUpdate({
+    currentState: input.currentState,
+    update: input.update,
+    cachedConfig: input.cachedConfig,
+    macroBias: input.macroBias,
+    temporaryOverride: input.temporaryOverride,
+    currentMaxLatencyMs: input.currentMaxLatencyMs,
+    observedAt: input.observedAt
+  });
+
+  await handlers.applyRuntimeUpdate(runtimeUpdate);
+  return runtimeUpdate;
 }

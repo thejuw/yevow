@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { defaultConfig } from "../../src/ConfigManager";
 import { neutralMacroBias } from "../../src/Governor";
 import {
+  applyAdminConfigUpdateFlow,
   applyConfigRefreshSideEffects,
   applyRuntimeConfigUpdateSideEffects,
   buildConfigRefreshLog,
@@ -12,6 +13,7 @@ import {
   stateAfterConfigRefresh,
   stateAfterRuntimeConfigUpdate,
   type ConfigRefreshSideEffectHandlers,
+  type AdminConfigUpdateFlowHandlers,
   type RuntimeConfigUpdateSideEffectHandlers
 } from "../../src/engine/trading/config/ConfigRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
@@ -322,6 +324,100 @@ describe("ConfigRuntime", () => {
 
     expect(sideEffects.events).toEqual(["latency:175", "state:PAPER", "persist", "warn:risk-v3"]);
   });
+
+  it("orchestrates refresh-only admin config updates without applying runtime state", async () => {
+    const sideEffects = adminConfigUpdateFlowSpy();
+
+    const result = await applyAdminConfigUpdateFlow(
+      {
+        update: {
+          signal: "REFRESH_CONFIG",
+          config: {
+            TRADING_ENABLED: false,
+            MAX_POSITION_SIZE: 125,
+            LATENCY_THRESHOLD_MS: 175
+          }
+        },
+        currentState: defaultEngineState("refresh-only-flow"),
+        cachedConfig: {
+          ...defaultConfig,
+          TRADING_ENABLED: true,
+          MAX_POSITION_SIZE: 200,
+          version: "config-current"
+        },
+        macroBias: neutralMacroBias(),
+        temporaryOverride: null,
+        currentMaxLatencyMs: 250,
+        observedAt: "2026-05-18T15:00:00.000Z"
+      },
+      sideEffects.handlers
+    );
+
+    expect(result).toBeNull();
+    expect(sideEffects.events).toEqual(["refresh:false:125:175", "schedule"]);
+  });
+
+  it("orchestrates admin config refresh before runtime state application", async () => {
+    const sideEffects = adminConfigUpdateFlowSpy();
+
+    const result = await applyAdminConfigUpdateFlow(
+      {
+        update: {
+          config: {
+            TRADING_ENABLED: true,
+            LATENCY_THRESHOLD_MS: 150
+          },
+          mode: "PAPER",
+          maxLatencyMs: 150
+        },
+        currentState: defaultEngineState("refresh-runtime-flow"),
+        cachedConfig: {
+          ...defaultConfig,
+          TRADING_ENABLED: false,
+          LATENCY_THRESHOLD_MS: 250,
+          version: "config-current"
+        },
+        macroBias: neutralMacroBias(),
+        temporaryOverride: null,
+        currentMaxLatencyMs: 250,
+        observedAt: "2026-05-18T15:00:00.000Z"
+      },
+      sideEffects.handlers
+    );
+
+    expect(result?.state.mode).toBe("PAPER");
+    expect(result?.maxLatencyMs).toBe(150);
+    expect(sideEffects.events).toEqual(["refresh:true:0:150", "schedule", "runtime:PAPER:150"]);
+  });
+
+  it("orchestrates runtime-only admin updates without refreshing config", async () => {
+    const sideEffects = adminConfigUpdateFlowSpy();
+
+    const result = await applyAdminConfigUpdateFlow(
+      {
+        update: {
+          mode: "HALTED",
+          bankroll: {
+            equity: 275
+          }
+        },
+        currentState: defaultEngineState("runtime-only-flow"),
+        cachedConfig: {
+          ...defaultConfig,
+          version: "config-current"
+        },
+        macroBias: neutralMacroBias(),
+        temporaryOverride: null,
+        currentMaxLatencyMs: 250,
+        observedAt: "2026-05-18T15:00:00.000Z"
+      },
+      sideEffects.handlers
+    );
+
+    expect(result?.state.mode).toBe("HALTED");
+    expect(result?.state.bankroll.equity).toBe(275);
+    expect(sideEffects.events).toEqual(["runtime:HALTED:250"]);
+  });
 });
 
 function configRefreshSideEffectSpy(): {
@@ -380,6 +476,33 @@ function runtimeConfigUpdateSideEffectSpy(): {
       },
       warnApplied(metadata) {
         events.push(`warn:${String(metadata.riskConfigVersion)}`);
+      }
+    }
+  };
+}
+
+function adminConfigUpdateFlowSpy(): {
+  events: string[];
+  handlers: AdminConfigUpdateFlowHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      refreshConfig(config) {
+        events.push(
+          `refresh:${String(config?.TRADING_ENABLED)}:${String(config?.MAX_POSITION_SIZE)}:${String(config?.LATENCY_THRESHOLD_MS)}`
+        );
+        return Promise.resolve();
+      },
+      scheduleConfigRefresh() {
+        events.push("schedule");
+        return Promise.resolve();
+      },
+      applyRuntimeUpdate(update) {
+        events.push(`runtime:${update.state.mode}:${update.maxLatencyMs}`);
+        return Promise.resolve();
       }
     }
   };
