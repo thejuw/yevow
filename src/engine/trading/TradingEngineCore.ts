@@ -35,16 +35,13 @@ import {
   nullableMarkPriceForInstrument
 } from "./book/BookViews";
 import {
-  applyInformationalBookNotReadySideEffects,
   applyBookDeltaFlow,
   applyBookSnapshotFlow,
-  applyRejectedBookDeltaSideEffects,
+  applyInformationalBookNotReadyFlow,
+  applyRejectedBookDeltaFlow,
   bookDesyncStorageExtra,
   markBookSyncDesynced,
-  stateAfterDesyncedBook,
-  stateAfterInformationalBookNotReady,
-  stateAfterRejectedBookDelta,
-  rejectedBookDeltaIngestResult
+  stateAfterDesyncedBook
 } from "./book/BookRuntimeState";
 import {
   applyOrderBookResetSideEffects,
@@ -2193,31 +2190,21 @@ export class TradingEngine {
     orderBookUpdateMs: number,
     hotPathStartedAt: number
   ): Promise<TickIngestResult> {
-    this.observeExecutionProfile(metrics, {
-      wakeUpTimeMs,
-      orderBookUpdateMs,
-      agentLogicMs: null,
-      hotPathStartedAt,
-      observedAt: metrics.brainTimestamp
-    });
-
-    const nextState = stateAfterInformationalBookNotReady({
-      currentState: this.engineState,
-      tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-      instrumentCode: tick.instrumentCode,
-      maxLatencyMs: this.maxLatencyMs,
-      observedAt: metrics.brainTimestamp
-    });
-
-    await applyInformationalBookNotReadySideEffects(
+    return applyInformationalBookNotReadyFlow(
       {
-        state: nextState,
-        storageWrites: this.latencyStorageWritesForState(nextState),
+        currentState: this.engineState,
+        tradingEnabled: this.cachedConfig.TRADING_ENABLED,
         tick,
         metrics,
+        maxLatencyMs: this.maxLatencyMs,
+        wakeUpTimeMs,
+        orderBookUpdateMs,
         hotPathStartedAt
       },
       {
+        observeExecutionProfile: (profileMetrics, trace) =>
+          this.observeExecutionProfile(profileMetrics, trace),
+        storageWritesForState: (state) => this.latencyStorageWritesForState(state),
         applyState: (state) => {
           this.engineState = state;
         },
@@ -2226,13 +2213,6 @@ export class TradingEngine {
           this.publishTickTelemetry(telemetryTick, telemetryMetrics, status, telemetryStartedAt)
       }
     );
-
-    return {
-      accepted: false,
-      status: "BOOK_NOT_READY",
-      reason: "INFORMATIONAL_TICK_WITHOUT_BOOK",
-      metrics
-    };
   }
 
   private async handleRejectedBookDelta(
@@ -2243,43 +2223,23 @@ export class TradingEngine {
     orderBookUpdateMs: number,
     hotPathStartedAt: number
   ): Promise<TickIngestResult> {
-    this.observeExecutionProfile(metrics, {
-      wakeUpTimeMs,
-      orderBookUpdateMs,
-      agentLogicMs: null,
-      hotPathStartedAt,
-      observedAt: metrics.brainTimestamp
-    });
-
-    if (applied.reason === "DUPLICATE_OR_OUT_OF_ORDER") {
-      return rejectedBookDeltaIngestResult({ applied, metrics });
-    }
-
-    const nextState = stateAfterRejectedBookDelta({
-      currentState: this.engineState,
-      internalOrderBookDepth: countBookLevels(this.bids, this.asks),
-      maxLatencyMs: this.maxLatencyMs,
-      observedAt: metrics.brainTimestamp
-    });
-
-    await applyRejectedBookDeltaSideEffects(
+    return applyRejectedBookDeltaFlow(
       {
-        state: nextState,
-        storageWrites: this.latencyStorageWritesForState(
-          nextState,
-          bookDesyncStorageExtra({
-            tick,
-            metrics,
-            reason: applied.reason ?? "BOOK_UPDATE_REJECTED",
-            expectedSequence: applied.expectedSequence,
-            actualSequence: applied.actualSequence
-          })
-        ),
+        currentState: this.engineState,
+        internalOrderBookDepth: countBookLevels(this.bids, this.asks),
         tick,
         metrics,
+        applied,
+        maxLatencyMs: this.maxLatencyMs,
+        wakeUpTimeMs,
+        orderBookUpdateMs,
         hotPathStartedAt
       },
       {
+        observeExecutionProfile: (profileMetrics, trace) =>
+          this.observeExecutionProfile(profileMetrics, trace),
+        storageWritesForState: (state, extra) => this.latencyStorageWritesForState(state, extra),
+        bookDesyncStorageExtra,
         applyState: (state) => {
           this.engineState = state;
         },
@@ -2288,8 +2248,6 @@ export class TradingEngine {
           this.publishTickTelemetry(telemetryTick, telemetryMetrics, status, telemetryStartedAt)
       }
     );
-
-    return rejectedBookDeltaIngestResult({ applied, metrics });
   }
 
   private async handleAnomalyEmergencyPause(

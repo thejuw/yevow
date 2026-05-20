@@ -3,7 +3,9 @@ import {
   applyBookDeltaFlow,
   applyBookSnapshotFlow,
   applyBookSnapshotSideEffects,
+  applyInformationalBookNotReadyFlow,
   applyInformationalBookNotReadySideEffects,
+  applyRejectedBookDeltaFlow,
   applyRejectedBookDeltaSideEffects,
   bookDesyncStorageExtra,
   bookSnapshotRuntimeArtifacts,
@@ -21,6 +23,8 @@ import {
   stateAfterRebuiltBookSnapshot,
   type BookDeltaFlowHandlers,
   type BookEarlyReturnSideEffectHandlers,
+  type InformationalBookNotReadyFlowHandlers,
+  type RejectedBookDeltaFlowHandlers,
   type BookSnapshotFlowHandlers,
   type BookSnapshotSideEffectHandlers
 } from "../../src/engine/trading/book/BookRuntimeState";
@@ -512,6 +516,36 @@ describe("BookRuntimeState", () => {
     ]);
   });
 
+  it("orchestrates book-not-ready early return with profile and telemetry", async () => {
+    const flow = bookNotReadyFlowSpy();
+    const result = await applyInformationalBookNotReadyFlow(
+      {
+        currentState: defaultEngineState("book-not-ready-flow"),
+        tradingEnabled: true,
+        tick: marketTick(),
+        metrics: latencyMetrics(),
+        maxLatencyMs: 150,
+        wakeUpTimeMs: 3,
+        orderBookUpdateMs: 4,
+        hotPathStartedAt: 12
+      },
+      flow.handlers
+    );
+
+    expect(result).toMatchObject({
+      accepted: false,
+      status: "BOOK_NOT_READY",
+      reason: "INFORMATIONAL_TICK_WITHOUT_BOOK"
+    });
+    expect(flow.events).toEqual([
+      "profile:3:4",
+      "storage:1",
+      "state:1",
+      "persist:INFORMATIONAL_TICK_BOOK_NOT_READY:1",
+      "telemetry:FRESH:12"
+    ]);
+  });
+
   it("updates compact state after rejected book deltas", () => {
     const currentState = defaultEngineState("engine-test");
     currentState.processedTicks = 8;
@@ -555,6 +589,64 @@ describe("BookRuntimeState", () => {
     );
 
     expect(sideEffects.events).toEqual(["state:1", "persist:BOOK_DESYNC:2", "telemetry:FRESH:14"]);
+  });
+
+  it("orchestrates rejected book delta flow while skipping duplicate persistence", async () => {
+    const duplicate = rejectedBookDeltaFlowSpy();
+    const duplicateResult = await applyRejectedBookDeltaFlow(
+      {
+        currentState: defaultEngineState("book-duplicate-flow"),
+        internalOrderBookDepth: 7,
+        tick: marketTick(),
+        metrics: latencyMetrics(),
+        applied: {
+          accepted: false,
+          reason: "DUPLICATE_OR_OUT_OF_ORDER",
+          actualSequence: 11,
+          timeToBookMs: null
+        },
+        maxLatencyMs: 150,
+        wakeUpTimeMs: 3,
+        orderBookUpdateMs: 4,
+        hotPathStartedAt: 14
+      },
+      duplicate.handlers
+    );
+
+    expect(duplicateResult.status).toBe("DUPLICATE_OR_OUT_OF_ORDER");
+    expect(duplicate.events).toEqual(["profile:3:4"]);
+
+    const desync = rejectedBookDeltaFlowSpy();
+    const desyncResult = await applyRejectedBookDeltaFlow(
+      {
+        currentState: defaultEngineState("book-desync-flow"),
+        internalOrderBookDepth: 7,
+        tick: marketTick(),
+        metrics: latencyMetrics(),
+        applied: {
+          accepted: false,
+          reason: "SEQUENCE_GAP",
+          expectedSequence: 10,
+          actualSequence: 11,
+          timeToBookMs: null
+        },
+        maxLatencyMs: 150,
+        wakeUpTimeMs: 3,
+        orderBookUpdateMs: 4,
+        hotPathStartedAt: 14
+      },
+      desync.handlers
+    );
+
+    expect(desyncResult.status).toBe("DESYNC");
+    expect(desync.events).toEqual([
+      "profile:3:4",
+      "desync-extra:SEQUENCE_GAP",
+      "storage:2",
+      "state:1",
+      "persist:BOOK_DESYNC:2",
+      "telemetry:FRESH:14"
+    ]);
   });
 
   it("maps rejected book deltas to ingest statuses", () => {
@@ -970,6 +1062,55 @@ function bookEarlyReturnSideEffectSpy(): {
       },
       publishTickTelemetry(_tick, _metrics, status, hotPathStartedAt) {
         events.push(`telemetry:${status}:${hotPathStartedAt}`);
+      }
+    }
+  };
+}
+
+function bookNotReadyFlowSpy(): {
+  events: string[];
+  handlers: InformationalBookNotReadyFlowHandlers;
+} {
+  const sideEffects = bookEarlyReturnSideEffectSpy();
+  const events = sideEffects.events;
+
+  return {
+    events,
+    handlers: {
+      ...sideEffects.handlers,
+      observeExecutionProfile(_metrics, trace) {
+        events.push(`profile:${trace.wakeUpTimeMs}:${trace.orderBookUpdateMs}`);
+      },
+      storageWritesForState(state) {
+        events.push(`storage:${state.processedTicks}`);
+        return { "engine:state": state };
+      }
+    }
+  };
+}
+
+function rejectedBookDeltaFlowSpy(): {
+  events: string[];
+  handlers: RejectedBookDeltaFlowHandlers;
+} {
+  const sideEffects = bookEarlyReturnSideEffectSpy();
+  const events = sideEffects.events;
+
+  return {
+    events,
+    handlers: {
+      ...sideEffects.handlers,
+      observeExecutionProfile(_metrics, trace) {
+        events.push(`profile:${trace.wakeUpTimeMs}:${trace.orderBookUpdateMs}`);
+      },
+      storageWritesForState(state, extra) {
+        const writes = { "engine:state": state, ...extra };
+        events.push(`storage:${Object.keys(writes).length}`);
+        return writes;
+      },
+      bookDesyncStorageExtra(input) {
+        events.push(`desync-extra:${input.reason}`);
+        return bookDesyncStorageExtra(input);
       }
     }
   };

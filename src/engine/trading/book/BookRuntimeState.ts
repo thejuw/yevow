@@ -15,6 +15,7 @@ import type { AppliedBookUpdate, BookDeltaWithTicker, BookSyncState } from "./Bo
 import { microstructureFromBook } from "./BookReconstruction";
 import type { AppliedBookSnapshot } from "./OrderBookReconstructor";
 import type { TickIngestResult } from "../TradingEngineRouteTypes";
+import type { ExecutionTraceInput } from "../performance/LatencyRuntime";
 
 export interface BookResetStateInput {
   readonly currentState: EngineState;
@@ -181,6 +182,43 @@ export interface BookEarlyReturnSideEffectHandlers {
     status: "FRESH",
     hotPathStartedAt: number
   ) => void;
+}
+
+export interface InformationalBookNotReadyFlowInput {
+  readonly currentState: EngineState;
+  readonly tradingEnabled: boolean;
+  readonly tick: MarketTick;
+  readonly metrics: LatencyMetrics;
+  readonly maxLatencyMs: number;
+  readonly wakeUpTimeMs: number | null;
+  readonly orderBookUpdateMs: number;
+  readonly hotPathStartedAt: number;
+}
+
+export interface InformationalBookNotReadyFlowHandlers extends BookEarlyReturnSideEffectHandlers {
+  readonly observeExecutionProfile: (metrics: LatencyMetrics, trace: ExecutionTraceInput) => void;
+  readonly storageWritesForState: (state: EngineState) => Record<string, unknown>;
+}
+
+export interface RejectedBookDeltaFlowInput {
+  readonly currentState: EngineState;
+  readonly internalOrderBookDepth: number;
+  readonly tick: MarketTick;
+  readonly metrics: LatencyMetrics;
+  readonly applied: AppliedBookUpdate;
+  readonly maxLatencyMs: number;
+  readonly wakeUpTimeMs: number | null;
+  readonly orderBookUpdateMs: number;
+  readonly hotPathStartedAt: number;
+}
+
+export interface RejectedBookDeltaFlowHandlers extends BookEarlyReturnSideEffectHandlers {
+  readonly observeExecutionProfile: (metrics: LatencyMetrics, trace: ExecutionTraceInput) => void;
+  readonly storageWritesForState: (
+    state: EngineState,
+    extra?: Record<string, unknown>
+  ) => Record<string, unknown>;
+  readonly bookDesyncStorageExtra: (input: BookDesyncStorageInput) => Record<string, unknown>;
 }
 
 export interface BookSyncDesyncInput {
@@ -420,6 +458,91 @@ export async function applyRejectedBookDeltaSideEffects(
   handlers.applyState(input.state);
   await handlers.persistStorage(input.storageWrites, "BOOK_DESYNC");
   handlers.publishTickTelemetry(input.tick, input.metrics, "FRESH", input.hotPathStartedAt);
+}
+
+export async function applyInformationalBookNotReadyFlow(
+  input: InformationalBookNotReadyFlowInput,
+  handlers: InformationalBookNotReadyFlowHandlers
+): Promise<TickIngestResult> {
+  handlers.observeExecutionProfile(input.metrics, {
+    wakeUpTimeMs: input.wakeUpTimeMs,
+    orderBookUpdateMs: input.orderBookUpdateMs,
+    agentLogicMs: null,
+    hotPathStartedAt: input.hotPathStartedAt,
+    observedAt: input.metrics.brainTimestamp
+  });
+
+  const nextState = stateAfterInformationalBookNotReady({
+    currentState: input.currentState,
+    tradingEnabled: input.tradingEnabled,
+    instrumentCode: input.tick.instrumentCode,
+    maxLatencyMs: input.maxLatencyMs,
+    observedAt: input.metrics.brainTimestamp
+  });
+
+  await applyInformationalBookNotReadySideEffects(
+    {
+      state: nextState,
+      storageWrites: handlers.storageWritesForState(nextState),
+      tick: input.tick,
+      metrics: input.metrics,
+      hotPathStartedAt: input.hotPathStartedAt
+    },
+    handlers
+  );
+
+  return {
+    accepted: false,
+    status: "BOOK_NOT_READY",
+    reason: "INFORMATIONAL_TICK_WITHOUT_BOOK",
+    metrics: input.metrics
+  };
+}
+
+export async function applyRejectedBookDeltaFlow(
+  input: RejectedBookDeltaFlowInput,
+  handlers: RejectedBookDeltaFlowHandlers
+): Promise<TickIngestResult> {
+  handlers.observeExecutionProfile(input.metrics, {
+    wakeUpTimeMs: input.wakeUpTimeMs,
+    orderBookUpdateMs: input.orderBookUpdateMs,
+    agentLogicMs: null,
+    hotPathStartedAt: input.hotPathStartedAt,
+    observedAt: input.metrics.brainTimestamp
+  });
+
+  if (input.applied.reason === "DUPLICATE_OR_OUT_OF_ORDER") {
+    return rejectedBookDeltaIngestResult({ applied: input.applied, metrics: input.metrics });
+  }
+
+  const nextState = stateAfterRejectedBookDelta({
+    currentState: input.currentState,
+    internalOrderBookDepth: input.internalOrderBookDepth,
+    maxLatencyMs: input.maxLatencyMs,
+    observedAt: input.metrics.brainTimestamp
+  });
+
+  await applyRejectedBookDeltaSideEffects(
+    {
+      state: nextState,
+      storageWrites: handlers.storageWritesForState(
+        nextState,
+        handlers.bookDesyncStorageExtra({
+          tick: input.tick,
+          metrics: input.metrics,
+          reason: input.applied.reason ?? "BOOK_UPDATE_REJECTED",
+          expectedSequence: input.applied.expectedSequence,
+          actualSequence: input.applied.actualSequence
+        })
+      ),
+      tick: input.tick,
+      metrics: input.metrics,
+      hotPathStartedAt: input.hotPathStartedAt
+    },
+    handlers
+  );
+
+  return rejectedBookDeltaIngestResult({ applied: input.applied, metrics: input.metrics });
 }
 
 export function rejectedBookDeltaIngestResult(input: {
