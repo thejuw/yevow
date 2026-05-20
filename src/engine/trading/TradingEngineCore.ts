@@ -27,7 +27,6 @@ import {
   applyLocationRisk,
   buildTopologyObservationLogEvents,
   defaultEngineLocation,
-  readTopologyHeaders,
   resolveEngineLocation,
   stateAfterLocationLatency,
   stateAfterTopologyObservation
@@ -233,10 +232,7 @@ import {
   handleTradingEngineHttpRoute,
   type EngineHttpRouteContext
 } from "./routes/EngineHttpRoutes";
-import {
-  classifyTradingEngineWebSocketRoute,
-  isTradingEngineMarketDataRequest
-} from "./routes/EngineFetchRuntime";
+import { buildTradingEngineFetchRequestContext } from "./routes/EngineFetchRuntime";
 import {
   acceptMarketStream as acceptTradingMarketStream,
   acceptTelemetryStream as acceptTradingTelemetryStream
@@ -923,35 +919,24 @@ export class TradingEngine {
     const wakeUpTimeMs = roundLatency(highResolutionNow() - fetchStartedAt);
     this.latestWakeUpTimeMs = wakeUpTimeMs;
 
-    const url = new URL(request.url);
-    const requestId = request.headers.get("cf-ray") ?? crypto.randomUUID();
-    const topology = readTopologyHeaders(request);
-    if (
-      isTradingEngineMarketDataRequest({
-        pathname: url.pathname,
-        sourceHeader: request.headers.get("x-source") ?? ""
-      })
-    ) {
-      this.observeTopology(topology);
-      this.warmUpForTopology(topology);
+    const routeContext = buildTradingEngineFetchRequestContext(request);
+    if (routeContext.isMarketDataRequest) {
+      this.observeTopology(routeContext.topology);
+      this.warmUpForTopology(routeContext.topology);
     }
 
-    const webSocketRoute = classifyTradingEngineWebSocketRoute({
-      pathname: url.pathname,
-      upgradeHeader: request.headers.get("Upgrade")
-    });
-    if (webSocketRoute === "TELEMETRY_STREAM") {
+    if (routeContext.webSocketRoute === "TELEMETRY_STREAM") {
       return acceptTradingTelemetryStream(this.streamContext());
     }
 
-    if (webSocketRoute === "MARKET_STREAM") {
+    if (routeContext.webSocketRoute === "MARKET_STREAM") {
       return acceptTradingMarketStream(this.streamContext());
     }
 
     try {
       return await handleTradingEngineHttpRoute(
         request,
-        url,
+        routeContext.url,
         this.engineHttpRouteContext(wakeUpTimeMs)
       );
     } catch (error) {
@@ -961,11 +946,11 @@ export class TradingEngine {
       this.logger.error(
         "ENGINE_REQUEST_FAILED",
         "Trading engine request failed",
-        { path: url.pathname, message },
-        requestId
+        { path: routeContext.url.pathname, message },
+        routeContext.requestId
       );
 
-      return json({ ok: false, error: message, requestId }, status);
+      return json({ ok: false, error: message, requestId: routeContext.requestId }, status);
     }
   }
 
