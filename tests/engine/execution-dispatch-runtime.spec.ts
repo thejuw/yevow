@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   buildExecutionDispatchBlockLog,
+  buildExecutionDispatchRuntimeDecision,
   buildExecutionPlanDispatchAction,
   dispatchTradeIntentToExecutioner,
+  emitExecutionDispatchBlockLog,
+  type ExecutionDispatchBlockLogger,
   type ExecutionDispatchLogger,
   evaluateExecutionDispatchGate,
   shadowTradeIntentAuthorizedLogMetadata,
@@ -147,6 +150,60 @@ describe("ExecutionDispatchRuntime", () => {
         selectedInstruments: ["btc-usd"]
       })
     ).toBeNull();
+  });
+
+  it("assembles dispatch runtime gate and block log together", () => {
+    const decision = buildExecutionDispatchRuntimeDecision({
+      intent: tradeIntent({ instrumentCode: "eth-usd" }),
+      hasExecutioner: true,
+      tradingEnabled: true,
+      hedgeEnabled: false,
+      inventoryHedge: false,
+      instrumentSelected: false,
+      selectedInstruments: ["btc-usd", "hype-usd"]
+    });
+
+    expect(decision.gate).toEqual({ allowed: false, reason: "MOLTWORKER_NOT_SELECTED" });
+    expect(decision.blockLog).toMatchObject({
+      level: "INFO",
+      eventType: "EXECUTION_DISPATCH_BLOCKED",
+      metadata: {
+        instrumentCode: "eth-usd",
+        selectedInstruments: ["btc-usd", "hype-usd"]
+      }
+    });
+  });
+
+  it("emits execution dispatch block logs at the declared severity", () => {
+    const { logger, events } = blockLoggerSpy();
+
+    emitExecutionDispatchBlockLog(logger, {
+      level: "INFO",
+      eventType: "EXECUTION_DISPATCH_BLOCKED",
+      message: "blocked",
+      metadata: { intentId: "intent-1" }
+    });
+    emitExecutionDispatchBlockLog(logger, {
+      level: "WARN",
+      eventType: "TAKER_EXECUTION_SUPPRESSED",
+      message: "suppressed",
+      metadata: { intentId: "intent-2" }
+    });
+
+    expect(events).toEqual([
+      {
+        level: "INFO",
+        eventType: "EXECUTION_DISPATCH_BLOCKED",
+        message: "blocked",
+        telemetry: { intentId: "intent-1" }
+      },
+      {
+        level: "WARN",
+        eventType: "TAKER_EXECUTION_SUPPRESSED",
+        message: "suppressed",
+        telemetry: { intentId: "intent-2" }
+      }
+    ]);
   });
 
   it("builds execution plan dispatch log metadata", () => {
@@ -312,6 +369,34 @@ function loggerSpy(): {
       }
     },
     errors
+  };
+}
+
+function blockLoggerSpy(): {
+  logger: ExecutionDispatchBlockLogger;
+  events: {
+    level: "INFO" | "WARN";
+    eventType: string;
+    message: string;
+    telemetry?: Record<string, unknown>;
+  }[];
+} {
+  const events: {
+    level: "INFO" | "WARN";
+    eventType: string;
+    message: string;
+    telemetry?: Record<string, unknown>;
+  }[] = [];
+  return {
+    logger: {
+      info(eventType, message, telemetry) {
+        events.push({ level: "INFO", eventType, message, telemetry });
+      },
+      warn(eventType, message, telemetry) {
+        events.push({ level: "WARN", eventType, message, telemetry });
+      }
+    },
+    events
   };
 }
 

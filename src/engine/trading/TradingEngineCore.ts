@@ -121,10 +121,10 @@ import {
   type ApprovedExecutionPlan
 } from "./execution/ExecutionPlanRuntime";
 import {
-  buildExecutionDispatchBlockLog,
+  buildExecutionDispatchRuntimeDecision,
   buildExecutionPlanDispatchAction,
   dispatchTradeIntentToExecutioner,
-  evaluateExecutionDispatchGate
+  emitExecutionDispatchBlockLog
 } from "./execution/ExecutionDispatchRuntime";
 import {
   buildCroupierEvaluationInput,
@@ -4175,30 +4175,21 @@ export class TradingEngine {
   ): Promise<void> {
     const inventoryHedge = isInventoryHedgeIntent(intent);
     const executioner = this.env.EXECUTIONER;
-    const dispatchGate = evaluateExecutionDispatchGate({
+    const dispatch = buildExecutionDispatchRuntimeDecision({
       intent,
       hasExecutioner: Boolean(executioner),
       tradingEnabled: this.cachedConfig.TRADING_ENABLED,
       hedgeEnabled: this.cachedConfig.HEDGE_ENABLED,
       inventoryHedge,
-      instrumentSelected: isInstrumentSelectedByMoltworker(intent.instrumentCode, this.macroBias)
-    });
-
-    const blockLog = buildExecutionDispatchBlockLog({
-      decision: dispatchGate,
-      intent,
+      instrumentSelected: isInstrumentSelectedByMoltworker(intent.instrumentCode, this.macroBias),
       selectedInstruments: [...selectedMoltworkerInstruments(this.macroBias)]
     });
-    if (blockLog) {
-      if (blockLog.level === "INFO") {
-        this.logger.info(blockLog.eventType, blockLog.message, blockLog.metadata);
-      } else {
-        this.logger.warn(blockLog.eventType, blockLog.message, blockLog.metadata);
-      }
+    if (dispatch.blockLog) {
+      emitExecutionDispatchBlockLog(this.logger, dispatch.blockLog);
       return;
     }
 
-    if (!dispatchGate.allowed || !executioner) {
+    if (!dispatch.gate.allowed || !executioner) {
       return;
     }
 

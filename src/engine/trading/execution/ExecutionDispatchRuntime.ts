@@ -33,12 +33,26 @@ export interface ExecutionDispatchBlockLogEvent {
   readonly metadata: JsonRecord;
 }
 
+export interface ExecutionDispatchRuntimeInput extends ExecutionDispatchGateInput {
+  readonly selectedInstruments: readonly string[];
+}
+
+export interface ExecutionDispatchRuntimeDecision {
+  readonly gate: ExecutionDispatchGateDecision;
+  readonly blockLog: ExecutionDispatchBlockLogEvent | null;
+}
+
 export interface ExecutionDispatchFetcher {
   fetch(request: Request): Promise<Response>;
 }
 
 export interface ExecutionDispatchLogger {
   error(eventType: string, message: string, telemetry?: JsonRecord): void;
+}
+
+export interface ExecutionDispatchBlockLogger {
+  info(eventType: string, message: string, telemetry?: JsonRecord): void;
+  warn(eventType: string, message: string, telemetry?: JsonRecord): void;
 }
 
 export interface DispatchTradeIntentInput {
@@ -160,6 +174,32 @@ export function buildExecutionDispatchBlockLog(
   }
 
   return null;
+}
+
+export function buildExecutionDispatchRuntimeDecision(
+  input: ExecutionDispatchRuntimeInput
+): ExecutionDispatchRuntimeDecision {
+  const gate = evaluateExecutionDispatchGate(input);
+  return {
+    gate,
+    blockLog: buildExecutionDispatchBlockLog({
+      decision: gate,
+      intent: input.intent,
+      selectedInstruments: input.selectedInstruments
+    })
+  };
+}
+
+export function emitExecutionDispatchBlockLog(
+  logger: ExecutionDispatchBlockLogger,
+  event: ExecutionDispatchBlockLogEvent
+): void {
+  if (event.level === "INFO") {
+    logger.info(event.eventType, event.message, event.metadata);
+    return;
+  }
+
+  logger.warn(event.eventType, event.message, event.metadata);
 }
 
 export function tradeIntentAuthorizedLogMetadata(input: ExecutionPlanDispatchLogInput): JsonRecord {
