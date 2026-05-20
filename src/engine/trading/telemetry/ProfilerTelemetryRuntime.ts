@@ -6,6 +6,14 @@ export interface ProfilerTelemetryEvent {
   readonly correlationId: string;
 }
 
+export interface ProfilerTelemetryPublishHandlers {
+  readonly publish: (
+    type: ProfilerTelemetryEvent["telemetryType"],
+    payload: ProfilerTelemetryEvent["payload"],
+    correlationId: string
+  ) => void;
+}
+
 export interface ProfilerQuoteCancelInput {
   readonly signal: AgentSignal;
   readonly profilerQuoteHalt: boolean;
@@ -112,4 +120,25 @@ export function buildAmVpinTelemetry(
     },
     correlationId: `am-vpin:${instrumentCode}:${profilerState.amVpinBucketCompletions}`
   };
+}
+
+export function emitProfilerAlertTelemetry(
+  signal: AgentSignal,
+  profilerState: ProfilerState,
+  handlers: ProfilerTelemetryPublishHandlers
+): ProfilerTelemetryEvent {
+  const event = buildProfilerAlertTelemetry(signal, profilerState);
+  handlers.publish(event.telemetryType, event.payload, event.correlationId);
+  return event;
+}
+
+export function emitAmVpinTelemetry(
+  profilerState: ProfilerState,
+  instrumentCode: string,
+  observedAt: string,
+  handlers: ProfilerTelemetryPublishHandlers
+): ProfilerTelemetryEvent {
+  const event = buildAmVpinTelemetry(profilerState, instrumentCode, observedAt);
+  handlers.publish(event.telemetryType, event.payload, event.correlationId);
+  return event;
 }

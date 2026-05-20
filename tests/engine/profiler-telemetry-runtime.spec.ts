@@ -3,7 +3,10 @@ import {
   applyProfilerSignalSideEffects,
   buildAmVpinTelemetry,
   buildProfilerAlertTelemetry,
-  shouldCancelQuotesForProfilerSignal
+  emitAmVpinTelemetry,
+  emitProfilerAlertTelemetry,
+  shouldCancelQuotesForProfilerSignal,
+  type ProfilerTelemetryPublishHandlers
 } from "../../src/engine/trading/telemetry/ProfilerTelemetryRuntime";
 import type { AgentSignal, ProfilerState } from "../../src/types";
 
@@ -52,6 +55,25 @@ describe("ProfilerTelemetryRuntime", () => {
         toxicity_state: "TOXIC"
       }
     });
+  });
+
+  it("emits profiler and AM-VPIN telemetry through the publish boundary", () => {
+    const sideEffects = profilerTelemetryPublishSpy();
+
+    const alert = emitProfilerAlertTelemetry(signal(), profilerState(), sideEffects.handlers);
+    const amVpin = emitAmVpinTelemetry(
+      profilerState({ amVpinBucketCompletions: 8 }),
+      "btc-usd",
+      "2026-05-19T12:00:00.000Z",
+      sideEffects.handlers
+    );
+
+    expect(alert.correlationId).toBe("signal-1");
+    expect(amVpin.correlationId).toBe("am-vpin:btc-usd:8");
+    expect(sideEffects.events).toEqual([
+      "publish:PROFILER_ALERT:signal-1",
+      "publish:AM_VPIN_TELEMETRY:am-vpin:btc-usd:8"
+    ]);
   });
 
   it("decides when profiler signals should cancel resting quotes", () => {
@@ -129,6 +151,22 @@ describe("ProfilerTelemetryRuntime", () => {
     ]);
   });
 });
+
+function profilerTelemetryPublishSpy(): {
+  events: string[];
+  handlers: ProfilerTelemetryPublishHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      publish(type, _payload, correlationId) {
+        events.push(`publish:${type}:${correlationId}`);
+      }
+    }
+  };
+}
 
 function signal(overrides: Partial<AgentSignal> = {}): AgentSignal {
   return {

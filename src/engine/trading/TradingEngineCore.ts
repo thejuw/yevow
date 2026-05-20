@@ -260,8 +260,8 @@ import {
 } from "./telemetry/CascadeSignalTelemetryRuntime";
 import {
   applyProfilerSignalSideEffects,
-  buildAmVpinTelemetry,
-  buildProfilerAlertTelemetry
+  emitAmVpinTelemetry,
+  emitProfilerAlertTelemetry
 } from "./telemetry/ProfilerTelemetryRuntime";
 import { buildTickTelemetryPayload } from "./telemetry/TickTelemetryRuntime";
 import { type ReplayOptions, type ReplayScenario } from "./routes/ReplayAdminRoutes";
@@ -4615,8 +4615,9 @@ export class TradingEngine {
   }
 
   private publishProfilerAlert(signal: AgentSignal, profilerState: ProfilerState): void {
-    const event = buildProfilerAlertTelemetry(signal, profilerState);
-    this.publish(event.telemetryType, event.payload, event.correlationId);
+    emitProfilerAlertTelemetry(signal, profilerState, {
+      publish: (type, payload, correlationId) => this.publish(type, payload, correlationId)
+    });
   }
 
   private publishAmVpinTelemetry(
@@ -4624,8 +4625,9 @@ export class TradingEngine {
     instrumentCode: string,
     observedAt: string
   ): void {
-    const event = buildAmVpinTelemetry(profilerState, instrumentCode, observedAt);
-    this.publish(event.telemetryType, event.payload, event.correlationId);
+    emitAmVpinTelemetry(profilerState, instrumentCode, observedAt, {
+      publish: (type, payload, correlationId) => this.publish(type, payload, correlationId)
+    });
   }
 
   private publish(type: string, payload: Record<string, unknown>, correlationId?: string): void {
