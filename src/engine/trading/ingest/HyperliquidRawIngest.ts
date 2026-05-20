@@ -90,6 +90,28 @@ export type HyperliquidRawMessageRoute =
   | { readonly kind: "LIQUIDATION_EVENTS"; readonly raw: Record<string, unknown> }
   | { readonly kind: "IGNORED"; readonly raw: Record<string, unknown>; readonly reason: string };
 
+export interface HyperliquidRawMessageRouteHandlers {
+  readonly handleL2Book: (
+    raw: Record<string, unknown>,
+    payload: HyperliquidRawIngestPayload,
+    wakeUpTimeMs: number | null
+  ) => Promise<TickIngestResult>;
+  readonly handleTrades: (
+    raw: Record<string, unknown>,
+    payload: HyperliquidRawIngestPayload,
+    wakeUpTimeMs: number | null
+  ) => Promise<TickIngestResult>;
+  readonly handleAssetContext: (
+    raw: Record<string, unknown>,
+    payload: HyperliquidRawIngestPayload,
+    wakeUpTimeMs: number | null
+  ) => Promise<TickIngestResult>;
+  readonly handleLiquidationEvents: (
+    raw: Record<string, unknown>,
+    payload: HyperliquidRawIngestPayload
+  ) => Promise<TickIngestResult>;
+}
+
 export async function handleHyperliquidRawBatch(
   payload: HyperliquidRawIngestPayload,
   wakeUpTimeMs: number | null,
@@ -120,6 +142,42 @@ export async function handleHyperliquidRawBatch(
   return {
     ...(terminalResult ?? { accepted: true, status: "FRESH" as const }),
     processedCount
+  };
+}
+
+export async function dispatchHyperliquidRawMessageRoute(
+  raw: unknown,
+  payload: HyperliquidRawIngestPayload,
+  wakeUpTimeMs: number | null,
+  handlers: HyperliquidRawMessageRouteHandlers
+): Promise<TickIngestResult> {
+  const route = routeHyperliquidRawMessage(raw);
+
+  if (route.kind === "CONTROL") {
+    return { accepted: true, status: "FRESH", processedCount: 0 };
+  }
+
+  if (route.kind === "L2_BOOK") {
+    return handlers.handleL2Book(route.raw, payload, wakeUpTimeMs);
+  }
+
+  if (route.kind === "TRADES") {
+    return handlers.handleTrades(route.raw, payload, wakeUpTimeMs);
+  }
+
+  if (route.kind === "ASSET_CONTEXT") {
+    return handlers.handleAssetContext(route.raw, payload, wakeUpTimeMs);
+  }
+
+  if (route.kind === "LIQUIDATION_EVENTS") {
+    return handlers.handleLiquidationEvents(route.raw, payload);
+  }
+
+  return {
+    accepted: false,
+    status: "BOOK_NOT_READY",
+    reason: route.reason,
+    processedCount: 0
   };
 }
 

@@ -217,13 +217,13 @@ import type { AppliedBookUpdate, BookDeltaWithTicker, BookSyncState } from "./bo
 import {
   buildHyperliquidL2BookTick,
   buildHyperliquidL2BookTickFromBook,
+  dispatchHyperliquidRawMessageRoute,
   evaluateHyperliquidL2BookRuntime,
   handleHyperliquidRawBatch,
   hyperliquidBookDesyncLogMetadata,
   processHyperliquidAssetContext,
   processHyperliquidTradeBatch,
   registerHyperliquidIngestConnection,
-  routeHyperliquidRawMessage,
   type HyperliquidL2BookHotPathDecision,
   type HyperliquidRawIngestPayload
 } from "./ingest/HyperliquidRawIngest";
@@ -1196,34 +1196,16 @@ export class TradingEngine {
     payload: HyperliquidRawIngestPayload,
     wakeUpTimeMs: number | null
   ): Promise<TickIngestResult> {
-    const route = routeHyperliquidRawMessage(raw);
-
-    if (route.kind === "CONTROL") {
-      return { accepted: true, status: "FRESH", processedCount: 0 };
-    }
-
-    if (route.kind === "L2_BOOK") {
-      return this.handleHyperliquidL2Book(route.raw, payload, wakeUpTimeMs);
-    }
-
-    if (route.kind === "TRADES") {
-      return this.handleHyperliquidTrades(route.raw, payload, wakeUpTimeMs);
-    }
-
-    if (route.kind === "ASSET_CONTEXT") {
-      return this.handleHyperliquidAssetContext(route.raw, payload, wakeUpTimeMs);
-    }
-
-    if (route.kind === "LIQUIDATION_EVENTS") {
-      return this.handleHyperliquidLiquidationEvents(route.raw, payload);
-    }
-
-    return {
-      accepted: false,
-      status: "BOOK_NOT_READY",
-      reason: route.reason,
-      processedCount: 0
-    };
+    return dispatchHyperliquidRawMessageRoute(raw, payload, wakeUpTimeMs, {
+      handleL2Book: (routeRaw, routePayload, wakeUp) =>
+        this.handleHyperliquidL2Book(routeRaw, routePayload, wakeUp),
+      handleTrades: (routeRaw, routePayload, wakeUp) =>
+        this.handleHyperliquidTrades(routeRaw, routePayload, wakeUp),
+      handleAssetContext: (routeRaw, routePayload, wakeUp) =>
+        this.handleHyperliquidAssetContext(routeRaw, routePayload, wakeUp),
+      handleLiquidationEvents: (routeRaw, routePayload) =>
+        this.handleHyperliquidLiquidationEvents(routeRaw, routePayload)
+    });
   }
 
   private async handleStaleHyperliquidL2Book(

@@ -5,6 +5,7 @@ import {
   buildHyperliquidL2BookTick,
   buildHyperliquidL2BookTickFromBook,
   calculateHyperliquidBookTotalLatencyMs,
+  dispatchHyperliquidRawMessageRoute,
   evaluateHyperliquidL2BookHotPath,
   evaluateHyperliquidL2BookRuntime,
   evaluateHyperliquidBookSequence,
@@ -84,6 +85,46 @@ describe("hyperliquid raw ingest helpers", () => {
       reason: "IGNORED_HYPERLIQUID_CHANNEL_unknownthing"
     });
     expect(() => routeHyperliquidRawMessage("bad")).toThrow("INVALID_HYPERLIQUID_RAW_MESSAGE");
+  });
+
+  it("dispatches routed raw messages to the matching ingest handlers", async () => {
+    const calls: string[] = [];
+    const handlers = {
+      handleL2Book: async () => {
+        calls.push("l2");
+        return freshResult();
+      },
+      handleTrades: async () => {
+        calls.push("trades");
+        return freshResult();
+      },
+      handleAssetContext: async () => {
+        calls.push("asset-context");
+        return freshResult();
+      },
+      handleLiquidationEvents: async () => {
+        calls.push("liquidations");
+        return freshResult();
+      }
+    };
+
+    await expect(
+      dispatchHyperliquidRawMessageRoute({ channel: "pong" }, {}, 4, handlers)
+    ).resolves.toEqual({ accepted: true, status: "FRESH", processedCount: 0 });
+    await dispatchHyperliquidRawMessageRoute({ channel: "l2Book" }, {}, 4, handlers);
+    await dispatchHyperliquidRawMessageRoute({ channel: "trades" }, {}, 4, handlers);
+    await dispatchHyperliquidRawMessageRoute({ channel: "activeAssetCtx" }, {}, 4, handlers);
+    await dispatchHyperliquidRawMessageRoute({ channel: "userEvents" }, {}, 4, handlers);
+    await expect(
+      dispatchHyperliquidRawMessageRoute({ channel: "ignored" }, {}, 4, handlers)
+    ).resolves.toEqual({
+      accepted: false,
+      status: "BOOK_NOT_READY",
+      reason: "IGNORED_HYPERLIQUID_CHANNEL_ignored",
+      processedCount: 0
+    });
+
+    expect(calls).toEqual(["l2", "trades", "asset-context", "liquidations"]);
   });
 
   it("resolves book timestamps with drift and invalid timestamp guards", () => {
