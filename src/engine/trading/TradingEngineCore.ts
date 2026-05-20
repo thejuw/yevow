@@ -38,15 +38,12 @@ import {
 import {
   bookDesyncStorageExtra,
   markBookSyncDesynced,
-  shouldEmitBookSnapshotTelemetry,
   stateAfterAcceptedBookDelta,
-  stateAfterBookSnapshot,
   stateAfterDesyncedBook,
   stateAfterInformationalBookNotReady,
   stateAfterRejectedBookDelta,
   rejectedBookDeltaIngestResult,
-  bookSnapshotTelemetry,
-  bookSnapshotStorageWrites
+  bookSnapshotRuntimeArtifacts
 } from "./book/BookRuntimeState";
 import {
   applyOrderBookResetSideEffects,
@@ -2130,7 +2127,7 @@ export class TradingEngine {
     const book = applied.book;
     const domSnapshot = this.getLiquidityWalls(applied.instrumentCode, updatedAt);
 
-    this.engineState = stateAfterBookSnapshot({
+    const artifacts = bookSnapshotRuntimeArtifacts({
       currentState: this.engineState,
       book,
       internalOrderBookDepth: countBookLevels(this.bids, this.asks),
@@ -2140,40 +2137,32 @@ export class TradingEngine {
         updatedAt
       ),
       dom: domSnapshot,
-      updatedAt
-    });
-
-    if (options.persist !== false) {
-      await this.safeStoragePut(
-        bookSnapshotStorageWrites({
-          engineStateKey: ENGINE_STATE_KEY,
-          state: this.engineState,
-          domWallHistoryKey: DOM_WALL_HISTORY_KEY,
-          domWallHistory: this.domWallHistory,
-          orderBookPrefix: ORDER_BOOK_PREFIX,
-          marketKey: applied.marketKey,
-          book
-        }),
-        "ORDER_BOOK_SNAPSHOT_APPLIED"
-      );
-    }
-
-    const shouldEmitTelemetry = shouldEmitBookSnapshotTelemetry({
+      updatedAt,
+      engineStateKey: ENGINE_STATE_KEY,
+      domWallHistoryKey: DOM_WALL_HISTORY_KEY,
+      domWallHistory: this.domWallHistory,
+      orderBookPrefix: ORDER_BOOK_PREFIX,
+      marketKey: applied.marketKey,
       telemetryEnabled: options.telemetry !== false,
       snapshotSource: snapshot.source,
       processedTicks: this.engineState.processedTicks,
       earlyTickLimit: 5,
-      interval: AGENT_SNAPSHOT_TICK_INTERVAL
+      telemetryInterval: AGENT_SNAPSHOT_TICK_INTERVAL,
+      applied
     });
+    this.engineState = artifacts.state;
 
-    if (shouldEmitTelemetry) {
-      const telemetry = bookSnapshotTelemetry(applied);
+    if (options.persist !== false) {
+      await this.safeStoragePut(artifacts.storageWrites, "ORDER_BOOK_SNAPSHOT_APPLIED");
+    }
+
+    if (artifacts.shouldEmitTelemetry) {
       this.logger.info(
         "ORDER_BOOK_SNAPSHOT_APPLIED",
         "Full order book snapshot applied",
-        telemetry
+        artifacts.telemetry
       );
-      this.publish("ORDER_BOOK_SNAPSHOT_APPLIED", telemetry);
+      this.publish("ORDER_BOOK_SNAPSHOT_APPLIED", artifacts.telemetry);
     }
 
     return book;

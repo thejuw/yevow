@@ -44,6 +44,36 @@ export interface BookSnapshotStorageInput {
   readonly book: InternalOrderBook;
 }
 
+export interface BookSnapshotRuntimeArtifactsInput extends BookSnapshotStateInput {
+  readonly engineStateKey: string;
+  readonly domWallHistoryKey: string;
+  readonly domWallHistory: unknown;
+  readonly orderBookPrefix: string;
+  readonly marketKey: string;
+  readonly telemetryEnabled: boolean;
+  readonly snapshotSource: string;
+  readonly processedTicks: number;
+  readonly earlyTickLimit: number;
+  readonly telemetryInterval: number;
+  readonly applied: Pick<
+    AppliedBookSnapshot,
+    | "instrumentCode"
+    | "exchangeCode"
+    | "sequence"
+    | "bidLevels"
+    | "askLevels"
+    | "tickSize"
+    | "timeToBookMs"
+  >;
+}
+
+export interface BookSnapshotRuntimeArtifacts {
+  readonly state: EngineState;
+  readonly storageWrites: Record<string, unknown>;
+  readonly shouldEmitTelemetry: boolean;
+  readonly telemetry: JsonRecord;
+}
+
 export interface BookDeltaStateInput {
   readonly currentState: EngineState;
   readonly book: InternalOrderBook;
@@ -137,6 +167,34 @@ export function bookSnapshotStorageWrites(
     [input.engineStateKey]: input.state,
     [input.domWallHistoryKey]: input.domWallHistory,
     [`${input.orderBookPrefix}${input.marketKey}`]: input.book
+  };
+}
+
+export function bookSnapshotRuntimeArtifacts(
+  input: BookSnapshotRuntimeArtifactsInput
+): BookSnapshotRuntimeArtifacts {
+  const state = stateAfterBookSnapshot(input);
+  const shouldEmitTelemetry = shouldEmitBookSnapshotTelemetry({
+    telemetryEnabled: input.telemetryEnabled,
+    snapshotSource: input.snapshotSource,
+    processedTicks: input.processedTicks,
+    earlyTickLimit: input.earlyTickLimit,
+    interval: input.telemetryInterval
+  });
+
+  return {
+    state,
+    storageWrites: bookSnapshotStorageWrites({
+      engineStateKey: input.engineStateKey,
+      state,
+      domWallHistoryKey: input.domWallHistoryKey,
+      domWallHistory: input.domWallHistory,
+      orderBookPrefix: input.orderBookPrefix,
+      marketKey: input.marketKey,
+      book: input.book
+    }),
+    shouldEmitTelemetry,
+    telemetry: bookSnapshotTelemetry(input.applied)
   };
 }
 

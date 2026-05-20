@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   bookDesyncStorageExtra,
+  bookSnapshotRuntimeArtifacts,
   bookSnapshotTelemetry,
   bookSnapshotStorageWrites,
   markBookSyncDesynced,
@@ -200,6 +201,61 @@ describe("BookRuntimeState", () => {
       "engine:state": state,
       "dom:walls": domWallHistory,
       "book:hyperliquid:hype-usd": snapshotBook
+    });
+  });
+
+  it("assembles snapshot runtime artifacts with storage and telemetry", () => {
+    const currentState = defaultEngineState("book-snapshot-runtime");
+    const snapshotBook = book({ marketKey: "hyperliquid:hype-usd", instrumentCode: "hype-usd" });
+    const domSnapshot = dom("hype-usd");
+    const artifacts = bookSnapshotRuntimeArtifacts({
+      currentState,
+      book: snapshotBook,
+      internalOrderBookDepth: 8,
+      priceDiscovery: priceDiscovery("hype-usd", 5),
+      dom: domSnapshot,
+      updatedAt: OBSERVED_AT,
+      engineStateKey: "engine:state",
+      domWallHistoryKey: "dom:walls",
+      domWallHistory: [domSnapshot],
+      orderBookPrefix: "book:",
+      marketKey: snapshotBook.marketKey,
+      telemetryEnabled: true,
+      snapshotSource: "ADMIN",
+      processedTicks: 999,
+      earlyTickLimit: 5,
+      telemetryInterval: 1_000,
+      applied: {
+        instrumentCode: "hype-usd",
+        exchangeCode: "hyperliquid",
+        sequence: 42,
+        bidLevels: 3,
+        askLevels: 4,
+        tickSize: 0.001,
+        timeToBookMs: 2
+      }
+    });
+
+    expect(artifacts.state).toMatchObject({
+      internalOrderBookDepth: 8,
+      microstructure: { instrumentCode: "hype-usd" },
+      priceDiscovery: { instrumentCode: "hype-usd", weightedMidPrice: 5 },
+      dom: domSnapshot
+    });
+    expect(artifacts.storageWrites).toEqual({
+      "engine:state": artifacts.state,
+      "dom:walls": [domSnapshot],
+      "book:hyperliquid:hype-usd": snapshotBook
+    });
+    expect(artifacts.shouldEmitTelemetry).toBe(true);
+    expect(artifacts.telemetry).toEqual({
+      instrumentCode: "hype-usd",
+      exchangeCode: "hyperliquid",
+      sequence: 42,
+      bidLevels: 3,
+      askLevels: 4,
+      tickSize: 0.001,
+      timeToBookMs: 2
     });
   });
 
