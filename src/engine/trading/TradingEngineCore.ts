@@ -54,12 +54,11 @@ import {
 } from "./book/OrderBookResetRuntime";
 import { buildDomAnalysisSnapshot, currentDomHeatmapSnapshot } from "./book/DomAnalyzer";
 import {
+  applyShadowQueueLatencyBreachSideEffects,
   buildShadowQueueDecisionRuntimeArtifacts,
   buildShadowQueueGhostFillRuntimeRecord,
-  buildShadowQueueLatencyBreachTelemetry,
   emitShadowQueueGhostFillSideEffects,
   emitShadowQueueNoEdgeDecisionSideEffects,
-  enforceShadowQueueDecisionLatency,
   resolveShadowQueueGhostFillConfig,
   resolveShadowQueueNoEdgeLogInterval,
   resolveShadowQueueSizingConfig,
@@ -3369,21 +3368,13 @@ export class TradingEngine {
     decision: ShadowQueueDecision,
     latencyBudgetMs: number
   ): ShadowQueueDecision | null {
-    const latencyDecision = enforceShadowQueueDecisionLatency(decision, latencyBudgetMs);
-
-    if (!latencyDecision.breached) {
-      return null;
-    }
-
-    const suppressed = latencyDecision.decision;
-    const telemetry = buildShadowQueueLatencyBreachTelemetry({
-      originalDecision: decision,
-      suppressedDecision: suppressed,
-      latencyBudgetMs
-    });
-    this.logger.warn(telemetry.eventType, telemetry.message, telemetry.metadata);
-    this.publish(telemetry.eventType, telemetry.payload, telemetry.correlationId);
-    return suppressed;
+    return applyShadowQueueLatencyBreachSideEffects(
+      { decision, latencyBudgetMs },
+      {
+        warn: (eventType, message, metadata) => this.logger.warn(eventType, message, metadata),
+        publish: (type, payload, correlationId) => this.publish(type, payload, correlationId)
+      }
+    );
   }
 
   private dispatchShadowQueueDecisionAction(

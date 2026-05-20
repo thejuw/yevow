@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyShadowQueueLatencyBreachSideEffects,
   buildShadowQueueDecisionAction,
   buildShadowQueueDecisionRuntimeArtifacts,
   buildShadowQueueDecisionTrace,
@@ -20,6 +21,7 @@ import {
   shadowQueueKellySize,
   shadowQueuePostOnlyPrice,
   type ShadowQueueGhostFillSideEffectHandlers,
+  type ShadowQueueLatencyBreachSideEffectHandlers,
   type ShadowQueueNoEdgeSideEffectHandlers
 } from "../../src/engine/trading/shadow/ShadowQueueRuntime";
 import { defaultConfig } from "../../src/ConfigManager";
@@ -358,6 +360,31 @@ describe("ShadowQueueRuntime", () => {
       tradeIntentId: null,
       reason: "late Suppressed because drift decision latency exceeded 5ms."
     });
+  });
+
+  it("applies latency-breach side effects only when the decision exceeds budget", () => {
+    const sideEffects = shadowQueueLatencyBreachSideEffectSpy();
+    const withinBudget = applyShadowQueueLatencyBreachSideEffects(
+      { decision: decision({ decisionLatencyMs: 5 }), latencyBudgetMs: 5 },
+      sideEffects.handlers
+    );
+    const suppressed = applyShadowQueueLatencyBreachSideEffects(
+      {
+        decision: decision({ decisionLatencyMs: 9, tradeIntentId: "intent-1", reason: "late" }),
+        latencyBudgetMs: 5
+      },
+      sideEffects.handlers
+    );
+
+    expect(withinBudget).toBeNull();
+    expect(suppressed).toMatchObject({
+      tradeIntentId: null,
+      reason: "late Suppressed because drift decision latency exceeded 5ms."
+    });
+    expect(sideEffects.events).toEqual([
+      "warn:SHADOW_QUEUE_LATENCY_BREACH:decision-1",
+      "publish:SHADOW_QUEUE_LATENCY_BREACH:decision-1"
+    ]);
   });
 
   it("builds shadow queue agent decision traces for audit linkage", () => {
@@ -729,6 +756,25 @@ function shadowQueueNoEdgeSideEffectSpy(): {
     handlers: {
       logInfo(eventType, _message, metadata) {
         events.push(`info:${eventType}:${metadata.decisionId}`);
+      },
+      publish(type, _payload, correlationId) {
+        events.push(`publish:${type}:${correlationId}`);
+      }
+    }
+  };
+}
+
+function shadowQueueLatencyBreachSideEffectSpy(): {
+  events: string[];
+  handlers: ShadowQueueLatencyBreachSideEffectHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      warn(eventType, _message, metadata) {
+        events.push(`warn:${eventType}:${metadata.decisionId}`);
       },
       publish(type, _payload, correlationId) {
         events.push(`publish:${type}:${correlationId}`);

@@ -170,6 +170,16 @@ export interface ShadowQueueLatencyBudgetResult {
   readonly decision: ShadowQueueDecision;
 }
 
+export interface ShadowQueueLatencyBreachSideEffectInput {
+  readonly decision: ShadowQueueDecision;
+  readonly latencyBudgetMs: number;
+}
+
+export interface ShadowQueueLatencyBreachSideEffectHandlers {
+  readonly warn: (eventType: string, message: string, metadata: JsonRecord) => void;
+  readonly publish: (type: string, payload: Record<string, unknown>, correlationId: string) => void;
+}
+
 export interface ShadowQueueNoEdgeTelemetry {
   readonly eventType: "SHADOW_QUEUE_NO_EDGE";
   readonly message: string;
@@ -486,6 +496,29 @@ export function buildShadowQueueLatencyBreachTelemetry(input: {
     payload: input.suppressedDecision as unknown as Record<string, unknown>,
     correlationId: input.originalDecision.decisionId
   };
+}
+
+export function applyShadowQueueLatencyBreachSideEffects(
+  input: ShadowQueueLatencyBreachSideEffectInput,
+  handlers: ShadowQueueLatencyBreachSideEffectHandlers
+): ShadowQueueDecision | null {
+  const latencyDecision = enforceShadowQueueDecisionLatency(input.decision, input.latencyBudgetMs);
+
+  if (!latencyDecision.breached) {
+    return null;
+  }
+
+  const suppressed = latencyDecision.decision;
+  const telemetry = buildShadowQueueLatencyBreachTelemetry({
+    originalDecision: input.decision,
+    suppressedDecision: suppressed,
+    latencyBudgetMs: input.latencyBudgetMs
+  });
+
+  handlers.warn(telemetry.eventType, telemetry.message, telemetry.metadata);
+  handlers.publish(telemetry.eventType, telemetry.payload, telemetry.correlationId);
+
+  return suppressed;
 }
 
 export function buildShadowQueueDecisionTrace(
