@@ -54,6 +54,7 @@ import {
 } from "./book/OrderBookResetRuntime";
 import { buildDomAnalysisSnapshot, currentDomHeatmapSnapshot } from "./book/DomAnalyzer";
 import {
+  applyShadowQueueDecisionActionSideEffects,
   applyShadowQueueLatencyBreachSideEffects,
   buildShadowQueueDecisionRuntimeArtifacts,
   buildShadowQueueGhostFillRuntimeRecord,
@@ -3381,14 +3382,15 @@ export class TradingEngine {
     action: ShadowQueueDecisionAction,
     book: InternalOrderBook
   ): void {
-    this.publish(action.publish.type, action.publish.payload, action.publish.correlationId);
-
-    if (action.cancelReason) {
-      this.state.waitUntil(this.cancelAllQuotes(book.instrumentCode, action.cancelReason));
-    }
-    if (action.dispatchIntent) {
-      this.state.waitUntil(this.dispatchExecution(action.dispatchIntent));
-    }
+    applyShadowQueueDecisionActionSideEffects(
+      { action, instrumentCode: book.instrumentCode },
+      {
+        publish: (type, payload, correlationId) => this.publish(type, payload, correlationId),
+        schedule: (work) => this.state.waitUntil(work),
+        cancelAllQuotes: (instrumentCode, reason) => this.cancelAllQuotes(instrumentCode, reason),
+        dispatchExecution: (intent) => this.dispatchExecution(intent)
+      }
+    );
   }
 
   private handleShadowQueueDecision(

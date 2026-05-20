@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyShadowQueueDecisionActionSideEffects,
   applyShadowQueueLatencyBreachSideEffects,
   buildShadowQueueDecisionAction,
   buildShadowQueueDecisionRuntimeArtifacts,
@@ -20,6 +21,7 @@ import {
   shouldProcessShadowQueueTick,
   shadowQueueKellySize,
   shadowQueuePostOnlyPrice,
+  type ShadowQueueDecisionActionSideEffectHandlers,
   type ShadowQueueGhostFillSideEffectHandlers,
   type ShadowQueueLatencyBreachSideEffectHandlers,
   type ShadowQueueNoEdgeSideEffectHandlers
@@ -500,6 +502,41 @@ describe("ShadowQueueRuntime", () => {
     });
   });
 
+  it("applies shadow queue decision action side effects in publish then work order", async () => {
+    const intent = buildShadowQueueTradeIntent({
+      decision: decision({ action: "RED_LIGHT", dispatchSide: "SELL" }),
+      book: book(),
+      observedAt: OBSERVED_AT,
+      engineId: "engine-1",
+      baseSpreadBps: 4,
+      exchangeFeeBps: 1,
+      toxicityScore: 0.3,
+      requestedSize: 0.25,
+      price: 100.5
+    });
+    const action = buildShadowQueueDecisionAction({
+      decision: decision({ action: "RED_LIGHT" }),
+      intent,
+      tradingEnabled: true
+    });
+    const sideEffects = shadowQueueDecisionActionSideEffectSpy();
+
+    applyShadowQueueDecisionActionSideEffects(
+      { action, instrumentCode: "btc-usd" },
+      sideEffects.handlers
+    );
+
+    expect(sideEffects.events).toEqual([
+      "publish:SHADOW_QUEUE_RED_LIGHT:decision-1",
+      "cancel:btc-usd:SHADOW_QUEUE_RED_LIGHT",
+      "schedule",
+      "dispatch:vlo-intent:decision-1",
+      "schedule"
+    ]);
+
+    await Promise.all(sideEffects.scheduled);
+  });
+
   it("assembles shadow queue decision runtime artifacts", () => {
     const artifacts = buildShadowQueueDecisionRuntimeArtifacts({
       decision: decision({ action: "GREEN_LIGHT", dispatchSide: "BUY", microDrift: 0.6 }),
@@ -778,6 +815,37 @@ function shadowQueueLatencyBreachSideEffectSpy(): {
       },
       publish(type, _payload, correlationId) {
         events.push(`publish:${type}:${correlationId}`);
+      }
+    }
+  };
+}
+
+function shadowQueueDecisionActionSideEffectSpy(): {
+  events: string[];
+  scheduled: Promise<unknown>[];
+  handlers: ShadowQueueDecisionActionSideEffectHandlers;
+} {
+  const events: string[] = [];
+  const scheduled: Promise<unknown>[] = [];
+
+  return {
+    events,
+    scheduled,
+    handlers: {
+      publish(type, _payload, correlationId) {
+        events.push(`publish:${type}:${correlationId}`);
+      },
+      schedule(work) {
+        events.push("schedule");
+        scheduled.push(work);
+      },
+      cancelAllQuotes(instrumentCode, reason) {
+        events.push(`cancel:${instrumentCode}:${reason}`);
+        return Promise.resolve();
+      },
+      dispatchExecution(intent) {
+        events.push(`dispatch:${intent.intentId}`);
+        return Promise.resolve();
       }
     }
   };

@@ -238,6 +238,21 @@ export interface ShadowQueueDecisionAction {
   readonly dispatchIntent: TradeIntent | null;
 }
 
+export interface ShadowQueueDecisionActionSideEffectInput {
+  readonly action: ShadowQueueDecisionAction;
+  readonly instrumentCode: string;
+}
+
+export interface ShadowQueueDecisionActionSideEffectHandlers {
+  readonly publish: (type: string, payload: Record<string, unknown>, correlationId: string) => void;
+  readonly schedule: (work: Promise<unknown>) => void;
+  readonly cancelAllQuotes: (
+    instrumentCode: string,
+    reason: NonNullable<ShadowQueueDecisionAction["cancelReason"]>
+  ) => Promise<unknown>;
+  readonly dispatchExecution: (intent: TradeIntent) => Promise<unknown>;
+}
+
 export function shouldProcessShadowQueueTick(input: ShadowQueueTickGateInput): boolean {
   return (
     !input.shadowReplay &&
@@ -590,6 +605,25 @@ export function buildShadowQueueDecisionAction(
     cancelReason: isRedLight && input.tradingEnabled ? "SHADOW_QUEUE_RED_LIGHT" : null,
     dispatchIntent: input.tradingEnabled ? input.intent : null
   };
+}
+
+export function applyShadowQueueDecisionActionSideEffects(
+  input: ShadowQueueDecisionActionSideEffectInput,
+  handlers: ShadowQueueDecisionActionSideEffectHandlers
+): void {
+  handlers.publish(
+    input.action.publish.type,
+    input.action.publish.payload,
+    input.action.publish.correlationId
+  );
+
+  if (input.action.cancelReason) {
+    handlers.schedule(handlers.cancelAllQuotes(input.instrumentCode, input.action.cancelReason));
+  }
+
+  if (input.action.dispatchIntent) {
+    handlers.schedule(handlers.dispatchExecution(input.action.dispatchIntent));
+  }
 }
 
 export function buildShadowQueueDecisionRuntimeArtifacts(
