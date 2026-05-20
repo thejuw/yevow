@@ -1,5 +1,9 @@
-import type { CroupierInput } from "../../../agents/CroupierAgent";
+import type { CroupierDecision, CroupierInput } from "../../../agents/CroupierAgent";
 import type { ProfilerContext } from "../../../agents/ProfilerAgent";
+import {
+  type AdverseSelectionModel,
+  adversePenaltyForQuoteSide
+} from "../../AdverseSelectionModel";
 import type {
   BayesianUpdateTrace,
   GlobalRiskConfig,
@@ -21,6 +25,7 @@ import {
   DEFAULT_PREDATORY_ORDER_OFFSET_BPS
 } from "../../../TradingEngineConstants";
 import { readPositiveNumber } from "../helpers/RuntimeParsing";
+import { highResolutionNow, roundLatency } from "../helpers/RuntimeClock";
 import type { DomAnalysisSnapshot } from "../../../types";
 import type { MultiScaleVolatilitySnapshot } from "../../MultiScaleVolatility";
 
@@ -80,6 +85,25 @@ export interface CroupierEvaluationEnv {
   readonly FUNDING_BIAS_THRESHOLD?: string;
   readonly FUNDING_INVENTORY_BIAS?: string;
   readonly HL_PREDATORY_ORDER_OFFSET_BPS?: string;
+}
+
+export interface CroupierRuntimeEvaluator {
+  evaluate(input: CroupierInput): CroupierDecision;
+}
+
+export interface CroupierRuntimeEvaluationInput extends Omit<
+  CroupierEvaluationInputParams,
+  "bidAdversePenaltyBps" | "askAdversePenaltyBps"
+> {
+  readonly croupierEnabled: boolean;
+  readonly evaluator: CroupierRuntimeEvaluator;
+  readonly disabledDecision: CroupierDecision;
+  readonly adverseSelectionModel: AdverseSelectionModel;
+}
+
+export interface CroupierRuntimeEvaluationResult {
+  readonly croupierDecision: CroupierDecision;
+  readonly croupierLatencyMs: number;
 }
 
 export function buildProfilerContext(input: ProfilerContextInput): ProfilerContext {
@@ -175,5 +199,41 @@ export function buildCroupierEvaluationInput(input: CroupierEvaluationInputParam
     macroBias: input.macroBias,
     marketMakingMode: config.MARKET_MAKING_MODE,
     observedAt: input.observedAt
+  };
+}
+
+export function evaluateCroupierRuntime(
+  input: CroupierRuntimeEvaluationInput
+): CroupierRuntimeEvaluationResult {
+  const croupierStartedAt = highResolutionNow();
+  const bidAdversePenalty = adversePenaltyForQuoteSide(
+    input.adverseSelectionModel,
+    input.book,
+    "BID",
+    input.oracle.regime,
+    input.observedAt
+  );
+  const askAdversePenalty = adversePenaltyForQuoteSide(
+    input.adverseSelectionModel,
+    input.book,
+    "ASK",
+    input.oracle.regime,
+    input.observedAt
+  );
+  const croupierDecision = input.croupierEnabled
+    ? input.evaluator.evaluate(
+        buildCroupierEvaluationInput({
+          ...input,
+          bidAdversePenaltyBps: bidAdversePenalty.penaltyBps,
+          askAdversePenaltyBps: askAdversePenalty.penaltyBps
+        })
+      )
+    : input.disabledDecision;
+
+  return {
+    croupierDecision,
+    croupierLatencyMs: input.croupierEnabled
+      ? roundLatency(highResolutionNow() - croupierStartedAt)
+      : 0
   };
 }

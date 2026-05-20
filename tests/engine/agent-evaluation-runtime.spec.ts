@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { defaultConfig } from "../../src/ConfigManager";
+import { AdverseSelectionModel } from "../../src/engine/AdverseSelectionModel";
 import {
   buildCroupierEvaluationInput,
   buildOracleTickInput,
   buildProfilerContext,
-  disabledOracleTickResult
+  disabledOracleTickResult,
+  evaluateCroupierRuntime
 } from "../../src/engine/trading/agents/AgentEvaluationRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
+import type { CroupierDecision, CroupierInput } from "../../src/agents/CroupierAgent";
 import type { DomAnalysisSnapshot, InternalOrderBook, MarketTick } from "../../src/types";
 
 const OBSERVED_AT = "2026-05-19T12:00:00.000Z";
@@ -123,6 +126,96 @@ describe("AgentEvaluationRuntime", () => {
       profilerPressureSide: "BUY",
       sentimentAlphaMode: "EVENT_RISK_ONLY",
       observedAt: OBSERVED_AT
+    });
+  });
+
+  it("evaluates Croupier runtime decisions with adverse-selection penalties", () => {
+    const state = defaultEngineState("engine-1");
+    let captured: CroupierInput | null = null;
+    const enabledDecision: CroupierDecision = {
+      intent: null,
+      quote: null,
+      pullAllQuotes: false,
+      adverseSelectionCost: 0,
+      minEvThreshold: 0.01
+    };
+
+    const enabled = evaluateCroupierRuntime({
+      croupierEnabled: true,
+      evaluator: {
+        evaluate(input) {
+          captured = input;
+          return enabledDecision;
+        }
+      },
+      disabledDecision: { ...enabledDecision, minEvThreshold: 1 },
+      adverseSelectionModel: new AdverseSelectionModel(),
+      engineId: state.engineId,
+      book: book(),
+      oracle: state.oracle,
+      sentiment: state.sentiment,
+      toxicityScore: 0.4,
+      inventory: state.inventory,
+      leadLag: state.leadLag,
+      config: defaultConfig,
+      env: {},
+      executionCostBufferBps: 1,
+      multiScaleVolatility: null,
+      fundingRateHourly: 0,
+      liquidationHeatmap: state.liquidationHeatmap,
+      profilerToxicityState: "NORMAL",
+      profilerPressureSide: "NEUTRAL",
+      profilerSpreadMultiplier: 1,
+      profilerReservationShiftBps: 0,
+      sentimentAlphaMode: defaultConfig.SENTIMENT_ALPHA_MODE,
+      macroBias: state.macroBias,
+      observedAt: OBSERVED_AT
+    });
+
+    expect(enabled.croupierDecision).toBe(enabledDecision);
+    expect(enabled.croupierLatencyMs).toBeGreaterThanOrEqual(0);
+    expect(captured).toMatchObject({
+      engineId: "engine-1",
+      toxicityScore: 0.4,
+      adverseSelectionPenaltyBps: 0,
+      observedAt: OBSERVED_AT
+    });
+
+    const disabledDecision: CroupierDecision = { ...enabledDecision, minEvThreshold: 1 };
+    expect(
+      evaluateCroupierRuntime({
+        croupierEnabled: false,
+        evaluator: {
+          evaluate() {
+            throw new Error("should not evaluate");
+          }
+        },
+        disabledDecision,
+        adverseSelectionModel: new AdverseSelectionModel(),
+        engineId: state.engineId,
+        book: book(),
+        oracle: state.oracle,
+        sentiment: state.sentiment,
+        toxicityScore: 0.4,
+        inventory: state.inventory,
+        leadLag: state.leadLag,
+        config: defaultConfig,
+        env: {},
+        executionCostBufferBps: 1,
+        multiScaleVolatility: null,
+        fundingRateHourly: 0,
+        liquidationHeatmap: state.liquidationHeatmap,
+        profilerToxicityState: "NORMAL",
+        profilerPressureSide: "NEUTRAL",
+        profilerSpreadMultiplier: 1,
+        profilerReservationShiftBps: 0,
+        sentimentAlphaMode: defaultConfig.SENTIMENT_ALPHA_MODE,
+        macroBias: state.macroBias,
+        observedAt: OBSERVED_AT
+      })
+    ).toEqual({
+      croupierDecision: disabledDecision,
+      croupierLatencyMs: 0
     });
   });
 });
