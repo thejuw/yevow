@@ -210,6 +210,7 @@ import {
   cascadeRecoverySignalConfig as buildCascadeRecoverySignalConfig
 } from "./cascade/CascadeConfigRuntime";
 import {
+  applyCascadePositionUpdateSideEffects,
   closedOneMinuteCandlesForTick,
   shouldEvaluateCascadeStrategy
 } from "./cascade/CascadeStrategyRuntime";
@@ -250,7 +251,6 @@ import { buildAgentStateSnapshot } from "./telemetry/AgentSnapshotRuntime";
 import {
   buildCascadeOperationalAlertTelemetry,
   buildCascadeSignalTelemetry,
-  cascadeCloseOperationalAlert,
   cascadeEntryAgentSignal,
   cascadeEntryDecisionTrace,
   cascadeHeatCapAlertMetadata,
@@ -1786,35 +1786,28 @@ export class TradingEngine {
       atr: calculateAtr(this.candleAggregator.snapshot(tick.instrumentCode, "1m", 32), 14)
     });
 
-    for (const update of updates) {
-      for (const intent of update.intents) {
-        if (intent.kind !== "CLOSE" || intent.size <= 0) {
-          continue;
-        }
-        const tradeIntent = this.tradeIntentFromCascadePositionIntent(intent, observedAt);
-        this.state.waitUntil(this.dispatchExecution(tradeIntent));
-        const closeAlert = cascadeCloseOperationalAlert(intent, observedAt);
-        if (closeAlert) {
-          this.emitCascadeOperationalAlert(
-            closeAlert.eventType,
-            closeAlert.title,
-            closeAlert.message,
-            closeAlert.metadata,
-            closeAlert.dedupeKey
-          );
-        }
-      }
-    }
-
-    if (updates.length > 0) {
-      this.state.waitUntil(
-        this.safeStoragePut(
-          CASCADE_POSITIONS_KEY,
-          this.cascadePositionManager.snapshot(),
-          "CASCADE_POSITION_UPDATE"
+    applyCascadePositionUpdateSideEffects(updates, observedAt, {
+      dispatchCloseIntent: (intent) =>
+        this.state.waitUntil(
+          this.dispatchExecution(this.tradeIntentFromCascadePositionIntent(intent, observedAt))
+        ),
+      emitOperationalAlert: (alert) =>
+        this.emitCascadeOperationalAlert(
+          alert.eventType,
+          alert.title,
+          alert.message,
+          alert.metadata,
+          alert.dedupeKey
+        ),
+      persistPositions: () =>
+        this.state.waitUntil(
+          this.safeStoragePut(
+            CASCADE_POSITIONS_KEY,
+            this.cascadePositionManager.snapshot(),
+            "CASCADE_POSITION_UPDATE"
+          )
         )
-      );
-    }
+    });
   }
 
   private handleRejectedCascadeSize(
