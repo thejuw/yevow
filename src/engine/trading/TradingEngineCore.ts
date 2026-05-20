@@ -329,7 +329,6 @@ import {
   createTradingEngineBootServices,
   tradingEngineLoggerRuntimeContext
 } from "./state/EngineBootServices";
-import { nextTickAgentHealth } from "./state/AgentHealthRuntime";
 import {
   shadowModeAutoResumeLogMetadata,
   shadowModeAutoResumeTelemetry,
@@ -635,7 +634,10 @@ import {
 } from "./state/EngineStateDefaults";
 import { isInformationalTick, isTradeTick } from "./state/TickClassification";
 import { evaluateTickTargetPreflight } from "./state/TickPreflightRuntime";
-import { buildAcceptedTickLifecycleArtifacts } from "./pipelines/AcceptedTickRuntime";
+import {
+  buildAcceptedTickLifecycleArtifacts,
+  buildAcceptedTickStateTransition
+} from "./pipelines/AcceptedTickRuntime";
 import type {
   AcceptedDecisionPipelineInput,
   AcceptedExecutionContext,
@@ -3344,70 +3346,29 @@ export class TradingEngine {
   }
 
   private commitAcceptedTickState(input: AcceptedTickStateCommitInput): void {
-    const assetQuoteStates = {
-      ...this.engineState.assetQuoteStates,
-      [input.tick.instrumentCode]: input.assetQuoteState
-    };
-    const quoteState = aggregateQuoteState(
-      assetQuoteStates,
-      this.engineState.quoteState,
-      input.observedAt
+    this.engineState = stateAfterAcceptedTick(
+      buildAcceptedTickStateTransition({
+        currentState: this.engineState,
+        config: this.cachedConfig,
+        commit: input,
+        internalOrderBookDepth: countBookLevels(this.bids, this.asks),
+        maxLatencyMs: this.maxLatencyMs,
+        calculateAssetMatrix: (
+          observedAt,
+          latestInstrumentCode,
+          latestOracle,
+          profilerStates,
+          assetQuoteStates
+        ) =>
+          this.calculateAssetMatrix(
+            observedAt,
+            latestInstrumentCode,
+            latestOracle,
+            profilerStates,
+            assetQuoteStates
+          )
+      })
     );
-    const finalAssetMatrix = this.calculateAssetMatrix(
-      input.observedAt,
-      input.tick.instrumentCode,
-      input.oracle,
-      input.profilerStates,
-      assetQuoteStates
-    );
-    const agentHealth = nextTickAgentHealth({
-      previous: this.engineState.agentHealth,
-      config: this.cachedConfig,
-      observedAt: input.observedAt,
-      oracleLatencyMs: input.oracleLatencyMs,
-      sentimentLatencyMs: this.engineState.agentHealth.SENTIMENT.latencyMs,
-      profilerToxicityScore: input.profilerResult.toxicityScore,
-      profilerAlertThreshold: input.profilerResult.state.alertThreshold,
-      profilerLatencyMs: input.profilerLatencyMs,
-      profilerSignalId: input.profilerResult.signal?.signalId ?? undefined,
-      croupierLatencyMs: input.croupierLatencyMs,
-      croupierHasOutput: Boolean(input.croupierDecision.intent || input.croupierDecision.quote),
-      croupierSignalId:
-        input.croupierDecision.quote?.signalId ?? input.croupierDecision.intent?.intentId,
-      pitBossIntentId: input.executionPlan?.intent.intentId
-    });
-
-    this.engineState = stateAfterAcceptedTick({
-      currentState: this.engineState,
-      tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-      shadowReplay: input.shadowReplay,
-      latencyStatus: input.metrics.status,
-      internalOrderBookDepth: countBookLevels(this.bids, this.asks),
-      book: input.book,
-      oracle: input.oracle,
-      sentiment: input.sentiment,
-      ensemble: input.ensemble,
-      leadLag: input.leadLag,
-      inventory: input.inventory,
-      riskMetrics: input.riskMetrics,
-      quoteState,
-      assetQuoteStates,
-      shadowQueue: input.shadowQueueState,
-      lastTradeIntent: input.executionPlan?.intent ?? input.croupierDecision.intent,
-      inventoryGuard: input.inventoryGuard,
-      ordersToTrack: input.executionPlans.flatMap((plan) => plan.orders),
-      shouldTrackOrders:
-        input.executionPlans.length > 0 &&
-        (this.cachedConfig.TRADING_ENABLED || input.shadowReplay),
-      dom: input.domSnapshot,
-      anomaly: input.anomalyResult.status,
-      assetMatrix: finalAssetMatrix,
-      profilerStates: input.profilerStates,
-      toxicityScore: input.profilerResult.toxicityScore,
-      agentHealth,
-      maxLatencyMs: this.maxLatencyMs,
-      observedAt: input.observedAt
-    });
   }
 
   private prepareAcceptedExecutionContext(

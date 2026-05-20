@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import type { CroupierDecision } from "../../src/agents/CroupierAgent";
 import type { ProfilerEvaluation } from "../../src/agents/ProfilerAgent";
 import type { OracleTickResult } from "../../src/engine/trading/agents/AgentEvaluationRuntime";
-import { buildAcceptedTickLifecycleArtifacts } from "../../src/engine/trading/pipelines/AcceptedTickRuntime";
+import {
+  buildAcceptedTickLifecycleArtifacts,
+  buildAcceptedTickStateTransition
+} from "../../src/engine/trading/pipelines/AcceptedTickRuntime";
 import type {
   AcceptedDecisionPipelineInput,
   AcceptedExecutionContext,
@@ -15,6 +18,7 @@ const OBSERVED_AT = "2026-05-18T20:00:00.000Z";
 describe("AcceptedTickRuntime", () => {
   it("assembles accepted tick commit and side-effect artifacts from pipeline state", () => {
     const state = defaultEngineState("accepted-runtime");
+    const profilerState = { alertThreshold: 0.7 } as ProfilerEvaluation["state"];
     const croupierDecision: CroupierDecision = {
       intent: null,
       quote: null,
@@ -27,7 +31,7 @@ describe("AcceptedTickRuntime", () => {
       skippedReason: null,
       closedBuckets: 1,
       toxicityScore: 0.42,
-      state: state.profilerStates["btc-usd"],
+      state: profilerState,
       signal: null
     };
     const oracleResult: OracleTickResult = {
@@ -114,5 +118,54 @@ describe("AcceptedTickRuntime", () => {
       hotPathStartedAt: 123,
       shadowReplay: true
     });
+
+    const transition = buildAcceptedTickStateTransition({
+      currentState: state,
+      config: state.cachedConfig,
+      commit: artifacts.commitInput,
+      internalOrderBookDepth: 8,
+      maxLatencyMs: 150,
+      calculateAssetMatrix: (
+        observedAt,
+        latestInstrumentCode,
+        latestOracle,
+        profilerStates,
+        assetQuoteStates
+      ) => {
+        expect(observedAt).toBe(OBSERVED_AT);
+        expect(latestInstrumentCode).toBe("btc-usd");
+        expect(latestOracle).toBe(state.oracle);
+        expect(profilerStates).toBe(state.profilerStates);
+        expect(assetQuoteStates["btc-usd"]).toBe(state.quoteState);
+        return state.assetMatrix;
+      }
+    });
+
+    expect(transition).toMatchObject({
+      currentState: state,
+      tradingEnabled: state.cachedConfig.TRADING_ENABLED,
+      shadowReplay: true,
+      latencyStatus: artifacts.commitInput.metrics.status,
+      internalOrderBookDepth: 8,
+      quoteState: {
+        status: "ACTIVE",
+        reason: "PARTIAL_ASSET_SUSPENSION",
+        updatedAt: OBSERVED_AT
+      },
+      assetQuoteStates: {
+        "btc-usd": state.quoteState
+      },
+      shadowQueue: state.shadowQueue,
+      lastTradeIntent: null,
+      ordersToTrack: [],
+      shouldTrackOrders: false,
+      assetMatrix: state.assetMatrix,
+      profilerStates: state.profilerStates,
+      toxicityScore: 0.42,
+      maxLatencyMs: 150,
+      observedAt: OBSERVED_AT
+    });
+    expect(transition.agentHealth.PROFILER.latencyMs).toBe(2.5);
+    expect(transition.agentHealth.CROUPIER.latencyMs).toBe(3.5);
   });
 });
