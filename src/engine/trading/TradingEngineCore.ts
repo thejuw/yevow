@@ -56,17 +56,13 @@ import {
 } from "./book/OrderBookResetRuntime";
 import { buildDomAnalysisSnapshot, currentDomHeatmapSnapshot } from "./book/DomAnalyzer";
 import {
-  applyShadowQueueDecisionActionSideEffects,
-  applyShadowQueueLatencyBreachSideEffects,
-  buildShadowQueueDecisionRuntimeArtifacts,
+  applyShadowQueueDecisionFlow,
   buildShadowQueueGhostFillRuntimeRecord,
   emitShadowQueueGhostFillSideEffects,
-  emitShadowQueueNoEdgeDecisionSideEffects,
   processShadowQueueTickRuntime,
   resolveShadowQueueGhostFillConfig,
   resolveShadowQueueNoEdgeLogInterval,
-  resolveShadowQueueSizingConfig,
-  type ShadowQueueDecisionAction
+  resolveShadowQueueSizingConfig
 } from "./shadow/ShadowQueueRuntime";
 import {
   applyAnomalyEmergencyPauseSideEffects,
@@ -3281,93 +3277,50 @@ export class TradingEngine {
     });
   }
 
-  private handleShadowQueueNoEdgeDecision(decision: ShadowQueueDecision): ShadowQueueDecision {
-    return emitShadowQueueNoEdgeDecisionSideEffects(
-      {
-        decision,
-        lastLoggedAtByInstrument: this.shadowQueueNoEdgeLogAt,
-        nowMs: Date.now(),
-        intervalMs: resolveShadowQueueNoEdgeLogInterval(
-          this.env.SHADOW_QUEUE_NO_EDGE_LOG_INTERVAL_MS
-        )
-      },
-      {
-        logInfo: (eventType, message, metadata) => this.logger.info(eventType, message, metadata),
-        publish: (type, payload, correlationId) => this.publish(type, payload, correlationId)
-      }
-    );
-  }
-
-  private handleShadowQueueLatencyBreach(
-    decision: ShadowQueueDecision,
-    latencyBudgetMs: number
-  ): ShadowQueueDecision | null {
-    return applyShadowQueueLatencyBreachSideEffects(
-      { decision, latencyBudgetMs },
-      {
-        warn: (eventType, message, metadata) => this.logger.warn(eventType, message, metadata),
-        publish: (type, payload, correlationId) => this.publish(type, payload, correlationId)
-      }
-    );
-  }
-
-  private dispatchShadowQueueDecisionAction(
-    action: ShadowQueueDecisionAction,
-    book: InternalOrderBook
-  ): void {
-    applyShadowQueueDecisionActionSideEffects(
-      { action, instrumentCode: book.instrumentCode },
-      {
-        publish: (type, payload, correlationId) => this.publish(type, payload, correlationId),
-        schedule: (work) => this.state.waitUntil(work),
-        cancelAllQuotes: (instrumentCode, reason) => this.cancelAllQuotes(instrumentCode, reason),
-        dispatchExecution: (intent) => this.dispatchExecution(intent)
-      }
-    );
-  }
-
   private handleShadowQueueDecision(
     decision: ShadowQueueDecision,
     book: InternalOrderBook,
     observedAt: string
   ): ShadowQueueDecision {
-    if (decision.action === "NO_EDGE" || decision.dispatchSide === null) {
-      return this.handleShadowQueueNoEdgeDecision(decision);
-    }
-
-    const latencyBudget = this.engineState.shadowQueue.latencyBudgetMs;
-    const suppressed = this.handleShadowQueueLatencyBreach(decision, latencyBudget);
-    if (suppressed) {
-      return suppressed;
-    }
-
     const sizing = resolveShadowQueueSizingConfig({
       cachedConfig: this.cachedConfig,
       envMaxPositionPct: readPositiveNumber(this.env.MAX_POSITION_PCT, DEFAULT_MAX_POSITION_PCT),
       envKellyFraction: readPositiveNumber(this.env.KELLY_FRACTION, 0.5)
     });
-    const artifacts = buildShadowQueueDecisionRuntimeArtifacts({
-      decision,
-      book,
-      observedAt,
-      engineId: this.engineState.engineId,
-      baseSpreadBps: this.engineState.shadowQueue.baseSpreadBps,
-      exchangeFeeBps: this.cachedConfig.EXCHANGE_FEE_BPS,
-      toxicityScore: this.engineState.toxicityScore,
-      equity: this.engineState.bankroll.equity,
-      maxPositionPct: sizing.maxPositionPct,
-      kellyFraction: sizing.kellyFraction,
-      inventory: this.engineState.inventory,
-      positionSizeMultiplier: this.engineState.location.positionSizeMultiplier,
-      quoteStateStatus: this.engineState.quoteState.status,
-      cachedConfigVersion: this.cachedConfig.version,
-      tradingEnabled: this.cachedConfig.TRADING_ENABLED
-    });
-    this.logger.traceDecision(artifacts.trace);
-
-    this.dispatchShadowQueueDecisionAction(artifacts.action, book);
-
-    return artifacts.decision;
+    return applyShadowQueueDecisionFlow(
+      {
+        decision,
+        book,
+        observedAt,
+        engineId: this.engineState.engineId,
+        baseSpreadBps: this.engineState.shadowQueue.baseSpreadBps,
+        exchangeFeeBps: this.cachedConfig.EXCHANGE_FEE_BPS,
+        toxicityScore: this.engineState.toxicityScore,
+        equity: this.engineState.bankroll.equity,
+        maxPositionPct: sizing.maxPositionPct,
+        kellyFraction: sizing.kellyFraction,
+        inventory: this.engineState.inventory,
+        positionSizeMultiplier: this.engineState.location.positionSizeMultiplier,
+        quoteStateStatus: this.engineState.quoteState.status,
+        cachedConfigVersion: this.cachedConfig.version,
+        tradingEnabled: this.cachedConfig.TRADING_ENABLED,
+        latencyBudgetMs: this.engineState.shadowQueue.latencyBudgetMs,
+        lastLoggedAtByInstrument: this.shadowQueueNoEdgeLogAt,
+        noEdgeNowMs: Date.now(),
+        noEdgeLogIntervalMs: resolveShadowQueueNoEdgeLogInterval(
+          this.env.SHADOW_QUEUE_NO_EDGE_LOG_INTERVAL_MS
+        )
+      },
+      {
+        logInfo: (eventType, message, metadata) => this.logger.info(eventType, message, metadata),
+        warn: (eventType, message, metadata) => this.logger.warn(eventType, message, metadata),
+        publish: (type, payload, correlationId) => this.publish(type, payload, correlationId),
+        schedule: (work) => this.state.waitUntil(work),
+        cancelAllQuotes: (instrumentCode, reason) => this.cancelAllQuotes(instrumentCode, reason),
+        dispatchExecution: (intent) => this.dispatchExecution(intent),
+        traceDecision: (trace) => this.logger.traceDecision(trace)
+      }
+    );
   }
 
   private updateLeadLagMetrics(

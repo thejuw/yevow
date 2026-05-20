@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyShadowQueueDecisionFlow,
   applyShadowQueueDecisionActionSideEffects,
   applyShadowQueueLatencyBreachSideEffects,
   buildShadowQueueDecisionAction,
@@ -23,6 +24,7 @@ import {
   shadowQueueKellySize,
   shadowQueuePostOnlyPrice,
   type ShadowQueueDecisionActionSideEffectHandlers,
+  type ShadowQueueDecisionFlowHandlers,
   type ShadowQueueGhostFillSideEffectHandlers,
   type ShadowQueueLatencyBreachSideEffectHandlers,
   type ShadowQueueNoEdgeSideEffectHandlers,
@@ -607,6 +609,81 @@ describe("ShadowQueueRuntime", () => {
     });
   });
 
+  it("routes no-edge decisions through the shadow queue flow without tracing execution", () => {
+    const flow = shadowQueueDecisionFlowSpy();
+
+    const result = applyShadowQueueDecisionFlow(
+      {
+        ...shadowQueueDecisionFlowInput({
+          decision: decision({ action: "NO_EDGE", dispatchSide: null })
+        }),
+        noEdgeNowMs: 10_000
+      },
+      flow.handlers
+    );
+
+    expect(result).toMatchObject({
+      action: "NO_EDGE",
+      dispatchSide: null
+    });
+    expect(flow.events).toEqual([
+      "info:SHADOW_QUEUE_NO_EDGE:decision-1",
+      "publish:SHADOW_QUEUE_NO_EDGE:decision-1"
+    ]);
+  });
+
+  it("routes eligible shadow queue decisions through trace and execution side effects", async () => {
+    const flow = shadowQueueDecisionFlowSpy();
+
+    const result = applyShadowQueueDecisionFlow(
+      shadowQueueDecisionFlowInput({
+        decision: decision({ action: "RED_LIGHT", dispatchSide: "SELL", microDrift: -0.6 })
+      }),
+      flow.handlers
+    );
+
+    expect(result).toMatchObject({
+      action: "RED_LIGHT",
+      dispatchSide: "SELL",
+      tradeIntentId: "vlo-intent:decision-1"
+    });
+    expect(flow.events).toEqual([
+      "trace:decision-1",
+      "publish:SHADOW_QUEUE_RED_LIGHT:decision-1",
+      "cancel:btc-usd:SHADOW_QUEUE_RED_LIGHT",
+      "schedule",
+      "dispatch:vlo-intent:decision-1",
+      "schedule"
+    ]);
+    await Promise.all(flow.scheduled);
+  });
+
+  it("suppresses shadow queue decisions that exceed the latency envelope", () => {
+    const flow = shadowQueueDecisionFlowSpy();
+
+    const result = applyShadowQueueDecisionFlow(
+      shadowQueueDecisionFlowInput({
+        decision: decision({
+          action: "GREEN_LIGHT",
+          dispatchSide: "BUY",
+          decisionLatencyMs: 9,
+          reason: "late"
+        }),
+        latencyBudgetMs: 5
+      }),
+      flow.handlers
+    );
+
+    expect(result).toMatchObject({
+      tradeIntentId: null,
+      reason: "late Suppressed because drift decision latency exceeded 5ms."
+    });
+    expect(flow.events).toEqual([
+      "warn:SHADOW_QUEUE_LATENCY_BREACH:decision-1",
+      "publish:SHADOW_QUEUE_LATENCY_BREACH:decision-1"
+    ]);
+  });
+
   it("snaps post-only prices away from the touch", () => {
     const baseBook = book({ bestBid: 99.5, bestAsk: 100.5, tickSize: 0.5, spread: 1 });
 
@@ -874,6 +951,73 @@ function shadowQueueDecisionActionSideEffectSpy(): {
         return Promise.resolve();
       }
     }
+  };
+}
+
+function shadowQueueDecisionFlowSpy(): {
+  events: string[];
+  scheduled: Promise<unknown>[];
+  handlers: ShadowQueueDecisionFlowHandlers;
+} {
+  const events: string[] = [];
+  const scheduled: Promise<unknown>[] = [];
+
+  return {
+    events,
+    scheduled,
+    handlers: {
+      logInfo(eventType, _message, metadata) {
+        events.push(`info:${eventType}:${metadata.decisionId}`);
+      },
+      warn(eventType, _message, metadata) {
+        events.push(`warn:${eventType}:${metadata.decisionId}`);
+      },
+      publish(type, _payload, correlationId) {
+        events.push(`publish:${type}:${correlationId}`);
+      },
+      schedule(work) {
+        events.push("schedule");
+        scheduled.push(work);
+      },
+      cancelAllQuotes(instrumentCode, reason) {
+        events.push(`cancel:${instrumentCode}:${reason}`);
+        return Promise.resolve();
+      },
+      dispatchExecution(intent) {
+        events.push(`dispatch:${intent.intentId}`);
+        return Promise.resolve();
+      },
+      traceDecision(trace) {
+        events.push(`trace:${trace.decisionId}`);
+      }
+    }
+  };
+}
+
+function shadowQueueDecisionFlowInput(
+  overrides: Partial<Parameters<typeof applyShadowQueueDecisionFlow>[0]> = {}
+): Parameters<typeof applyShadowQueueDecisionFlow>[0] {
+  return {
+    decision: decision({ action: "GREEN_LIGHT", dispatchSide: "BUY", microDrift: 0.6 }),
+    book: book(),
+    observedAt: OBSERVED_AT,
+    engineId: "engine-1",
+    baseSpreadBps: 4,
+    exchangeFeeBps: 1,
+    toxicityScore: 0.3,
+    equity: 1_000,
+    maxPositionPct: 0.1,
+    kellyFraction: 0.5,
+    inventory: inventory({ netDelta: 0, maxInventoryUnits: 2 }),
+    positionSizeMultiplier: 1,
+    quoteStateStatus: "ACTIVE",
+    cachedConfigVersion: "config-v1",
+    tradingEnabled: true,
+    latencyBudgetMs: 5,
+    lastLoggedAtByInstrument: new Map(),
+    noEdgeNowMs: 10_000,
+    noEdgeLogIntervalMs: 1_000,
+    ...overrides
   };
 }
 

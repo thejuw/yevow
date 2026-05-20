@@ -257,6 +257,21 @@ export interface ShadowQueueDecisionRuntimeArtifacts {
   readonly action: ShadowQueueDecisionAction;
 }
 
+export interface ShadowQueueDecisionFlowInput extends ShadowQueueDecisionRuntimeInput {
+  readonly latencyBudgetMs: number;
+  readonly lastLoggedAtByInstrument: Map<string, number>;
+  readonly noEdgeNowMs: number;
+  readonly noEdgeLogIntervalMs: number;
+}
+
+export interface ShadowQueueDecisionFlowHandlers
+  extends
+    ShadowQueueNoEdgeSideEffectHandlers,
+    ShadowQueueLatencyBreachSideEffectHandlers,
+    ShadowQueueDecisionActionSideEffectHandlers {
+  readonly traceDecision: (trace: AgentDecisionTrace) => void;
+}
+
 export interface ShadowQueueDecisionAction {
   readonly publish: {
     readonly type:
@@ -719,6 +734,44 @@ export function buildShadowQueueDecisionRuntimeArtifacts(
       tradingEnabled: input.tradingEnabled
     })
   };
+}
+
+export function applyShadowQueueDecisionFlow(
+  input: ShadowQueueDecisionFlowInput,
+  handlers: ShadowQueueDecisionFlowHandlers
+): ShadowQueueDecision {
+  if (input.decision.action === "NO_EDGE" || input.decision.dispatchSide === null) {
+    return emitShadowQueueNoEdgeDecisionSideEffects(
+      {
+        decision: input.decision,
+        lastLoggedAtByInstrument: input.lastLoggedAtByInstrument,
+        nowMs: input.noEdgeNowMs,
+        intervalMs: input.noEdgeLogIntervalMs
+      },
+      handlers
+    );
+  }
+
+  const suppressed = applyShadowQueueLatencyBreachSideEffects(
+    {
+      decision: input.decision,
+      latencyBudgetMs: input.latencyBudgetMs
+    },
+    handlers
+  );
+
+  if (suppressed) {
+    return suppressed;
+  }
+
+  const artifacts = buildShadowQueueDecisionRuntimeArtifacts(input);
+  handlers.traceDecision(artifacts.trace);
+  applyShadowQueueDecisionActionSideEffects(
+    { action: artifacts.action, instrumentCode: input.book.instrumentCode },
+    handlers
+  );
+
+  return artifacts.decision;
 }
 
 export function shadowQueuePostOnlyPrice(
