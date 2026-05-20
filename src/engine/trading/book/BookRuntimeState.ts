@@ -4,7 +4,7 @@ import type {
   MicrostructureMetrics,
   PriceDiscoveryMetrics
 } from "../../../types";
-import { defaultMicrostructure, defaultPriceDiscovery } from "../state/EngineStateDefaults";
+import { defaultMicrostructure, defaultPriceDiscovery } from "../state/MarketStateDefaults";
 import type { AppliedBookUpdate, BookDeltaWithTicker } from "./BookTypes";
 import { microstructureFromBook } from "./BookReconstruction";
 export {

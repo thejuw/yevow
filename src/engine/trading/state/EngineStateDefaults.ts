@@ -25,17 +25,19 @@ import {
   DEFAULT_SHADOW_VLO_CAPACITY,
   DEFAULT_SHADOW_VLO_DRIFT_TRADES,
   DEFAULT_SHADOW_VLO_LATENCY_BUDGET_MS,
-  DEFAULT_SHADOW_VLO_QUEUE_DEPTH_MULTIPLIER,
-  DEFAULT_SOURCE_WEIGHT
+  DEFAULT_SHADOW_VLO_QUEUE_DEPTH_MULTIPLIER
 } from "../../../TradingEngineConstants";
 import { defaultAgentHealth, defaultEnsembleState } from "./AgentStateDefaults";
+import {
+  defaultLeadLagMetrics,
+  defaultMicrostructure,
+  defaultPriceDiscovery
+} from "./MarketStateDefaults";
 import type {
   AdminConfigUpdate,
   EngineState,
   Env,
   InventoryState,
-  MicrostructureMetrics,
-  PriceDiscoveryMetrics,
   RiskLimits,
   ShadowQueueState
 } from "../../../types";
@@ -53,6 +55,11 @@ export {
   defaultExecutionProfile,
   normalizeExecutionProfile
 } from "./EnginePerformanceDefaults";
+export {
+  defaultLeadLagMetrics,
+  defaultMicrostructure,
+  defaultPriceDiscovery
+} from "./MarketStateDefaults";
 
 export function defaultEngineState(engineId: string): EngineState {
   const now = new Date().toISOString();
@@ -160,56 +167,6 @@ export function parseDeltaNormalizationWeights(value: string | undefined): Recor
   } catch {
     return {};
   }
-}
-
-export function defaultMicrostructure(): MicrostructureMetrics {
-  return {
-    marketKey: null,
-    instrumentCode: null,
-    exchangeCode: null,
-    source_exchange: null,
-    sourceWeight: DEFAULT_SOURCE_WEIGHT,
-    bestBid: null,
-    bestAsk: null,
-    midPrice: null,
-    spread: null,
-    spreadBps: null,
-    bidVolume: 0,
-    askVolume: 0,
-    weightedImbalance: null,
-    depthLevels: 0,
-    lastSequence: null,
-    timeToBookMs: null,
-    isSynced: false,
-    updatedAt: null
-  };
-}
-
-export function defaultPriceDiscovery(): PriceDiscoveryMetrics {
-  return {
-    instrumentCode: null,
-    weightedMidPrice: null,
-    primaryExchange: null,
-    primaryWeight: 0,
-    sourceCount: 0,
-    sources: [],
-    updatedAt: null
-  };
-}
-
-export function defaultLeadLagMetrics(): EngineState["leadLag"] {
-  return {
-    schemaVersion: "lead-lag.v1",
-    leadInstrument: null,
-    lagInstrument: null,
-    correlation: null,
-    lagMs: null,
-    leadLagDelta: null,
-    expectedValue: null,
-    executable: false,
-    sampleCount: 0,
-    updatedAt: null
-  };
 }
 
 export function defaultInventoryState(

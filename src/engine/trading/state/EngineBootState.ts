@@ -34,13 +34,12 @@ import {
   normalizeAssetQuoteStates
 } from "./AssetStateRuntime";
 import { defaultEnsembleState } from "./AgentStateDefaults";
+import { defaultLeadLagMetrics, defaultMicrostructure } from "./MarketStateDefaults";
 import {
   defaultCitadelState,
   defaultEngineState,
   defaultInventoryGuardState,
   defaultJanitorState,
-  defaultLeadLagMetrics,
-  defaultMicrostructure,
   defaultRiskMetrics,
   defaultSlippageAnalytics,
   mergeRiskLimits,

@@ -549,14 +549,16 @@ import {
   touchAgentHealth
 } from "./state/AgentStateDefaults";
 import {
+  defaultLeadLagMetrics,
+  defaultMicrostructure,
+  defaultPriceDiscovery
+} from "./state/MarketStateDefaults";
+import {
   defaultEngineState,
   normalizePaperBankroll,
   parseDeltaNormalizationWeights,
   defaultAnomalyStatus,
   normalizeExecutionProfile,
-  defaultMicrostructure,
-  defaultPriceDiscovery,
-  defaultLeadLagMetrics,
   defaultInventoryState,
   normalizeInventoryState,
   defaultRiskMetrics,
