@@ -342,6 +342,7 @@ import {
   stateAfterHealthHeartbeat,
   syncStateMicrostructureFromBook as syncEngineStateMicrostructure
 } from "./state/EngineDiagnostics";
+import { readEngineBootStorageSnapshot } from "./state/EngineBootStorage";
 import { nextTickAgentHealth } from "./state/AgentHealthRuntime";
 import {
   killSwitchActiveLogMetadata,
@@ -1087,61 +1088,25 @@ export class TradingEngine {
     this.orderBookReconstructor = this.createOrderBookReconstructor();
 
     this.initialized = this.state.blockConcurrencyWhile(async () => {
-      let persistedState: EngineState | undefined;
-      let persistedBooks = new Map<string, InternalOrderBook>();
-      let persistedLatencyHistory: LatencyMetrics[] | undefined;
-      let persistedProcessingLatencySamples: number[] | undefined;
-      let persistedDomWallHistory: LiquidityWall[] | undefined;
-      let persistedProfilerState: ProfilerState | undefined;
-      let persistedProfilerStates = new Map<string, ProfilerState>();
-      let persistedHeatmapState: LiquidationHeatmapState | undefined;
-      let persistedAnomalyState: AnomalyDetectorState | undefined;
-      let persistedRateLimits: Record<string, RateLimitBucketSnapshot> | undefined;
-      let persistedCascadePositions: CascadeOpenPosition[] | undefined;
-      let kvRiskLimits: Partial<RiskLimits> | null = null;
-      let kvConfig: AdminConfigUpdate | null = null;
-
-      try {
-        [
-          persistedState,
-          persistedBooks,
-          persistedLatencyHistory,
-          persistedProcessingLatencySamples,
-          persistedDomWallHistory,
-          persistedProfilerState,
-          persistedProfilerStates,
-          persistedHeatmapState,
-          persistedAnomalyState,
-          persistedRateLimits,
-          persistedCascadePositions,
-          kvRiskLimits,
-          kvConfig
-        ] = await Promise.all([
-          this.state.storage.get<EngineState>(ENGINE_STATE_KEY),
-          this.state.storage.list<InternalOrderBook>({ prefix: ORDER_BOOK_PREFIX }),
-          this.state.storage.get<LatencyMetrics[]>(PERFORMANCE_HISTORY_KEY),
-          this.state.storage.get<number[]>(PROCESSING_LATENCY_SAMPLES_KEY),
-          this.state.storage.get<LiquidityWall[]>(DOM_WALL_HISTORY_KEY),
-          this.state.storage.get<ProfilerState>(PROFILER_STATE_STORAGE_KEY),
-          this.state.storage.list<ProfilerState>({ prefix: PROFILER_STATE_STORAGE_PREFIX }),
-          this.state.storage.get<LiquidationHeatmapState>(LIQUIDATION_HEATMAP_STORAGE_KEY),
-          this.state.storage.get<AnomalyDetectorState>(ANOMALY_DETECTOR_STORAGE_KEY),
-          this.state.storage.get<Record<string, RateLimitBucketSnapshot>>(RATE_LIMIT_STATE_KEY),
-          this.state.storage.get<CascadeOpenPosition[]>(CASCADE_POSITIONS_KEY),
-          this.env.RISK_VAULT.get<Partial<RiskLimits>>(RISK_LIMITS_KEY, "json"),
-          this.env.CONFIG_STORE.get<AdminConfigUpdate>(CONFIG_KEY, "json")
-        ]);
-      } catch (error) {
-        this.handleStorageWriteFailure("SYSTEM_INIT_STORAGE_READ", error);
-        try {
-          [kvRiskLimits, kvConfig] = await Promise.all([
-            this.env.RISK_VAULT.get<Partial<RiskLimits>>(RISK_LIMITS_KEY, "json"),
-            this.env.CONFIG_STORE.get<AdminConfigUpdate>(CONFIG_KEY, "json")
-          ]);
-        } catch (kvError) {
-          this.handleStorageWriteFailure("SYSTEM_INIT_KV_FALLBACK_READ", kvError);
-        }
-      }
+      const {
+        persistedState,
+        persistedBooks,
+        persistedLatencyHistory,
+        persistedProcessingLatencySamples,
+        persistedDomWallHistory,
+        persistedProfilerState,
+        persistedProfilerStates,
+        persistedHeatmapState,
+        persistedAnomalyState,
+        persistedRateLimits,
+        persistedCascadePositions,
+        kvRiskLimits,
+        kvConfig
+      } = await readEngineBootStorageSnapshot({
+        storage: this.state.storage,
+        env: this.env,
+        onReadFailure: (reason, error) => this.handleStorageWriteFailure(reason, error)
+      });
 
       const baseState = persistedState ?? defaultEngineState(this.state.id.toString());
       const now = new Date().toISOString();
