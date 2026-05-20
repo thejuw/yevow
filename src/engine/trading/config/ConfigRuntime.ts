@@ -70,6 +70,24 @@ export interface RuntimeConfigAppliedLogInput {
   readonly maxLatencyMs: number;
 }
 
+export interface ConfigRefreshSideEffectsInput extends ConfigRefreshLogInput {
+  readonly refreshedState: EngineState;
+}
+
+export interface ConfigRefreshSideEffectHandlers {
+  readonly applyConfigCache: (
+    config: GlobalRiskConfig,
+    macroBias: MacroBias,
+    temporaryOverride: TemporaryGovernanceOverride | null
+  ) => void;
+  readonly configureProfilers: (config: GlobalRiskConfig) => void;
+  readonly setMaxLatencyMs: (maxLatencyMs: number) => void;
+  readonly clearKillSwitchLog: () => void;
+  readonly applyState: (state: EngineState) => void;
+  readonly persistState: () => Promise<void>;
+  readonly warnRefresh: (metadata: JsonRecord) => void;
+}
+
 export function stateAfterRuntimeConfigUpdate(
   input: RuntimeConfigUpdateInput
 ): RuntimeConfigUpdateResult {
@@ -196,4 +214,24 @@ export function buildRuntimeConfigAppliedLog(input: RuntimeConfigAppliedLogInput
     maxLatencyMs: input.maxLatencyMs,
     killSwitch: input.state.risk.killSwitch
   };
+}
+
+export async function applyConfigRefreshSideEffects(
+  input: ConfigRefreshSideEffectsInput,
+  handlers: ConfigRefreshSideEffectHandlers
+): Promise<void> {
+  handlers.applyConfigCache(input.nextConfig, input.macroBias, input.temporaryOverride);
+  handlers.configureProfilers(input.nextConfig);
+  handlers.setMaxLatencyMs(input.nextConfig.LATENCY_THRESHOLD_MS);
+
+  if (input.nextConfig.TRADING_ENABLED) {
+    handlers.clearKillSwitchLog();
+  }
+
+  handlers.applyState(input.refreshedState);
+  await handlers.persistState();
+
+  if (shouldLogConfigRefresh(input)) {
+    handlers.warnRefresh(buildConfigRefreshLog(input));
+  }
 }

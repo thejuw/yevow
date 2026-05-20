@@ -193,11 +193,10 @@ import {
   nextCascadeCvd
 } from "./cascade/CascadeAbsorptionRuntime";
 import {
-  buildConfigRefreshLog,
+  applyConfigRefreshSideEffects,
   buildRuntimeConfigAppliedLog,
   configRefreshQuoteState,
   configRefreshTopologyFromLocation,
-  shouldLogConfigRefresh,
   stateAfterConfigRefresh,
   stateAfterRuntimeConfigUpdate
 } from "./config/ConfigRuntime";
@@ -4702,12 +4701,17 @@ export class TradingEngine {
     this.state.waitUntil(warmUp);
   }
 
-  private applyRefreshedConfigState(nextConfig: GlobalRiskConfig, observedAt: string): void {
+  private buildRefreshedConfigState(
+    nextConfig: GlobalRiskConfig,
+    macroBias: MacroBias,
+    temporaryOverride: TemporaryGovernanceOverride | null,
+    observedAt: string
+  ): EngineState {
     const quoteRefresh = configRefreshQuoteState({
       assetQuoteStates: this.engineState.assetQuoteStates,
       quoteState: this.engineState.quoteState,
       nextConfig,
-      macroBias: this.macroBias,
+      macroBias,
       observedAt
     });
     const profilerStates = this.profilerRegistry.snapshot();
@@ -4719,11 +4723,11 @@ export class TradingEngine {
       this.engineState.location.observedLatencyMs
     );
 
-    this.engineState = stateAfterConfigRefresh({
+    return stateAfterConfigRefresh({
       currentState: this.engineState,
       nextConfig,
-      macroBias: this.macroBias,
-      temporaryOverride: this.activeTemporaryOverride,
+      macroBias,
+      temporaryOverride,
       nextAssetQuoteStates: quoteRefresh.assetQuoteStates,
       nextQuoteState: quoteRefresh.quoteState,
       assetMatrix: this.calculateAssetMatrix(
@@ -4749,33 +4753,44 @@ export class TradingEngine {
     );
     const nextConfig = effectiveGovernance.config;
     const now = new Date().toISOString();
-
-    this.cachedConfig = nextConfig;
-    this.macroBias = effectiveGovernance.macroBias;
-    this.activeTemporaryOverride = effectiveGovernance.temporaryOverride;
-    this.profilerRegistry.configure(nextConfig);
-    this.maxLatencyMs = nextConfig.LATENCY_THRESHOLD_MS;
-    if (nextConfig.TRADING_ENABLED) {
-      this.killSwitchLogged = false;
-    }
-    this.applyRefreshedConfigState(nextConfig, now);
-
-    await this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "CONFIG_REFRESH");
-
-    const refreshLogInput = {
-      source,
-      previousVersion,
+    const refreshedState = this.buildRefreshedConfigState(
       nextConfig,
-      macroBias: this.macroBias,
-      temporaryOverride: this.activeTemporaryOverride
-    };
-    if (shouldLogConfigRefresh(refreshLogInput)) {
-      this.logger.warn(
-        "CONFIG_REFRESHED",
-        "Trading engine config cache refreshed",
-        buildConfigRefreshLog(refreshLogInput)
-      );
-    }
+      effectiveGovernance.macroBias,
+      effectiveGovernance.temporaryOverride,
+      now
+    );
+
+    await applyConfigRefreshSideEffects(
+      {
+        source,
+        previousVersion,
+        nextConfig,
+        macroBias: effectiveGovernance.macroBias,
+        temporaryOverride: effectiveGovernance.temporaryOverride,
+        refreshedState
+      },
+      {
+        applyConfigCache: (config, macroBias, temporaryOverride) => {
+          this.cachedConfig = config;
+          this.macroBias = macroBias;
+          this.activeTemporaryOverride = temporaryOverride;
+        },
+        configureProfilers: (config) => this.profilerRegistry.configure(config),
+        setMaxLatencyMs: (maxLatencyMs) => {
+          this.maxLatencyMs = maxLatencyMs;
+        },
+        clearKillSwitchLog: () => {
+          this.killSwitchLogged = false;
+        },
+        applyState: (state) => {
+          this.engineState = state;
+        },
+        persistState: () =>
+          this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "CONFIG_REFRESH"),
+        warnRefresh: (metadata) =>
+          this.logger.warn("CONFIG_REFRESHED", "Trading engine config cache refreshed", metadata)
+      }
+    );
   }
 
   private async refreshConfigIfDue(source: "ALARM" | "ADMIN_SIGNAL"): Promise<void> {

@@ -2,13 +2,15 @@ import { describe, expect, it } from "vitest";
 import { defaultConfig } from "../../src/ConfigManager";
 import { neutralMacroBias } from "../../src/Governor";
 import {
+  applyConfigRefreshSideEffects,
   buildConfigRefreshLog,
   buildRuntimeConfigAppliedLog,
   configRefreshQuoteState,
   configRefreshTopologyFromLocation,
   shouldLogConfigRefresh,
   stateAfterConfigRefresh,
-  stateAfterRuntimeConfigUpdate
+  stateAfterRuntimeConfigUpdate,
+  type ConfigRefreshSideEffectHandlers
 } from "../../src/engine/trading/config/ConfigRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { AdminConfigUpdate } from "../../src/types";
@@ -263,4 +265,73 @@ describe("ConfigRuntime", () => {
       killSwitch: true
     });
   });
+
+  it("applies config refresh side effects and emits meaningful audit logs", async () => {
+    const nextConfig = {
+      ...defaultConfig,
+      TRADING_ENABLED: true,
+      LATENCY_THRESHOLD_MS: 125,
+      version: "config-v2"
+    };
+    const refreshedState = defaultEngineState("config-side-effects");
+    refreshedState.cachedConfig = nextConfig;
+    const sideEffects = configRefreshSideEffectSpy();
+
+    await applyConfigRefreshSideEffects(
+      {
+        source: "ALARM",
+        previousVersion: "config-v1",
+        nextConfig,
+        macroBias: neutralMacroBias(),
+        temporaryOverride: null,
+        refreshedState
+      },
+      sideEffects.handlers
+    );
+
+    expect(sideEffects.events).toEqual([
+      "cache:config-v2",
+      "profilers:config-v2",
+      "latency:125",
+      "kill-switch-log-clear",
+      "state:config-v2",
+      "persist",
+      "warn:config-v2"
+    ]);
+  });
 });
+
+function configRefreshSideEffectSpy(): {
+  events: string[];
+  handlers: ConfigRefreshSideEffectHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      applyConfigCache(config) {
+        events.push(`cache:${config.version}`);
+      },
+      configureProfilers(config) {
+        events.push(`profilers:${config.version}`);
+      },
+      setMaxLatencyMs(maxLatencyMs) {
+        events.push(`latency:${maxLatencyMs}`);
+      },
+      clearKillSwitchLog() {
+        events.push("kill-switch-log-clear");
+      },
+      applyState(state) {
+        events.push(`state:${state.cachedConfig.version}`);
+      },
+      persistState() {
+        events.push("persist");
+        return Promise.resolve();
+      },
+      warnRefresh(metadata) {
+        events.push(`warn:${String(metadata.configVersion)}`);
+      }
+    }
+  };
+}
