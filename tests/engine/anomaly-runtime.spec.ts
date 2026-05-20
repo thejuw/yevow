@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  anomalyEmergencyPauseArtifacts,
   anomalyEmergencyPauseStorageWrites,
   buildAnomalyEmergencyPauseTelemetry,
   stateAfterAnomalyEmergencyPause
@@ -135,6 +136,51 @@ describe("AnomalyRuntime", () => {
       "book:hyperliquid:btc-usd": currentBook,
       "lastTick:hyperliquid:btc-usd": currentTick,
       "anomaly:hyperliquid:btc-usd:42": anomalyDetection.anomalies
+    });
+  });
+
+  it("assembles emergency pause state, storage, telemetry, and ingest result", () => {
+    const currentState = defaultEngineState("anomaly-artifacts");
+    const artifacts = anomalyEmergencyPauseArtifacts({
+      currentState,
+      engineStateKey: "engine:state",
+      performanceHistoryKey: "latency:history",
+      latencyHistory: [latency()],
+      processingLatencySamplesKey: "latency:samples",
+      processingLatencySamples: [1],
+      domWallHistoryKey: "dom:walls",
+      domWallHistory: dom().walls,
+      anomalyDetectorStorageKey: "anomaly:state",
+      anomalyResult: anomalyResult(),
+      orderBookPrefix: "book:",
+      book: book(),
+      tick: tick(),
+      domSnapshot: dom(),
+      metrics: latency(),
+      internalOrderBookDepth: 4,
+      observedAt: OBSERVED_AT
+    });
+
+    expect(artifacts.state).toMatchObject({
+      mode: "HALTED",
+      processedTicks: 1,
+      internalOrderBookDepth: 4,
+      risk: { killSwitch: true }
+    });
+    expect(artifacts.storageWrites["engine:state"]).toBe(artifacts.state);
+    expect(artifacts.event).toMatchObject({
+      correlationId: "anomaly-1",
+      payload: {
+        mode: "HALTED",
+        killSwitch: true
+      }
+    });
+    expect(artifacts.result).toMatchObject({
+      accepted: false,
+      status: "ANOMALY_PAUSE",
+      reason: "FLASH_CRASH",
+      metrics: latency(),
+      book: book()
     });
   });
 });

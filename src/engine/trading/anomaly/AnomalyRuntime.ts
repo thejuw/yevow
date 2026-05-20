@@ -10,6 +10,7 @@ import type {
   MarketTick
 } from "../../../types";
 import { microstructureFromBook } from "../book/BookReconstruction";
+import type { TickIngestResult } from "../TradingEngineRouteTypes";
 
 export interface AnomalyEmergencyPauseStateInput {
   readonly currentState: EngineState;
@@ -56,6 +57,24 @@ export interface AnomalyEmergencyPauseTelemetry {
     readonly dedupeKey: string;
     readonly metadata: JsonRecord;
   };
+}
+
+export interface AnomalyEmergencyPauseArtifactsInput extends Omit<
+  AnomalyEmergencyPauseStorageInput,
+  "state"
+> {
+  readonly currentState: EngineState;
+  readonly domSnapshot: DomAnalysisSnapshot;
+  readonly metrics: LatencyMetrics;
+  readonly internalOrderBookDepth: number;
+  readonly observedAt: string;
+}
+
+export interface AnomalyEmergencyPauseArtifacts {
+  readonly state: EngineState;
+  readonly storageWrites: Record<string, unknown>;
+  readonly event: AnomalyEmergencyPauseTelemetry;
+  readonly result: TickIngestResult;
 }
 
 export function stateAfterAnomalyEmergencyPause(
@@ -157,5 +176,52 @@ export function anomalyEmergencyPauseStorageWrites(
     [`${input.orderBookPrefix}${input.book.marketKey}`]: input.book,
     [`lastTick:${input.book.marketKey}`]: input.tick,
     [`anomaly:${input.book.marketKey}:${input.tick.sequence}`]: input.anomalyResult.anomalies
+  };
+}
+
+export function anomalyEmergencyPauseArtifacts(
+  input: AnomalyEmergencyPauseArtifactsInput
+): AnomalyEmergencyPauseArtifacts {
+  const state = stateAfterAnomalyEmergencyPause({
+    currentState: input.currentState,
+    book: input.book,
+    dom: input.domSnapshot,
+    anomaly: input.anomalyResult.status,
+    internalOrderBookDepth: input.internalOrderBookDepth,
+    observedAt: input.observedAt
+  });
+
+  return {
+    state,
+    storageWrites: anomalyEmergencyPauseStorageWrites({
+      engineStateKey: input.engineStateKey,
+      state,
+      performanceHistoryKey: input.performanceHistoryKey,
+      latencyHistory: input.latencyHistory,
+      processingLatencySamplesKey: input.processingLatencySamplesKey,
+      processingLatencySamples: input.processingLatencySamples,
+      domWallHistoryKey: input.domWallHistoryKey,
+      domWallHistory: input.domWallHistory,
+      anomalyDetectorStorageKey: input.anomalyDetectorStorageKey,
+      anomalyResult: input.anomalyResult,
+      orderBookPrefix: input.orderBookPrefix,
+      book: input.book,
+      tick: input.tick
+    }),
+    event: buildAnomalyEmergencyPauseTelemetry({
+      tick: input.tick,
+      book: input.book,
+      domSnapshot: input.domSnapshot,
+      anomalyResult: input.anomalyResult,
+      metrics: input.metrics,
+      engineState: state
+    }),
+    result: {
+      accepted: false,
+      status: "ANOMALY_PAUSE",
+      reason: input.anomalyResult.anomalies.map((event) => event.types.join("+")).join(","),
+      metrics: input.metrics,
+      book: input.book
+    }
   };
 }

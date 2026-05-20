@@ -78,9 +78,8 @@ import {
   shouldProcessShadowQueueTick
 } from "./shadow/ShadowQueueRuntime";
 import {
-  anomalyEmergencyPauseStorageWrites,
-  buildAnomalyEmergencyPauseTelemetry,
-  stateAfterAnomalyEmergencyPause
+  anomalyEmergencyPauseArtifacts,
+  type AnomalyEmergencyPauseTelemetry
 } from "./anomaly/AnomalyRuntime";
 import {
   crossAssetHypeCancelLogMetadata,
@@ -2672,44 +2671,34 @@ export class TradingEngine {
       observedAt: metrics.brainTimestamp
     });
 
-    this.engineState = stateAfterAnomalyEmergencyPause({
+    const artifacts = anomalyEmergencyPauseArtifacts({
       currentState: this.engineState,
+      engineStateKey: ENGINE_STATE_KEY,
+      performanceHistoryKey: PERFORMANCE_HISTORY_KEY,
+      latencyHistory: this.latencyHistory,
+      processingLatencySamplesKey: PROCESSING_LATENCY_SAMPLES_KEY,
+      processingLatencySamples: this.processingLatencySamples,
+      domWallHistoryKey: DOM_WALL_HISTORY_KEY,
+      domWallHistory: this.domWallHistory,
+      anomalyDetectorStorageKey: ANOMALY_DETECTOR_STORAGE_KEY,
+      anomalyResult,
+      orderBookPrefix: ORDER_BOOK_PREFIX,
       book,
-      dom: domSnapshot,
-      anomaly: anomalyResult.status,
+      tick,
+      domSnapshot,
+      metrics,
       internalOrderBookDepth: countBookLevels(this.bids, this.asks),
       observedAt: metrics.brainTimestamp
     });
 
-    await this.safeStoragePut(
-      anomalyEmergencyPauseStorageWrites({
-        engineStateKey: ENGINE_STATE_KEY,
-        state: this.engineState,
-        performanceHistoryKey: PERFORMANCE_HISTORY_KEY,
-        latencyHistory: this.latencyHistory,
-        processingLatencySamplesKey: PROCESSING_LATENCY_SAMPLES_KEY,
-        processingLatencySamples: this.processingLatencySamples,
-        domWallHistoryKey: DOM_WALL_HISTORY_KEY,
-        domWallHistory: this.domWallHistory,
-        anomalyDetectorStorageKey: ANOMALY_DETECTOR_STORAGE_KEY,
-        anomalyResult,
-        orderBookPrefix: ORDER_BOOK_PREFIX,
-        book,
-        tick
-      }),
-      "ANOMALY_EMERGENCY_PAUSE"
-    );
+    this.engineState = artifacts.state;
 
-    this.triggerEmergencyPause(tick, book, domSnapshot, anomalyResult, metrics);
+    await this.safeStoragePut(artifacts.storageWrites, "ANOMALY_EMERGENCY_PAUSE");
+
+    this.triggerEmergencyPause(artifacts.event);
     this.publishTickTelemetry(tick, metrics, "FRESH", hotPathStartedAt);
 
-    return {
-      accepted: false,
-      status: "ANOMALY_PAUSE",
-      reason: anomalyResult.anomalies.map((event) => event.types.join("+")).join(","),
-      metrics,
-      book
-    };
+    return artifacts.result;
   }
 
   private handleCroupierQuoteAction(
@@ -5042,22 +5031,7 @@ export class TradingEngine {
     this.logger.logPerformance(latencyMetrics);
   }
 
-  private triggerEmergencyPause(
-    tick: MarketTick,
-    book: InternalOrderBook,
-    domSnapshot: DomAnalysisSnapshot,
-    anomalyResult: AnomalyDetectionResult,
-    metrics: LatencyMetrics
-  ): void {
-    const event = buildAnomalyEmergencyPauseTelemetry({
-      tick,
-      book,
-      domSnapshot,
-      anomalyResult,
-      metrics,
-      engineState: this.engineState
-    });
-
+  private triggerEmergencyPause(event: AnomalyEmergencyPauseTelemetry): void {
     this.logger.writeLog(
       "CRITICAL",
       "TradingEngine",
