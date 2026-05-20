@@ -1,5 +1,5 @@
 import type { PerformanceSnapshot } from "../../../Logger";
-import { parseTimestampMs, roundLatency } from "../helpers/RuntimeClock";
+import { highResolutionNow, parseTimestampMs, roundLatency } from "../helpers/RuntimeClock";
 import { processingLatencyStats, prometheusMetric } from "../helpers/RuntimeMetrics";
 import { readPositiveNumber } from "../helpers/RuntimeParsing";
 import { aggregateQuoteState, suspendAssetQuoteStates } from "../state/AssetStateRuntime";
@@ -979,6 +979,21 @@ export interface ExecutionProfileSideEffectsInput {
   readonly lastPerformanceStatus: EngineStabilityStatus | null;
 }
 
+export interface ExecutionProfileFlowInput {
+  readonly engineId: string;
+  readonly previousProfile: ExecutionProfile | null | undefined;
+  readonly processedTicks: number;
+  readonly processingLatencySamples: number[];
+  readonly metrics: LatencyMetrics;
+  readonly trace: ExecutionTraceInput;
+  readonly jitterThresholdMs: number;
+  readonly jitterSampleWindow: number;
+  readonly jitterComputeIntervalTicks: number;
+  readonly coldStartWakeupThresholdMs: number;
+  readonly lastPerformanceStatus: EngineStabilityStatus | null;
+  readonly nowMs?: number;
+}
+
 export interface ExecutionProfileSideEffectHandlers {
   readonly applyProfile: (profile: ExecutionProfile) => void;
   readonly markPerformanceStatus: (status: EngineStabilityStatus) => void;
@@ -1071,6 +1086,40 @@ export function applyExecutionProfileSideEffects(
   }
 
   return result;
+}
+
+export function applyExecutionProfileFlow(
+  input: ExecutionProfileFlowInput,
+  handlers: ExecutionProfileSideEffectHandlers
+): ExecutionProfileRuntimeResult {
+  const processingLatencyMs = recordProcessingLatencySample(
+    input.processingLatencySamples,
+    input.metrics.processingLatencyMs,
+    input.jitterSampleWindow
+  );
+  const nextProcessedTicks = input.processedTicks + 1;
+  const currentHighResolutionMs = input.nowMs ?? highResolutionNow();
+  const totalHotPathMs = roundLatency(
+    Math.max(0, currentHighResolutionMs - input.trace.hotPathStartedAt)
+  );
+
+  return applyExecutionProfileSideEffects(
+    {
+      engineId: input.engineId,
+      previousProfile: input.previousProfile,
+      processingLatencySamples: input.processingLatencySamples,
+      processingLatencyMs,
+      nextProcessedTicks,
+      jitterThresholdMs: input.jitterThresholdMs,
+      jitterSampleWindow: input.jitterSampleWindow,
+      jitterComputeIntervalTicks: input.jitterComputeIntervalTicks,
+      coldStartWakeupThresholdMs: input.coldStartWakeupThresholdMs,
+      totalHotPathMs,
+      trace: input.trace,
+      lastPerformanceStatus: input.lastPerformanceStatus
+    },
+    handlers
+  );
 }
 
 export function buildPerformanceSnapshot(

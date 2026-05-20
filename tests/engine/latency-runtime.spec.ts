@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyExecutionProfileFlow,
   applyExecutionProfileSideEffects,
   applyHardStaleTickDropFlow,
   applyHardStaleTickDropSideEffects,
@@ -1006,6 +1007,53 @@ describe("LatencyRuntime", () => {
     );
 
     expect(result.profile.status).toBe("UNSTABLE");
+    expect(sideEffects.events).toEqual([
+      "profile:UNSTABLE",
+      "mark:UNSTABLE",
+      "snapshot:UNSTABLE",
+      "publish:ENGINE_PERFORMANCE_UNSTABLE:engine-1:10",
+      "notify:HIGH"
+    ]);
+  });
+
+  it("orchestrates execution profile sampling and hot-path timing", () => {
+    const sideEffects = executionProfileSideEffectSpy();
+    const samples = [1, 5];
+
+    const result = applyExecutionProfileFlow(
+      {
+        engineId: "engine-1",
+        previousProfile: profile({
+          status: "STABLE",
+          lastComputedAt: "2026-05-18T14:59:00.000Z"
+        }),
+        processedTicks: 9,
+        processingLatencySamples: samples,
+        metrics: latencyMetrics({ processingLatencyMs: 9 }),
+        trace: {
+          wakeUpTimeMs: 30,
+          orderBookUpdateMs: 2,
+          agentLogicMs: 4,
+          hotPathStartedAt: 100,
+          observedAt: "2026-05-18T15:00:00.000Z"
+        },
+        jitterThresholdMs: 2,
+        jitterSampleWindow: 3,
+        jitterComputeIntervalTicks: 5,
+        coldStartWakeupThresholdMs: 25,
+        lastPerformanceStatus: "STABLE",
+        nowMs: 112
+      },
+      sideEffects.handlers
+    );
+
+    expect(samples).toEqual([1, 5, 9]);
+    expect(result.profile).toMatchObject({
+      status: "UNSTABLE",
+      totalHotPathMs: 12,
+      lastProcessingLatencyMs: 9,
+      coldStartSuspected: true
+    });
     expect(sideEffects.events).toEqual([
       "profile:UNSTABLE",
       "mark:UNSTABLE",

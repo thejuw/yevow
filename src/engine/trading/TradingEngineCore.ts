@@ -129,7 +129,7 @@ import {
 } from "./execution/ExecutionQueueRuntime";
 import { calculateAssetMatrix as calculateRuntimeAssetMatrix } from "./state/AssetMatrixRuntime";
 import {
-  applyExecutionProfileSideEffects,
+  applyExecutionProfileFlow,
   applyHardStaleTickDropFlow,
   applyLatencyBaselineResetSideEffects,
   applyNativeHyperliquidLatencyPullSideEffects,
@@ -143,7 +143,6 @@ import {
   hydrateLatencyMetricsFromState,
   nextLatencyAverage,
   prepareTickLatencyRuntime,
-  recordProcessingLatencySample,
   type ExecutionTraceInput
 } from "./performance/LatencyRuntime";
 import {
@@ -4200,27 +4199,18 @@ export class TradingEngine {
   }
 
   private observeExecutionProfile(metrics: LatencyMetrics, trace: ExecutionTraceInput): void {
-    const processingLatencyMs = recordProcessingLatencySample(
-      this.processingLatencySamples,
-      metrics.processingLatencyMs,
-      this.jitterSampleWindow
-    );
-    const nextProcessedTicks = this.engineState.processedTicks + 1;
-    const totalHotPathMs = roundLatency(Math.max(0, highResolutionNow() - trace.hotPathStartedAt));
-
-    applyExecutionProfileSideEffects(
+    applyExecutionProfileFlow(
       {
         engineId: this.engineState.engineId,
         previousProfile: this.engineState.executionProfile,
+        processedTicks: this.engineState.processedTicks,
         processingLatencySamples: this.processingLatencySamples,
-        processingLatencyMs,
-        nextProcessedTicks,
+        metrics,
+        trace,
         jitterThresholdMs: this.jitterThresholdMs,
         jitterSampleWindow: this.jitterSampleWindow,
         jitterComputeIntervalTicks: this.jitterComputeIntervalTicks,
         coldStartWakeupThresholdMs: COLD_START_WAKEUP_THRESHOLD_MS,
-        totalHotPathMs,
-        trace,
         lastPerformanceStatus: this.lastPerformanceStatus
       },
       {
