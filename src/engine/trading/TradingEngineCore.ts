@@ -133,9 +133,7 @@ import {
 } from "./agents/AgentEvaluationRuntime";
 import { applyIntentPaperExecutionBudgetSideEffects } from "./execution/PaperExecutionBudgetRuntime";
 import {
-  buildExecutionQueueEnqueuePlan,
-  executionQueueDeferralLogMetadata,
-  shouldLogExecutionQueueDeferral,
+  applyExecutionQueueEnqueueSideEffects,
   splitExecutionQueueForDrain,
   type QueuedExecutionIntent
 } from "./execution/ExecutionQueueRuntime";
@@ -3914,41 +3912,34 @@ export class TradingEngine {
     priority: QueuedExecutionIntent["priority"],
     waitMs: number
   ): Promise<void> {
-    const queue = await this.readExecutionQueue("EXECUTION_QUEUE_ENQUEUE_READ");
     const now = Date.now();
-    const plan = buildExecutionQueueEnqueuePlan({
-      queue,
-      intent,
-      priority,
-      waitMs,
-      nowMs: now,
-      enqueuedAtIso: new Date(now).toISOString()
-    });
-
-    await this.safeStoragePut(EXECUTION_QUEUE_KEY, plan.queue, "EXECUTION_QUEUE_ENQUEUE");
-    await this.safeSetAlarm(
-      Math.min(plan.runAfterMs, now + CONFIG_ALARM_INTERVAL_MS),
-      "EXECUTION_QUEUE_ALARM"
-    );
-    if (
-      shouldLogExecutionQueueDeferral({
+    await applyExecutionQueueEnqueueSideEffects(
+      {
+        intent,
+        priority,
+        waitMs,
         nowMs: now,
-        lastLoggedAtMs: this.rateLimitDeferralLogAt,
+        enqueuedAtIso: new Date(now).toISOString(),
+        alarmCapMs: CONFIG_ALARM_INTERVAL_MS,
+        lastDeferralLoggedAtMs: this.rateLimitDeferralLogAt,
         throttleMs: HOT_PATH_LOG_THROTTLE_MS
-      })
-    ) {
-      this.rateLimitDeferralLogAt = now;
-      this.logger.warn(
-        "EXECUTION_DEFERRED_BY_RATE_LIMIT",
-        "Execution intent deferred by durable rate limiter",
-        executionQueueDeferralLogMetadata({
-          intent,
-          priority,
-          waitMs,
-          queuedCount: plan.queuedCount
-        })
-      );
-    }
+      },
+      {
+        readQueue: () => this.readExecutionQueue("EXECUTION_QUEUE_ENQUEUE_READ"),
+        persistQueue: (queue) =>
+          this.safeStoragePut(EXECUTION_QUEUE_KEY, queue, "EXECUTION_QUEUE_ENQUEUE"),
+        setAlarm: (timestampMs) => this.safeSetAlarm(timestampMs, "EXECUTION_QUEUE_ALARM"),
+        markDeferralLogged: (loggedAtMs) => {
+          this.rateLimitDeferralLogAt = loggedAtMs;
+        },
+        warnDeferral: (metadata) =>
+          this.logger.warn(
+            "EXECUTION_DEFERRED_BY_RATE_LIMIT",
+            "Execution intent deferred by durable rate limiter",
+            metadata
+          )
+      }
+    );
   }
 
   private async readExecutionQueue(reason: string): Promise<QueuedExecutionIntent[]> {

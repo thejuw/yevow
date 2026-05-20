@@ -49,6 +49,25 @@ export interface ExecutionQueueDeferralLogMetadataInput {
   readonly queuedCount: number;
 }
 
+export interface ExecutionQueueEnqueueSideEffectsInput {
+  readonly intent: TradeIntent;
+  readonly priority: ExecutionQueuePriority;
+  readonly waitMs: number;
+  readonly nowMs: number;
+  readonly enqueuedAtIso: string;
+  readonly alarmCapMs: number;
+  readonly lastDeferralLoggedAtMs: number;
+  readonly throttleMs: number;
+}
+
+export interface ExecutionQueueEnqueueSideEffectHandlers {
+  readonly readQueue: () => Promise<QueuedExecutionIntent[]>;
+  readonly persistQueue: (queue: readonly QueuedExecutionIntent[]) => Promise<void>;
+  readonly setAlarm: (timestampMs: number) => Promise<void>;
+  readonly markDeferralLogged: (loggedAtMs: number) => void;
+  readonly warnDeferral: (metadata: JsonRecord) => void;
+}
+
 const DEFAULT_MAX_QUEUE_SIZE = 1_000;
 const PRIORITY_WEIGHT: Record<ExecutionQueuePriority, number> = {
   CANCEL: 0,
@@ -130,4 +149,42 @@ export function executionQueueDeferralLogMetadata(
     waitMs: input.waitMs,
     queuedCount: input.queuedCount
   };
+}
+
+export async function applyExecutionQueueEnqueueSideEffects(
+  input: ExecutionQueueEnqueueSideEffectsInput,
+  handlers: ExecutionQueueEnqueueSideEffectHandlers
+): Promise<ExecutionQueueEnqueuePlan> {
+  const queue = await handlers.readQueue();
+  const plan = buildExecutionQueueEnqueuePlan({
+    queue,
+    intent: input.intent,
+    priority: input.priority,
+    waitMs: input.waitMs,
+    nowMs: input.nowMs,
+    enqueuedAtIso: input.enqueuedAtIso
+  });
+
+  await handlers.persistQueue(plan.queue);
+  await handlers.setAlarm(Math.min(plan.runAfterMs, input.nowMs + input.alarmCapMs));
+
+  if (
+    shouldLogExecutionQueueDeferral({
+      nowMs: input.nowMs,
+      lastLoggedAtMs: input.lastDeferralLoggedAtMs,
+      throttleMs: input.throttleMs
+    })
+  ) {
+    handlers.markDeferralLogged(input.nowMs);
+    handlers.warnDeferral(
+      executionQueueDeferralLogMetadata({
+        intent: input.intent,
+        priority: input.priority,
+        waitMs: input.waitMs,
+        queuedCount: plan.queuedCount
+      })
+    );
+  }
+
+  return plan;
 }

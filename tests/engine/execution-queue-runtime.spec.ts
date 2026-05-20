@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyExecutionQueueEnqueueSideEffects,
   buildExecutionQueueEnqueuePlan,
   compareExecutionQueueItems,
   executionQueueDeferralLogMetadata,
+  type ExecutionQueueEnqueueSideEffectHandlers,
   shouldLogExecutionQueueDeferral,
   splitExecutionQueueForDrain,
   type ExecutionQueuePriority,
@@ -109,7 +111,87 @@ describe("ExecutionQueueRuntime", () => {
       queuedCount: 3
     });
   });
+
+  it("runs enqueue side effects and emits throttled deferral telemetry", async () => {
+    const sideEffects = enqueueSideEffectSpy({
+      queue: [queuedIntent({ id: "existing", priority: "NEW", runAfterMs: 1_050 })]
+    });
+
+    const plan = await applyExecutionQueueEnqueueSideEffects(
+      {
+        intent: tradeIntent({ intentId: "queued-now" }),
+        priority: "NEW",
+        waitMs: 750,
+        nowMs: 1_000,
+        enqueuedAtIso: "2026-05-19T12:00:00.000Z",
+        alarmCapMs: 500,
+        lastDeferralLoggedAtMs: 0,
+        throttleMs: 250
+      },
+      sideEffects.handlers
+    );
+
+    expect(plan.runAfterMs).toBe(1_750);
+    expect(sideEffects.events).toEqual([
+      "read",
+      "persist:existing,queued-now",
+      "alarm:1500",
+      "mark:1000",
+      "warn:queued-now:2"
+    ]);
+  });
+
+  it("suppresses enqueue deferral telemetry inside the throttle window", async () => {
+    const sideEffects = enqueueSideEffectSpy({ queue: [] });
+
+    await applyExecutionQueueEnqueueSideEffects(
+      {
+        intent: tradeIntent({ intentId: "queued-now" }),
+        priority: "NEW",
+        waitMs: 100,
+        nowMs: 1_000,
+        enqueuedAtIso: "2026-05-19T12:00:00.000Z",
+        alarmCapMs: 500,
+        lastDeferralLoggedAtMs: 900,
+        throttleMs: 250
+      },
+      sideEffects.handlers
+    );
+
+    expect(sideEffects.events).toEqual(["read", "persist:queued-now", "alarm:1100"]);
+  });
 });
+
+function enqueueSideEffectSpy(input: { queue: QueuedExecutionIntent[] }): {
+  events: string[];
+  handlers: ExecutionQueueEnqueueSideEffectHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      readQueue() {
+        events.push("read");
+        return Promise.resolve(input.queue);
+      },
+      persistQueue(queue) {
+        events.push(`persist:${queue.map((item) => item.intent.intentId).join(",")}`);
+        return Promise.resolve();
+      },
+      setAlarm(timestampMs) {
+        events.push(`alarm:${timestampMs}`);
+        return Promise.resolve();
+      },
+      markDeferralLogged(loggedAtMs) {
+        events.push(`mark:${loggedAtMs}`);
+      },
+      warnDeferral(metadata) {
+        events.push(`warn:${String(metadata.intentId)}:${String(metadata.queuedCount)}`);
+      }
+    }
+  };
+}
 
 function queuedIntent(input: {
   id: string;
