@@ -19,6 +19,10 @@ import {
   getOrCreateBookSyncState,
   markBookDesynced
 } from "./BookSyncRuntime";
+import {
+  applyTopOfBookCrossCheckSync,
+  evaluateTopOfBookCrossCheck
+} from "./TopOfBookCrossCheckRuntime";
 import { SortedBookSide } from "./SortedBookSide";
 
 export interface AppliedBookSnapshot {
@@ -449,66 +453,30 @@ export class OrderBookReconstructor {
       book.source,
       book.sourceWeight
     );
-    const now = Date.now();
-
-    if (now - syncState.lastCrossCheckAt < this.config.topOfBookCrossCheckIntervalMs) {
-      return;
-    }
-
-    syncState.lastCrossCheckAt = now;
-
-    const rawBestBid = typeof delta.bestBid === "number" ? delta.bestBid : null;
-    const rawBestAsk = typeof delta.bestAsk === "number" ? delta.bestAsk : null;
-    const bidMismatch =
-      rawBestBid !== null &&
-      book.bestBid !== null &&
-      Math.abs(rawBestBid - book.bestBid) > book.tickSize;
-    const askMismatch =
-      rawBestAsk !== null &&
-      book.bestAsk !== null &&
-      Math.abs(rawBestAsk - book.bestAsk) > book.tickSize;
-
-    if (!bidMismatch && !askMismatch) {
-      this.config.publish("ORDER_BOOK_CROSS_CHECK", {
-        instrumentCode: book.instrumentCode,
-        exchangeCode: book.exchangeCode,
-        sequence: book.sequence,
-        bestBid: book.bestBid,
-        bestAsk: book.bestAsk,
-        rawBestBid,
-        rawBestAsk,
-        status: "MATCH"
-      });
-      return;
-    }
-
-    markBookDesynced(
+    const result = evaluateTopOfBookCrossCheck({
       syncState,
-      "TOP_OF_BOOK_MISMATCH",
-      new Date().toISOString(),
-      syncState.ttbLatencyMs
-    );
+      delta,
+      book,
+      checkedAtMs: Date.now(),
+      intervalMs: this.config.topOfBookCrossCheckIntervalMs,
+      desyncedAt: new Date().toISOString()
+    });
+
+    applyTopOfBookCrossCheckSync(syncState, result);
+
+    if (result.status === "SKIP") {
+      return;
+    }
+
+    if (result.status === "MATCH") {
+      this.config.publish("ORDER_BOOK_CROSS_CHECK", result.payload);
+      return;
+    }
 
     this.config.error("ORDER_BOOK_CROSS_CHECK_FAILED", "Top-of-book mismatch detected", {
-      instrumentCode: book.instrumentCode,
-      exchangeCode: book.exchangeCode,
-      sequence: book.sequence,
-      bestBid: book.bestBid,
-      bestAsk: book.bestAsk,
-      rawBestBid,
-      rawBestAsk,
-      tickSize: book.tickSize
+      ...result.payload
     });
-    this.config.publish("ORDER_BOOK_CROSS_CHECK_FAILED", {
-      instrumentCode: book.instrumentCode,
-      exchangeCode: book.exchangeCode,
-      sequence: book.sequence,
-      bestBid: book.bestBid,
-      bestAsk: book.bestAsk,
-      rawBestBid,
-      rawBestAsk,
-      tickSize: book.tickSize
-    });
+    this.config.publish("ORDER_BOOK_CROSS_CHECK_FAILED", result.payload);
   }
 
   private logCrossedBook(
