@@ -162,7 +162,7 @@ import {
   cancelJanitorOrder,
   fetchJanitorExchangeOpenOrders,
   reconcileJanitorOrders,
-  recordPostOnlyDustCloseSkip
+  recordPostOnlyDustCloseSkips
 } from "./janitor/JanitorRuntime";
 import {
   currentCascadeActiveSnapshot as buildCurrentCascadeActiveSnapshot,
@@ -4244,26 +4244,6 @@ export class TradingEngine {
     );
   }
 
-  private recordJanitorDustCloseSkips(
-    instrumentCodes: readonly string[],
-    observedAt: string
-  ): string[] {
-    const dustCloseIntents: string[] = [];
-    for (const instrumentCode of instrumentCodes) {
-      const intentId = recordPostOnlyDustCloseSkip({
-        openPositions: this.engineState.openPositions,
-        logger: this.logger,
-        instrumentCode,
-        observedAt
-      });
-      if (intentId) {
-        dustCloseIntents.push(intentId);
-      }
-    }
-
-    return dustCloseIntents;
-  }
-
   private async runJanitor(source: "ALARM" | "ADMIN" = "ALARM"): Promise<void> {
     const observedAt = new Date().toISOString();
     const baseReport = this.janitorAgent.run({
@@ -4293,7 +4273,12 @@ export class TradingEngine {
       await this.cancelOrder(request.orderId, request.reason, request.instrumentCode);
     }
 
-    const dustCloseIntents = this.recordJanitorDustCloseSkips(baseReport.dustPositions, observedAt);
+    const dustCloseIntents = recordPostOnlyDustCloseSkips({
+      openPositions: this.engineState.openPositions,
+      logger: this.logger,
+      instrumentCodes: baseReport.dustPositions,
+      observedAt
+    });
 
     const pruneReport = await this.pruneOperationalLogs();
     const artifacts = buildJanitorRunArtifacts({

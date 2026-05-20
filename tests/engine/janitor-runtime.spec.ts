@@ -8,6 +8,7 @@ import {
   type JanitorExecutionLogger,
   reconcileJanitorOrders,
   recordPostOnlyDustCloseSkip,
+  recordPostOnlyDustCloseSkips,
   stateAfterJanitorRun
 } from "../../src/engine/trading/janitor/JanitorRuntime";
 import type { LogPruneReport } from "../../src/engine/LogRetention";
@@ -279,6 +280,32 @@ describe("JanitorRuntime", () => {
         inventoryProtocol: "POST_ONLY_SKEW"
       }
     });
+  });
+
+  it("records post-only dust close skips for a batch of instruments", () => {
+    const { logger, warnings } = loggerSpy();
+
+    expect(
+      recordPostOnlyDustCloseSkips({
+        openPositions: {
+          "hype-usd": {
+            instrumentCode: "hype-usd",
+            side: "LONG",
+            quantity: 0.0000004,
+            averageEntryPrice: 30,
+            markPrice: 31,
+            unrealizedPnl: 0.1,
+            realizedPnl: 0,
+            updatedAt: OBSERVED_AT
+          }
+        },
+        logger,
+        instrumentCodes: ["hype-usd", "btc-usd"],
+        observedAt: OBSERVED_AT
+      })
+    ).toEqual([]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0].telemetry).toMatchObject({ instrumentCode: "hype-usd" });
   });
 
   it("merges janitor reports back into engine state", () => {

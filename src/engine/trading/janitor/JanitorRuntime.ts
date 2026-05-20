@@ -95,6 +95,13 @@ export interface RecordPostOnlyDustCloseSkipInput {
   readonly observedAt: string;
 }
 
+export interface RecordPostOnlyDustCloseSkipsInput {
+  readonly openPositions: EngineState["openPositions"];
+  readonly logger: JanitorExecutionLogger;
+  readonly instrumentCodes: readonly string[];
+  readonly observedAt: string;
+}
+
 export function reconcileJanitorOrders(
   input: JanitorOrderReconciliationInput
 ): JanitorOrderReconciliation {
@@ -251,6 +258,25 @@ export function recordPostOnlyDustCloseSkip(
     }
   );
   return null;
+}
+
+export function recordPostOnlyDustCloseSkips(input: RecordPostOnlyDustCloseSkipsInput): string[] {
+  const dustCloseIntents: string[] = [];
+
+  for (const instrumentCode of input.instrumentCodes) {
+    const intentId = recordPostOnlyDustCloseSkip({
+      openPositions: input.openPositions,
+      logger: input.logger,
+      instrumentCode,
+      observedAt: input.observedAt
+    });
+
+    if (intentId) {
+      dustCloseIntents.push(intentId);
+    }
+  }
+
+  return dustCloseIntents;
 }
 
 export function buildJanitorReport(input: JanitorReportInput): JanitorReportResult {
