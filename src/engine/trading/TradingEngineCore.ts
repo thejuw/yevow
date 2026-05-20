@@ -177,9 +177,9 @@ import {
   applyRuntimeConfigUpdateSideEffects
 } from "./config/ConfigRuntime";
 import {
-  absorptionAnalyzerConfig as buildAbsorptionAnalyzerConfig,
+  absorptionAnalyzerConfigFromRuntime,
   cascadeAssetProfileFromConfig,
-  cascadeDetectorConfig as buildCascadeDetectorConfig,
+  cascadeDetectorConfigFromRuntime,
   cascadeRecoverySignalConfig as buildCascadeRecoverySignalConfig,
   resolveCascadeAtr1h as resolveCascadeAtr1hFromConfig
 } from "./cascade/CascadeConfigRuntime";
@@ -1486,22 +1486,12 @@ export class TradingEngine {
   }
 
   private currentCascadeDetectorConfig(instrumentCode: string): CascadeDetectorConfig {
-    return buildCascadeDetectorConfig({
+    return cascadeDetectorConfigFromRuntime({
       config: this.cachedConfig,
-      profile: this.cascadeAssetProfile(instrumentCode),
-      minBaselineWindows: readPositiveInteger(this.env.CASCADE_MIN_BASELINE_WINDOWS, 12, 0, 10_000),
-      minCascadeSeparationMs: readPositiveInteger(
-        this.env.CASCADE_MIN_SEPARATION_MS,
-        this.cachedConfig.CASCADE_WINDOW_MS,
-        0,
-        6 * 3_600_000
-      ),
-      maxEventsPerInstrument: readPositiveInteger(
-        this.env.CASCADE_MAX_EVENTS_PER_INSTRUMENT,
-        10_000,
-        100,
-        100_000
-      )
+      instrumentCode,
+      minBaselineWindowsValue: this.env.CASCADE_MIN_BASELINE_WINDOWS,
+      minCascadeSeparationMsValue: this.env.CASCADE_MIN_SEPARATION_MS,
+      maxEventsPerInstrumentValue: this.env.CASCADE_MAX_EVENTS_PER_INSTRUMENT
     });
   }
 
@@ -1510,10 +1500,10 @@ export class TradingEngine {
   }
 
   private currentAbsorptionAnalyzerConfig(): AbsorptionAnalyzerConfig {
-    return buildAbsorptionAnalyzerConfig({
+    return absorptionAnalyzerConfigFromRuntime({
       config: this.cachedConfig,
-      oiStabilityBps: readPositiveNumber(this.env.ABSORPTION_OI_STABILITY_BPS, 5),
-      maxActiveCascades: readPositiveInteger(this.env.ABSORPTION_MAX_ACTIVE_CASCADES, 24, 1, 100)
+      oiStabilityBpsValue: this.env.ABSORPTION_OI_STABILITY_BPS,
+      maxActiveCascadesValue: this.env.ABSORPTION_MAX_ACTIVE_CASCADES
     });
   }
 

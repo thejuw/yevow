@@ -10,7 +10,11 @@ import type {
   LiquidationEvent,
   CascadeRecoverySignalConfig
 } from "../../../strategy/cascade/types";
-import { readBoundedNumber, readPositiveNumber } from "../helpers/RuntimeParsing";
+import {
+  readBoundedNumber,
+  readPositiveInteger,
+  readPositiveNumber
+} from "../helpers/RuntimeParsing";
 
 export function cascadeAssetProfileFromConfig(
   instrumentCode: string,
@@ -34,6 +38,14 @@ export interface CascadeDetectorRuntimeConfigInput {
   readonly maxEventsPerInstrument: number;
 }
 
+export interface CascadeDetectorRuntimeEnvInput {
+  readonly config: GlobalRiskConfig;
+  readonly instrumentCode: string;
+  readonly minBaselineWindowsValue?: string;
+  readonly minCascadeSeparationMsValue?: string;
+  readonly maxEventsPerInstrumentValue?: string;
+}
+
 export function cascadeDetectorConfig(
   input: CascadeDetectorRuntimeConfigInput
 ): CascadeDetectorConfig {
@@ -50,10 +62,38 @@ export function cascadeDetectorConfig(
   };
 }
 
+export function cascadeDetectorConfigFromRuntime(
+  input: CascadeDetectorRuntimeEnvInput
+): CascadeDetectorConfig {
+  return cascadeDetectorConfig({
+    config: input.config,
+    profile: cascadeAssetProfileFromConfig(input.instrumentCode, input.config),
+    minBaselineWindows: readPositiveInteger(input.minBaselineWindowsValue, 12, 0, 10_000),
+    minCascadeSeparationMs: readPositiveInteger(
+      input.minCascadeSeparationMsValue,
+      input.config.CASCADE_WINDOW_MS,
+      0,
+      6 * 3_600_000
+    ),
+    maxEventsPerInstrument: readPositiveInteger(
+      input.maxEventsPerInstrumentValue,
+      10_000,
+      100,
+      100_000
+    )
+  });
+}
+
 export interface AbsorptionAnalyzerRuntimeConfigInput {
   readonly config: GlobalRiskConfig;
   readonly oiStabilityBps: number;
   readonly maxActiveCascades: number;
+}
+
+export interface AbsorptionAnalyzerRuntimeEnvInput {
+  readonly config: GlobalRiskConfig;
+  readonly oiStabilityBpsValue?: string;
+  readonly maxActiveCascadesValue?: string;
 }
 
 export interface CascadeAtrFallbackInput {
@@ -73,6 +113,16 @@ export function absorptionAnalyzerConfig(
     oiStabilityBps: input.oiStabilityBps,
     maxActiveCascades: input.maxActiveCascades
   };
+}
+
+export function absorptionAnalyzerConfigFromRuntime(
+  input: AbsorptionAnalyzerRuntimeEnvInput
+): AbsorptionAnalyzerConfig {
+  return absorptionAnalyzerConfig({
+    config: input.config,
+    oiStabilityBps: readPositiveNumber(input.oiStabilityBpsValue, 5),
+    maxActiveCascades: readPositiveInteger(input.maxActiveCascadesValue, 24, 1, 100)
+  });
 }
 
 export function resolveCascadeAtr1h(input: CascadeAtrFallbackInput): number | null {

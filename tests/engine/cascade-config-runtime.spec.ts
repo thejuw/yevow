@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import { defaultConfig } from "../../src/ConfigManager";
 import {
   absorptionAnalyzerConfig,
+  absorptionAnalyzerConfigFromRuntime,
   cascadeAssetProfileFromConfig,
   cascadeDetectorConfig,
+  cascadeDetectorConfigFromRuntime,
   cascadeRecoverySignalConfig,
   resolveCascadeAtr1h
 } from "../../src/engine/trading/cascade/CascadeConfigRuntime";
@@ -71,6 +73,35 @@ describe("CascadeConfigRuntime", () => {
       minHoldSeconds: defaultConfig.ABSORPTION_MIN_HOLD_SECONDS,
       oiStabilityBps: 7,
       maxActiveCascades: 18
+    });
+  });
+
+  it("builds detector and absorption analyzer configs from env-backed runtime values", () => {
+    expect(
+      cascadeDetectorConfigFromRuntime({
+        config: defaultConfig,
+        instrumentCode: "btc-usd",
+        minBaselineWindowsValue: "20",
+        minCascadeSeparationMsValue: "90000",
+        maxEventsPerInstrumentValue: "250"
+      })
+    ).toMatchObject({
+      windowMs: defaultConfig.CASCADE_WINDOW_MS,
+      minBaselineWindows: 20,
+      minCascadeSeparationMs: 90_000,
+      maxEventsPerInstrument: 250
+    });
+
+    expect(
+      absorptionAnalyzerConfigFromRuntime({
+        config: defaultConfig,
+        oiStabilityBpsValue: "9",
+        maxActiveCascadesValue: "12"
+      })
+    ).toMatchObject({
+      absorptionWindowMs: defaultConfig.ABSORPTION_WINDOW_MS,
+      oiStabilityBps: 9,
+      maxActiveCascades: 12
     });
   });
 
