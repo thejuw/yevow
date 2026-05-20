@@ -1448,11 +1448,7 @@ export class TradingEngine {
       this.publish("LIQUIDATION_EVENT", liquidationResult.telemetryPayload);
     }
 
-    return {
-      accepted: true,
-      status: "FRESH",
-      processedCount: liquidationResult.processedCount
-    };
+    return liquidationResult.ingestResult;
   }
 
   private recordCascadeLiquidations(

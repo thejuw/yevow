@@ -197,6 +197,11 @@ describe("CascadeLiquidationRuntime", () => {
       totalEstimatedNotionalUsd: 12_000_000
     });
     expect(result.processedCount).toBe(2);
+    expect(result.ingestResult).toEqual({
+      accepted: true,
+      status: "FRESH",
+      processedCount: 2
+    });
   });
 
   it("builds cascade detected log, telemetry, and alert payloads", () => {

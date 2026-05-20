@@ -2,6 +2,7 @@ import { nativeIso, normalizeSourceExchange } from "../helpers/NativeHyperliquid
 import type { EngineState, JsonRecord, LiquidationHeatmapState } from "../../../types";
 import type { CascadeAssetProfile } from "../../../strategy/cascade/AssetProfiles";
 import type { CascadeEvent, LiquidationEvent } from "../../../strategy/cascade/types";
+import type { TickIngestResult } from "../TradingEngineRouteTypes";
 
 export interface LiquidationEventContextInput {
   readonly payload: {
@@ -66,6 +67,7 @@ export interface LiquidationEventProcessingResult {
   readonly shouldPublishTelemetry: boolean;
   readonly telemetryPayload: JsonRecord;
   readonly processedCount: number;
+  readonly ingestResult: TickIngestResult;
 }
 
 export interface CascadeDetectedArtifacts {
@@ -140,6 +142,12 @@ export function liquidationEventProcessingResult(
   input: LiquidationEventProcessingInput
 ): LiquidationEventProcessingResult {
   const nextEventCount = input.heatmap.recentEvents.length;
+  const processedCount = liquidationEventProcessedCount({
+    previousEventCount: input.previousEventCount,
+    nextEventCount,
+    cascadeLiquidationCount: input.cascadeLiquidationCount,
+    cascadeEventCount: input.cascadeEventCount
+  });
   const state = stateAfterLiquidationHeatmap({
     currentState: input.currentState,
     heatmap: input.heatmap,
@@ -161,12 +169,12 @@ export function liquidationEventProcessingResult(
       cascadeEventCount: input.cascadeEventCount,
       observedAt: input.context.observedAt
     }),
-    processedCount: liquidationEventProcessedCount({
-      previousEventCount: input.previousEventCount,
-      nextEventCount,
-      cascadeLiquidationCount: input.cascadeLiquidationCount,
-      cascadeEventCount: input.cascadeEventCount
-    })
+    processedCount,
+    ingestResult: {
+      accepted: true,
+      status: "FRESH",
+      processedCount
+    }
   };
 }
 
