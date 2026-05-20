@@ -4,6 +4,7 @@ import { processingLatencyStats, prometheusMetric } from "../helpers/RuntimeMetr
 import { readPositiveNumber } from "../helpers/RuntimeParsing";
 import { aggregateQuoteState, suspendAssetQuoteStates } from "../state/AssetStateRuntime";
 import { defaultExecutionProfile } from "../state/EngineStateDefaults";
+import { extractTickStreamId } from "../state/TickClassification";
 import {
   DEFAULT_DWELLIR_NATIVE_HL_MAX_LATENCY_MS,
   DEFAULT_NATIVE_HL_MAX_LATENCY_MS
@@ -41,6 +42,23 @@ export interface TickLatencyInput {
   readonly averageLatencyMs: number;
   readonly sampleCount: number;
   readonly location: EngineState["location"];
+}
+
+export interface TickLatencyPreparationInput extends TickLatencyInput {
+  readonly tick: MarketTick;
+  readonly shadowReplay: boolean;
+  readonly dwellirMaxLatencyMs?: string;
+  readonly hlStaleAfterMs?: string;
+  readonly currentMaxLatencyMs: number;
+}
+
+export interface TickLatencyPreparationResult {
+  readonly metrics: LatencyMetrics;
+  readonly streamId: string | null;
+  readonly hardStaleDropMs: number;
+  readonly isHardStale: boolean;
+  readonly shouldResetLatencyBaseline: boolean;
+  readonly shouldUpdateLatencyAverage: boolean;
 }
 
 export interface NativeHyperliquidMaxLatencyInput {
@@ -107,6 +125,51 @@ export function calculateTickLatency(input: TickLatencyInput): LatencyMetrics {
     placement: input.location.placement,
     latencyRiskMultiplier: input.location.latencyRiskMultiplier,
     positionSizeMultiplier: input.location.positionSizeMultiplier
+  };
+}
+
+export function prepareTickLatencyRuntime(
+  input: TickLatencyPreparationInput
+): TickLatencyPreparationResult {
+  const metrics = calculateTickLatency(input);
+  const streamId = extractTickStreamId(input.tick);
+  const hardStaleDropMs = resolveNativeHyperliquidMaxLatencyMs({
+    transport: input.tick.transport,
+    streamId,
+    dwellirMaxLatencyMs: input.dwellirMaxLatencyMs,
+    hlStaleAfterMs: input.hlStaleAfterMs,
+    currentMaxLatencyMs: input.currentMaxLatencyMs
+  });
+  const isHardStale = !input.shadowReplay && metrics.totalLatencyMs > hardStaleDropMs;
+
+  if (isHardStale) {
+    return {
+      metrics,
+      streamId,
+      hardStaleDropMs,
+      isHardStale,
+      shouldResetLatencyBaseline: false,
+      shouldUpdateLatencyAverage: false
+    };
+  }
+
+  const nextMetrics: LatencyMetrics = {
+    ...metrics,
+    maxLatencyMs: input.currentMaxLatencyMs,
+    status:
+      !input.shadowReplay && metrics.totalLatencyMs > input.currentMaxLatencyMs ? "STALE" : "FRESH"
+  };
+
+  return {
+    metrics: nextMetrics,
+    streamId,
+    hardStaleDropMs,
+    isHardStale,
+    shouldResetLatencyBaseline:
+      !input.shadowReplay &&
+      input.averageLatencyMs > hardStaleDropMs &&
+      metrics.totalLatencyMs <= hardStaleDropMs,
+    shouldUpdateLatencyAverage: nextMetrics.status === "FRESH"
   };
 }
 

@@ -10,6 +10,7 @@ import {
   nativeHyperliquidLatencyPullStorageWrites,
   nextExecutionProfile,
   nextLatencyAverage,
+  prepareTickLatencyRuntime,
   recordProcessingLatencySample,
   resolveNativeHyperliquidMaxLatencyMs,
   shouldLogHardStaleTickDrop,
@@ -82,6 +83,85 @@ describe("LatencyRuntime", () => {
         currentMaxLatencyMs: 500
       })
     ).toBe(150);
+  });
+
+  it("prepares tick latency status and hard-stale decisions for the DO hot path", () => {
+    const fresh = prepareTickLatencyRuntime({
+      tick: tick({
+        receivedAt: "2026-05-18T15:00:00.050Z"
+      }),
+      brainTimestamp: "2026-05-18T15:00:00.100Z",
+      maxLatencyMs: 150,
+      averageLatencyMs: 180,
+      sampleCount: 9,
+      location: location(),
+      shadowReplay: false,
+      dwellirMaxLatencyMs: "150",
+      currentMaxLatencyMs: 250
+    });
+
+    expect(fresh).toMatchObject({
+      streamId: null,
+      hardStaleDropMs: 150,
+      isHardStale: false,
+      shouldResetLatencyBaseline: true,
+      shouldUpdateLatencyAverage: true,
+      metrics: {
+        totalLatencyMs: 100,
+        maxLatencyMs: 250,
+        status: "FRESH"
+      }
+    });
+
+    const softStale = prepareTickLatencyRuntime({
+      tick: tick({
+        receivedAt: "2026-05-18T15:00:00.200Z"
+      }),
+      brainTimestamp: "2026-05-18T15:00:00.260Z",
+      maxLatencyMs: 150,
+      averageLatencyMs: 20,
+      sampleCount: 3,
+      location: location(),
+      shadowReplay: false,
+      dwellirMaxLatencyMs: "500",
+      currentMaxLatencyMs: 150
+    });
+
+    expect(softStale).toMatchObject({
+      hardStaleDropMs: 500,
+      isHardStale: false,
+      shouldUpdateLatencyAverage: false,
+      metrics: {
+        totalLatencyMs: 260,
+        maxLatencyMs: 150,
+        status: "STALE"
+      }
+    });
+
+    const hardStale = prepareTickLatencyRuntime({
+      tick: tick({
+        receivedAt: "2026-05-18T15:00:00.200Z"
+      }),
+      brainTimestamp: "2026-05-18T15:00:00.260Z",
+      maxLatencyMs: 150,
+      averageLatencyMs: 20,
+      sampleCount: 3,
+      location: location(),
+      shadowReplay: false,
+      dwellirMaxLatencyMs: "100",
+      currentMaxLatencyMs: 150
+    });
+
+    expect(hardStale).toMatchObject({
+      hardStaleDropMs: 100,
+      isHardStale: true,
+      shouldResetLatencyBaseline: false,
+      shouldUpdateLatencyAverage: false,
+      metrics: {
+        totalLatencyMs: 260,
+        status: "FRESH"
+      }
+    });
   });
 
   it("updates rolling latency averages and trims jitter samples in place", () => {

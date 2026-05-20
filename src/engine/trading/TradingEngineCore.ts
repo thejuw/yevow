@@ -155,13 +155,13 @@ import {
   buildExecutionPerformanceTransition,
   buildPerformanceMetricsText,
   buildPerformanceSnapshot,
-  calculateTickLatency,
   hardStalePullTelemetryPayload,
   hardStaleTickDropLogMetadata,
   latencySnapshotStorageWrites,
   nativeHyperliquidLatencyPullStorageWrites,
   nextExecutionProfile,
   nextLatencyAverage,
+  prepareTickLatencyRuntime,
   recordProcessingLatencySample,
   resolveNativeHyperliquidMaxLatencyMs,
   shouldLogHardStaleTickDrop,
@@ -642,7 +642,7 @@ import {
   mergeRiskLimits,
   resolveMaxLatencyMs
 } from "./state/EngineStateDefaults";
-import { isInformationalTick, isTradeTick, extractTickStreamId } from "./state/TickClassification";
+import { isInformationalTick, isTradeTick } from "./state/TickClassification";
 import { evaluateTickTargetPreflight } from "./state/TickPreflightRuntime";
 import type {
   AcceptedDecisionPipelineInput,
@@ -3142,44 +3142,32 @@ export class TradingEngine {
     hardStaleDropMs: number;
     isHardStale: boolean;
   } {
-    const metrics = calculateTickLatency({
+    const latency = prepareTickLatencyRuntime({
       tick,
       brainTimestamp: new Date().toISOString(),
       maxLatencyMs: this.maxLatencyMs,
       averageLatencyMs: this.engineState.averageLatency,
       sampleCount: this.engineState.latencySampleCount,
-      location: this.engineState.location
-    });
-    const streamId = extractTickStreamId(tick);
-    const hardStaleDropMs = resolveNativeHyperliquidMaxLatencyMs({
-      transport: tick.transport,
-      streamId,
+      location: this.engineState.location,
+      shadowReplay,
       dwellirMaxLatencyMs: this.env.DWELLIR_MAX_LATENCY_MS,
       hlStaleAfterMs: this.env.HL_STALE_AFTER_MS,
       currentMaxLatencyMs: this.maxLatencyMs
     });
-    const isHardStale = !shadowReplay && metrics.totalLatencyMs > hardStaleDropMs;
 
-    if (isHardStale) {
-      return { metrics, streamId, hardStaleDropMs, isHardStale };
+    if (latency.isHardStale) {
+      return latency;
     }
 
-    if (
-      !shadowReplay &&
-      this.engineState.averageLatency > hardStaleDropMs &&
-      metrics.totalLatencyMs <= hardStaleDropMs
-    ) {
-      this.resetLatencyBaseline(metrics.brainTimestamp, "FRESH_SAMPLE_AFTER_BACKLOG");
+    if (latency.shouldResetLatencyBaseline) {
+      this.resetLatencyBaseline(latency.metrics.brainTimestamp, "FRESH_SAMPLE_AFTER_BACKLOG");
     }
 
-    metrics.maxLatencyMs = this.maxLatencyMs;
-    metrics.status =
-      !shadowReplay && metrics.totalLatencyMs > this.maxLatencyMs ? "STALE" : "FRESH";
-
-    if (metrics.status === "FRESH") {
-      this.updateLatencyAverage(metrics.totalLatencyMs);
+    if (latency.shouldUpdateLatencyAverage) {
+      this.updateLatencyAverage(latency.metrics.totalLatencyMs);
     }
 
+    const metrics = latency.metrics;
     this.applyLocationLatency(metrics.totalLatencyMs, metrics.brainTimestamp);
 
     metrics.averageLatencyMs = this.engineState.averageLatency;
@@ -3189,7 +3177,7 @@ export class TradingEngine {
 
     this.latencyHistory = [...this.latencyHistory, metrics].slice(-PERFORMANCE_HISTORY_LIMIT);
 
-    return { metrics, streamId, hardStaleDropMs, isHardStale };
+    return latency;
   }
 
   private async resolveTickBook(
