@@ -10,6 +10,7 @@ import {
   buildShadowQueueTradeIntent,
   buildShadowQueueTradeIntentFromDecision,
   emitShadowQueueGhostFillSideEffects,
+  emitShadowQueueNoEdgeDecisionSideEffects,
   enforceShadowQueueDecisionLatency,
   resolveShadowQueueGhostFillConfig,
   resolveShadowQueueNoEdgeLogInterval,
@@ -18,7 +19,8 @@ import {
   shouldProcessShadowQueueTick,
   shadowQueueKellySize,
   shadowQueuePostOnlyPrice,
-  type ShadowQueueGhostFillSideEffectHandlers
+  type ShadowQueueGhostFillSideEffectHandlers,
+  type ShadowQueueNoEdgeSideEffectHandlers
 } from "../../src/engine/trading/shadow/ShadowQueueRuntime";
 import { defaultConfig } from "../../src/ConfigManager";
 import type {
@@ -299,6 +301,32 @@ describe("ShadowQueueRuntime", () => {
       action: "NO_EDGE",
       dispatchSide: null
     });
+  });
+
+  it("emits no-edge decision logs through the throttle and always publishes telemetry", () => {
+    const sideEffects = shadowQueueNoEdgeSideEffectSpy();
+    const lastLoggedAtByInstrument = new Map<string, number>();
+    const noEdge = decision({
+      action: "NO_EDGE",
+      dispatchSide: null,
+      microDrift: 0.1,
+      tickThreshold: 0.5
+    });
+
+    emitShadowQueueNoEdgeDecisionSideEffects(
+      { decision: noEdge, lastLoggedAtByInstrument, nowMs: 1_000, intervalMs: 500 },
+      sideEffects.handlers
+    );
+    emitShadowQueueNoEdgeDecisionSideEffects(
+      { decision: noEdge, lastLoggedAtByInstrument, nowMs: 1_250, intervalMs: 500 },
+      sideEffects.handlers
+    );
+
+    expect(sideEffects.events).toEqual([
+      "info:SHADOW_QUEUE_NO_EDGE:decision-1",
+      "publish:SHADOW_QUEUE_NO_EDGE:decision-1",
+      "publish:SHADOW_QUEUE_NO_EDGE:decision-1"
+    ]);
   });
 
   it("builds latency-breach telemetry with suppressed decision payload", () => {
@@ -682,6 +710,25 @@ function shadowQueueGhostFillSideEffectSpy(): {
     handlers: {
       recordExecution(trade) {
         events.push(`record:${trade.tradeId}`);
+      },
+      publish(type, _payload, correlationId) {
+        events.push(`publish:${type}:${correlationId}`);
+      }
+    }
+  };
+}
+
+function shadowQueueNoEdgeSideEffectSpy(): {
+  events: string[];
+  handlers: ShadowQueueNoEdgeSideEffectHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      logInfo(eventType, _message, metadata) {
+        events.push(`info:${eventType}:${metadata.decisionId}`);
       },
       publish(type, _payload, correlationId) {
         events.push(`publish:${type}:${correlationId}`);

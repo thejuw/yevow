@@ -57,14 +57,13 @@ import {
   buildShadowQueueDecisionRuntimeArtifacts,
   buildShadowQueueGhostFillRuntimeRecord,
   buildShadowQueueLatencyBreachTelemetry,
-  buildShadowQueueNoEdgeTelemetry,
   emitShadowQueueGhostFillSideEffects,
+  emitShadowQueueNoEdgeDecisionSideEffects,
   enforceShadowQueueDecisionLatency,
   resolveShadowQueueGhostFillConfig,
   resolveShadowQueueNoEdgeLogInterval,
   resolveShadowQueueSizingConfig,
   type ShadowQueueDecisionAction,
-  shouldLogShadowQueueNoEdge as shouldLogShadowQueueNoEdgeEvent,
   shouldProcessShadowQueueTick
 } from "./shadow/ShadowQueueRuntime";
 import {
@@ -3350,21 +3349,20 @@ export class TradingEngine {
   }
 
   private handleShadowQueueNoEdgeDecision(decision: ShadowQueueDecision): ShadowQueueDecision {
-    const telemetry = buildShadowQueueNoEdgeTelemetry(decision);
-    if (
-      shouldLogShadowQueueNoEdgeEvent({
+    return emitShadowQueueNoEdgeDecisionSideEffects(
+      {
+        decision,
         lastLoggedAtByInstrument: this.shadowQueueNoEdgeLogAt,
-        instrumentCode: decision.instrumentCode,
         nowMs: Date.now(),
         intervalMs: resolveShadowQueueNoEdgeLogInterval(
           this.env.SHADOW_QUEUE_NO_EDGE_LOG_INTERVAL_MS
         )
-      })
-    ) {
-      this.logger.info(telemetry.eventType, telemetry.message, telemetry.metadata);
-    }
-    this.publish(telemetry.eventType, telemetry.payload, telemetry.correlationId);
-    return decision;
+      },
+      {
+        logInfo: (eventType, message, metadata) => this.logger.info(eventType, message, metadata),
+        publish: (type, payload, correlationId) => this.publish(type, payload, correlationId)
+      }
+    );
   }
 
   private handleShadowQueueLatencyBreach(

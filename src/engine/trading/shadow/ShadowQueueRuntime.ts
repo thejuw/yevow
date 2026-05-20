@@ -144,6 +144,18 @@ export interface ShadowQueueNoEdgeThrottleInput {
   readonly intervalMs: number;
 }
 
+export interface ShadowQueueNoEdgeSideEffectInput {
+  readonly decision: ShadowQueueDecision;
+  readonly lastLoggedAtByInstrument: Map<string, number>;
+  readonly nowMs: number;
+  readonly intervalMs: number;
+}
+
+export interface ShadowQueueNoEdgeSideEffectHandlers {
+  readonly logInfo: (eventType: string, message: string, metadata: JsonRecord) => void;
+  readonly publish: (type: string, payload: Record<string, unknown>, correlationId: string) => void;
+}
+
 export function resolveShadowQueueNoEdgeLogInterval(envValue?: string): number {
   return readPositiveInteger(
     envValue,
@@ -434,6 +446,27 @@ export function buildShadowQueueNoEdgeTelemetry(
     payload: decision as unknown as Record<string, unknown>,
     correlationId: decision.decisionId
   };
+}
+
+export function emitShadowQueueNoEdgeDecisionSideEffects(
+  input: ShadowQueueNoEdgeSideEffectInput,
+  handlers: ShadowQueueNoEdgeSideEffectHandlers
+): ShadowQueueDecision {
+  const telemetry = buildShadowQueueNoEdgeTelemetry(input.decision);
+
+  if (
+    shouldLogShadowQueueNoEdge({
+      lastLoggedAtByInstrument: input.lastLoggedAtByInstrument,
+      instrumentCode: input.decision.instrumentCode,
+      nowMs: input.nowMs,
+      intervalMs: input.intervalMs
+    })
+  ) {
+    handlers.logInfo(telemetry.eventType, telemetry.message, telemetry.metadata);
+  }
+
+  handlers.publish(telemetry.eventType, telemetry.payload, telemetry.correlationId);
+  return input.decision;
 }
 
 export function buildShadowQueueLatencyBreachTelemetry(input: {
