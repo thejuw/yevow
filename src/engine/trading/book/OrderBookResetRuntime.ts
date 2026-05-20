@@ -52,6 +52,18 @@ export interface OrderBookResetRuntimeArtifacts {
   readonly latencyResetReason: string | null;
 }
 
+export interface OrderBookResetSideEffectHandlers {
+  readonly resetLatencyBaseline: (observedAt: string, reason: string) => void;
+  readonly applyConnectionIds: (
+    connectionId: string | null,
+    connectionKeys: readonly string[]
+  ) => void;
+  readonly persistWrites: (writes: Record<string, unknown>) => Promise<void>;
+  readonly deleteStorageKeys: (keys: readonly string[]) => Promise<void>;
+  readonly logReset: (telemetry: JsonRecord) => void;
+  readonly publishReset: (telemetry: JsonRecord) => void;
+}
+
 export function resolveOrderBookReset(
   payload: Partial<OrderBookResetRequest>,
   now = new Date().toISOString()
@@ -198,4 +210,23 @@ export function orderBookResetRuntimeArtifacts(
     latencyResetReason:
       input.reset.source === "INGEST_WORKER" ? `ORDER_BOOK_RESET:${input.reset.reason}` : null
   };
+}
+
+export async function applyOrderBookResetSideEffects(
+  reset: ResolvedOrderBookReset,
+  artifacts: OrderBookResetRuntimeArtifacts,
+  handlers: OrderBookResetSideEffectHandlers
+): Promise<void> {
+  if (artifacts.latencyResetReason) {
+    handlers.resetLatencyBaseline(reset.now, artifacts.latencyResetReason);
+    handlers.applyConnectionIds(reset.connectionId, artifacts.connectionKeys);
+  }
+
+  await Promise.all([
+    handlers.persistWrites(artifacts.writes),
+    handlers.deleteStorageKeys(artifacts.deleteKeys)
+  ]);
+
+  handlers.logReset(artifacts.telemetry);
+  handlers.publishReset(artifacts.telemetry);
 }

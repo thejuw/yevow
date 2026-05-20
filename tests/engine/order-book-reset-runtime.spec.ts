@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyOrderBookResetConnectionIds,
+  applyOrderBookResetSideEffects,
   applyOrderBookResetStores,
   orderBookResetConnectionKeys,
   orderBookResetDeleteKeys,
@@ -157,6 +158,64 @@ describe("OrderBookResetRuntime", () => {
       marketKey: "hyperliquid:btc-usd",
       deletedBookSnapshots: 1
     });
+  });
+
+  it("applies reset side effects in the expected operational order", async () => {
+    const reset = resolveOrderBookReset(
+      {
+        source: "INGEST_WORKER",
+        reason: "STREAM_RECOVERED",
+        streamId: "book",
+        instrumentCode: "BTC-USD",
+        source_exchange: "hyperliquid",
+        connectionId: "conn-1"
+      },
+      "2026-05-18T14:00:00.000Z"
+    );
+    const artifacts = orderBookResetRuntimeArtifacts({
+      reset,
+      currentState: defaultEngineState("order-book-reset-side-effects"),
+      persistedBooks: new Map<string, InternalOrderBook>([
+        ["book:hyperliquid:btc-usd", {} as InternalOrderBook]
+      ]),
+      orderBookPrefix: "book:",
+      engineStateKey: "engine:state",
+      stores: storeSet(),
+      orderBookSize: 1,
+      internalOrderBookDepth: 0,
+      priceDiscovery: null
+    });
+    const calls: string[] = [];
+
+    await applyOrderBookResetSideEffects(reset, artifacts, {
+      resetLatencyBaseline(observedAt, reason) {
+        calls.push(`latency:${observedAt}:${reason}`);
+      },
+      applyConnectionIds(connectionId, connectionKeys) {
+        calls.push(`connections:${connectionId}:${connectionKeys.join(",")}`);
+      },
+      async persistWrites(writes) {
+        calls.push(`persist:${Object.keys(writes).join(",")}`);
+      },
+      async deleteStorageKeys(keys) {
+        calls.push(`delete:${keys.join(",")}`);
+      },
+      logReset(telemetry) {
+        calls.push(`log:${telemetry.reason as string}`);
+      },
+      publishReset(telemetry) {
+        calls.push(`publish:${telemetry.reason as string}`);
+      }
+    });
+
+    expect(calls).toEqual([
+      "latency:2026-05-18T14:00:00.000Z:ORDER_BOOK_RESET:STREAM_RECOVERED",
+      "connections:conn-1:hyperliquid:book",
+      "persist:engine:state",
+      "delete:book:hyperliquid:btc-usd",
+      "log:STREAM_RECOVERED",
+      "publish:STREAM_RECOVERED"
+    ]);
   });
 });
 
