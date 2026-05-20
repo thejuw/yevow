@@ -67,6 +67,7 @@ import {
 import {
   applyAnomalyEmergencyPauseSideEffects,
   anomalyEmergencyPauseArtifacts,
+  emitAnomalyEmergencyPauseSideEffects,
   type AnomalyEmergencyPauseTelemetry
 } from "./anomaly/AnomalyRuntime";
 import {
@@ -4606,14 +4607,12 @@ export class TradingEngine {
   }
 
   private triggerEmergencyPause(event: AnomalyEmergencyPauseTelemetry): void {
-    this.logger.writeLog(
-      "CRITICAL",
-      "TradingEngine",
-      "Emergency pause triggered by market anomaly detector",
-      event.logMetadata
-    );
-    this.publish("EMERGENCY_PAUSE", event.payload, event.correlationId);
-    this.notifier.notify(event.notification);
+    emitAnomalyEmergencyPauseSideEffects(event, {
+      writeCriticalLog: (source, message, metadata) =>
+        this.logger.writeLog("CRITICAL", source, message, metadata),
+      publish: (type, payload, correlationId) => this.publish(type, payload, correlationId),
+      notify: (notification) => this.notifier.notify(notification)
+    });
   }
 
   private publishProfilerAlert(signal: AgentSignal, profilerState: ProfilerState): void {

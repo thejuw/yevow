@@ -83,6 +83,12 @@ export interface AnomalyEmergencyPauseSideEffectHandlers {
   readonly emitEmergencyPause: (event: AnomalyEmergencyPauseTelemetry) => void;
 }
 
+export interface AnomalyEmergencyPauseEmitHandlers {
+  readonly writeCriticalLog: (source: string, message: string, metadata: JsonRecord) => void;
+  readonly publish: (type: "EMERGENCY_PAUSE", payload: JsonRecord, correlationId: string) => void;
+  readonly notify: (notification: AnomalyEmergencyPauseTelemetry["notification"]) => void;
+}
+
 export function stateAfterAnomalyEmergencyPause(
   input: AnomalyEmergencyPauseStateInput
 ): EngineState {
@@ -239,4 +245,17 @@ export async function applyAnomalyEmergencyPauseSideEffects(
   handlers.applyState(artifacts.state);
   await handlers.persistStorageWrites(artifacts.storageWrites);
   handlers.emitEmergencyPause(artifacts.event);
+}
+
+export function emitAnomalyEmergencyPauseSideEffects(
+  event: AnomalyEmergencyPauseTelemetry,
+  handlers: AnomalyEmergencyPauseEmitHandlers
+): void {
+  handlers.writeCriticalLog(
+    "TradingEngine",
+    "Emergency pause triggered by market anomaly detector",
+    event.logMetadata
+  );
+  handlers.publish("EMERGENCY_PAUSE", event.payload, event.correlationId);
+  handlers.notify(event.notification);
 }

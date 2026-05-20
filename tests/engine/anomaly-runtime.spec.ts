@@ -4,7 +4,9 @@ import {
   anomalyEmergencyPauseArtifacts,
   anomalyEmergencyPauseStorageWrites,
   buildAnomalyEmergencyPauseTelemetry,
+  emitAnomalyEmergencyPauseSideEffects,
   stateAfterAnomalyEmergencyPause,
+  type AnomalyEmergencyPauseEmitHandlers,
   type AnomalyEmergencyPauseSideEffectHandlers
 } from "../../src/engine/trading/anomaly/AnomalyRuntime";
 import type { AnomalyDetectionResult } from "../../src/agents/AnomalyDetector";
@@ -212,7 +214,49 @@ describe("AnomalyRuntime", () => {
 
     expect(sideEffects.events).toEqual(["state:HALTED", "persist:8", "emit:anomaly-1"]);
   });
+
+  it("emits emergency pause audit, bus, and notification side effects in order", () => {
+    const event = buildAnomalyEmergencyPauseTelemetry({
+      tick: tick(),
+      book: book(),
+      domSnapshot: dom(),
+      anomalyResult: anomalyResult(),
+      metrics: latency(),
+      engineState: defaultEngineState("anomaly-emit")
+    });
+    const sideEffects = anomalyEmitSideEffectSpy();
+
+    emitAnomalyEmergencyPauseSideEffects(event, sideEffects.handlers);
+
+    expect(sideEffects.events).toEqual([
+      "log:CRITICAL:TradingEngine:MARKET_ANOMALY_EMERGENCY_PAUSE",
+      "publish:EMERGENCY_PAUSE:anomaly-1",
+      "notify:CRITICAL"
+    ]);
+  });
 });
+
+function anomalyEmitSideEffectSpy(): {
+  events: string[];
+  handlers: AnomalyEmergencyPauseEmitHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      writeCriticalLog(source, _message, metadata) {
+        events.push(`log:CRITICAL:${source}:${metadata.eventType}`);
+      },
+      publish(type, _payload, correlationId) {
+        events.push(`publish:${type}:${correlationId}`);
+      },
+      notify(notification) {
+        events.push(`notify:${notification.priority}`);
+      }
+    }
+  };
+}
 
 function anomalySideEffectSpy(): {
   events: string[];
