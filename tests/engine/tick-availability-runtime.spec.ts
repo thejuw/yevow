@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { evaluateTickAvailability } from "../../src/engine/trading/state/TickAvailabilityRuntime";
+import {
+  applyTickAvailabilitySideEffects,
+  evaluateTickAvailability,
+  type TickAvailabilitySideEffectHandlers
+} from "../../src/engine/trading/state/TickAvailabilityRuntime";
 import type { MarketTick } from "../../src/types";
 
 describe("TickAvailabilityRuntime", () => {
@@ -64,6 +68,28 @@ describe("TickAvailabilityRuntime", () => {
       nextKillSwitchLogged: true
     });
   });
+
+  it("applies availability logging and kill-switch latch side effects", () => {
+    const decision = evaluateTickAvailability({
+      tick: tick(),
+      shadowReplay: false,
+      shadowMode: false,
+      tradingEnabled: true,
+      mode: "HALTED",
+      configVersion: "risk-v1",
+      killSwitchLogged: false
+    });
+    const sideEffects = tickAvailabilitySideEffectSpy();
+
+    const result = applyTickAvailabilitySideEffects(decision, sideEffects.handlers);
+
+    expect(result).toEqual({
+      accepted: false,
+      status: "DISABLED",
+      reason: "TRADING_DISABLED"
+    });
+    expect(sideEffects.events).toEqual(["warn:KILL_SWITCH_ACTIVE:HALTED", "latch:true"]);
+  });
 });
 
 function tick(): MarketTick {
@@ -73,4 +99,23 @@ function tick(): MarketTick {
     source_exchange: "hyperliquid",
     sequence: 12
   } as unknown as MarketTick;
+}
+
+function tickAvailabilitySideEffectSpy(): {
+  events: string[];
+  handlers: TickAvailabilitySideEffectHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      warn(event) {
+        events.push(`warn:${event.eventType}:${event.metadata.mode}`);
+      },
+      setKillSwitchLogged(logged) {
+        events.push(`latch:${logged}`);
+      }
+    }
+  };
 }

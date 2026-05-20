@@ -317,7 +317,10 @@ import {
   shouldAutoResumeShadowMode,
   stateAfterAcceptedTick
 } from "./state/TickStateRuntime";
-import { evaluateTickAvailability } from "./state/TickAvailabilityRuntime";
+import {
+  applyTickAvailabilitySideEffects,
+  evaluateTickAvailability
+} from "./state/TickAvailabilityRuntime";
 import {
   recordAcceptedTickJournalSideEffects,
   scheduleHotPathTickSnapshotSideEffects
@@ -2653,16 +2656,12 @@ export class TradingEngine {
       killSwitchLogged: this.killSwitchLogged
     });
 
-    if (availability.log) {
-      this.logger.warn(
-        availability.log.eventType,
-        availability.log.message,
-        availability.log.metadata
-      );
-    }
-    this.killSwitchLogged = availability.nextKillSwitchLogged;
-
-    return availability.result;
+    return applyTickAvailabilitySideEffects(availability, {
+      warn: (event) => this.logger.warn(event.eventType, event.message, event.metadata),
+      setKillSwitchLogged: (logged) => {
+        this.killSwitchLogged = logged;
+      }
+    });
   }
 
   private scheduleAcceptedTickSnapshot(

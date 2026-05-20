@@ -28,6 +28,11 @@ export interface TickAvailabilityDecision {
   readonly nextKillSwitchLogged: boolean;
 }
 
+export interface TickAvailabilitySideEffectHandlers {
+  readonly warn: (event: TickAvailabilityLog) => void;
+  readonly setKillSwitchLogged: (logged: boolean) => void;
+}
+
 export function evaluateTickAvailability(input: TickAvailabilityInput): TickAvailabilityDecision {
   const logMetadata = () =>
     killSwitchActiveLogMetadata({
@@ -85,4 +90,16 @@ export function evaluateTickAvailability(input: TickAvailabilityInput): TickAvai
     log: null,
     nextKillSwitchLogged: input.killSwitchLogged
   };
+}
+
+export function applyTickAvailabilitySideEffects(
+  decision: TickAvailabilityDecision,
+  handlers: TickAvailabilitySideEffectHandlers
+): TickIngestResult | null {
+  if (decision.log) {
+    handlers.warn(decision.log);
+  }
+
+  handlers.setKillSwitchLogged(decision.nextKillSwitchLogged);
+  return decision.result;
 }
