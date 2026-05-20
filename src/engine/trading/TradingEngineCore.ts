@@ -83,11 +83,7 @@ import {
   referencePriceForBaseAsset as resolveBaseAssetReferencePrice,
   resolveInventoryStateConfig
 } from "./inventory/InventoryRuntime";
-import {
-  applyDrawdownKillSwitchSideEffects,
-  buildDrawdownKillSwitchTransition,
-  calculatePortfolioRisk as calculatePortfolioRuntimeRisk
-} from "./risk/PortfolioRiskRuntime";
+import { applyPortfolioRiskFlow } from "./risk/PortfolioRiskRuntime";
 import { calculateEnsembleState as calculateRuntimeEnsembleState } from "./ensemble/EnsembleRuntime";
 import {
   currentFundingRate as resolveCurrentFundingRate,
@@ -3388,29 +3384,23 @@ export class TradingEngine {
     oracle: EngineState["oracle"],
     observedAt: string
   ): EngineState["riskMetrics"] {
-    const { drawdownBreached, metrics } = calculatePortfolioRuntimeRisk({
-      mode: this.engineState.mode,
-      equity: this.engineState.bankroll.equity,
-      priorHighWaterMark: this.engineState.riskMetrics.highWaterMark,
-      positions: this.engineState.openPositions,
-      oracleVolatility: oracle.volatility,
-      varConfidenceZ:
-        this.cachedConfig.VAR_CONFIDENCE_Z > 0
-          ? this.cachedConfig.VAR_CONFIDENCE_Z
-          : readPositiveNumber(this.env.VAR_CONFIDENCE_Z, DEFAULT_VAR_CONFIDENCE_Z),
-      maxDrawdownPct: this.cachedConfig.MAX_DRAWDOWN_PCT,
-      tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-      observedAt
-    });
-
-    if (drawdownBreached && this.cachedConfig.TRADING_ENABLED) {
-      const killSwitch = buildDrawdownKillSwitchTransition({
+    return applyPortfolioRiskFlow(
+      {
         cachedConfig: this.cachedConfig,
-        metrics,
+        mode: this.engineState.mode,
         equity: this.engineState.bankroll.equity,
+        priorHighWaterMark: this.engineState.riskMetrics.highWaterMark,
+        positions: this.engineState.openPositions,
+        oracleVolatility: oracle.volatility,
+        varConfidenceZ:
+          this.cachedConfig.VAR_CONFIDENCE_Z > 0
+            ? this.cachedConfig.VAR_CONFIDENCE_Z
+            : readPositiveNumber(this.env.VAR_CONFIDENCE_Z, DEFAULT_VAR_CONFIDENCE_Z),
+        maxDrawdownPct: this.cachedConfig.MAX_DRAWDOWN_PCT,
+        tradingEnabled: this.cachedConfig.TRADING_ENABLED,
         observedAt
-      });
-      applyDrawdownKillSwitchSideEffects(killSwitch, {
+      },
+      {
         applyConfig: (config) => {
           this.cachedConfig = config;
         },
@@ -3418,10 +3408,8 @@ export class TradingEngine {
         cancelAllQuotes: (instrumentCode, reason) => this.cancelAllQuotes(instrumentCode, reason),
         schedule: (work) => this.state.waitUntil(work),
         notify: (notification) => this.notifier.notify(notification)
-      });
-    }
-
-    return metrics;
+      }
+    );
   }
 
   private calculateEnsembleState(

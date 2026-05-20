@@ -42,6 +42,10 @@ export interface DrawdownKillSwitchSideEffectHandlers {
   readonly notify: (notification: NotifierEvent) => void;
 }
 
+export interface PortfolioRiskFlowInput extends PortfolioRiskInput {
+  readonly cachedConfig: GlobalRiskConfig;
+}
+
 export function calculatePortfolioRisk(input: PortfolioRiskInput): PortfolioRiskResult {
   const equity = Math.max(input.equity, 0);
   const priorHighWaterMark = Math.max(input.priorHighWaterMark, equity);
@@ -113,4 +117,25 @@ export function applyDrawdownKillSwitchSideEffects(
   handlers.schedule(handlers.writeConfig(transition.config));
   handlers.schedule(handlers.cancelAllQuotes("ALL", transition.cancelReason));
   handlers.notify(transition.notification);
+}
+
+export function applyPortfolioRiskFlow(
+  input: PortfolioRiskFlowInput,
+  handlers: DrawdownKillSwitchSideEffectHandlers
+): EngineState["riskMetrics"] {
+  const { drawdownBreached, metrics } = calculatePortfolioRisk(input);
+
+  if (drawdownBreached && input.tradingEnabled) {
+    applyDrawdownKillSwitchSideEffects(
+      buildDrawdownKillSwitchTransition({
+        cachedConfig: input.cachedConfig,
+        metrics,
+        equity: input.equity,
+        observedAt: input.observedAt
+      }),
+      handlers
+    );
+  }
+
+  return metrics;
 }

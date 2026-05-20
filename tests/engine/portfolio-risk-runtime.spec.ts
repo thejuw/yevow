@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { defaultConfig } from "../../src/ConfigManager";
 import {
   applyDrawdownKillSwitchSideEffects,
+  applyPortfolioRiskFlow,
   buildDrawdownKillSwitchTransition,
   calculatePortfolioRisk,
   type DrawdownKillSwitchSideEffectHandlers
@@ -140,6 +141,66 @@ describe("PortfolioRiskRuntime", () => {
     ]);
 
     await Promise.all(sideEffects.scheduled);
+  });
+
+  it("runs portfolio risk flow and only triggers the kill switch on active breaches", async () => {
+    const sideEffects = drawdownKillSwitchSideEffectSpy();
+
+    const metrics = applyPortfolioRiskFlow(
+      {
+        cachedConfig: {
+          ...defaultConfig,
+          TRADING_ENABLED: true,
+          MAX_DRAWDOWN_PCT: 0.2,
+          version: "risk-v1"
+        },
+        mode: "LIVE",
+        equity: 700,
+        priorHighWaterMark: 1_000,
+        positions: {},
+        oracleVolatility: 0.02,
+        varConfidenceZ: 2.33,
+        maxDrawdownPct: 0.2,
+        tradingEnabled: true,
+        observedAt: OBSERVED_AT
+      },
+      sideEffects.handlers
+    );
+
+    expect(metrics.rollingDrawdownPct).toBe(0.3);
+    expect(sideEffects.events).toEqual([
+      "config:false:risk-v1:drawdown",
+      "write:false",
+      "schedule",
+      "cancel:ALL:MAX_DRAWDOWN_BREACH",
+      "schedule",
+      "notify:risk:max-drawdown"
+    ]);
+    await Promise.all(sideEffects.scheduled);
+
+    const disabledSideEffects = drawdownKillSwitchSideEffectSpy();
+    applyPortfolioRiskFlow(
+      {
+        cachedConfig: {
+          ...defaultConfig,
+          TRADING_ENABLED: false,
+          MAX_DRAWDOWN_PCT: 0.2,
+          version: "risk-v2"
+        },
+        mode: "LIVE",
+        equity: 700,
+        priorHighWaterMark: 1_000,
+        positions: {},
+        oracleVolatility: 0.02,
+        varConfidenceZ: 2.33,
+        maxDrawdownPct: 0.2,
+        tradingEnabled: false,
+        observedAt: OBSERVED_AT
+      },
+      disabledSideEffects.handlers
+    );
+
+    expect(disabledSideEffects.events).toEqual([]);
   });
 });
 
