@@ -4,6 +4,8 @@ import { neutralMacroBias } from "../../src/Governor";
 import {
   buildConfigRefreshLog,
   buildRuntimeConfigAppliedLog,
+  configRefreshQuoteState,
+  configRefreshTopologyFromLocation,
   shouldLogConfigRefresh,
   stateAfterConfigRefresh,
   stateAfterRuntimeConfigUpdate
@@ -159,6 +161,43 @@ describe("ConfigRuntime", () => {
       }
     });
     expect(result.risk.maxOrderNotional).toBe(175);
+  });
+
+  it("derives config refresh quote state and topology from runtime state", () => {
+    const currentState = defaultEngineState("config-refresh-derivatives");
+    const macroBias = neutralMacroBias();
+    const quoteState = configRefreshQuoteState({
+      assetQuoteStates: currentState.assetQuoteStates,
+      quoteState: currentState.quoteState,
+      nextConfig: {
+        ...defaultConfig,
+        TRADING_ENABLED: false
+      },
+      macroBias,
+      observedAt: "2026-05-18T15:00:00.000Z"
+    });
+
+    expect(quoteState.quoteState).toMatchObject({
+      status: "SUSPENDED",
+      reason: "TRADING_DISABLED",
+      updatedAt: "2026-05-18T15:00:00.000Z"
+    });
+    expect(
+      configRefreshTopologyFromLocation(
+        {
+          ...currentState.location,
+          colo: "NRT",
+          placement: "remote-nrt"
+        },
+        "2026-05-18T15:00:00.000Z",
+        "request-1"
+      )
+    ).toMatchObject({
+      colo: "NRT",
+      placement: "remote-nrt",
+      requestId: "request-1",
+      observedAt: "2026-05-18T15:00:00.000Z"
+    });
   });
 
   it("builds config refresh audit metadata only when meaningful", () => {

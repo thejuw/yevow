@@ -1,5 +1,6 @@
 import type {
   AdminConfigUpdate,
+  EdgeTopology,
   EngineLocation,
   EngineState,
   GlobalRiskConfig,
@@ -10,6 +11,10 @@ import type {
 import { toJsonValue } from "../helpers/RuntimeSerialization";
 import { mergeRiskLimits, resolveMaxLatencyMs } from "../state/EngineStateDefaults";
 import { applyLocationRisk } from "../helpers/PlacementResolver";
+import {
+  aggregateQuoteState,
+  reconcileAssetQuoteStatesForConfig
+} from "../state/AssetStateRuntime";
 
 export interface RuntimeConfigUpdateInput {
   readonly currentState: EngineState;
@@ -37,6 +42,19 @@ export interface ConfigRefreshStateInput {
   readonly profilerStates: EngineState["profilerStates"];
   readonly refreshedLocation: EngineLocation;
   readonly observedAt: string;
+}
+
+export interface ConfigRefreshQuoteStateInput {
+  readonly assetQuoteStates: EngineState["assetQuoteStates"];
+  readonly quoteState: EngineState["quoteState"];
+  readonly nextConfig: GlobalRiskConfig;
+  readonly macroBias: MacroBias;
+  readonly observedAt: string;
+}
+
+export interface ConfigRefreshQuoteStateResult {
+  readonly assetQuoteStates: EngineState["assetQuoteStates"];
+  readonly quoteState: EngineState["quoteState"];
 }
 
 export interface ConfigRefreshLogInput {
@@ -115,6 +133,41 @@ export function stateAfterConfigRefresh(input: ConfigRefreshStateInput): EngineS
       input.observedAt
     ),
     updatedAt: input.observedAt
+  };
+}
+
+export function configRefreshQuoteState(
+  input: ConfigRefreshQuoteStateInput
+): ConfigRefreshQuoteStateResult {
+  const assetQuoteStates = reconcileAssetQuoteStatesForConfig(
+    input.assetQuoteStates,
+    input.nextConfig,
+    input.macroBias,
+    input.observedAt
+  );
+
+  return {
+    assetQuoteStates,
+    quoteState: aggregateQuoteState(assetQuoteStates, input.quoteState, input.observedAt)
+  };
+}
+
+export function configRefreshTopologyFromLocation(
+  location: EngineLocation,
+  observedAt: string,
+  requestId: string
+): EdgeTopology {
+  return {
+    colo: location.colo,
+    placement: location.placement,
+    country: location.country,
+    city: location.city,
+    region: location.region,
+    timezone: location.timezone,
+    latitude: location.latitude,
+    longitude: location.longitude,
+    requestId,
+    observedAt
   };
 }
 

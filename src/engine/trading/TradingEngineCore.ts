@@ -200,6 +200,8 @@ import {
 import {
   buildConfigRefreshLog,
   buildRuntimeConfigAppliedLog,
+  configRefreshQuoteState,
+  configRefreshTopologyFromLocation,
   shouldLogConfigRefresh,
   stateAfterConfigRefresh,
   stateAfterRuntimeConfigUpdate
@@ -578,7 +580,6 @@ import {
   filterTargetOrderBooks,
   defaultAssetMatrix,
   normalizeAssetQuoteStates,
-  reconcileAssetQuoteStatesForConfig,
   quoteStateForInstrumentState,
   isQuoteSuspendedAt,
   suspendAssetQuoteStates,
@@ -4990,31 +4991,16 @@ export class TradingEngine {
   }
 
   private applyRefreshedConfigState(nextConfig: GlobalRiskConfig, observedAt: string): void {
-    const nextAssetQuoteStates = reconcileAssetQuoteStatesForConfig(
-      this.engineState.assetQuoteStates,
+    const quoteRefresh = configRefreshQuoteState({
+      assetQuoteStates: this.engineState.assetQuoteStates,
+      quoteState: this.engineState.quoteState,
       nextConfig,
-      this.macroBias,
+      macroBias: this.macroBias,
       observedAt
-    );
-    const nextQuoteState = aggregateQuoteState(
-      nextAssetQuoteStates,
-      this.engineState.quoteState,
-      observedAt
-    );
+    });
     const profilerStates = this.profilerRegistry.snapshot();
     const refreshedLocation = resolveEngineLocation(
-      {
-        colo: this.engineState.location.colo,
-        placement: this.engineState.location.placement,
-        country: this.engineState.location.country,
-        city: this.engineState.location.city,
-        region: this.engineState.location.region,
-        timezone: this.engineState.location.timezone,
-        latitude: this.engineState.location.latitude,
-        longitude: this.engineState.location.longitude,
-        requestId: crypto.randomUUID(),
-        observedAt
-      },
+      configRefreshTopologyFromLocation(this.engineState.location, observedAt, crypto.randomUUID()),
       this.engineState.location,
       this.env,
       nextConfig,
@@ -5026,14 +5012,14 @@ export class TradingEngine {
       nextConfig,
       macroBias: this.macroBias,
       temporaryOverride: this.activeTemporaryOverride,
-      nextAssetQuoteStates,
-      nextQuoteState,
+      nextAssetQuoteStates: quoteRefresh.assetQuoteStates,
+      nextQuoteState: quoteRefresh.quoteState,
       assetMatrix: this.calculateAssetMatrix(
         observedAt,
         this.engineState.microstructure.instrumentCode ?? undefined,
         this.engineState.oracle,
         profilerStates,
-        nextAssetQuoteStates
+        quoteRefresh.assetQuoteStates
       ),
       profilerStates,
       refreshedLocation,
