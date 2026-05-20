@@ -258,13 +258,7 @@ import {
   buildProfilerAlertTelemetry,
   shouldCancelQuotesForProfilerSignal
 } from "./telemetry/ProfilerTelemetryRuntime";
-import {
-  bayesianPosteriorUpdatedLogMetadata,
-  buildTickTelemetryPayload,
-  marketTickAcceptedLogMetadata,
-  shouldLogBayesianPosteriorUpdate,
-  shouldLogMarketTickAccepted
-} from "./telemetry/TickTelemetryRuntime";
+import { buildTickTelemetryPayload } from "./telemetry/TickTelemetryRuntime";
 import { type ReplayOptions, type ReplayScenario } from "./routes/ReplayAdminRoutes";
 import {
   markHistoricalReplayTrades,
@@ -316,8 +310,8 @@ import {
 } from "./state/TickStateRuntime";
 import { evaluateTickAvailability } from "./state/TickAvailabilityRuntime";
 import {
-  buildHotPathTickSnapshotWrites,
-  shouldJournalMarketTick as shouldPersistMarketTick
+  buildAcceptedTickJournalArtifacts,
+  buildHotPathTickSnapshotWrites
 } from "./state/TickPersistenceRuntime";
 import {
   adminRecoveryPlan,
@@ -2815,44 +2809,28 @@ export class TradingEngine {
     metrics: LatencyMetrics,
     bayesianTrace: BayesianUpdateTrace | null
   ): void {
-    if (
-      shouldPersistMarketTick(
-        this.engineState.processedTicks,
-        this.env.MARKET_TICK_JOURNAL_INTERVAL
-      )
-    ) {
+    const artifacts = buildAcceptedTickJournalArtifacts({
+      tick,
+      metrics,
+      bayesianTrace,
+      processedTicks: this.engineState.processedTicks,
+      averageLatencyMs: this.engineState.averageLatency,
+      marketTickJournalInterval: this.env.MARKET_TICK_JOURNAL_INTERVAL,
+      bayesianSnapshotInterval: AGENT_SNAPSHOT_TICK_INTERVAL
+    });
+
+    if (artifacts.shouldRecordMarketTick) {
       this.logger.recordMarketTick(tick);
     }
 
-    if (
-      bayesianTrace &&
-      shouldLogBayesianPosteriorUpdate({
-        trace: bayesianTrace,
-        processedTicks: this.engineState.processedTicks,
-        interval: AGENT_SNAPSHOT_TICK_INTERVAL
-      })
-    ) {
-      this.logger.info(
-        "BAYESIAN_POSTERIOR_UPDATED",
-        "Oracle posterior PDF updated",
-        bayesianPosteriorUpdatedLogMetadata({
-          instrumentCode: tick.instrumentCode,
-          trace: bayesianTrace
-        })
-      );
+    if (artifacts.bayesianPosteriorLog) {
+      const log = artifacts.bayesianPosteriorLog;
+      this.logger.info(log.eventType, log.message, log.metadata);
     }
 
-    if (shouldLogMarketTickAccepted(this.engineState.processedTicks)) {
-      this.logger.info(
-        "MARKET_TICK_ACCEPTED",
-        "Market tick processed",
-        marketTickAcceptedLogMetadata({
-          tick,
-          metrics,
-          processedTicks: this.engineState.processedTicks,
-          averageLatencyMs: this.engineState.averageLatency
-        })
-      );
+    if (artifacts.acceptedTickLog) {
+      const log = artifacts.acceptedTickLog;
+      this.logger.info(log.eventType, log.message, log.metadata);
     }
   }
 

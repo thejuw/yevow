@@ -9,10 +9,18 @@ import {
   PROCESSING_LATENCY_SAMPLES_KEY
 } from "../../../TradingEngineConstants";
 import { profilerStorageKey } from "../book/BookRuntimeHelpers";
+import {
+  bayesianPosteriorUpdatedLogMetadata,
+  marketTickAcceptedLogMetadata,
+  shouldLogBayesianPosteriorUpdate,
+  shouldLogMarketTickAccepted
+} from "../telemetry/TickTelemetryRuntime";
 import type {
   AnomalyDetectorState,
+  BayesianUpdateTrace,
   EngineState,
   InternalOrderBook,
+  JsonRecord,
   LatencyMetrics,
   LiquidityWall,
   MarketTick,
@@ -29,6 +37,28 @@ export interface HotPathTickSnapshotWritesInput {
   readonly tick: MarketTick;
   readonly profilerProcessed: boolean;
   readonly profilerState: ProfilerState;
+}
+
+export interface AcceptedTickJournalArtifactsInput {
+  readonly tick: MarketTick;
+  readonly metrics: LatencyMetrics;
+  readonly bayesianTrace: BayesianUpdateTrace | null;
+  readonly processedTicks: number;
+  readonly averageLatencyMs: number;
+  readonly marketTickJournalInterval?: string | number;
+  readonly bayesianSnapshotInterval: number;
+}
+
+export interface AcceptedTickJournalLog {
+  readonly eventType: string;
+  readonly message: string;
+  readonly metadata: JsonRecord;
+}
+
+export interface AcceptedTickJournalArtifacts {
+  readonly shouldRecordMarketTick: boolean;
+  readonly bayesianPosteriorLog: AcceptedTickJournalLog | null;
+  readonly acceptedTickLog: AcceptedTickJournalLog | null;
 }
 
 export function buildHotPathTickSnapshotWrites(
@@ -68,4 +98,45 @@ export function shouldJournalMarketTick(
   }
 
   return processedTicks <= 5 || processedTicks % interval === 0;
+}
+
+export function buildAcceptedTickJournalArtifacts(
+  input: AcceptedTickJournalArtifactsInput
+): AcceptedTickJournalArtifacts {
+  const bayesianPosteriorLog =
+    input.bayesianTrace &&
+    shouldLogBayesianPosteriorUpdate({
+      trace: input.bayesianTrace,
+      processedTicks: input.processedTicks,
+      interval: input.bayesianSnapshotInterval
+    })
+      ? {
+          eventType: "BAYESIAN_POSTERIOR_UPDATED",
+          message: "Oracle posterior PDF updated",
+          metadata: bayesianPosteriorUpdatedLogMetadata({
+            instrumentCode: input.tick.instrumentCode,
+            trace: input.bayesianTrace
+          })
+        }
+      : null;
+
+  return {
+    shouldRecordMarketTick: shouldJournalMarketTick(
+      input.processedTicks,
+      input.marketTickJournalInterval
+    ),
+    bayesianPosteriorLog,
+    acceptedTickLog: shouldLogMarketTickAccepted(input.processedTicks)
+      ? {
+          eventType: "MARKET_TICK_ACCEPTED",
+          message: "Market tick processed",
+          metadata: marketTickAcceptedLogMetadata({
+            tick: input.tick,
+            metrics: input.metrics,
+            processedTicks: input.processedTicks,
+            averageLatencyMs: input.averageLatencyMs
+          })
+        }
+      : null
+  };
 }

@@ -9,6 +9,7 @@ import {
   PROCESSING_LATENCY_SAMPLES_KEY
 } from "../../src/TradingEngineConstants";
 import {
+  buildAcceptedTickJournalArtifacts,
   buildHotPathTickSnapshotWrites,
   shouldJournalMarketTick
 } from "../../src/engine/trading/state/TickPersistenceRuntime";
@@ -16,7 +17,9 @@ import { profilerStorageKey } from "../../src/engine/trading/book/BookRuntimeHel
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type {
   AnomalyDetectorState,
+  BayesianUpdateTrace,
   InternalOrderBook,
+  LatencyMetrics,
   MarketTick,
   ProfilerState
 } from "../../src/types";
@@ -78,6 +81,47 @@ describe("TickPersistenceRuntime", () => {
     expect(shouldJournalMarketTick(10, "3.8")).toBe(false);
     expect(shouldJournalMarketTick(9, "3.8")).toBe(true);
   });
+
+  it("builds accepted tick journal artifacts without touching logger state", () => {
+    const tick = marketTick("btc-usd");
+    const metrics = latencyMetrics();
+    const trace: BayesianUpdateTrace = {
+      priorBullishProbability: 0.5,
+      posteriorBullishProbability: 0.6,
+      delta: 0.1,
+      evidence: { source: "unit-test" },
+      updatedAt: OBSERVED_AT
+    };
+
+    const artifacts = buildAcceptedTickJournalArtifacts({
+      tick,
+      metrics,
+      bayesianTrace: trace,
+      processedTicks: 1_000,
+      averageLatencyMs: 12,
+      marketTickJournalInterval: "500",
+      bayesianSnapshotInterval: 1_000
+    });
+
+    expect(artifacts.shouldRecordMarketTick).toBe(true);
+    expect(artifacts.bayesianPosteriorLog).toMatchObject({
+      eventType: "BAYESIAN_POSTERIOR_UPDATED",
+      message: "Oracle posterior PDF updated",
+      metadata: {
+        instrumentCode: "btc-usd",
+        posteriorBullishProbability: 0.6
+      }
+    });
+    expect(artifacts.acceptedTickLog).toMatchObject({
+      eventType: "MARKET_TICK_ACCEPTED",
+      metadata: {
+        instrumentCode: "btc-usd",
+        processedTicks: 1_000,
+        totalLatencyMs: 7,
+        averageLatencyMs: 12
+      }
+    });
+  });
 });
 
 function marketTick(instrumentCode: string): MarketTick {
@@ -125,5 +169,32 @@ function orderBook(): InternalOrderBook {
     desyncReason: null,
     sequence: 42,
     updatedAt: OBSERVED_AT
+  };
+}
+
+function latencyMetrics(): LatencyMetrics {
+  return {
+    instrumentCode: "btc-usd",
+    exchangeCode: "hyperliquid",
+    source: "HYPERLIQUID",
+    sourceExchange: "hyperliquid",
+    sourceWeight: 1,
+    sequence: 42,
+    providerTimestamp: OBSERVED_AT,
+    sourceTimestamp: OBSERVED_AT,
+    ingestTimestamp: OBSERVED_AT,
+    brainTimestamp: OBSERVED_AT,
+    clockOffsetMs: 0,
+    networkLatencyMs: 4,
+    processingLatencyMs: 3,
+    totalLatencyMs: 7,
+    maxLatencyMs: 150,
+    averageLatencyMs: 12,
+    sampleCount: 4,
+    status: "FRESH",
+    colo: "NRT",
+    placement: "smart",
+    latencyRiskMultiplier: 1,
+    positionSizeMultiplier: 1
   };
 }
