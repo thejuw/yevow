@@ -68,6 +68,24 @@ export interface CrossAssetHypeCancelArtifacts {
   readonly telemetry: JsonRecord;
 }
 
+export interface CrossAssetHypeCancelSideEffectInput {
+  readonly decision: CrossAssetHypeCancelDecision;
+  readonly volatility: MultiScaleVolatilitySnapshot | null;
+  readonly leadThresholdBps: number;
+  readonly observedAt: string;
+}
+
+export interface CrossAssetHypeCancelSideEffectHandlers {
+  readonly markCooldown: (instrumentCode: "hype-usd", nowMs: number) => void;
+  readonly warn: (eventType: string, message: string, metadata: JsonRecord) => void;
+  readonly publishSuspend: (payload: JsonRecord) => void;
+  readonly schedule: (work: Promise<unknown>) => void;
+  readonly cancelAllQuotes: (
+    instrumentCode: "hype-usd",
+    reason: "BTC_LEAD_MOVE"
+  ) => Promise<unknown>;
+}
+
 export function updateLeadLagMetrics(input: LeadLagUpdateInput): EngineState["leadLag"] {
   if (input.midPrice === null) {
     return input.currentLeadLag;
@@ -186,6 +204,27 @@ export function buildCrossAssetHypeCancelArtifacts(
     logMetadata: crossAssetHypeCancelLogMetadata(input),
     telemetry: crossAssetHypeCancelTelemetry(input)
   };
+}
+
+export function applyCrossAssetHypeCancelSideEffects(
+  input: CrossAssetHypeCancelSideEffectInput,
+  handlers: CrossAssetHypeCancelSideEffectHandlers
+): boolean {
+  if (!input.decision.shouldCancel) {
+    return false;
+  }
+
+  const artifacts = buildCrossAssetHypeCancelArtifacts(input);
+  handlers.markCooldown("hype-usd", input.decision.nowMs);
+  handlers.warn(
+    "CROSS_ASSET_HYPE_CANCEL",
+    "BTC lead move invalidated HYPE resting quotes",
+    artifacts.logMetadata
+  );
+  handlers.publishSuspend(artifacts.telemetry);
+  handlers.schedule(handlers.cancelAllQuotes("hype-usd", "BTC_LEAD_MOVE"));
+
+  return true;
 }
 
 export function crossAssetHypeCancelLogMetadata(

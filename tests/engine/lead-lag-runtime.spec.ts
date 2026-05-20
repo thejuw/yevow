@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyCrossAssetHypeCancelSideEffects,
   buildCrossAssetHypeCancelArtifacts,
   crossAssetHypeCancelLogMetadata,
   crossAssetHypeCancelTelemetry,
   evaluateCrossAssetHypeQuoteCancel,
   resolveCrossAssetHypeQuoteCancelConfig,
   updateLeadLagMetrics,
+  type CrossAssetHypeCancelSideEffectHandlers,
   type LeadLagSample
 } from "../../src/engine/trading/leadlag/LeadLagRuntime";
 import type { MultiScaleVolatilitySnapshot } from "../../src/engine/MultiScaleVolatility";
@@ -173,6 +175,50 @@ describe("LeadLagRuntime", () => {
     });
   });
 
+  it("applies cross-asset HYPE cancellation side effects only when eligible", async () => {
+    const skipped = applyCrossAssetHypeCancelSideEffects(
+      {
+        decision: {
+          shouldCancel: false,
+          nowMs: Date.parse(OBSERVED_AT),
+          moveBps: 2,
+          reason: "BELOW_THRESHOLD"
+        },
+        volatility: volatility(),
+        leadThresholdBps: 5,
+        observedAt: OBSERVED_AT
+      },
+      crossAssetHypeCancelSideEffectSpy().handlers
+    );
+    const sideEffects = crossAssetHypeCancelSideEffectSpy();
+    const applied = applyCrossAssetHypeCancelSideEffects(
+      {
+        decision: {
+          shouldCancel: true,
+          nowMs: Date.parse(OBSERVED_AT),
+          moveBps: 12,
+          reason: "BTC_LEAD_MOVE"
+        },
+        volatility: volatility({ jumpDetected: true }),
+        leadThresholdBps: 5,
+        observedAt: OBSERVED_AT
+      },
+      sideEffects.handlers
+    );
+
+    expect(skipped).toBe(false);
+    expect(applied).toBe(true);
+    expect(sideEffects.events).toEqual([
+      `mark:hype-usd:${Date.parse(OBSERVED_AT)}`,
+      "warn:CROSS_ASSET_HYPE_CANCEL:BTC lead move invalidated HYPE resting quotes",
+      "publish:hype-usd:BTC_LEAD_MOVE",
+      "cancel:hype-usd:BTC_LEAD_MOVE",
+      "schedule"
+    ]);
+
+    await Promise.all(sideEffects.scheduled);
+  });
+
   it("resolves cross-asset quote cancellation config from bounded env values", () => {
     expect(
       resolveCrossAssetHypeQuoteCancelConfig({
@@ -194,6 +240,39 @@ describe("LeadLagRuntime", () => {
     });
   });
 });
+
+function crossAssetHypeCancelSideEffectSpy(): {
+  events: string[];
+  scheduled: Promise<unknown>[];
+  handlers: CrossAssetHypeCancelSideEffectHandlers;
+} {
+  const events: string[] = [];
+  const scheduled: Promise<unknown>[] = [];
+
+  return {
+    events,
+    scheduled,
+    handlers: {
+      markCooldown(instrumentCode, nowMs) {
+        events.push(`mark:${instrumentCode}:${nowMs}`);
+      },
+      warn(eventType, message) {
+        events.push(`warn:${eventType}:${message}`);
+      },
+      publishSuspend(payload) {
+        events.push(`publish:${payload.instrumentCode}:${payload.reason}`);
+      },
+      schedule(work) {
+        events.push("schedule");
+        scheduled.push(work);
+      },
+      cancelAllQuotes(instrumentCode, reason) {
+        events.push(`cancel:${instrumentCode}:${reason}`);
+        return Promise.resolve();
+      }
+    }
+  };
+}
 
 function samplesFrom(prices: number[]): LeadLagSample[] {
   return prices.map((price, index) => ({
