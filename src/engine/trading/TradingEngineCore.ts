@@ -7,7 +7,7 @@ import {
 } from "../../ConfigManager";
 import { decode as msgpackDecode } from "@msgpack/msgpack";
 import { Governor, neutralMacroBias } from "../../Governor";
-import { Logger, createLogSink, structuredConsoleLogsEnabled } from "../../Logger";
+import type { Logger } from "../../Logger";
 import {
   ProfilerAgent,
   PROFILER_STATE_STORAGE_KEY,
@@ -274,7 +274,7 @@ import {
   acceptMarketStream as acceptTradingMarketStream,
   acceptTelemetryStream as acceptTradingTelemetryStream
 } from "./routes/EngineWebSocketStreams";
-import { TradingTelemetryBus } from "./telemetry/TelemetryBus";
+import type { TradingTelemetryBus } from "./telemetry/TelemetryBus";
 import {
   acceptedAgentSignalStorageEntries,
   agentSignalStorageKey,
@@ -313,7 +313,7 @@ import {
 import { type ReplayOptions, type ReplayScenario } from "./routes/ReplayAdminRoutes";
 import {
   markHistoricalReplayTrades,
-  ReplayJournal,
+  type ReplayJournal,
   type ReplayTradeRow
 } from "./replay/ReplayJournal";
 import {
@@ -353,6 +353,14 @@ import {
   resolveEngineBootRuntimeSettings
 } from "./state/EngineBootConfig";
 import { buildHydratedEngineState } from "./state/EngineBootState";
+import {
+  createEngineLogger,
+  createEngineNotifier,
+  createEngineReplayJournal,
+  createEngineStorageGuard,
+  createEngineTelemetryBus,
+  tradingEngineLoggerRuntimeContext
+} from "./state/EngineBootServices";
 import { nextTickAgentHealth } from "./state/AgentHealthRuntime";
 import {
   killSwitchActiveLogMetadata,
@@ -377,7 +385,7 @@ import {
   evaluateHotStorageSnapshotDecision,
   resolveHotStorageSnapshotIntervalMs,
   resolveHotStorageSnapshotTickInterval,
-  StorageWriteGuard
+  type StorageWriteGuard
 } from "./state/StorageWriteGuard";
 import {
   emptyLogPruneReport,
@@ -403,7 +411,7 @@ import { OracleAgent, defaultOracleState } from "../../agents/OracleAgent";
 import { PitBossAgent } from "../../agents/PitBossAgent";
 import { SentimentAgent, defaultSentimentState } from "../../agents/SentimentAgent";
 import { RateLimiter, type RateLimitBucketSnapshot } from "../../utils/RateLimiter";
-import { Notifier } from "../../utils/Notifier";
+import type { Notifier } from "../../utils/Notifier";
 import { isShadowMode } from "../../utils/CitadelProtocol";
 import { GhostBook, type GhostBookConfig, type GhostBookObservation } from "../../utils/GhostBook";
 import { AbsorptionAnalyzer } from "../../strategy/cascade/AbsorptionAnalyzer";
@@ -904,8 +912,8 @@ export class TradingEngine {
     this.cascadeNewsCalendar = new NewsCalendar(env.CONFIG_STORE);
     this.cascadeBacktester = new Backtester(env.TRADING_DB);
     this.ghostBook = createShadowQueue(env);
-    this.storageGuard = new StorageWriteGuard(state.storage, STORAGE_WRITE_BACKOFF_MS);
-    this.telemetryBus = new TradingTelemetryBus({
+    this.storageGuard = createEngineStorageGuard(state.storage);
+    this.telemetryBus = createEngineTelemetryBus({
       env,
       adminSockets: this.adminSockets,
       waitUntil: (promise) => state.waitUntil(promise)
@@ -926,23 +934,20 @@ export class TradingEngine {
     this.anomalyDetector = createBootAnomalyDetector(env);
     this.croupierAgent = createBootCroupierAgent(env);
     this.rateLimiter.configure("default", 10, 10);
-    this.logger = new Logger(
-      env.TRADING_DB,
-      (promise) => this.state.waitUntil(promise),
-      "TradingEngine",
-      () => ({
-        lastTickTimestamp: this.lastTickTimestamp,
-        orderBookImbalance: this.engineState.microstructure.weightedImbalance,
-        colo: this.engineState.location.colo,
-        placement: this.engineState.location.placement,
-        latencyRiskMultiplier: this.engineState.location.latencyRiskMultiplier,
-        positionSizeMultiplier: this.engineState.location.positionSizeMultiplier
-      }),
-      createLogSink(env),
-      structuredConsoleLogsEnabled(env)
-    );
-    this.notifier = new Notifier(env, (promise) => this.state.waitUntil(promise));
-    this.replayJournal = new ReplayJournal({
+    this.logger = createEngineLogger({
+      env,
+      waitUntil: (promise) => this.state.waitUntil(promise),
+      runtimeContext: () =>
+        tradingEngineLoggerRuntimeContext({
+          lastTickTimestamp: this.lastTickTimestamp,
+          engineState: this.engineState
+        })
+    });
+    this.notifier = createEngineNotifier({
+      env,
+      waitUntil: (promise) => this.state.waitUntil(promise)
+    });
+    this.replayJournal = createEngineReplayJournal({
       env,
       logger: this.logger,
       readStorage: (key) => this.state.storage.get(key),
