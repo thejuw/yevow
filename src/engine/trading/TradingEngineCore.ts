@@ -81,7 +81,8 @@ import {
   buildInventoryHedgeIntent,
   calculateInventoryState as calculateInventoryRuntimeState,
   inventoryHedgeAuthorizedLogMetadata,
-  referencePriceForBaseAsset as resolveBaseAssetReferencePrice
+  referencePriceForBaseAsset as resolveBaseAssetReferencePrice,
+  resolveInventoryStateConfig
 } from "./inventory/InventoryRuntime";
 import {
   buildDrawdownKillSwitchTransition,
@@ -468,8 +469,6 @@ import {
   DEFAULT_MIN_EV_THRESHOLD,
   DEFAULT_MAX_POSITION_PCT,
   DEFAULT_MAX_INVENTORY_UNITS,
-  DEFAULT_MAX_INVENTORY_DELTA,
-  DEFAULT_RISK_AVERSION_FACTOR,
   DEFAULT_AMM_MIN_TICK_CHANGE,
   DEFAULT_HEATMAP_PRICE_BIN_SIZE,
   DEFAULT_HEATMAP_CLUSTER_NOTIONAL_USD,
@@ -3618,26 +3617,20 @@ export class TradingEngine {
     observedAt: string,
     positions: Record<string, Position> = this.engineState.openPositions
   ): EngineState["inventory"] {
-    const maxInventoryUnits =
-      this.cachedConfig.MAX_INVENTORY_UNITS > 0
-        ? this.cachedConfig.MAX_INVENTORY_UNITS
-        : readPositiveNumber(this.env.MAX_INVENTORY_UNITS, DEFAULT_MAX_INVENTORY_UNITS);
-    const maxInventoryDelta =
-      this.cachedConfig.MAX_INVENTORY_DELTA > 0
-        ? this.cachedConfig.MAX_INVENTORY_DELTA
-        : readPositiveNumber(this.env.MAX_INVENTORY_DELTA, DEFAULT_MAX_INVENTORY_DELTA);
-    const riskAversionFactor =
-      this.cachedConfig.RISK_AVERSION_FACTOR > 0
-        ? this.cachedConfig.RISK_AVERSION_FACTOR
-        : readPositiveNumber(this.env.RISK_AVERSION_FACTOR, DEFAULT_RISK_AVERSION_FACTOR);
+    const inventoryConfig = resolveInventoryStateConfig({
+      config: this.cachedConfig,
+      maxInventoryUnitsValue: this.env.MAX_INVENTORY_UNITS,
+      maxInventoryDeltaValue: this.env.MAX_INVENTORY_DELTA,
+      riskAversionFactorValue: this.env.RISK_AVERSION_FACTOR
+    });
     const baseAsset = "BTC";
 
     return calculateInventoryRuntimeState({
       positions,
       observedAt,
-      maxInventoryUnits,
-      maxInventoryDelta,
-      riskAversionFactor,
+      maxInventoryUnits: inventoryConfig.maxInventoryUnits,
+      maxInventoryDelta: inventoryConfig.maxInventoryDelta,
+      riskAversionFactor: inventoryConfig.riskAversionFactor,
       baseAsset,
       baseReferencePrice: this.referencePriceForBaseAsset(baseAsset),
       configuredWeights: parseDeltaNormalizationWeights(this.env.DELTA_NORMALIZATION_WEIGHTS),

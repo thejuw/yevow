@@ -5,7 +5,8 @@ import {
   calculateInventoryState,
   inventoryHedgeAuthorizedLogMetadata,
   normalizeInventoryDelta,
-  referencePriceForBaseAsset
+  referencePriceForBaseAsset,
+  resolveInventoryStateConfig
 } from "../../src/engine/trading/inventory/InventoryRuntime";
 import type { InternalOrderBook, Position } from "../../src/types";
 
@@ -61,6 +62,43 @@ describe("InventoryRuntime", () => {
       stopBid: true,
       stopAsk: false,
       updatedAt: OBSERVED_AT
+    });
+  });
+
+  it("resolves inventory config from live config with environment fallbacks", () => {
+    expect(
+      resolveInventoryStateConfig({
+        config: {
+          ...defaultConfig,
+          MAX_INVENTORY_UNITS: 4,
+          MAX_INVENTORY_DELTA: 2,
+          RISK_AVERSION_FACTOR: 0.3
+        },
+        maxInventoryUnitsValue: "9",
+        maxInventoryDeltaValue: "8",
+        riskAversionFactorValue: "0.8"
+      })
+    ).toEqual({
+      maxInventoryUnits: 4,
+      maxInventoryDelta: 2,
+      riskAversionFactor: 0.3
+    });
+    expect(
+      resolveInventoryStateConfig({
+        config: {
+          ...defaultConfig,
+          MAX_INVENTORY_UNITS: 0,
+          MAX_INVENTORY_DELTA: 0,
+          RISK_AVERSION_FACTOR: 0
+        },
+        maxInventoryUnitsValue: "9",
+        maxInventoryDeltaValue: "8",
+        riskAversionFactorValue: "0.8"
+      })
+    ).toEqual({
+      maxInventoryUnits: 9,
+      maxInventoryDelta: 8,
+      riskAversionFactor: 0.8
     });
   });
 

@@ -7,11 +7,17 @@ import type {
   TradeIntent
 } from "../../../types";
 import {
+  DEFAULT_MAX_INVENTORY_DELTA,
+  DEFAULT_MAX_INVENTORY_UNITS,
+  DEFAULT_RISK_AVERSION_FACTOR
+} from "../../../TradingEngineConstants";
+import {
   DEFAULT_ORDER_BOOK_TICK_SIZE,
   normalizePriceToTick,
   roundCrypto,
   roundMetric
 } from "../book/SortedBookSide";
+import { readPositiveNumber } from "../helpers/RuntimeParsing";
 
 export interface InventoryStateInput {
   readonly positions: Record<string, Position>;
@@ -23,6 +29,22 @@ export interface InventoryStateInput {
   readonly baseReferencePrice: number;
   readonly configuredWeights: Record<string, number>;
   readonly markPrice: (instrumentCode: string, fallback: number) => number;
+}
+
+export interface InventoryStateConfigInput {
+  readonly config: Pick<
+    GlobalRiskConfig,
+    "MAX_INVENTORY_UNITS" | "MAX_INVENTORY_DELTA" | "RISK_AVERSION_FACTOR"
+  >;
+  readonly maxInventoryUnitsValue?: string;
+  readonly maxInventoryDeltaValue?: string;
+  readonly riskAversionFactorValue?: string;
+}
+
+export interface InventoryStateConfig {
+  readonly maxInventoryUnits: number;
+  readonly maxInventoryDelta: number;
+  readonly riskAversionFactor: number;
 }
 
 export interface BaseAssetReferencePriceInput {
@@ -86,6 +108,25 @@ export function calculateInventoryState(input: InventoryStateInput): InventorySt
     stopBid,
     stopAsk,
     updatedAt: input.observedAt
+  };
+}
+
+export function resolveInventoryStateConfig(
+  input: InventoryStateConfigInput
+): InventoryStateConfig {
+  return {
+    maxInventoryUnits:
+      input.config.MAX_INVENTORY_UNITS > 0
+        ? input.config.MAX_INVENTORY_UNITS
+        : readPositiveNumber(input.maxInventoryUnitsValue, DEFAULT_MAX_INVENTORY_UNITS),
+    maxInventoryDelta:
+      input.config.MAX_INVENTORY_DELTA > 0
+        ? input.config.MAX_INVENTORY_DELTA
+        : readPositiveNumber(input.maxInventoryDeltaValue, DEFAULT_MAX_INVENTORY_DELTA),
+    riskAversionFactor:
+      input.config.RISK_AVERSION_FACTOR > 0
+        ? input.config.RISK_AVERSION_FACTOR
+        : readPositiveNumber(input.riskAversionFactorValue, DEFAULT_RISK_AVERSION_FACTOR)
   };
 }
 
