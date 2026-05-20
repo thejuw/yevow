@@ -5,11 +5,13 @@ import {
   applyCascadeSignalRejectionSideEffects,
   applyCascadeSizeRejectionSideEffects,
   closedOneMinuteCandlesForTick,
+  evaluateCascadeStrategyFlow,
   processCascadeClosedCandleSignals,
   processAcceptedCascadeSignalFlow,
   type CascadeAcceptedSignalFlowHandlers,
   type CascadeOpenPositionSideEffectHandlers,
   type CascadeSignalRejectionSideEffectHandlers,
+  type CascadeStrategyEvaluationHandlers,
   type CascadeSizeRejectionSideEffectHandlers,
   shouldEvaluateCascadeStrategy
 } from "../../src/engine/trading/cascade/CascadeStrategyRuntime";
@@ -24,13 +26,71 @@ import type {
   CascadeRecoverySignalRejection,
   PositionSizeDecision
 } from "../../src/strategy/cascade/types";
-import type { TradeIntent } from "../../src/types";
+import type { MarketTick, TradeIntent } from "../../src/types";
 
 describe("CascadeStrategyRuntime", () => {
   it("gates cascade evaluation by strategy mode", () => {
     expect(shouldEvaluateCascadeStrategy("OFF")).toBe(false);
     expect(shouldEvaluateCascadeStrategy("MARKET_MAKING")).toBe(false);
     expect(shouldEvaluateCascadeStrategy("CASCADE_RECOVERY")).toBe(true);
+  });
+
+  it("orchestrates cascade strategy evaluation order around gates", async () => {
+    const disabled = cascadeStrategyEvaluationSpy();
+    const disabledResult = await evaluateCascadeStrategyFlow(
+      {
+        strategyMode: "OFF",
+        tick: marketTick(),
+        observedAt: "2026-05-18T20:01:00.000Z"
+      },
+      disabled.handlers
+    );
+
+    expect(disabledResult).toEqual({
+      evaluated: false,
+      closedCandles: [],
+      reason: "STRATEGY_DISABLED"
+    });
+    expect(disabled.events).toEqual([]);
+
+    const instrumentDisabled = cascadeStrategyEvaluationSpy({ instrumentEnabled: false });
+    const instrumentDisabledResult = await evaluateCascadeStrategyFlow(
+      {
+        strategyMode: "CASCADE_RECOVERY",
+        tick: marketTick(),
+        observedAt: "2026-05-18T20:01:00.000Z"
+      },
+      instrumentDisabled.handlers
+    );
+
+    expect(instrumentDisabledResult.reason).toBe("INSTRUMENT_DISABLED");
+    expect(instrumentDisabled.events).toEqual([
+      "ingest:btc-usd",
+      "positions:btc-usd:2026-05-18T20:01:00.000Z",
+      "enabled:btc-usd"
+    ]);
+
+    const evaluated = cascadeStrategyEvaluationSpy();
+    const evaluatedResult = await evaluateCascadeStrategyFlow(
+      {
+        strategyMode: "CASCADE_RECOVERY",
+        tick: marketTick(),
+        observedAt: "2026-05-18T20:01:00.000Z"
+      },
+      evaluated.handlers
+    );
+
+    expect(evaluatedResult.reason).toBe("EVALUATED");
+    expect(evaluated.events).toEqual([
+      "ingest:btc-usd",
+      "positions:btc-usd:2026-05-18T20:01:00.000Z",
+      "enabled:btc-usd",
+      "refresh-news",
+      "absorption:btc-usd",
+      "cascade:cascade-btc-usd",
+      "evaluate:100.5",
+      "accept:signal-flow:2026-05-18T20:01:00.000Z"
+    ]);
   });
 
   it("selects only closed one-minute candles for the active tick instrument", () => {
@@ -260,6 +320,85 @@ describe("CascadeStrategyRuntime", () => {
     ]);
   });
 });
+
+function marketTick(overrides: Partial<MarketTick> = {}): MarketTick {
+  return {
+    schemaVersion: "universal-tick.v1",
+    source: "HYPERLIQUID",
+    source_exchange: "hyperliquid",
+    transport: "grpc",
+    exchangeCode: "hyperliquid",
+    instrumentCode: "btc-usd",
+    baseAsset: "BTC",
+    quoteAsset: "USD",
+    price: 100,
+    size: 1,
+    side: "buy",
+    sequence: 1,
+    exchangeTimestamp: "2026-05-18T20:01:00.000Z",
+    synchronizedExchangeTimestamp: "2026-05-18T20:01:00.000Z",
+    clockOffsetMs: 0,
+    receivedAt: "2026-05-18T20:01:00.010Z",
+    sourceWeight: 1,
+    ...overrides
+  };
+}
+
+function cascadeStrategyEvaluationSpy(
+  options: {
+    instrumentEnabled?: boolean;
+  } = {}
+): {
+  events: string[];
+  handlers: CascadeStrategyEvaluationHandlers;
+} {
+  const events: string[] = [];
+  const instrumentEnabled = options.instrumentEnabled ?? true;
+
+  return {
+    events,
+    handlers: {
+      ingestTick(tick) {
+        events.push(`ingest:${tick.instrumentCode}`);
+        return [candle({ instrumentCode: tick.instrumentCode })];
+      },
+      dispatchPositionUpdates(tick, observedAt) {
+        events.push(`positions:${tick.instrumentCode}:${observedAt}`);
+        return Promise.resolve();
+      },
+      isInstrumentEnabled(instrumentCode) {
+        events.push(`enabled:${instrumentCode}`);
+        return instrumentEnabled;
+      },
+      refreshNewsCalendar() {
+        events.push("refresh-news");
+        return Promise.resolve();
+      },
+      latestAbsorptionForInstrument(instrumentCode) {
+        events.push(`absorption:${instrumentCode}`);
+        return absorption(instrumentCode);
+      },
+      cascadeForAbsorption(foundAbsorption) {
+        events.push(`cascade:${foundAbsorption.cascadeId}`);
+        return cascade(foundAbsorption.cascadeId, foundAbsorption.instrumentCode);
+      },
+      evaluateSignal(_cascade, _absorption, reclaimCandle) {
+        events.push(`evaluate:${reclaimCandle.close}`);
+        return {
+          accepted: true,
+          signal: recoverySignal("signal-flow", reclaimCandle.instrumentCode)
+        };
+      },
+      recordRejectedSignal(rejection, observedAt) {
+        events.push(`reject:${rejection.cascadeId}:${observedAt}`);
+      },
+      processAcceptedSignal(signal, observedAt) {
+        events.push(`accept:${signal.signalId}:${observedAt}`);
+        return Promise.resolve();
+      }
+    }
+  };
+}
 
 function candle(overrides: Partial<Candle> = {}): Candle {
   return {

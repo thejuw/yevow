@@ -117,6 +117,25 @@ export interface CascadeClosedCandleSignalHandlers {
   ) => Promise<void>;
 }
 
+export interface CascadeStrategyEvaluationInput {
+  readonly strategyMode: GlobalRiskConfig["STRATEGY_MODE"];
+  readonly tick: MarketTick;
+  readonly observedAt: string;
+}
+
+export interface CascadeStrategyEvaluationHandlers extends CascadeClosedCandleSignalHandlers {
+  readonly ingestTick: (tick: MarketTick) => readonly Candle[];
+  readonly dispatchPositionUpdates: (tick: MarketTick, observedAt: string) => Promise<void>;
+  readonly isInstrumentEnabled: (instrumentCode: string) => boolean;
+  readonly refreshNewsCalendar: () => Promise<void>;
+}
+
+export interface CascadeStrategyEvaluationResult {
+  readonly evaluated: boolean;
+  readonly closedCandles: readonly Candle[];
+  readonly reason: "STRATEGY_DISABLED" | "INSTRUMENT_DISABLED" | "EVALUATED";
+}
+
 export interface CascadeAcceptedSignalFlowInput {
   readonly signal: CascadeRecoverySignal;
   readonly observedAt: string;
@@ -358,4 +377,37 @@ export async function processCascadeClosedCandleSignals(
 
     await handlers.processAcceptedSignal(signalResult.signal, observedAt);
   }
+}
+
+export async function evaluateCascadeStrategyFlow(
+  input: CascadeStrategyEvaluationInput,
+  handlers: CascadeStrategyEvaluationHandlers
+): Promise<CascadeStrategyEvaluationResult> {
+  if (!shouldEvaluateCascadeStrategy(input.strategyMode)) {
+    return {
+      evaluated: false,
+      closedCandles: [],
+      reason: "STRATEGY_DISABLED"
+    };
+  }
+
+  const closedCandles = handlers.ingestTick(input.tick);
+  await handlers.dispatchPositionUpdates(input.tick, input.observedAt);
+
+  if (!handlers.isInstrumentEnabled(input.tick.instrumentCode)) {
+    return {
+      evaluated: false,
+      closedCandles,
+      reason: "INSTRUMENT_DISABLED"
+    };
+  }
+
+  await handlers.refreshNewsCalendar();
+  await processCascadeClosedCandleSignals(closedCandles, input.tick, input.observedAt, handlers);
+
+  return {
+    evaluated: true,
+    closedCandles,
+    reason: "EVALUATED"
+  };
 }

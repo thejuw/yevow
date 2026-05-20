@@ -195,9 +195,9 @@ import { ensureCascadePaperModeArmedRuntime } from "./cascade/CascadePaperModeRu
 import {
   applyCascadePositionUpdateSideEffects,
   applyCascadeSignalRejectionSideEffects,
+  evaluateCascadeStrategyFlow,
   processCascadeClosedCandleSignals,
-  processAcceptedCascadeSignalFlow,
-  shouldEvaluateCascadeStrategy
+  processAcceptedCascadeSignalFlow
 } from "./cascade/CascadeStrategyRuntime";
 import { OrderBookReconstructor, type OrderBookStores } from "./book/OrderBookReconstructor";
 import type { AppliedBookUpdate, BookDeltaWithTicker, BookSyncState } from "./book/BookTypes";
@@ -1635,29 +1635,31 @@ export class TradingEngine {
   }
 
   private async evaluateCascadeStrategy(tick: MarketTick, observedAt: string): Promise<void> {
-    if (!shouldEvaluateCascadeStrategy(this.cachedConfig.STRATEGY_MODE)) {
-      return;
-    }
-
-    const closedCandles = this.candleAggregator.ingestTick(tick);
-    await this.dispatchCascadePositionUpdates(tick, observedAt);
-
-    if (!this.isCascadeInstrumentEnabled(tick.instrumentCode)) {
-      return;
-    }
-
-    await this.cascadeNewsCalendar.refresh();
-    await processCascadeClosedCandleSignals(closedCandles, tick, observedAt, {
-      latestAbsorptionForInstrument: (instrumentCode) =>
-        latestAbsorptionForInstrument(this.cascadeAbsorptionsById, instrumentCode),
-      cascadeForAbsorption: (absorption) =>
-        this.cascadeEventsById.get(absorption.cascadeId) ?? null,
-      evaluateSignal: (cascade, absorption, reclaimCandle, signalObservedAt) =>
-        this.evaluateCascadeRecoverySignal(cascade, absorption, reclaimCandle, signalObservedAt),
-      recordRejectedSignal: (rejection, rejectedAt) =>
-        this.recordRejectedCascadeSignal(rejection, rejectedAt),
-      processAcceptedSignal: (signal, acceptedAt) => this.processCascadeSignal(signal, acceptedAt)
-    });
+    await evaluateCascadeStrategyFlow(
+      {
+        strategyMode: this.cachedConfig.STRATEGY_MODE,
+        tick,
+        observedAt
+      },
+      {
+        ingestTick: (currentTick) => this.candleAggregator.ingestTick(currentTick),
+        dispatchPositionUpdates: (currentTick, updateObservedAt) =>
+          this.dispatchCascadePositionUpdates(currentTick, updateObservedAt),
+        isInstrumentEnabled: (instrumentCode) => this.isCascadeInstrumentEnabled(instrumentCode),
+        refreshNewsCalendar: async () => {
+          await this.cascadeNewsCalendar.refresh();
+        },
+        latestAbsorptionForInstrument: (instrumentCode) =>
+          latestAbsorptionForInstrument(this.cascadeAbsorptionsById, instrumentCode),
+        cascadeForAbsorption: (absorption) =>
+          this.cascadeEventsById.get(absorption.cascadeId) ?? null,
+        evaluateSignal: (cascade, absorption, reclaimCandle, signalObservedAt) =>
+          this.evaluateCascadeRecoverySignal(cascade, absorption, reclaimCandle, signalObservedAt),
+        recordRejectedSignal: (rejection, rejectedAt) =>
+          this.recordRejectedCascadeSignal(rejection, rejectedAt),
+        processAcceptedSignal: (signal, acceptedAt) => this.processCascadeSignal(signal, acceptedAt)
+      }
+    );
   }
 
   private async dispatchCascadePositionUpdates(
