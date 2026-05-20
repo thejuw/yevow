@@ -1,5 +1,6 @@
 import { logPruneReportToJson, type LogPruneReport } from "../../LogRetention";
 import type { EngineState, ExchangeOpenOrder, JanitorState, JsonRecord } from "../../../types";
+import type { RateLimitPriority } from "../../../utils/RateLimiter";
 
 export type JanitorCancelReason = "JANITOR_ORPHAN_EXCHANGE_ORDER" | "JANITOR_ZOMBIE_LOCAL_ORDER";
 
@@ -118,6 +119,25 @@ export interface CancelJanitorOrderInput {
   readonly orderId: string;
   readonly reason: string;
   readonly instrumentCode?: string;
+}
+
+export interface CancelJanitorOrderSideEffectsInput {
+  readonly hasExecutioner: boolean;
+  readonly orderId: string;
+  readonly reason: string;
+  readonly instrumentCode?: string;
+}
+
+export interface JanitorCancelReservation {
+  readonly allowed: boolean;
+  readonly waitMs: number;
+}
+
+export interface CancelJanitorOrderSideEffectHandlers {
+  readonly reserveCancelCapacity: (priority: RateLimitPriority) => JanitorCancelReservation;
+  readonly persistRateLimitState: () => void;
+  readonly wait: (ms: number) => Promise<void>;
+  readonly cancelOrder: (orderId: string, reason: string, instrumentCode?: string) => Promise<void>;
 }
 
 export interface RecordPostOnlyDustCloseSkipInput {
@@ -267,6 +287,25 @@ export async function cancelJanitorOrder(input: CancelJanitorOrderInput): Promis
       error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
     });
   }
+}
+
+export async function applyCancelJanitorOrderSideEffects(
+  input: CancelJanitorOrderSideEffectsInput,
+  handlers: CancelJanitorOrderSideEffectHandlers
+): Promise<void> {
+  if (!input.hasExecutioner) {
+    return;
+  }
+
+  const priority: RateLimitPriority = "CANCEL";
+  const reservation = handlers.reserveCancelCapacity(priority);
+  handlers.persistRateLimitState();
+
+  if (!reservation.allowed) {
+    await handlers.wait(reservation.waitMs);
+  }
+
+  await handlers.cancelOrder(input.orderId, input.reason, input.instrumentCode);
 }
 
 export async function dispatchJanitorCancellationRequests(

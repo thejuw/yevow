@@ -162,6 +162,7 @@ import {
   type ExecutionTraceInput
 } from "./performance/LatencyRuntime";
 import {
+  applyCancelJanitorOrderSideEffects,
   applyJanitorRunSideEffects,
   cancelJanitorOrder,
   fetchJanitorExchangeOpenOrders,
@@ -4111,28 +4112,37 @@ export class TradingEngine {
     reason: string,
     instrumentCode?: string
   ): Promise<void> {
-    if (!this.env.EXECUTIONER) {
-      return;
-    }
-
-    const reservation = this.rateLimiter.reserve("default", "CANCEL");
-    this.waitUntilStoragePut(
-      RATE_LIMIT_STATE_KEY,
-      this.rateLimiter.exportState(),
-      "JANITOR_CANCEL_RATE_LIMIT"
+    const executioner = this.env.EXECUTIONER;
+    await applyCancelJanitorOrderSideEffects(
+      {
+        hasExecutioner: Boolean(executioner),
+        orderId,
+        reason,
+        instrumentCode
+      },
+      {
+        reserveCancelCapacity: (priority) => this.rateLimiter.reserve("default", priority),
+        persistRateLimitState: () =>
+          this.waitUntilStoragePut(
+            RATE_LIMIT_STATE_KEY,
+            this.rateLimiter.exportState(),
+            "JANITOR_CANCEL_RATE_LIMIT"
+          ),
+        wait,
+        cancelOrder: (cancelOrderId, cancelReason, cancelInstrumentCode) => {
+          if (!executioner) {
+            return Promise.resolve();
+          }
+          return cancelJanitorOrder({
+            executioner,
+            logger: this.logger,
+            orderId: cancelOrderId,
+            reason: cancelReason,
+            instrumentCode: cancelInstrumentCode
+          });
+        }
+      }
     );
-
-    if (!reservation.allowed) {
-      await wait(reservation.waitMs);
-    }
-
-    await cancelJanitorOrder({
-      executioner: this.env.EXECUTIONER,
-      logger: this.logger,
-      orderId,
-      reason,
-      instrumentCode
-    });
   }
 
   private async pruneOperationalLogs(): Promise<LogPruneReport> {

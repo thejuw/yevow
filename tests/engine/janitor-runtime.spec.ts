@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyCancelJanitorOrderSideEffects,
   applyJanitorRunSideEffects,
   buildJanitorReport,
   buildJanitorRunArtifacts,
@@ -8,6 +9,7 @@ import {
   fetchJanitorExchangeOpenOrders,
   janitorCleanupRequiredLogMetadata,
   type JanitorRunSideEffectHandlers,
+  type CancelJanitorOrderSideEffectHandlers,
   type JanitorExecutionLogger,
   reconcileJanitorOrders,
   recordPostOnlyDustCloseSkip,
@@ -286,6 +288,45 @@ describe("JanitorRuntime", () => {
     ]);
   });
 
+  it("skips janitor cancel side effects when the executioner is absent", async () => {
+    const sideEffects = cancelJanitorOrderSideEffectSpy();
+
+    await applyCancelJanitorOrderSideEffects(
+      {
+        hasExecutioner: false,
+        orderId: "orphan-1",
+        reason: "JANITOR_ORPHAN_EXCHANGE_ORDER",
+        instrumentCode: "hype-usd"
+      },
+      sideEffects.handlers
+    );
+
+    expect(sideEffects.events).toEqual([]);
+  });
+
+  it("rate-limits janitor cancels before dispatching to the executioner", async () => {
+    const sideEffects = cancelJanitorOrderSideEffectSpy({
+      reservation: { allowed: false, waitMs: 125 }
+    });
+
+    await applyCancelJanitorOrderSideEffects(
+      {
+        hasExecutioner: true,
+        orderId: "orphan-1",
+        reason: "JANITOR_ORPHAN_EXCHANGE_ORDER",
+        instrumentCode: "hype-usd"
+      },
+      sideEffects.handlers
+    );
+
+    expect(sideEffects.events).toEqual([
+      "reserve:CANCEL",
+      "persist",
+      "wait:125",
+      "cancel:orphan-1:JANITOR_ORPHAN_EXCHANGE_ORDER:hype-usd"
+    ]);
+  });
+
   it("records post-only dust close skips with position context", () => {
     const { logger, warnings } = loggerSpy();
 
@@ -538,6 +579,39 @@ function janitorSideEffectSpy(options: {
   };
 
   return result;
+}
+
+function cancelJanitorOrderSideEffectSpy(
+  options: {
+    reservation?: { allowed: boolean; waitMs: number };
+  } = {}
+): {
+  events: string[];
+  handlers: CancelJanitorOrderSideEffectHandlers;
+} {
+  const events: string[] = [];
+  const reservation = options.reservation ?? { allowed: true, waitMs: 0 };
+
+  return {
+    events,
+    handlers: {
+      reserveCancelCapacity(priority) {
+        events.push(`reserve:${priority}`);
+        return reservation;
+      },
+      persistRateLimitState() {
+        events.push("persist");
+      },
+      wait(ms) {
+        events.push(`wait:${ms}`);
+        return Promise.resolve();
+      },
+      cancelOrder(orderId, reason, instrumentCode) {
+        events.push(`cancel:${orderId}:${reason}:${instrumentCode ?? "NONE"}`);
+        return Promise.resolve();
+      }
+    }
+  };
 }
 
 function order(overrides: Partial<ManagedOrder> = {}): ManagedOrder {
