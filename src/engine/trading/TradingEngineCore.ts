@@ -217,6 +217,7 @@ import type { AppliedBookUpdate, BookDeltaWithTicker, BookSyncState } from "./bo
 import {
   buildHyperliquidL2BookTick,
   buildHyperliquidL2BookTickFromBook,
+  dispatchHyperliquidL2BookDecision,
   dispatchHyperliquidRawMessageRoute,
   evaluateHyperliquidL2BookRuntime,
   handleHyperliquidRawBatch,
@@ -1343,29 +1344,26 @@ export class TradingEngine {
     });
     const { marketKey } = l2Decision.bundle;
 
-    if (l2Decision.kind === "DUPLICATE_OR_OUT_OF_ORDER") {
-      return l2Decision.result;
-    }
-
-    if (l2Decision.kind === "DESYNC") {
-      markBookSyncDesynced({
-        syncState: this.bookSync.get(marketKey),
-        reason: l2Decision.sequenceDecision.reason,
-        observedAt: l2Decision.sequenceDecision.lastDesyncAt
-      });
-      this.logger.warn(
-        "ORDER_BOOK_DESYNC",
-        "Hyperliquid native book sequence gap detected",
-        hyperliquidBookDesyncLogMetadata(l2Decision.bundle, l2Decision.sequenceDecision)
-      );
-      return l2Decision.result;
-    }
-
-    if (l2Decision.kind === "STALE") {
-      return this.handleStaleHyperliquidL2Book(l2Decision, payload, wakeUpTimeMs, hotPathStartedAt);
-    }
-
-    return this.handleAcceptedHyperliquidL2Book(l2Decision, payload, wakeUpTimeMs);
+    return dispatchHyperliquidL2BookDecision(l2Decision, {
+      handleDuplicateOrOutOfOrder: (decision) => decision.result,
+      handleDesync: (decision) => {
+        markBookSyncDesynced({
+          syncState: this.bookSync.get(marketKey),
+          reason: decision.sequenceDecision.reason,
+          observedAt: decision.sequenceDecision.lastDesyncAt
+        });
+        this.logger.warn(
+          "ORDER_BOOK_DESYNC",
+          "Hyperliquid native book sequence gap detected",
+          hyperliquidBookDesyncLogMetadata(decision.bundle, decision.sequenceDecision)
+        );
+        return decision.result;
+      },
+      handleStale: (decision) =>
+        this.handleStaleHyperliquidL2Book(decision, payload, wakeUpTimeMs, hotPathStartedAt),
+      handleAccepted: (decision) =>
+        this.handleAcceptedHyperliquidL2Book(decision, payload, wakeUpTimeMs)
+    });
   }
 
   private async handleHyperliquidTrades(

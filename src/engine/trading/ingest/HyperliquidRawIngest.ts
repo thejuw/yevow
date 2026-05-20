@@ -90,6 +90,21 @@ export type HyperliquidRawMessageRoute =
   | { readonly kind: "LIQUIDATION_EVENTS"; readonly raw: Record<string, unknown> }
   | { readonly kind: "IGNORED"; readonly raw: Record<string, unknown>; readonly reason: string };
 
+export interface HyperliquidL2BookDecisionHandlers {
+  readonly handleDuplicateOrOutOfOrder: (
+    decision: Extract<HyperliquidL2BookHotPathDecision, { kind: "DUPLICATE_OR_OUT_OF_ORDER" }>
+  ) => Promise<TickIngestResult> | TickIngestResult;
+  readonly handleDesync: (
+    decision: Extract<HyperliquidL2BookHotPathDecision, { kind: "DESYNC" }>
+  ) => Promise<TickIngestResult> | TickIngestResult;
+  readonly handleStale: (
+    decision: Extract<HyperliquidL2BookHotPathDecision, { kind: "STALE" }>
+  ) => Promise<TickIngestResult>;
+  readonly handleAccepted: (
+    decision: Extract<HyperliquidL2BookHotPathDecision, { kind: "ACCEPTED" }>
+  ) => Promise<TickIngestResult>;
+}
+
 export interface HyperliquidRawMessageRouteHandlers {
   readonly handleL2Book: (
     raw: Record<string, unknown>,
@@ -179,6 +194,25 @@ export async function dispatchHyperliquidRawMessageRoute(
     reason: route.reason,
     processedCount: 0
   };
+}
+
+export async function dispatchHyperliquidL2BookDecision(
+  decision: HyperliquidL2BookHotPathDecision,
+  handlers: HyperliquidL2BookDecisionHandlers
+): Promise<TickIngestResult> {
+  if (decision.kind === "DUPLICATE_OR_OUT_OF_ORDER") {
+    return handlers.handleDuplicateOrOutOfOrder(decision);
+  }
+
+  if (decision.kind === "DESYNC") {
+    return handlers.handleDesync(decision);
+  }
+
+  if (decision.kind === "STALE") {
+    return handlers.handleStale(decision);
+  }
+
+  return handlers.handleAccepted(decision);
 }
 
 export function routeHyperliquidRawMessage(raw: unknown): HyperliquidRawMessageRoute {

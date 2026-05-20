@@ -5,6 +5,7 @@ import {
   buildHyperliquidL2BookTick,
   buildHyperliquidL2BookTickFromBook,
   calculateHyperliquidBookTotalLatencyMs,
+  dispatchHyperliquidL2BookDecision,
   dispatchHyperliquidRawMessageRoute,
   evaluateHyperliquidL2BookHotPath,
   evaluateHyperliquidL2BookRuntime,
@@ -397,6 +398,85 @@ describe("hyperliquid raw ingest helpers", () => {
       totalLatencyMs: 100,
       nativeMaxLatencyMs: 150
     });
+  });
+
+  it("dispatches native L2 hot-path decisions through typed handlers", async () => {
+    const raw = {
+      data: {
+        coin: "BTC",
+        time: Date.parse("2026-01-01T00:00:00.000Z"),
+        sequence: 20,
+        levels: [[{ px: "100", sz: "1" }], [{ px: "101", sz: "2" }]]
+      }
+    };
+    const baseInput = {
+      raw,
+      payload: {
+        source_exchange: "hyperliquid",
+        exchangeCode: "HL",
+        receivedAt: "2026-01-01T00:00:00.050Z"
+      },
+      maxTimestampDriftMs: 5_000,
+      sequenceGapMs: 15,
+      nativeMaxLatencyMs: 150,
+      averageLatencyMs: 40,
+      sampleCount: 10,
+      location: defaultEngineState("test").location,
+      fallbackReceivedAt: "2026-01-01T00:00:00.050Z",
+      brainTimestamp: "2026-01-01T00:00:00.100Z"
+    };
+    const calls: string[] = [];
+    const handlers = {
+      handleDuplicateOrOutOfOrder: () => {
+        calls.push("duplicate");
+        return freshResult();
+      },
+      handleDesync: () => {
+        calls.push("desync");
+        return freshResult();
+      },
+      handleStale: async () => {
+        calls.push("stale");
+        return freshResult();
+      },
+      handleAccepted: async () => {
+        calls.push("accepted");
+        return freshResult();
+      }
+    };
+
+    await dispatchHyperliquidL2BookDecision(
+      evaluateHyperliquidL2BookHotPath({
+        ...baseInput,
+        resolveExistingSync: () => bookSync(20)
+      }),
+      handlers
+    );
+    await dispatchHyperliquidL2BookDecision(
+      evaluateHyperliquidL2BookHotPath({
+        ...baseInput,
+        sequenceGapMs: 5,
+        resolveExistingSync: () => bookSync(10)
+      }),
+      handlers
+    );
+    await dispatchHyperliquidL2BookDecision(
+      evaluateHyperliquidL2BookHotPath({
+        ...baseInput,
+        nativeMaxLatencyMs: 50,
+        resolveExistingSync: () => bookSync(10)
+      }),
+      handlers
+    );
+    await dispatchHyperliquidL2BookDecision(
+      evaluateHyperliquidL2BookHotPath({
+        ...baseInput,
+        resolveExistingSync: () => bookSync(10)
+      }),
+      handlers
+    );
+
+    expect(calls).toEqual(["duplicate", "desync", "stale", "accepted"]);
   });
 
   it("processes bounded native trade batches without allocating sliced trade arrays", async () => {
