@@ -352,6 +352,7 @@ import {
   createBootProfilerAgent,
   resolveEngineBootRuntimeSettings
 } from "./state/EngineBootConfig";
+import { buildHydratedEngineState } from "./state/EngineBootState";
 import { nextTickAgentHealth } from "./state/AgentHealthRuntime";
 import {
   killSwitchActiveLogMetadata,
@@ -1011,108 +1012,28 @@ export class TradingEngine {
       }
       this.profilerRegistry.configure(this.cachedConfig);
       this.maxLatencyMs = this.cachedConfig.LATENCY_THRESHOLD_MS;
-      const location = baseState.location ?? defaultEngineLocation();
-      const risk = applyLocationRisk(
-        mergeRiskLimits(mergeRiskLimits(baseState.risk, kvRiskLimits), kvConfig?.risk),
-        this.cachedConfig,
-        location,
-        now
-      );
-      const bankroll = normalizePaperBankroll(
-        {
-          ...baseState.bankroll,
-          ...kvConfig?.bankroll,
-          updatedAt: now
-        },
-        this.env,
-        now
-      );
-
-      this.engineState = {
-        ...baseState,
-        mode: kvConfig?.mode ?? baseState.mode,
-        bankroll,
-        agentHealth: {
-          ...defaultEngineState(baseState.engineId).agentHealth,
-          ...baseState.agentHealth
-        },
-        risk,
-        internalOrderBookDepth: countBookLevels(this.bids, this.asks),
-        averageLatency: baseState.averageLatency ?? 0,
-        latencySampleCount: baseState.latencySampleCount ?? 0,
-        staleTickCount: baseState.staleTickCount ?? 0,
-        toxicityScore: baseState.toxicityScore ?? this.profilerRegistry.maxToxicity(),
-        current_inventory_delta:
-          baseState.current_inventory_delta ??
-          baseState.inventory?.current_inventory_delta ??
-          baseState.inventory?.netDelta ??
-          0,
-        liquidationHeatmap: this.heatmapAgent.snapshot(),
-        maxLatencyMs: this.maxLatencyMs,
+      this.engineState = buildHydratedEngineState({
+        baseState,
+        env: this.env,
+        now,
+        kvConfig,
+        kvRiskLimits,
         cachedConfig: this.cachedConfig,
         macroBias: this.macroBias,
         temporaryOverride: this.activeTemporaryOverride,
-        assetMatrix: normalizeAssetMatrix(
-          baseState.assetMatrix,
-          this.cachedConfig,
-          this.macroBias,
-          now
-        ),
-        assetQuoteStates: normalizeAssetQuoteStates(
-          baseState.assetQuoteStates,
-          this.cachedConfig,
-          this.macroBias,
-          now
-        ),
+        orderBook: this.orderBook,
+        bids: this.bids,
+        asks: this.asks,
+        liquidationHeatmap: this.heatmapAgent.snapshot(),
         profilerStates: this.profilerRegistry.snapshot(),
-        location,
-        fundingRates: baseState.fundingRates ?? {},
-        microstructure: baseState.microstructure ?? defaultMicrostructure(),
-        priceDiscovery:
-          baseState.priceDiscovery ??
-          calculateOrderBookPriceDiscovery(
-            this.orderBook,
-            baseState.microstructure?.instrumentCode,
-            now
-          ),
-        oracle: baseState.oracle ?? defaultOracleState(),
-        sentiment: baseState.sentiment ?? defaultSentimentState(),
-        ensemble: baseState.ensemble ?? defaultEnsembleState(now),
-        leadLag: baseState.leadLag ?? defaultLeadLagMetrics(),
-        inventory: normalizeInventoryState(
-          baseState.inventory,
-          readPositiveNumber(this.env.MAX_INVENTORY_UNITS, DEFAULT_MAX_INVENTORY_UNITS),
-          readPositiveNumber(this.env.MAX_INVENTORY_DELTA, DEFAULT_MAX_INVENTORY_DELTA)
-        ),
-        riskMetrics: baseState.riskMetrics ?? defaultRiskMetrics(bankroll.equity, now),
-        quoteState: baseState.quoteState ?? defaultQuoteState(),
         shadowQueue: this.ghostBook.snapshot(now),
-        lastTradeIntent: baseState.lastTradeIntent ?? null,
-        inventoryGuard:
-          baseState.inventoryGuard ??
-          (baseState as EngineState & { hedge?: EngineState["inventoryGuard"] }).hedge ??
-          defaultInventoryGuardState(),
-        janitor: baseState.janitor ?? defaultJanitorState(),
-        slippage: baseState.slippage ?? defaultSlippageAnalytics(),
-        orderMap: baseState.orderMap ?? {},
-        executionProfile: normalizeExecutionProfile(
-          baseState.executionProfile,
-          this.jitterThresholdMs,
-          this.jitterSampleWindow,
-          this.jitterComputeIntervalTicks,
-          this.processingLatencySamples.length,
-          now
-        ),
-        citadel: {
-          ...(baseState.citadel ?? defaultCitadelState(now)),
-          shadowMode: isShadowMode(this.env),
-          updatedAt: now
-        },
-        dom: baseState.dom ?? null,
-        anomaly: baseState.anomaly ?? this.anomalyDetector.status,
-        heartbeatAt: now,
-        updatedAt: now
-      };
+        anomaly: this.anomalyDetector.status,
+        maxLatencyMs: this.maxLatencyMs,
+        jitterThresholdMs: this.jitterThresholdMs,
+        jitterSampleWindow: this.jitterSampleWindow,
+        jitterComputeIntervalTicks: this.jitterComputeIntervalTicks,
+        processingLatencySampleCount: this.processingLatencySamples.length
+      });
       this.lastPerformanceStatus = this.engineState.executionProfile.status;
 
       await this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "SYSTEM_INIT");
