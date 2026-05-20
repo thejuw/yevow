@@ -93,14 +93,16 @@ import {
   resolveQuoteHibernateMs,
   strategyQuoteDisabledReason as runtimeStrategyQuoteDisabledReason
 } from "./quotes/QuoteStateRuntime";
+import { applyQuoteDispatchFlow } from "./quotes/QuoteIntentRuntime";
 import {
-  applyQuoteDispatchFlow,
   applyQuoteRefreshThrottleSideEffects,
   buildQuoteRefreshRuntimeDecision,
+  dispatchedQuoteSnapshot
+} from "./quotes/QuoteRefreshRuntime";
+import {
   dispatchCroupierQuoteActionSideEffects,
-  dispatchedQuoteSnapshot,
   type CroupierQuoteAction
-} from "./quotes/QuoteDispatchRuntime";
+} from "./quotes/QuoteActionRuntime";
 import {
   applyQuoteCancelAllSideEffects,
   dispatchQuoteCancelAll

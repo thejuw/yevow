@@ -1,5 +1,5 @@
 import type { ProfilerEvaluation } from "../../../agents/ProfilerAgent";
-import { buildCroupierQuoteAction, type CroupierQuoteAction } from "../quotes/QuoteDispatchRuntime";
+import { buildCroupierQuoteAction, type CroupierQuoteAction } from "../quotes/QuoteActionRuntime";
 import type { AcceptedTickSideEffectsInput } from "./TickPipelineTypes";
 
 export interface AcceptedTickFinalizationInput {
