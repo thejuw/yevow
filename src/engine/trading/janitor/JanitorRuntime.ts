@@ -66,6 +66,29 @@ export interface JanitorRunArtifacts {
   readonly warningMetadata: JsonRecord | null;
 }
 
+export interface JanitorRunSideEffectsInput {
+  readonly source: "ALARM" | "ADMIN";
+  readonly state: EngineState;
+  readonly baseReport: JanitorState;
+  readonly observedAt: string;
+}
+
+export interface JanitorRunSideEffectHandlers {
+  readonly fetchExchangeOpenOrders: () => Promise<ExchangeOpenOrder[]>;
+  readonly cancelOrder: (
+    orderId: string,
+    reason: JanitorCancelReason,
+    instrumentCode?: string
+  ) => Promise<void>;
+  readonly recordDustCloseSkips: (
+    instrumentCodes: readonly string[],
+    observedAt: string
+  ) => readonly string[];
+  readonly pruneOperationalLogs: () => Promise<LogPruneReport>;
+  readonly warnCleanupRequired: (metadata: JsonRecord) => void;
+  readonly applyState: (state: EngineState) => Promise<void>;
+}
+
 export interface DispatchJanitorCancellationRequestsInput {
   readonly requests: readonly JanitorCancellationRequest[];
   readonly cancelOrder: (
@@ -364,6 +387,46 @@ export function buildJanitorRunArtifacts(input: JanitorRunArtifactsInput): Janit
         })
       : null
   };
+}
+
+export async function applyJanitorRunSideEffects(
+  input: JanitorRunSideEffectsInput,
+  handlers: JanitorRunSideEffectHandlers
+): Promise<JanitorRunArtifacts> {
+  const exchangeOpenOrders = await handlers.fetchExchangeOpenOrders();
+  const reconciliation = reconcileJanitorOrders({
+    orderMap: input.state.orderMap,
+    exchangeOpenOrders,
+    zombieOrders: input.baseReport.zombieOrders,
+    observedAt: input.observedAt
+  });
+
+  await dispatchJanitorCancellationRequests({
+    requests: reconciliation.cancellationRequests,
+    cancelOrder: handlers.cancelOrder
+  });
+
+  const dustCloseIntents = handlers.recordDustCloseSkips(
+    input.baseReport.dustPositions,
+    input.observedAt
+  );
+  const pruneReport = await handlers.pruneOperationalLogs();
+  const artifacts = buildJanitorRunArtifacts({
+    source: input.source,
+    state: input.state,
+    baseReport: input.baseReport,
+    reconciliation,
+    dustCloseIntents,
+    pruneReport,
+    observedAt: input.observedAt
+  });
+
+  if (artifacts.warningMetadata) {
+    handlers.warnCleanupRequired(artifacts.warningMetadata);
+  }
+
+  await handlers.applyState(artifacts.state);
+  return artifacts;
 }
 
 function hasClientId(order: ExchangeOpenOrder): order is ExchangeOpenOrder & { clientId: string } {

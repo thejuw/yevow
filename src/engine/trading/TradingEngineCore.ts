@@ -162,11 +162,9 @@ import {
   type ExecutionTraceInput
 } from "./performance/LatencyRuntime";
 import {
-  buildJanitorRunArtifacts,
+  applyJanitorRunSideEffects,
   cancelJanitorOrder,
-  dispatchJanitorCancellationRequests,
   fetchJanitorExchangeOpenOrders,
-  reconcileJanitorOrders,
   recordPostOnlyDustCloseSkips
 } from "./janitor/JanitorRuntime";
 import {
@@ -4071,51 +4069,41 @@ export class TradingEngine {
       ),
       dustThreshold: 0.000001
     });
-    const exchangeOpenOrders = await fetchJanitorExchangeOpenOrders({
-      executioner: this.env.EXECUTIONER,
-      logger: this.logger
-    });
-    const reconciliation = reconcileJanitorOrders({
-      orderMap: this.engineState.orderMap,
-      exchangeOpenOrders,
-      zombieOrders: baseReport.zombieOrders,
-      observedAt
-    });
-
-    await dispatchJanitorCancellationRequests({
-      requests: reconciliation.cancellationRequests,
-      cancelOrder: (orderId, reason, instrumentCode) =>
-        this.cancelOrder(orderId, reason, instrumentCode)
-    });
-
-    const dustCloseIntents = recordPostOnlyDustCloseSkips({
-      openPositions: this.engineState.openPositions,
-      logger: this.logger,
-      instrumentCodes: baseReport.dustPositions,
-      observedAt
-    });
-
-    const pruneReport = await this.pruneOperationalLogs();
-    const artifacts = buildJanitorRunArtifacts({
-      source,
-      state: this.engineState,
-      baseReport,
-      reconciliation,
-      dustCloseIntents,
-      pruneReport,
-      observedAt
-    });
-
-    if (artifacts.warningMetadata) {
-      this.logger.warn(
-        "JANITOR_CLEANUP_REQUIRED",
-        "Janitor found state hygiene work",
-        artifacts.warningMetadata
-      );
-    }
-
-    this.engineState = artifacts.state;
-    await this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "JANITOR_REPORT");
+    await applyJanitorRunSideEffects(
+      {
+        source,
+        state: this.engineState,
+        baseReport,
+        observedAt
+      },
+      {
+        fetchExchangeOpenOrders: () =>
+          fetchJanitorExchangeOpenOrders({
+            executioner: this.env.EXECUTIONER,
+            logger: this.logger
+          }),
+        cancelOrder: (orderId, reason, instrumentCode) =>
+          this.cancelOrder(orderId, reason, instrumentCode),
+        recordDustCloseSkips: (instrumentCodes, dustObservedAt) =>
+          recordPostOnlyDustCloseSkips({
+            openPositions: this.engineState.openPositions,
+            logger: this.logger,
+            instrumentCodes,
+            observedAt: dustObservedAt
+          }),
+        pruneOperationalLogs: () => this.pruneOperationalLogs(),
+        warnCleanupRequired: (metadata) =>
+          this.logger.warn(
+            "JANITOR_CLEANUP_REQUIRED",
+            "Janitor found state hygiene work",
+            metadata
+          ),
+        applyState: async (state) => {
+          this.engineState = state;
+          await this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "JANITOR_REPORT");
+        }
+      }
+    );
   }
 
   private async cancelOrder(

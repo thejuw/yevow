@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyJanitorRunSideEffects,
   buildJanitorReport,
   buildJanitorRunArtifacts,
   cancelJanitorOrder,
   dispatchJanitorCancellationRequests,
   fetchJanitorExchangeOpenOrders,
   janitorCleanupRequiredLogMetadata,
+  type JanitorRunSideEffectHandlers,
   type JanitorExecutionLogger,
   reconcileJanitorOrders,
   recordPostOnlyDustCloseSkip,
@@ -425,7 +427,118 @@ describe("JanitorRuntime", () => {
       prunedTelemetryCount: 1
     });
   });
+
+  it("runs janitor side effects and applies the resulting state", async () => {
+    const state = {
+      orderMap: {
+        "client-1": order({ clientId: "client-1", exchangeOrderId: "missing", status: "OPEN" })
+      },
+      openPositions: {
+        "hype-usd": {
+          instrumentCode: "hype-usd",
+          side: "LONG",
+          quantity: 0.1,
+          averageEntryPrice: 30,
+          markPrice: 31,
+          unrealizedPnl: 0.1,
+          realizedPnl: 0,
+          updatedAt: OBSERVED_AT
+        }
+      },
+      janitor: janitorState(),
+      updatedAt: "2026-05-18T15:00:00.000Z",
+      heartbeatAt: "2026-05-18T15:00:00.000Z"
+    } as EngineState;
+    const sideEffects = janitorSideEffectSpy({
+      exchangeOpenOrders: [
+        exchangeOrder({
+          clientId: null,
+          exchangeOrderId: "orphan-1",
+          instrumentCode: "hype-usd"
+        })
+      ],
+      pruneReport: logPruneReport({ totalRows: 2 })
+    });
+
+    const artifacts = await applyJanitorRunSideEffects(
+      {
+        source: "ADMIN",
+        state,
+        baseReport: janitorState({ zombieOrders: ["client-1"], dustPositions: ["hype-usd"] }),
+        observedAt: OBSERVED_AT
+      },
+      sideEffects.handlers
+    );
+
+    expect(sideEffects.events).toEqual([
+      "fetch",
+      "cancel:orphan-1:JANITOR_ORPHAN_EXCHANGE_ORDER:hype-usd",
+      "cancel:client-1:JANITOR_ZOMBIE_LOCAL_ORDER:btc-usd",
+      "dust:hype-usd:2026-05-18T16:00:00.000Z",
+      "prune",
+      "warn:ADMIN",
+      "apply"
+    ]);
+    expect(artifacts.report).toMatchObject({
+      zombieOrders: ["client-1"],
+      orphanExchangeOrders: ["orphan-1"],
+      dustPositions: ["hype-usd"],
+      dustCloseIntents: ["dust-intent-1"],
+      prunedTelemetryCount: 2
+    });
+    expect(sideEffects.appliedState).toMatchObject({
+      janitor: artifacts.report,
+      updatedAt: OBSERVED_AT,
+      heartbeatAt: OBSERVED_AT
+    });
+  });
 });
+
+function janitorSideEffectSpy(options: {
+  exchangeOpenOrders: ExchangeOpenOrder[];
+  pruneReport: LogPruneReport;
+}): {
+  events: string[];
+  appliedState: EngineState | null;
+  handlers: JanitorRunSideEffectHandlers;
+} {
+  const result: {
+    events: string[];
+    appliedState: EngineState | null;
+    handlers: JanitorRunSideEffectHandlers;
+  } = {
+    events: [],
+    appliedState: null,
+    handlers: {
+      fetchExchangeOpenOrders() {
+        result.events.push("fetch");
+        return Promise.resolve(options.exchangeOpenOrders);
+      },
+      cancelOrder(orderId, reason, instrumentCode) {
+        result.events.push(`cancel:${orderId}:${reason}:${instrumentCode ?? "NONE"}`);
+        return Promise.resolve();
+      },
+      recordDustCloseSkips(instrumentCodes, observedAt) {
+        result.events.push(`dust:${instrumentCodes.join(",")}:${observedAt}`);
+        return ["dust-intent-1"];
+      },
+      pruneOperationalLogs() {
+        result.events.push("prune");
+        return Promise.resolve(options.pruneReport);
+      },
+      warnCleanupRequired(metadata) {
+        result.events.push(`warn:${String(metadata.source)}`);
+      },
+      applyState(state) {
+        result.events.push("apply");
+        result.appliedState = state;
+        return Promise.resolve();
+      }
+    }
+  };
+
+  return result;
+}
 
 function order(overrides: Partial<ManagedOrder> = {}): ManagedOrder {
   return {
