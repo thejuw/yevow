@@ -66,6 +66,11 @@ export interface AcceptedDecisionPipelineLifecycleDependencies {
   ) => AcceptedExecutionContext;
 }
 
+export interface AcceptedDecisionPipelineFlowHandlers {
+  readonly commitAcceptedTickState: (input: AcceptedTickStateCommitInput) => void;
+  readonly finalizeAcceptedTick: (input: AcceptedTickSideEffectsInput) => Promise<void>;
+}
+
 export interface AcceptedTickLifecycleArtifacts {
   readonly commitInput: AcceptedTickStateCommitInput;
   readonly sideEffectsInput: AcceptedTickSideEffectsInput;
@@ -150,6 +155,19 @@ export function buildAcceptedDecisionPipelineLifecycle(
     decisionContext,
     executionContext
   });
+}
+
+export async function applyAcceptedDecisionPipelineFlow(
+  input: AcceptedDecisionPipelineInput,
+  dependencies: AcceptedDecisionPipelineLifecycleDependencies,
+  handlers: AcceptedDecisionPipelineFlowHandlers
+): Promise<AcceptedTickLifecycleArtifacts> {
+  const lifecycle = buildAcceptedDecisionPipelineLifecycle(input, dependencies);
+
+  handlers.commitAcceptedTickState(lifecycle.commitInput);
+  await handlers.finalizeAcceptedTick(lifecycle.sideEffectsInput);
+
+  return lifecycle;
 }
 
 export function buildAcceptedTickStateTransition(

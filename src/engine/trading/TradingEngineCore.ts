@@ -595,7 +595,7 @@ import {
 import { isInformationalTick, isTradeTick } from "./state/TickClassification";
 import { evaluateTickTargetPreflight } from "./state/TickPreflightRuntime";
 import {
-  buildAcceptedDecisionPipelineLifecycle,
+  applyAcceptedDecisionPipelineFlow,
   buildAcceptedTickFinalizationArtifacts,
   buildAcceptedTickStateTransition
 } from "./pipelines/AcceptedTickRuntime";
@@ -3062,57 +3062,61 @@ export class TradingEngine {
   private async processAcceptedDecisionPipeline(
     input: AcceptedDecisionPipelineInput
   ): Promise<void> {
-    const lifecycle = buildAcceptedDecisionPipelineLifecycle(input, {
-      evaluateProfiler: (pipeline) =>
-        this.evaluateProfilerForTick(
-          pipeline.tick,
-          pipeline.book,
-          pipeline.domSnapshot,
-          pipeline.metrics.brainTimestamp,
-          pipeline.volatilitySnapshot?.jumpDetected ?? false,
-          pipeline.metrics,
-          pipeline.wakeUpTimeMs,
-          pipeline.orderBookUpdateMs,
-          pipeline.hotPathStartedAt
-        ),
-      evaluateOracle: (pipeline) =>
-        this.evaluateOracleForTick(pipeline.tick, pipeline.book, pipeline.metrics.brainTimestamp),
-      buildDecisionContext: (pipeline, oracle, profilerResult) =>
-        this.buildTickDecisionContext(
-          pipeline.tick,
-          oracle,
-          profilerResult,
-          pipeline.metrics.brainTimestamp
-        ),
-      evaluateCroupier: (pipeline, oracle, profilerResult, decisionContext) =>
-        this.evaluateCroupierForTick(
-          pipeline.book,
-          oracle,
-          decisionContext.sentimentForDecision,
-          profilerResult,
-          decisionContext.inventory,
-          decisionContext.leadLag,
-          pipeline.volatilitySnapshot,
-          pipeline.metrics.brainTimestamp
-        ),
-      prepareExecutionContext: (
-        pipeline,
-        profilerResult,
-        oracle,
-        croupierDecision,
-        decisionContext
-      ) =>
-        this.prepareAcceptedExecutionContext(
+    await applyAcceptedDecisionPipelineFlow(
+      input,
+      {
+        evaluateProfiler: (pipeline) =>
+          this.evaluateProfilerForTick(
+            pipeline.tick,
+            pipeline.book,
+            pipeline.domSnapshot,
+            pipeline.metrics.brainTimestamp,
+            pipeline.volatilitySnapshot?.jumpDetected ?? false,
+            pipeline.metrics,
+            pipeline.wakeUpTimeMs,
+            pipeline.orderBookUpdateMs,
+            pipeline.hotPathStartedAt
+          ),
+        evaluateOracle: (pipeline) =>
+          this.evaluateOracleForTick(pipeline.tick, pipeline.book, pipeline.metrics.brainTimestamp),
+        buildDecisionContext: (pipeline, oracle, profilerResult) =>
+          this.buildTickDecisionContext(
+            pipeline.tick,
+            oracle,
+            profilerResult,
+            pipeline.metrics.brainTimestamp
+          ),
+        evaluateCroupier: (pipeline, oracle, profilerResult, decisionContext) =>
+          this.evaluateCroupierForTick(
+            pipeline.book,
+            oracle,
+            decisionContext.sentimentForDecision,
+            profilerResult,
+            decisionContext.inventory,
+            decisionContext.leadLag,
+            pipeline.volatilitySnapshot,
+            pipeline.metrics.brainTimestamp
+          ),
+        prepareExecutionContext: (
           pipeline,
           profilerResult,
           oracle,
           croupierDecision,
           decisionContext
-        )
-    });
-
-    this.commitAcceptedTickState(lifecycle.commitInput);
-    await this.finalizeAcceptedTick(lifecycle.sideEffectsInput);
+        ) =>
+          this.prepareAcceptedExecutionContext(
+            pipeline,
+            profilerResult,
+            oracle,
+            croupierDecision,
+            decisionContext
+          )
+      },
+      {
+        commitAcceptedTickState: (commitInput) => this.commitAcceptedTickState(commitInput),
+        finalizeAcceptedTick: (sideEffectsInput) => this.finalizeAcceptedTick(sideEffectsInput)
+      }
+    );
   }
 
   private async handleTick(

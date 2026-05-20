@@ -3,6 +3,7 @@ import type { CroupierDecision } from "../../src/agents/CroupierAgent";
 import type { ProfilerEvaluation } from "../../src/agents/ProfilerAgent";
 import type { OracleTickResult } from "../../src/engine/trading/agents/AgentEvaluationRuntime";
 import {
+  applyAcceptedDecisionPipelineFlow,
   buildAcceptedDecisionPipelineLifecycle,
   buildAcceptedTickFinalizationArtifacts,
   buildAcceptedTickLifecycleArtifacts,
@@ -18,7 +19,7 @@ import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDe
 const OBSERVED_AT = "2026-05-18T20:00:00.000Z";
 
 describe("AcceptedTickRuntime", () => {
-  it("assembles accepted tick commit and side-effect artifacts from pipeline state", () => {
+  it("assembles accepted tick commit and side-effect artifacts from pipeline state", async () => {
     const state = defaultEngineState("accepted-runtime");
     const profilerState = { alertThreshold: 0.7 } as ProfilerEvaluation["state"];
     const croupierDecision: CroupierDecision = {
@@ -100,6 +101,28 @@ describe("AcceptedTickRuntime", () => {
       evaluateCroupier: () => ({ croupierDecision, croupierLatencyMs: 3.5 }),
       prepareExecutionContext: () => executionContext
     });
+    const flowEvents: string[] = [];
+    const flowArtifacts = await applyAcceptedDecisionPipelineFlow(
+      pipeline,
+      {
+        evaluateProfiler: () => ({ profilerResult, profilerLatencyMs: 2.5 }),
+        evaluateOracle: () => ({ oracleResult, oracleLatencyMs: 1.5 }),
+        buildDecisionContext: () => decisionContext,
+        evaluateCroupier: () => ({ croupierDecision, croupierLatencyMs: 3.5 }),
+        prepareExecutionContext: () => executionContext
+      },
+      {
+        commitAcceptedTickState(commitInput) {
+          flowEvents.push(`commit:${commitInput.tick.instrumentCode}:${commitInput.observedAt}`);
+        },
+        finalizeAcceptedTick(sideEffectsInput) {
+          flowEvents.push(
+            `finalize:${sideEffectsInput.tick.instrumentCode}:${sideEffectsInput.hotPathStartedAt}`
+          );
+          return Promise.resolve();
+        }
+      }
+    );
 
     expect(artifacts.commitInput).toMatchObject({
       tick: pipeline.tick,
@@ -116,6 +139,8 @@ describe("AcceptedTickRuntime", () => {
       observedAt: OBSERVED_AT
     });
     expect(pipelineArtifacts).toEqual(artifacts);
+    expect(flowArtifacts).toEqual(artifacts);
+    expect(flowEvents).toEqual(["commit:btc-usd:2026-05-18T20:00:00.000Z", "finalize:btc-usd:123"]);
     expect(artifacts.sideEffectsInput).toMatchObject({
       tick: pipeline.tick,
       metrics: pipeline.metrics,
