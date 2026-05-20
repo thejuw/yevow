@@ -3,9 +3,11 @@ import { neutralMacroBias } from "../../src/Governor";
 import {
   bayesianPosteriorUpdatedLogMetadata,
   buildTickTelemetryPayload,
+  emitTickTelemetry,
   marketTickAcceptedLogMetadata,
   shouldLogBayesianPosteriorUpdate,
-  shouldLogMarketTickAccepted
+  shouldLogMarketTickAccepted,
+  type TickTelemetryPublishHandlers
 } from "../../src/engine/trading/telemetry/TickTelemetryRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { AgentSignal, BayesianUpdateTrace, LatencyMetrics, MarketTick } from "../../src/types";
@@ -125,6 +127,27 @@ describe("TickTelemetryRuntime", () => {
     ]);
   });
 
+  it("emits tick telemetry through the publish boundary", () => {
+    const sideEffects = tickTelemetryPublishSpy();
+    const result = emitTickTelemetry(
+      {
+        tick: tick(),
+        metrics: latencyMetrics(),
+        status: "STALE",
+        cpuTimeMs: 2.5,
+        engineState: defaultEngineState("tick-emit"),
+        macroBias: neutralMacroBias(),
+        temporaryOverride: null,
+        connectedAdminStreams: 1,
+        signals: []
+      },
+      sideEffects.handlers
+    );
+
+    expect(result.correlationId).toBe("btc-usd:10");
+    expect(sideEffects.events).toEqual(["publish:TICK_TELEMETRY:btc-usd:10"]);
+  });
+
   it("builds accepted tick and Bayesian posterior log metadata", () => {
     expect(shouldLogMarketTickAccepted(1)).toBe(true);
     expect(shouldLogMarketTickAccepted(999)).toBe(false);
@@ -182,6 +205,22 @@ describe("TickTelemetryRuntime", () => {
     });
   });
 });
+
+function tickTelemetryPublishSpy(): {
+  events: string[];
+  handlers: TickTelemetryPublishHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      publish(type, _payload, correlationId) {
+        events.push(`publish:${type}:${correlationId}`);
+      }
+    }
+  };
+}
 
 function tick(overrides: Partial<MarketTick> = {}): MarketTick {
   return {

@@ -26,6 +26,14 @@ export interface TickTelemetryPayloadResult {
   readonly correlationId: string;
 }
 
+export interface TickTelemetryPublishHandlers {
+  readonly publish: (
+    type: "TICK_TELEMETRY",
+    payload: TickTelemetryPayloadResult["payload"],
+    correlationId: string
+  ) => void;
+}
+
 export function shouldLogMarketTickAccepted(processedTicks: number): boolean {
   return processedTicks <= 5 || processedTicks % 1_000 === 0;
 }
@@ -123,4 +131,13 @@ export function buildTickTelemetryPayload(
     },
     correlationId: `${input.tick.instrumentCode}:${input.tick.sequence}`
   };
+}
+
+export function emitTickTelemetry(
+  input: TickTelemetryPayloadInput,
+  handlers: TickTelemetryPublishHandlers
+): TickTelemetryPayloadResult {
+  const telemetry = buildTickTelemetryPayload(input);
+  handlers.publish("TICK_TELEMETRY", telemetry.payload, telemetry.correlationId);
+  return telemetry;
 }

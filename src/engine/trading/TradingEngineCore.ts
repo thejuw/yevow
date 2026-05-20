@@ -263,7 +263,7 @@ import {
   emitAmVpinTelemetry,
   emitProfilerAlertTelemetry
 } from "./telemetry/ProfilerTelemetryRuntime";
-import { buildTickTelemetryPayload } from "./telemetry/TickTelemetryRuntime";
+import { emitTickTelemetry } from "./telemetry/TickTelemetryRuntime";
 import { type ReplayOptions, type ReplayScenario } from "./routes/ReplayAdminRoutes";
 import {
   markHistoricalReplayTrades,
@@ -4562,19 +4562,22 @@ export class TradingEngine {
     hotPathStartedAt: number
   ): void {
     const cpuTimeMs = roundLatency(Math.max(0, highResolutionNow() - hotPathStartedAt));
-    const telemetry = buildTickTelemetryPayload({
-      tick,
-      metrics,
-      status,
-      cpuTimeMs,
-      engineState: this.engineState,
-      macroBias: this.macroBias,
-      temporaryOverride: this.activeTemporaryOverride,
-      connectedAdminStreams: this.adminSockets.size,
-      signals: this.signals
-    });
-
-    this.publish("TICK_TELEMETRY", telemetry.payload, telemetry.correlationId);
+    emitTickTelemetry(
+      {
+        tick,
+        metrics,
+        status,
+        cpuTimeMs,
+        engineState: this.engineState,
+        macroBias: this.macroBias,
+        temporaryOverride: this.activeTemporaryOverride,
+        connectedAdminStreams: this.adminSockets.size,
+        signals: this.signals
+      },
+      {
+        publish: (type, payload, correlationId) => this.publish(type, payload, correlationId)
+      }
+    );
   }
 
   private maybeRecordAgentSnapshot(observedAt: string): void {
