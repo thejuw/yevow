@@ -247,6 +247,10 @@ import {
   type EngineHttpRouteContext
 } from "./routes/EngineHttpRoutes";
 import {
+  classifyTradingEngineWebSocketRoute,
+  isTradingEngineMarketDataRequest
+} from "./routes/EngineFetchRuntime";
+import {
   acceptMarketStream as acceptTradingMarketStream,
   acceptTelemetryStream as acceptTradingTelemetryStream
 } from "./routes/EngineWebSocketStreams";
@@ -950,28 +954,25 @@ export class TradingEngine {
     const url = new URL(request.url);
     const requestId = request.headers.get("cf-ray") ?? crypto.randomUUID();
     const topology = readTopologyHeaders(request);
-    const sourceHeader = request.headers.get("x-source")?.toLowerCase() ?? "";
-    const isMarketDataRequest =
-      sourceHeader.includes("ingest") ||
-      url.pathname === "/tick" ||
-      url.pathname === "/ticks" ||
-      url.pathname === "/market/tick" ||
-      url.pathname === "/hyperliquid/tick" ||
-      url.pathname === "/hyperliquid/raw";
-
-    if (isMarketDataRequest) {
+    if (
+      isTradingEngineMarketDataRequest({
+        pathname: url.pathname,
+        sourceHeader: request.headers.get("x-source") ?? ""
+      })
+    ) {
       this.observeTopology(topology);
       this.warmUpForTopology(topology);
     }
 
-    if (
-      request.headers.get("Upgrade")?.toLowerCase() === "websocket" &&
-      url.pathname === "/stream"
-    ) {
+    const webSocketRoute = classifyTradingEngineWebSocketRoute({
+      pathname: url.pathname,
+      upgradeHeader: request.headers.get("Upgrade")
+    });
+    if (webSocketRoute === "TELEMETRY_STREAM") {
       return acceptTradingTelemetryStream(this.streamContext());
     }
 
-    if (request.headers.get("Upgrade")?.toLowerCase() === "websocket") {
+    if (webSocketRoute === "MARKET_STREAM") {
       return acceptTradingMarketStream(this.streamContext());
     }
 
