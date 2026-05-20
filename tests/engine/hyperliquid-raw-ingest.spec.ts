@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   applyAcceptedHyperliquidL2BookSideEffects,
   applyHyperliquidL2BookDesyncSideEffects,
-  applyHyperliquidIngestConnectionSideEffects,
   applyStaleHyperliquidL2BookSideEffects,
   buildHyperliquidL2BookSnapshotBundle,
   buildHyperliquidL2BookLatencyMetrics,
@@ -10,21 +9,24 @@ import {
   buildHyperliquidL2BookTickFromBook,
   calculateHyperliquidBookTotalLatencyMs,
   dispatchHyperliquidL2BookDecision,
-  dispatchHyperliquidRawMessageRoute,
   evaluateHyperliquidL2BookHotPath,
   evaluateHyperliquidL2BookRuntime,
   evaluateHyperliquidBookSequence,
-  handleHyperliquidRawBatch,
   hyperliquidBookDesyncLogMetadata,
+  resolveHyperliquidBookTimestamp
+} from "../../src/engine/trading/ingest/HyperliquidL2BookIngest";
+import {
+  applyHyperliquidIngestConnectionSideEffects,
+  dispatchHyperliquidRawMessageRoute,
+  handleHyperliquidRawBatch,
   hyperliquidIngestConnectionKey,
   hyperliquidRawMessages,
   isActiveHyperliquidIngestConnection,
   processHyperliquidAssetContext,
   processHyperliquidTradeBatch,
   registerHyperliquidIngestConnection,
-  resolveHyperliquidBookTimestamp,
   routeHyperliquidRawMessage
-} from "../../src/engine/trading/ingest/HyperliquidRawIngest";
+} from "../../src/engine/trading/ingest/HyperliquidRawRouting";
 import type { InternalOrderBook, MarketTick } from "../../src/types";
 import type { BookSyncState } from "../../src/engine/trading/book/BookTypes";
 import type { TickIngestResult } from "../../src/engine/trading/TradingEngineRouteTypes";

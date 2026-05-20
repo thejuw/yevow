@@ -204,18 +204,20 @@ import type { AppliedBookUpdate, BookDeltaWithTicker, BookSyncState } from "./bo
 import {
   applyAcceptedHyperliquidL2BookSideEffects,
   applyHyperliquidL2BookDesyncSideEffects,
-  applyHyperliquidIngestConnectionSideEffects,
   applyStaleHyperliquidL2BookSideEffects,
   dispatchHyperliquidL2BookDecision,
-  dispatchHyperliquidRawMessageRoute,
   evaluateHyperliquidL2BookRuntime,
+  type HyperliquidL2BookHotPathDecision
+} from "./ingest/HyperliquidL2BookIngest";
+import {
+  applyHyperliquidIngestConnectionSideEffects,
+  dispatchHyperliquidRawMessageRoute,
   handleHyperliquidRawBatch,
   processHyperliquidAssetContext,
   processHyperliquidTradeBatch,
   registerHyperliquidIngestConnection,
-  type HyperliquidL2BookHotPathDecision,
   type HyperliquidRawIngestPayload
-} from "./ingest/HyperliquidRawIngest";
+} from "./ingest/HyperliquidRawRouting";
 import { applyGrpcFatalDropSideEffects, grpcFatalDropArtifacts } from "./ingest/GrpcDropRuntime";
 import {
   handleTradingEngineHttpRoute,
