@@ -6,6 +6,7 @@ import {
   buildShadowReplayConfig,
   buildShadowReplayEngineState,
   calculateReplayShadowBankroll,
+  recordCompletedReplaySideEffects,
   resolveInitialShadowBankroll
 } from "../../src/engine/trading/replay/ReplayResultRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
@@ -146,6 +147,68 @@ describe("ReplayResultRuntime", () => {
     expect(artifacts.logMetadata).toMatchObject({
       replayId: "replay-complete",
       liveStateRestored: true
+    });
+  });
+
+  it("records completed replay side effects through injected journal handlers", async () => {
+    const calls: string[] = [];
+    const statuses: unknown[] = [];
+    const recordedRuns: unknown[] = [];
+
+    const result = await recordCompletedReplaySideEffects(
+      {
+        replayId: "replay-side-effects",
+        replayOptions: options({ scenario: "DELEVERAGING_2022" }),
+        ticksLength: 120,
+        ticksReplayed: 110,
+        initialShadowBankroll: 300,
+        historicalTradeCount: 4,
+        generatedIntentCount: 5,
+        speedMultiplier: 8,
+        modeledTrades: [trade({ tradeId: "sim-side-effect", theoreticalPnl: 7 })],
+        shadowTrades: [trade({ tradeId: "hist-side-effect", theoreticalPnl: 2 })],
+        sentiment: defaultEngineState("replay-result").sentiment,
+        dateFrom: "2026-05-01T00:00:00.000Z",
+        dateTo: "2026-05-03T00:00:00.000Z",
+        startedAt: STARTED_AT,
+        completedAt: COMPLETED_AT
+      },
+      {
+        writeCompletionLog: (metadata) => {
+          calls.push(`log:${String(metadata.replayId)}`);
+        },
+        recordBacktestRun: async (run, replayOptions, dateFrom, dateTo) => {
+          calls.push(`record:${run.replayId}`);
+          recordedRuns.push({ run, replayOptions, dateFrom, dateTo });
+        },
+        writeStatus: async (status) => {
+          calls.push(`status:${status.status}`);
+          statuses.push(status);
+        }
+      }
+    );
+
+    expect(result).toMatchObject({
+      replayId: "replay-side-effects",
+      scenario: "DELEVERAGING_2022",
+      shadowBankroll: 307,
+      theoreticalPnl: 7,
+      baselinePnl: 2
+    });
+    expect(calls).toEqual([
+      "log:replay-side-effects",
+      "record:replay-side-effects",
+      "status:COMPLETED"
+    ]);
+    expect(recordedRuns[0]).toMatchObject({
+      replayOptions: { scenario: "DELEVERAGING_2022" },
+      dateFrom: "2026-05-01T00:00:00.000Z",
+      dateTo: "2026-05-03T00:00:00.000Z"
+    });
+    expect(statuses[0]).toMatchObject({
+      replayId: "replay-side-effects",
+      status: "COMPLETED",
+      progressPct: 100
     });
   });
 

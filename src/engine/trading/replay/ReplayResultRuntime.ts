@@ -102,6 +102,19 @@ export interface CompletedReplayArtifacts extends BuildReplayResultOutput {
   readonly status: ReplayStatus;
 }
 
+export type RecordCompletedReplaySideEffectsInput = BuildCompletedReplayArtifactsInput;
+
+export interface CompletedReplaySideEffectHandlers {
+  readonly writeCompletionLog: (metadata: JsonRecord) => void;
+  readonly recordBacktestRun: (
+    result: ReplayResult,
+    replayOptions: ReplayOptions,
+    dateFrom: string | null,
+    dateTo: string | null
+  ) => Promise<void>;
+  readonly writeStatus: (status: ReplayStatus) => Promise<void>;
+}
+
 export function resolveInitialShadowBankroll(input: ResolveInitialShadowBankrollInput): number {
   if (input.requestedShadowBankroll > 0) {
     return input.requestedShadowBankroll;
@@ -294,6 +307,24 @@ export function buildCompletedReplayArtifacts(
       completedAt: input.completedAt
     })
   };
+}
+
+export async function recordCompletedReplaySideEffects(
+  input: RecordCompletedReplaySideEffectsInput,
+  handlers: CompletedReplaySideEffectHandlers
+): Promise<ReplayResult> {
+  const replayBuild = buildCompletedReplayArtifacts(input);
+
+  handlers.writeCompletionLog(replayBuild.logMetadata);
+  await handlers.recordBacktestRun(
+    replayBuild.result,
+    input.replayOptions,
+    input.dateFrom,
+    input.dateTo
+  );
+  await handlers.writeStatus(replayBuild.status);
+
+  return replayBuild.result;
 }
 
 function roundReplayMetric(value: number, decimals: number): number {

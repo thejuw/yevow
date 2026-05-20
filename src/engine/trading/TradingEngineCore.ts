@@ -275,10 +275,10 @@ import {
 } from "./replay/ReplayJournal";
 import { runShadowReplayLoop, type ShadowReplayLoopResult } from "./replay/ReplayLoopRuntime";
 import {
-  buildCompletedReplayArtifacts,
   buildReplayStatus,
   buildShadowReplayConfig,
   buildShadowReplayEngineState,
+  recordCompletedReplaySideEffects,
   resolveInitialShadowBankroll
 } from "./replay/ReplayResultRuntime";
 import {
@@ -4200,39 +4200,32 @@ export class TradingEngine {
     input: HistoricalReplayCompletionInput
   ): Promise<ReplayResult> {
     const completedAt = new Date().toISOString();
-    const replayBuild = buildCompletedReplayArtifacts({
-      replayId: input.replayId,
-      replayOptions: input.replayOptions,
-      ticksLength: input.ticksLength,
-      ticksReplayed: input.replayLoop.ticksReplayed,
-      initialShadowBankroll: input.initialShadowBankroll,
-      historicalTradeCount: input.historicalTradeCount,
-      generatedIntentCount: input.replayLoop.generatedIntentCount,
-      speedMultiplier: input.speedMultiplier,
-      modeledTrades: input.replayLoop.modeledTrades,
-      shadowTrades: input.shadowTrades,
-      sentiment: this.engineState.sentiment,
-      dateFrom: input.dateFrom,
-      dateTo: input.dateTo,
-      startedAt: input.startedAt,
-      completedAt
-    });
-    const result = replayBuild.result;
-
-    this.logger.warn(
-      "REPLAY_COMPLETED",
-      "Historical shadow replay completed",
-      replayBuild.logMetadata
+    return recordCompletedReplaySideEffects(
+      {
+        replayId: input.replayId,
+        replayOptions: input.replayOptions,
+        ticksLength: input.ticksLength,
+        ticksReplayed: input.replayLoop.ticksReplayed,
+        initialShadowBankroll: input.initialShadowBankroll,
+        historicalTradeCount: input.historicalTradeCount,
+        generatedIntentCount: input.replayLoop.generatedIntentCount,
+        speedMultiplier: input.speedMultiplier,
+        modeledTrades: input.replayLoop.modeledTrades,
+        shadowTrades: input.shadowTrades,
+        sentiment: this.engineState.sentiment,
+        dateFrom: input.dateFrom,
+        dateTo: input.dateTo,
+        startedAt: input.startedAt,
+        completedAt
+      },
+      {
+        writeCompletionLog: (metadata) =>
+          this.logger.warn("REPLAY_COMPLETED", "Historical shadow replay completed", metadata),
+        recordBacktestRun: (result, replayOptions, dateFrom, dateTo) =>
+          this.replayJournal.recordBacktestRun(result, replayOptions, dateFrom, dateTo),
+        writeStatus: (status) => this.replayJournal.writeStatus(status)
+      }
     );
-    await this.replayJournal.recordBacktestRun(
-      result,
-      input.replayOptions,
-      input.dateFrom,
-      input.dateTo
-    );
-    await this.replayJournal.writeStatus(replayBuild.status);
-
-    return result;
   }
 
   private async writeHistoricalReplayRunningStatus(
