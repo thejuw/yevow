@@ -62,6 +62,20 @@ export interface TickLatencyPreparationResult {
   readonly shouldUpdateLatencyAverage: boolean;
 }
 
+export interface PreparedTickLatencySideEffectsInput {
+  readonly latency: TickLatencyPreparationResult;
+  readonly history: readonly LatencyMetrics[];
+  readonly historyLimit: number;
+}
+
+export interface PreparedTickLatencySideEffectHandlers {
+  readonly resetLatencyBaseline: (observedAt: string, reason: string) => void;
+  readonly updateLatencyAverage: (totalLatencyMs: number) => void;
+  readonly hydrateMetrics: (metrics: LatencyMetrics) => LatencyMetrics;
+  readonly applyLocationLatency: (totalLatencyMs: number, observedAt: string) => void;
+  readonly setLatencyHistory: (history: LatencyMetrics[]) => void;
+}
+
 export interface NativeHyperliquidMaxLatencyInput {
   readonly transport?: MarketTransport;
   readonly streamId?: string | null;
@@ -198,6 +212,33 @@ export function appendLatencyHistory(
   limit: number
 ): LatencyMetrics[] {
   return [...history, metrics].slice(-Math.max(1, limit));
+}
+
+export function applyPreparedTickLatencySideEffects(
+  input: PreparedTickLatencySideEffectsInput,
+  handlers: PreparedTickLatencySideEffectHandlers
+): TickLatencyPreparationResult {
+  if (input.latency.isHardStale) {
+    return input.latency;
+  }
+
+  if (input.latency.shouldResetLatencyBaseline) {
+    handlers.resetLatencyBaseline(
+      input.latency.metrics.brainTimestamp,
+      "FRESH_SAMPLE_AFTER_BACKLOG"
+    );
+  }
+
+  if (input.latency.shouldUpdateLatencyAverage) {
+    handlers.updateLatencyAverage(input.latency.metrics.totalLatencyMs);
+  }
+
+  let metrics = handlers.hydrateMetrics(input.latency.metrics);
+  handlers.applyLocationLatency(metrics.totalLatencyMs, metrics.brainTimestamp);
+  metrics = handlers.hydrateMetrics(metrics);
+  handlers.setLatencyHistory(appendLatencyHistory(input.history, metrics, input.historyLimit));
+
+  return { ...input.latency, metrics };
 }
 
 export function nextLatencyAverage(

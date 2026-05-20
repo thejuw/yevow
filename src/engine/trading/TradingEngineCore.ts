@@ -153,8 +153,8 @@ import {
   applyLatencyBaselineResetSideEffects,
   applyNativeHyperliquidLatencyPullSideEffects,
   applyPerformanceSpikeLogSideEffect,
+  applyPreparedTickLatencySideEffects,
   applyStaleDataKillSwitchSideEffects,
-  appendLatencyHistory,
   buildHardStaleTickDropArtifacts,
   buildPerformanceMetricsText,
   buildStaleDataKillSwitchArtifacts,
@@ -2791,25 +2791,23 @@ export class TradingEngine {
       return latency;
     }
 
-    if (latency.shouldResetLatencyBaseline) {
-      this.resetLatencyBaseline(latency.metrics.brainTimestamp, "FRESH_SAMPLE_AFTER_BACKLOG");
-    }
-
-    if (latency.shouldUpdateLatencyAverage) {
-      this.updateLatencyAverage(latency.metrics.totalLatencyMs);
-    }
-
-    let metrics = hydrateLatencyMetricsFromState(latency.metrics, this.engineState);
-    this.applyLocationLatency(metrics.totalLatencyMs, metrics.brainTimestamp);
-    metrics = hydrateLatencyMetricsFromState(metrics, this.engineState);
-
-    this.latencyHistory = appendLatencyHistory(
-      this.latencyHistory,
-      metrics,
-      PERFORMANCE_HISTORY_LIMIT
+    return applyPreparedTickLatencySideEffects(
+      {
+        latency,
+        history: this.latencyHistory,
+        historyLimit: PERFORMANCE_HISTORY_LIMIT
+      },
+      {
+        resetLatencyBaseline: (observedAt, reason) => this.resetLatencyBaseline(observedAt, reason),
+        updateLatencyAverage: (totalLatencyMs) => this.updateLatencyAverage(totalLatencyMs),
+        hydrateMetrics: (metrics) => hydrateLatencyMetricsFromState(metrics, this.engineState),
+        applyLocationLatency: (totalLatencyMs, observedAt) =>
+          this.applyLocationLatency(totalLatencyMs, observedAt),
+        setLatencyHistory: (history) => {
+          this.latencyHistory = history;
+        }
+      }
     );
-
-    return { ...latency, metrics };
   }
 
   private async resolveTickBook(

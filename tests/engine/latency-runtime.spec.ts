@@ -5,6 +5,7 @@ import {
   applyLatencyBaselineResetSideEffects,
   applyNativeHyperliquidLatencyPullSideEffects,
   applyPerformanceSpikeLogSideEffect,
+  applyPreparedTickLatencySideEffects,
   applyStaleDataKillSwitchSideEffects,
   appendLatencyHistory,
   buildHardStaleTickDropArtifacts,
@@ -211,6 +212,61 @@ describe("LatencyRuntime", () => {
       positionSizeMultiplier: 0.75
     });
     expect(appendLatencyHistory([latencyMetrics({ sequence: 1 })], metrics, 1)).toEqual([metrics]);
+  });
+
+  it("applies prepared tick latency side effects in order for fresh samples", () => {
+    const events: string[] = [];
+    const latency = prepareTickLatencyRuntime({
+      tick: tick({
+        exchangeTimestamp: "2026-05-18T12:00:00.000Z",
+        synchronizedExchangeTimestamp: "2026-05-18T12:00:00.000Z",
+        receivedAt: "2026-05-18T12:00:00.000Z"
+      }),
+      brainTimestamp: "2026-05-18T12:00:00.020Z",
+      maxLatencyMs: 50,
+      averageLatencyMs: 500,
+      sampleCount: 10,
+      location: defaultEngineState("latency-side-effects").location,
+      shadowReplay: false,
+      currentMaxLatencyMs: 50,
+      dwellirMaxLatencyMs: "250"
+    });
+
+    const result = applyPreparedTickLatencySideEffects(
+      {
+        latency,
+        history: [latencyMetrics({ sequence: 1 })],
+        historyLimit: 2
+      },
+      {
+        resetLatencyBaseline(observedAt, reason) {
+          events.push(`reset:${observedAt}:${reason}`);
+        },
+        updateLatencyAverage(totalLatencyMs) {
+          events.push(`average:${totalLatencyMs}`);
+        },
+        hydrateMetrics(metrics) {
+          events.push(`hydrate:${metrics.totalLatencyMs}`);
+          return { ...metrics, averageLatencyMs: 20, sampleCount: 11 };
+        },
+        applyLocationLatency(totalLatencyMs, observedAt) {
+          events.push(`location:${totalLatencyMs}:${observedAt}`);
+        },
+        setLatencyHistory(history) {
+          events.push(`history:${history.length}:${history.at(-1)?.sampleCount}`);
+        }
+      }
+    );
+
+    expect(result.metrics.sampleCount).toBe(11);
+    expect(events).toEqual([
+      "reset:2026-05-18T12:00:00.020Z:FRESH_SAMPLE_AFTER_BACKLOG",
+      "average:20",
+      "hydrate:20",
+      "location:20:2026-05-18T12:00:00.020Z",
+      "hydrate:20",
+      "history:2:11"
+    ]);
   });
 
   it("resets stale latency baselines without mutating unrelated state", () => {
