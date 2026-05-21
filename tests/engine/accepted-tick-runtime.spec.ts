@@ -7,7 +7,11 @@ import {
   buildAcceptedDecisionPipelineLifecycle,
   buildAcceptedTickLifecycleArtifacts
 } from "../../src/engine/trading/pipelines/AcceptedTickLifecycleRuntime";
-import { prepareAcceptedExecutionContextFlow } from "../../src/engine/trading/pipelines/AcceptedExecutionContextRuntime";
+import {
+  prepareAcceptedExecutionContextFlow,
+  prepareAcceptedExecutionContextForTarget,
+  type AcceptedExecutionContextTarget
+} from "../../src/engine/trading/pipelines/AcceptedExecutionContextRuntime";
 import {
   buildAcceptedTickFinalizationArtifacts,
   finalizeAcceptedTickFlow
@@ -457,6 +461,97 @@ describe("AcceptedTickRuntime", () => {
       `plan:true:${OBSERVED_AT}:true:true:0.125`,
       `quote:btc-usd:1:${OBSERVED_AT}:false:false:unit-test ensemble`
     ]);
+  });
+
+  it("prepares accepted execution context against a trading target", () => {
+    const state = defaultEngineState("accepted-execution-context-target");
+    const profilerResult: ProfilerEvaluation = {
+      processed: true,
+      skippedReason: null,
+      closedBuckets: 0,
+      toxicityScore: 0.2,
+      state: { toxicityState: "NORMAL" } as ProfilerEvaluation["state"],
+      signal: null
+    };
+    const croupierDecision: CroupierDecision = {
+      intent: null,
+      quote: null,
+      pullAllQuotes: false,
+      adverseSelectionCost: 0.01,
+      minEvThreshold: 0.02
+    };
+    const pipeline = {
+      tick: { instrumentCode: "btc-usd" },
+      metrics: { brainTimestamp: OBSERVED_AT },
+      anomalyResult: { status: state.anomaly },
+      shadowReplay: false
+    } as unknown as AcceptedDecisionPipelineInput;
+    const decisionContext = {
+      leadLag: state.leadLag,
+      inventory: state.inventory,
+      riskMetrics: state.riskMetrics,
+      profilerStates: state.profilerStates,
+      assetMatrix: state.assetMatrix,
+      inventoryGuard: state.inventoryGuard,
+      sentimentForDecision: state.sentiment
+    } satisfies TickDecisionContext;
+    const sideEffects: string[] = [];
+    const target = {
+      engineState: state,
+      cachedConfig: {
+        ...state.cachedConfig,
+        PIT_BOSS_ENABLED: true,
+        TRADING_ENABLED: true,
+        KELLY_FRACTION: 0.5
+      },
+      env: {
+        QUOTE_HIBERNATE_MS: undefined,
+        MAX_POSITION_PCT: undefined,
+        ORDER_ACK_TIMEOUT_MS: undefined
+      },
+      orderBook: new Map(),
+      pitBossAgent: {
+        approve() {
+          throw new Error("unexpected pit boss approval for null intent");
+        }
+      },
+      macroBias: state.macroBias,
+      state: {
+        waitUntil() {
+          sideEffects.push("waitUntil");
+        }
+      },
+      logger: {
+        warn(eventType: string) {
+          sideEffects.push(`warn:${eventType}`);
+        }
+      },
+      publish(type: string) {
+        sideEffects.push(`publish:${type}`);
+      },
+      cancelAllQuotes() {
+        sideEffects.push("cancel");
+        return Promise.resolve();
+      }
+    } as unknown as AcceptedExecutionContextTarget;
+
+    const context = prepareAcceptedExecutionContextForTarget(
+      {
+        pipeline,
+        profilerResult,
+        oracleState: state.oracle,
+        croupierDecision,
+        decisionContext
+      },
+      target
+    );
+
+    expect(context.executionPlan).toBeNull();
+    expect(context.executionPlans).toEqual([]);
+    expect(context.ensemble.updatedAt).toBe(OBSERVED_AT);
+    expect(context.quotePolicy.executionPlans).toEqual([]);
+    expect(context.quotePolicy.strategyQuoteDisableReason).toBeNull();
+    expect(sideEffects).toEqual([]);
   });
 
   it("finalizes accepted tick side effects in deterministic order", async () => {

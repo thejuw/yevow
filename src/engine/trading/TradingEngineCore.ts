@@ -54,10 +54,8 @@ import {
 import { calculateTradingInventoryState } from "./inventory/TradingInventoryStateRuntime";
 import { resolveMaxPositionPct } from "./risk/PortfolioRiskRuntime";
 import { updateTradingPortfolioRisk } from "./risk/TradingPortfolioRiskRuntime";
-import { calculateTradingEnsembleState } from "./ensemble/TradingEnsembleRuntime";
 import { stateAfterFundingTick } from "./funding/FundingRuntime";
 import { resumeTradingQuotesIfExpired } from "./quotes/TradingQuoteStateRuntime";
-import { applyTradingQuoteSuppression } from "./quotes/TradingQuoteSuppressionRuntime";
 import {
   dispatchTradingQuoteForTarget,
   rememberTradingDispatchedQuoteForTarget,
@@ -73,8 +71,6 @@ import {
   cancelAllTradingQuotesForTarget,
   type TradingQuoteCancelAllTarget
 } from "./quotes/QuoteCancelRuntime";
-import { type ApprovedExecutionPlan } from "./execution/ExecutionPlanRuntime";
-import { prepareTradingExecutionPlan } from "./execution/TradingExecutionPlanPreparationRuntime";
 import {
   dispatchTradingExecutionPlans,
   type TradingExecutionPlanDispatchTarget
@@ -470,7 +466,10 @@ import {
   type AcceptedTickStateCommitTarget
 } from "./pipelines/AcceptedTickStateTransitionRuntime";
 import { finalizeAcceptedTickFlow } from "./pipelines/AcceptedTickFinalizationRuntime";
-import { prepareAcceptedExecutionContextFlow } from "./pipelines/AcceptedExecutionContextRuntime";
+import {
+  prepareAcceptedExecutionContextForTarget,
+  type AcceptedExecutionContextTarget
+} from "./pipelines/AcceptedExecutionContextRuntime";
 import { prepareTradingPostBookTickRuntime } from "./pipelines/PostBookTickRuntime";
 import { handleTickRuntime } from "./pipelines/TickHandlingRuntime";
 import type {
@@ -479,7 +478,6 @@ import type {
   AcceptedTickSideEffectsInput,
   AcceptedTickStateCommitInput,
   PostBookTickContext,
-  QuotePolicyResult,
   TickBookResolution,
   TickDecisionContext,
   TickHandlingOptions
@@ -1562,38 +1560,6 @@ export class TradingEngine {
     );
   }
 
-  private applyQuoteSuppression(
-    instrumentCode: string,
-    croupierDecision: CroupierDecision,
-    profilerResult: ProfilerEvaluation,
-    executionPlans: ApprovedExecutionPlan[],
-    observedAt: string,
-    shadowReplay: boolean,
-    ensembleAnomalyCircuitBreaker: boolean,
-    ensembleRationale: string
-  ): QuotePolicyResult {
-    return applyTradingQuoteSuppression(
-      {
-        engineState: this.engineState,
-        instrumentCode,
-        croupierDecision,
-        profilerResult,
-        executionPlans,
-        observedAt,
-        shadowReplay,
-        ensembleAnomalyCircuitBreaker,
-        ensembleRationale,
-        macroBias: this.macroBias,
-        config: this.cachedConfig,
-        envQuoteHibernateMs: this.env.QUOTE_HIBERNATE_MS
-      },
-      {
-        publishSuspend: (payload) => this.publish("SUSPEND_QUOTES", payload),
-        cancelQuotes: (reason) => this.state.waitUntil(this.cancelAllQuotes(instrumentCode, reason))
-      }
-    );
-  }
-
   private prepareTickLatency(
     tick: MarketTick,
     shadowReplay: boolean
@@ -1834,57 +1800,15 @@ export class TradingEngine {
     croupierDecision: CroupierDecision,
     decisionContext: TickDecisionContext
   ): AcceptedExecutionContext {
-    return prepareAcceptedExecutionContextFlow(
+    return prepareAcceptedExecutionContextForTarget(
       {
         pipeline: input,
         profilerResult,
         oracleState,
         croupierDecision,
-        decisionContext,
-        currentState: this.engineState,
-        pitBossEnabled: this.cachedConfig.PIT_BOSS_ENABLED,
-        kellyFraction: this.cachedConfig.KELLY_FRACTION
+        decisionContext
       },
-      {
-        calculateEnsembleState: (
-          intent,
-          profilerState,
-          currentOracleState,
-          sentimentState,
-          anomalyStatus,
-          observedAt
-        ) =>
-          this.calculateEnsembleState(
-            intent,
-            profilerState,
-            currentOracleState,
-            sentimentState,
-            anomalyStatus,
-            observedAt
-          ),
-        prepareExecutionPlan: (intent, observedAt, options) =>
-          this.prepareExecutionPlan(intent, observedAt, options),
-        applyQuoteSuppression: (
-          instrumentCode,
-          currentCroupierDecision,
-          currentProfilerResult,
-          executionPlans,
-          observedAt,
-          shadowReplay,
-          ensembleAnomalyCircuitBreaker,
-          ensembleRationale
-        ) =>
-          this.applyQuoteSuppression(
-            instrumentCode,
-            currentCroupierDecision,
-            currentProfilerResult,
-            executionPlans,
-            observedAt,
-            shadowReplay,
-            ensembleAnomalyCircuitBreaker,
-            ensembleRationale
-          )
-      }
+      this as unknown as AcceptedExecutionContextTarget
     );
   }
 
@@ -2176,56 +2100,6 @@ export class TradingEngine {
         cancelAllQuotes: (instrumentCode, reason) => this.cancelAllQuotes(instrumentCode, reason),
         schedule: (work) => this.state.waitUntil(work),
         notify: (notification) => this.notifier.notify(notification)
-      }
-    );
-  }
-
-  private calculateEnsembleState(
-    intent: TradeIntent | null,
-    profilerState: ProfilerState,
-    oracleState: EngineState["oracle"],
-    sentimentState: EngineState["sentiment"],
-    anomalyStatus: EngineState["anomaly"],
-    observedAt: string
-  ): EngineState["ensemble"] {
-    return calculateTradingEnsembleState({
-      intent,
-      profilerState,
-      oracleState,
-      sentimentState,
-      anomalyStatus,
-      config: this.cachedConfig,
-      observedAt
-    });
-  }
-
-  private prepareExecutionPlan(
-    intent: EngineState["lastTradeIntent"],
-    observedAt: string,
-    options: {
-      bypassQuoteSuspension?: boolean;
-      stateOverride?: EngineState;
-      kellyFractionOverride?: number;
-    } = {}
-  ): ApprovedExecutionPlan | null {
-    return prepareTradingExecutionPlan(
-      {
-        intent,
-        observedAt,
-        options,
-        engineState: this.engineState,
-        config: this.cachedConfig,
-        env: this.env,
-        orderBooks: this.orderBook.values(),
-        pitBossAgent: this.pitBossAgent
-      },
-      {
-        logResidualLiquidityShortfall: (metadata) =>
-          this.logger.warn(
-            "SOR_RESIDUAL_LIQUIDITY_SHORTFALL",
-            "Smart router could not source full approved size",
-            metadata
-          )
       }
     );
   }
