@@ -6,6 +6,14 @@ import {
   PERFORMANCE_HISTORY_LIMIT,
   PROCESSING_LATENCY_SAMPLES_KEY
 } from "../../../TradingEngineConstants";
+import {
+  applyTradingLocationLatencyForTarget,
+  type TradingTopologyTarget
+} from "../helpers/TradingTopologyRuntime";
+import {
+  updateTradingLatencyAverageForTarget,
+  type TradingLatencyStateTarget
+} from "./TradingLatencyStateRuntime";
 
 export interface NativeHyperliquidLatencyPullInput {
   readonly currentState: EngineState;
@@ -66,13 +74,12 @@ export interface TradingNativeHyperliquidLatencyPullHandlers extends NativeHyper
 
 export interface TradingNativeHyperliquidLatencyPullTarget {
   engineState: EngineState;
+  readonly cachedConfig: TradingTopologyTarget["cachedConfig"];
   latencyHistory: LatencyMetrics[];
   readonly processingLatencySamples: readonly number[];
   readonly state: {
     waitUntil(work: Promise<unknown>): void;
   };
-  updateLatencyAverage(totalLatencyMs: number): void;
-  applyLocationLatency(totalLatencyMs: number, observedAt: string): void;
   persistHotStorageSnapshot(
     writes: Record<string, unknown>,
     reason: "NATIVE_HL_LATENCY_PULL"
@@ -210,10 +217,17 @@ export function applyTradingNativeHyperliquidLatencyPullForTarget(
     },
     {
       updateLatencyAverage: (totalLatencyMs) => {
-        target.updateLatencyAverage(totalLatencyMs);
+        updateTradingLatencyAverageForTarget(
+          totalLatencyMs,
+          target as unknown as TradingLatencyStateTarget
+        );
       },
       applyLocationLatency: (totalLatencyMs, observedAt) => {
-        target.applyLocationLatency(totalLatencyMs, observedAt);
+        applyTradingLocationLatencyForTarget(
+          totalLatencyMs,
+          observedAt,
+          target as unknown as TradingTopologyTarget
+        );
       },
       applyLatencyHistory: (latencyHistory) => {
         target.latencyHistory = latencyHistory;

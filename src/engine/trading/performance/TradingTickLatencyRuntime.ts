@@ -10,6 +10,10 @@ import {
   updateTradingLatencyAverageForTarget,
   type TradingLatencyStateTarget
 } from "./TradingLatencyStateRuntime";
+import {
+  applyTradingLocationLatencyForTarget,
+  type TradingTopologyTarget
+} from "../helpers/TradingTopologyRuntime";
 
 export interface TradingTickLatencyInput {
   readonly tick: MarketTick;
@@ -34,7 +38,7 @@ export interface TradingTickLatencyTarget extends TradingLatencyStateTarget {
     readonly DWELLIR_MAX_LATENCY_MS?: string;
     readonly HL_STALE_AFTER_MS?: string;
   };
-  applyLocationLatency(totalLatencyMs: number, observedAt: string): void;
+  readonly cachedConfig: TradingTopologyTarget["cachedConfig"];
 }
 
 export type TradingTickLatencyResult = Pick<
@@ -93,7 +97,11 @@ export function prepareTradingTickLatencyForTarget(
         updateTradingLatencyAverageForTarget(totalLatencyMs, target);
       },
       applyLocationLatency: (totalLatencyMs, observedAt) => {
-        target.applyLocationLatency(totalLatencyMs, observedAt);
+        applyTradingLocationLatencyForTarget(
+          totalLatencyMs,
+          observedAt,
+          target as unknown as TradingTopologyTarget
+        );
       },
       setLatencyHistory: (history) => {
         target.latencyHistory = history;

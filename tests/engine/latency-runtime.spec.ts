@@ -75,6 +75,7 @@ import {
   prepareTradingTickLatencyForTarget,
   type TradingTickLatencyTarget
 } from "../../src/engine/trading/performance/TradingTickLatencyRuntime";
+import { defaultConfig } from "../../src/ConfigManager";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { EngineState, ExecutionProfile, LatencyMetrics, MarketTick } from "../../src/types";
 
@@ -284,6 +285,7 @@ describe("LatencyRuntime", () => {
       engineState.location = location();
       const target: TradingTickLatencyTarget = {
         engineState,
+        cachedConfig: defaultConfig,
         latencyHistory: [],
         processingLatencySamples: [],
         maxLatencyMs: 150,
@@ -295,9 +297,6 @@ describe("LatencyRuntime", () => {
           info(eventType, _message, telemetry) {
             events.push(`info:${eventType}:${String(telemetry?.reason ?? "none")}`);
           }
-        },
-        applyLocationLatency(totalLatencyMs, observedAt) {
-          events.push(`location:${totalLatencyMs}:${observedAt}`);
         }
       };
 
@@ -322,7 +321,7 @@ describe("LatencyRuntime", () => {
       expect(target.engineState.averageLatency).toBeCloseTo(46.667, 3);
       expect(target.engineState.latencySampleCount).toBe(3);
       expect(target.latencyHistory).toHaveLength(1);
-      expect(events).toEqual(["location:100:2026-05-18T15:00:00.100Z"]);
+      expect(events).toEqual([]);
     } finally {
       vi.useRealTimers();
     }
@@ -1169,6 +1168,7 @@ describe("LatencyRuntime", () => {
     const scheduled: Promise<unknown>[] = [];
     const target: TradingNativeHyperliquidLatencyPullTarget = {
       engineState: state,
+      cachedConfig: defaultConfig,
       latencyHistory: [latencyMetrics({ sequence: 4, totalLatencyMs: 80 })],
       processingLatencySamples: [1, 2],
       state: {
@@ -1176,17 +1176,6 @@ describe("LatencyRuntime", () => {
           events.push("schedule");
           scheduled.push(work);
         }
-      },
-      updateLatencyAverage(totalLatencyMs) {
-        events.push(`average:${totalLatencyMs}`);
-        target.engineState = {
-          ...target.engineState,
-          averageLatency: totalLatencyMs,
-          latencySampleCount: target.engineState.latencySampleCount + 1
-        };
-      },
-      applyLocationLatency(totalLatencyMs, observedAt) {
-        events.push(`location:${totalLatencyMs}:${observedAt}`);
       },
       persistHotStorageSnapshot(writes, reason) {
         events.push(`persist:${reason}:${Object.keys(writes).length}`);
@@ -1214,8 +1203,6 @@ describe("LatencyRuntime", () => {
     expect(target.latencyHistory).toHaveLength(2);
     expect(target.engineState.staleTickCount).toBe(1);
     expect(events).toEqual([
-      "average:190",
-      "location:190:2026-05-18T15:00:02.000Z",
       "persist:NATIVE_HL_LATENCY_PULL:3",
       "schedule",
       "performance:190:0",

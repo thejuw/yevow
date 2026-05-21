@@ -13,10 +13,6 @@ import { ProfilerRegistry } from "../../agents/ProfilerRegistry";
 import { AnomalyDetector, type AnomalyDetectionResult } from "../../agents/AnomalyDetector";
 import { CroupierAgent, type CroupierDecision } from "../../agents/CroupierAgent";
 import { AdverseSelectionModel } from "../AdverseSelectionModel";
-import {
-  applyTradingLocationLatencyForTarget,
-  type TradingTopologyTarget
-} from "./helpers/TradingTopologyRuntime";
 import { priceKey, SortedBookSide } from "./book/SortedBookSide";
 import {
   handleTradingEngineInformationalBookNotReady,
@@ -121,7 +117,6 @@ import {
   resetTradingLatencyBaselineForTarget,
   tradingLatencyStorageWritesForState,
   tradingLatencyStorageWritesForTarget,
-  updateTradingLatencyAverageForTarget,
   type TradingLatencyStateTarget
 } from "./performance/TradingLatencyStateRuntime";
 import {
@@ -1199,13 +1194,6 @@ export class TradingEngine {
     );
   }
 
-  private updateLatencyAverage(totalLatencyMs: number): void {
-    updateTradingLatencyAverageForTarget(
-      totalLatencyMs,
-      this as unknown as TradingLatencyStateTarget
-    );
-  }
-
   private resetLatencyBaseline(observedAt: string, reason: string): void {
     resetTradingLatencyBaselineForTarget(
       observedAt,
@@ -1265,14 +1253,6 @@ export class TradingEngine {
 
   private publish(type: string, payload: Record<string, unknown>, correlationId?: string): void {
     this.telemetryBus.publish(type, payload, correlationId);
-  }
-
-  private applyLocationLatency(totalLatencyMs: number, observedAt: string): void {
-    applyTradingLocationLatencyForTarget(
-      totalLatencyMs,
-      observedAt,
-      this as unknown as TradingTopologyTarget
-    );
   }
 
   private async refreshConfig(
