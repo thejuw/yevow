@@ -103,9 +103,9 @@ import { applyExecutionReportFlow } from "./execution/ExecutionReportRuntime";
 import {
   evaluateCroupierRuntime,
   evaluateOracleRuntime,
-  evaluateProfilerRuntime,
   type OracleTickResult
 } from "./agents/AgentEvaluationRuntime";
+import { evaluateTradingProfiler } from "./agents/TradingProfilerEvaluationRuntime";
 import { applyIntentPaperExecutionBudgetSideEffects } from "./execution/PaperExecutionBudgetRuntime";
 import {
   applyExecutionQueueDrainSideEffects,
@@ -2593,30 +2593,26 @@ export class TradingEngine {
     orderBookUpdateMs: number,
     hotPathStartedAt: number
   ): { profilerResult: ProfilerEvaluation; profilerLatencyMs: number } {
-    const profilerAgent = this.profilerRegistry.forInstrument(tick.instrumentCode);
-    const { profilerResult, profilerLatencyMs } = evaluateProfilerRuntime({
-      profilerEnabled: this.cachedConfig.PROFILER_ENABLED,
-      agent: profilerAgent,
-      tick,
-      context: {
-        engineId: this.engineState.engineId,
-        observedAt,
+    return evaluateTradingProfiler(
+      {
+        profilerRegistry: this.profilerRegistry,
+        config: this.cachedConfig,
+        engineState: this.engineState,
+        tick,
         book,
-        dom: domSnapshot,
-        liquidationHeatmap: this.engineState.liquidationHeatmap,
-        jumpDetected
+        domSnapshot,
+        observedAt,
+        jumpDetected,
+        metrics,
+        wakeUpTimeMs,
+        orderBookUpdateMs,
+        hotPathStartedAt
+      },
+      {
+        observeExecutionProfile: (profileMetrics, trace) =>
+          this.observeExecutionProfile(profileMetrics, trace)
       }
-    });
-
-    this.observeExecutionProfile(metrics, {
-      wakeUpTimeMs,
-      orderBookUpdateMs,
-      agentLogicMs: profilerLatencyMs,
-      hotPathStartedAt,
-      observedAt
-    });
-
-    return { profilerResult, profilerLatencyMs };
+    );
   }
 
   private evaluateOracleForTick(
