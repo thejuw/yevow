@@ -28,7 +28,6 @@ import { priceKey, SortedBookSide } from "./book/SortedBookSide";
 import { countBookLevels, microstructureFromBook } from "./book/BookReconstruction";
 import {
   calculateOrderBookPriceDiscovery,
-  currentMarkPriceForInstrument,
   currentOrderBookSnapshot,
   findBestAssetBook as findBestOrderBookForAsset
 } from "./book/BookViews";
@@ -77,7 +76,7 @@ import { type ApprovedExecutionPlan } from "./execution/ExecutionPlanRuntime";
 import { prepareTradingExecutionPlan } from "./execution/TradingExecutionPlanPreparationRuntime";
 import { dispatchExecutionPlanSideEffects } from "./execution/ExecutionPlanDispatchRuntime";
 import { dispatchTradingExecutionIntent } from "./execution/TradingExecutionDispatchRuntime";
-import { applyExecutionReportFlow } from "./execution/ExecutionReportRuntime";
+import { applyTradingExecutionReport } from "./execution/TradingExecutionReportRuntime";
 import { type OracleTickResult } from "./agents/AgentEvaluationRuntime";
 import { evaluateTradingCroupier } from "./agents/TradingCroupierEvaluationRuntime";
 import { evaluateTradingOracle } from "./agents/TradingOracleEvaluationRuntime";
@@ -3210,22 +3209,14 @@ export class TradingEngine {
   }
 
   private async applyExecutionReport(report: ExecutionReport): Promise<void> {
-    await applyExecutionReportFlow(
+    await applyTradingExecutionReport(
       {
         state: this.engineState,
         report,
-        oracleRegime: this.engineState.oracle.regime
+        orderBook: this.orderBook,
+        microstructure: this.engineState.microstructure
       },
       {
-        markPrice: (instrumentCode, fallback) =>
-          currentMarkPriceForInstrument(
-            {
-              orderBook: this.orderBook,
-              microstructure: this.engineState.microstructure
-            },
-            instrumentCode,
-            fallback
-          ),
         calculateInventory: (observedAt, openPositions) =>
           this.calculateInventoryState(observedAt, openPositions),
         observeAdverseSelection: (executionReport, order, markPrice, oracleRegime) =>
