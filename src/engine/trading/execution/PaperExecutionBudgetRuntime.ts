@@ -1,6 +1,7 @@
 import { DEFAULT_PAPER_MAX_GHOST_FILLS_PER_MINUTE } from "../../../TradingEngineConstants";
+import { isShadowMode } from "../../../utils/CitadelProtocol";
 import { readPositiveInteger } from "../helpers/RuntimeParsing";
-import type { JsonRecord, TradeIntent } from "../../../types";
+import type { Env, JsonRecord, TradeIntent } from "../../../types";
 
 export interface PaperExecutionBudgetState {
   readonly windowStartedAtMs: number;
@@ -40,6 +41,18 @@ export interface IntentPaperExecutionBudgetSideEffectHandlers {
   readonly applyState: (state: PaperExecutionBudgetState) => void;
   readonly warnThrottle: (metadata: JsonRecord) => void;
   readonly publishThrottle: (payload: JsonRecord) => void;
+}
+
+export interface TradingPaperExecutionBudgetTarget {
+  readonly env: Pick<Env, "PAPER_MAX_GHOST_FILLS_PER_MINUTE" | "SHADOW_MODE">;
+  paperExecutionWindowStartedAtMs: number;
+  paperExecutionWindowCount: number;
+  paperExecutionWindowDropped: number;
+  paperExecutionThrottleLoggedAtMs: number;
+  readonly logger: {
+    warn(eventType: string, message: string, telemetry?: JsonRecord): void;
+  };
+  publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
 }
 
 const DEFAULT_WINDOW_MS = 60_000;
@@ -164,4 +177,42 @@ export function applyIntentPaperExecutionBudgetSideEffects(
   }
 
   return budget;
+}
+
+export function reservePaperExecutionBudgetForTarget(
+  intent: TradeIntent,
+  target: TradingPaperExecutionBudgetTarget
+): boolean {
+  const budget = applyIntentPaperExecutionBudgetSideEffects(
+    {
+      intent,
+      shadowMode: isShadowMode(target.env),
+      nowMs: Date.now(),
+      maxPerMinuteValue: target.env.PAPER_MAX_GHOST_FILLS_PER_MINUTE,
+      windowStartedAtMs: target.paperExecutionWindowStartedAtMs,
+      windowCount: target.paperExecutionWindowCount,
+      windowDropped: target.paperExecutionWindowDropped,
+      throttleLoggedAtMs: target.paperExecutionThrottleLoggedAtMs
+    },
+    {
+      applyState: (state) => {
+        target.paperExecutionWindowStartedAtMs = state.windowStartedAtMs;
+        target.paperExecutionWindowCount = state.windowCount;
+        target.paperExecutionWindowDropped = state.windowDropped;
+        target.paperExecutionThrottleLoggedAtMs = state.throttleLoggedAtMs;
+      },
+      warnThrottle: (metadata) => {
+        target.logger.warn(
+          "SHADOW_PAPER_CADENCE_THROTTLED",
+          "Paper execution cadence capped",
+          metadata
+        );
+      },
+      publishThrottle: (payload) => {
+        target.publish("SHADOW_PAPER_CADENCE_THROTTLED", payload);
+      }
+    }
+  );
+
+  return budget.allowed;
 }

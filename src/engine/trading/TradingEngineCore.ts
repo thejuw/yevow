@@ -84,7 +84,10 @@ import { type OracleTickResult } from "./agents/AgentEvaluationRuntime";
 import { evaluateTradingCroupier } from "./agents/TradingCroupierEvaluationRuntime";
 import { evaluateTradingOracle } from "./agents/TradingOracleEvaluationRuntime";
 import { evaluateTradingProfiler } from "./agents/TradingProfilerEvaluationRuntime";
-import { applyIntentPaperExecutionBudgetSideEffects } from "./execution/PaperExecutionBudgetRuntime";
+import {
+  reservePaperExecutionBudgetForTarget,
+  type TradingPaperExecutionBudgetTarget
+} from "./execution/PaperExecutionBudgetRuntime";
 import {
   drainTradingExecutionQueue,
   enqueueTradingExecutionIntent,
@@ -2390,35 +2393,10 @@ export class TradingEngine {
   }
 
   private reservePaperExecutionBudget(intent: TradeIntent): boolean {
-    const budget = applyIntentPaperExecutionBudgetSideEffects(
-      {
-        intent,
-        shadowMode: isShadowMode(this.env),
-        nowMs: Date.now(),
-        maxPerMinuteValue: this.env.PAPER_MAX_GHOST_FILLS_PER_MINUTE,
-        windowStartedAtMs: this.paperExecutionWindowStartedAtMs,
-        windowCount: this.paperExecutionWindowCount,
-        windowDropped: this.paperExecutionWindowDropped,
-        throttleLoggedAtMs: this.paperExecutionThrottleLoggedAtMs
-      },
-      {
-        applyState: (state) => {
-          this.paperExecutionWindowStartedAtMs = state.windowStartedAtMs;
-          this.paperExecutionWindowCount = state.windowCount;
-          this.paperExecutionWindowDropped = state.windowDropped;
-          this.paperExecutionThrottleLoggedAtMs = state.throttleLoggedAtMs;
-        },
-        warnThrottle: (metadata) =>
-          this.logger.warn(
-            "SHADOW_PAPER_CADENCE_THROTTLED",
-            "Paper execution cadence capped",
-            metadata
-          ),
-        publishThrottle: (payload) => this.publish("SHADOW_PAPER_CADENCE_THROTTLED", payload)
-      }
+    return reservePaperExecutionBudgetForTarget(
+      intent,
+      this as unknown as TradingPaperExecutionBudgetTarget
     );
-
-    return budget.allowed;
   }
 
   private async enqueueExecutionIntent(

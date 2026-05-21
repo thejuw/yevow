@@ -3,9 +3,12 @@ import {
   applyIntentPaperExecutionBudget,
   applyIntentPaperExecutionBudgetSideEffects,
   applyPaperExecutionBudget,
+  reservePaperExecutionBudgetForTarget,
   type IntentPaperExecutionBudgetSideEffectHandlers,
+  type TradingPaperExecutionBudgetTarget,
   resolvePaperMaxGhostFillsPerMinute
 } from "../../src/engine/trading/execution/PaperExecutionBudgetRuntime";
+import type { TradeIntent } from "../../src/types";
 
 describe("PaperExecutionBudgetRuntime", () => {
   it("allows live mode without mutating shadow counters", () => {
@@ -164,6 +167,39 @@ describe("PaperExecutionBudgetRuntime", () => {
     expect(result.allowed).toBe(false);
     expect(sideEffects.events).toEqual(["state:1:1", "warn:intent-1", "publish:btc-usd"]);
   });
+
+  it("reserves paper execution budget through the trading target adapter", () => {
+    const calls: string[] = [];
+    const now = Date.now();
+    const target: TradingPaperExecutionBudgetTarget = {
+      env: {
+        SHADOW_MODE: "true",
+        PAPER_MAX_GHOST_FILLS_PER_MINUTE: "1"
+      },
+      paperExecutionWindowStartedAtMs: now,
+      paperExecutionWindowCount: 1,
+      paperExecutionWindowDropped: 0,
+      paperExecutionThrottleLoggedAtMs: 0,
+      logger: {
+        warn(eventType, _message, metadata) {
+          calls.push(`warn:${eventType}:${metadata?.intentId as string}`);
+        }
+      },
+      publish(type, payload) {
+        calls.push(`publish:${type}:${payload.instrumentCode as string}`);
+      }
+    };
+
+    const allowed = reservePaperExecutionBudgetForTarget(tradeIntent(), target);
+
+    expect(allowed).toBe(false);
+    expect(target.paperExecutionWindowCount).toBe(1);
+    expect(target.paperExecutionWindowDropped).toBe(1);
+    expect(calls).toEqual([
+      "warn:SHADOW_PAPER_CADENCE_THROTTLED:intent-1",
+      "publish:SHADOW_PAPER_CADENCE_THROTTLED:btc-usd"
+    ]);
+  });
 });
 
 function paperBudgetSideEffectSpy(): {
@@ -185,5 +221,38 @@ function paperBudgetSideEffectSpy(): {
         events.push(`publish:${String(payload.instrumentCode)}`);
       }
     }
+  };
+}
+
+function tradeIntent(): TradeIntent {
+  return {
+    schemaVersion: "trade-intent.v1",
+    intentId: "intent-1",
+    traceId: "trace-intent-1",
+    instrumentCode: "btc-usd",
+    marketKey: "hyperliquid:btc-usd",
+    source_exchange: "hyperliquid",
+    direction: "LONG",
+    executionStyle: "TAKER_IOC",
+    action: "BUY",
+    orderType: "IOC",
+    postOnly: false,
+    timeInForce: "IOC",
+    intendedPrice: 100,
+    expectedPrice: 100,
+    requestedSize: 1,
+    approvedSize: 1,
+    probabilityWin: 1,
+    probabilityLoss: 0,
+    profit: 0,
+    loss: 0,
+    executionCosts: 0,
+    adverseSelectionCost: 0,
+    expectedValue: 0,
+    minEvThreshold: 0,
+    maxSlippageBps: 10,
+    confidence: 1,
+    rationale: "test",
+    createdAt: "2026-05-19T12:00:00.000Z"
   };
 }
