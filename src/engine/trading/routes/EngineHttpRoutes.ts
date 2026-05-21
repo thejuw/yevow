@@ -37,6 +37,7 @@ import {
   type TradingIngestQueueTarget
 } from "../ingest/IngestQueueRuntime";
 import { buildTradingPerformanceMetricsResponseForTarget } from "../telemetry/TradingHotPathTelemetryRuntime";
+import { resetTradingLatencyBaselineForTarget } from "../performance/TradingLatencyStateRuntime";
 import {
   applyTradingExecutionReportForTarget,
   type TradingExecutionReportTarget
@@ -190,7 +191,7 @@ export interface EngineHttpRouteContextTarget extends TradingBookApplicationTarg
     analyzeHeadline(headline: string, env: Env): Promise<EngineState["sentiment"]>;
   };
   refreshConfigIfDue?(source: "ALARM" | "ADMIN_SIGNAL"): Promise<void>;
-  resetLatencyBaseline(observedAt: string, reason: string): void;
+  resetLatencyBaseline?(observedAt: string, reason: string): void;
   publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
   safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void>;
   safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
@@ -237,7 +238,11 @@ export function createTradingEngineHttpRouteContext(
     },
     performanceMetricsResponse: () => buildTradingPerformanceMetricsResponseForTarget(target),
     resetLatencyBaseline: (observedAt, reason) => {
-      target.resetLatencyBaseline(observedAt, reason);
+      if (target.resetLatencyBaseline) {
+        target.resetLatencyBaseline(observedAt, reason);
+        return;
+      }
+      resetTradingLatencyBaselineForTarget(observedAt, reason, target);
     },
     publish: (type, payload, correlationId) => {
       target.publish(type, payload, correlationId);

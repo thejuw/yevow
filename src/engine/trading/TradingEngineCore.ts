@@ -33,7 +33,6 @@ import {
 } from "./execution/TradingExecutionDispatchRuntime";
 import { type ExecutionTraceInput } from "./performance/LatencyRuntime";
 import {
-  resetTradingLatencyBaselineForTarget,
   tradingLatencyStorageWritesForState,
   tradingLatencyStorageWritesForTarget,
   type TradingLatencyStateTarget
@@ -411,14 +410,6 @@ export class TradingEngine {
       instrumentCode,
       reason,
       this as unknown as TradingQuoteCancelAllTarget
-    );
-  }
-
-  private resetLatencyBaseline(observedAt: string, reason: string): void {
-    resetTradingLatencyBaselineForTarget(
-      observedAt,
-      reason,
-      this as unknown as TradingLatencyStateTarget
     );
   }
 

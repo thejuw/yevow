@@ -13,6 +13,10 @@ import { countBookLevels } from "./BookReconstruction";
 import type { BookSyncState } from "./BookTypes";
 import type { SortedBookSide } from "./SortedBookSide";
 import { stateAfterOrderBookReset } from "./BookRuntimeState";
+import {
+  resetTradingLatencyBaselineForTarget,
+  type TradingLatencyStateTarget
+} from "../performance/TradingLatencyStateRuntime";
 
 export interface ResolvedOrderBookReset {
   readonly now: string;
@@ -117,7 +121,7 @@ export interface TradingOrderBookResetTarget {
     };
   };
   handleStorageWriteFailure(reason: string, error: unknown): void;
-  resetLatencyBaseline(observedAt: string, reason: string): void;
+  resetLatencyBaseline?(observedAt: string, reason: string): void;
   safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void>;
   safeStorageDelete(keys: string[], reason: string): Promise<void>;
   readonly logger: {
@@ -383,7 +387,15 @@ export async function resetTradingOrderBookForTarget(
         target.engineState = state;
       },
       resetLatencyBaseline: (observedAt, reason) => {
-        target.resetLatencyBaseline(observedAt, reason);
+        if (target.resetLatencyBaseline) {
+          target.resetLatencyBaseline(observedAt, reason);
+          return;
+        }
+        resetTradingLatencyBaselineForTarget(
+          observedAt,
+          reason,
+          target as unknown as TradingLatencyStateTarget
+        );
       },
       persistWrites: (writes) => target.safeStoragePut(writes, "ORDER_BOOK_RESET"),
       deleteStorageKeys: (keys) => target.safeStorageDelete([...keys], "ORDER_BOOK_RESET_DELETE"),

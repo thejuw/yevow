@@ -26,6 +26,10 @@ import {
   deleteRetiredProfilerStorageForTarget,
   type TradingRetiredProfilerStorageTarget
 } from "./ProfilerStorageRuntime";
+import {
+  resetTradingLatencyBaselineForTarget,
+  type TradingLatencyStateTarget
+} from "../performance/TradingLatencyStateRuntime";
 import { adminRecoveryPlan, applyAdminRecoveryPlanSideEffects } from "./RecoveryPlanRuntime";
 import type {
   AdminRecoveryPlan,
@@ -159,7 +163,7 @@ export interface TradingAdminRecoveryTarget {
     warn(eventType: string, message: string, metadata: JsonRecord): void;
   };
   resetOrderBook(payload: Partial<OrderBookResetRequest>): Promise<void>;
-  resetLatencyBaseline(observedAt: string, reason: string): void;
+  resetLatencyBaseline?(observedAt: string, reason: string): void;
   safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void>;
   publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
 }
@@ -439,7 +443,15 @@ export async function recoverTradingEngineStateForTarget(
     {
       resetOrderBook: (resetPayload) => target.resetOrderBook(resetPayload),
       resetLatencyBaseline: (observedAt, reason) => {
-        target.resetLatencyBaseline(observedAt, reason);
+        if (target.resetLatencyBaseline) {
+          target.resetLatencyBaseline(observedAt, reason);
+          return;
+        }
+        resetTradingLatencyBaselineForTarget(
+          observedAt,
+          reason,
+          target as unknown as TradingLatencyStateTarget
+        );
       },
       clearShadowQueue: () => {
         target.ghostBook.reset();
