@@ -4,10 +4,24 @@ import type {
   Env,
   GlobalRiskConfig,
   InternalOrderBook,
+  JsonRecord,
   LatencyMetrics,
+  MacroBias,
   MarketTick
 } from "../../../types";
 import { isShadowMode } from "../../../utils/CitadelProtocol";
+import {
+  handleTradingEngineAnomalyEmergencyPause,
+  type TradingAnomalyEmergencyTarget
+} from "../anomaly/TradingAnomalyEmergencyRuntime";
+import {
+  resolveTradingTickBookForTarget,
+  type TradingTickBookTarget
+} from "../book/TradingTickBookRuntime";
+import {
+  observeTradingEngineCascadeAbsorption,
+  type TradingCascadeAbsorptionTarget
+} from "../cascade/CascadeAbsorptionRuntime";
 import { stateAfterFundingTick } from "../funding/FundingRuntime";
 import { highResolutionNow } from "../helpers/RuntimeClock";
 import {
@@ -21,6 +35,16 @@ import {
 } from "../performance/TradingTickLatencyRuntime";
 import type { TickIngestResult } from "../TradingEngineRouteTypes";
 import { evaluateTickTargetPreflight } from "../state/TickPreflightRuntime";
+import { resolveTradingTickAvailability } from "../state/TradingAvailabilityRuntime";
+import { maybeResumeTradingShadowMode } from "../state/TradingShadowModeAutoResumeRuntime";
+import {
+  applyAcceptedDecisionPipelineForTarget,
+  type AcceptedDecisionPipelineTarget
+} from "./AcceptedTickLifecycleRuntime";
+import {
+  prepareTradingPostBookTickRuntimeForTarget,
+  type TradingPostBookTickRuntimeTarget
+} from "./PostBookTickRuntime";
 import type {
   AcceptedDecisionPipelineInput,
   PostBookTickContext,
@@ -111,6 +135,13 @@ export interface TradingTickHandlingTarget extends Omit<
   | "prepareTickLatency"
   | "handleHardStaleTickDrop"
   | "handleSoftStaleTick"
+  | "maybeAutoResumeShadowMode"
+  | "resolveTradingAvailability"
+  | "observeCascadeAbsorption"
+  | "resolveTickBook"
+  | "preparePostBookTickContext"
+  | "handleAnomalyEmergencyPause"
+  | "processAcceptedDecisionPipeline"
 > {
   readonly cachedConfig: Pick<GlobalRiskConfig, "TRADING_ENABLED">;
   readonly env: Pick<Env, "SHADOW_MODE">;
@@ -127,6 +158,13 @@ export interface TradingTickHandlingTarget extends Omit<
   readonly prepareTickLatency?: TickHandlingRuntimeHandlers["prepareTickLatency"];
   readonly handleHardStaleTickDrop?: TickHandlingRuntimeHandlers["handleHardStaleTickDrop"];
   readonly handleSoftStaleTick?: TickHandlingRuntimeHandlers["handleSoftStaleTick"];
+  readonly maybeAutoResumeShadowMode?: TickHandlingRuntimeHandlers["maybeAutoResumeShadowMode"];
+  readonly resolveTradingAvailability?: TickHandlingRuntimeHandlers["resolveTradingAvailability"];
+  readonly observeCascadeAbsorption?: TickHandlingRuntimeHandlers["observeCascadeAbsorption"];
+  readonly resolveTickBook?: TickHandlingRuntimeHandlers["resolveTickBook"];
+  readonly preparePostBookTickContext?: TickHandlingRuntimeHandlers["preparePostBookTickContext"];
+  readonly handleAnomalyEmergencyPause?: TickHandlingRuntimeHandlers["handleAnomalyEmergencyPause"];
+  readonly processAcceptedDecisionPipeline?: TickHandlingRuntimeHandlers["processAcceptedDecisionPipeline"];
 }
 
 export async function handleTickRuntime(
@@ -246,7 +284,16 @@ export function handleTickForTarget(
   const latencyOverrides: Partial<
     Pick<
       TickHandlingRuntimeHandlers,
-      "prepareTickLatency" | "handleHardStaleTickDrop" | "handleSoftStaleTick"
+      | "prepareTickLatency"
+      | "handleHardStaleTickDrop"
+      | "handleSoftStaleTick"
+      | "maybeAutoResumeShadowMode"
+      | "resolveTradingAvailability"
+      | "observeCascadeAbsorption"
+      | "resolveTickBook"
+      | "preparePostBookTickContext"
+      | "handleAnomalyEmergencyPause"
+      | "processAcceptedDecisionPipeline"
     >
   > = target;
 
@@ -261,15 +308,28 @@ export function handleTickForTarget(
     },
     {
       maybeAutoResumeShadowMode: (currentTick, shadowReplay) => {
-        target.maybeAutoResumeShadowMode(currentTick, shadowReplay);
+        if (latencyOverrides.maybeAutoResumeShadowMode) {
+          latencyOverrides.maybeAutoResumeShadowMode(currentTick, shadowReplay);
+          return;
+        }
+        maybeAutoResumeShadowModeForTarget(currentTick, shadowReplay, target);
       },
       resolveTradingAvailability: (currentTick, shadowReplay) =>
-        target.resolveTradingAvailability(currentTick, shadowReplay),
+        latencyOverrides.resolveTradingAvailability
+          ? latencyOverrides.resolveTradingAvailability(currentTick, shadowReplay)
+          : resolveTradingAvailabilityForTarget(currentTick, shadowReplay, target),
       rememberLastTickTimestamp: (receivedAt) => {
         target.lastTickTimestamp = receivedAt;
       },
       observeCascadeAbsorption: (currentTick) => {
-        target.observeCascadeAbsorption(currentTick);
+        if (latencyOverrides.observeCascadeAbsorption) {
+          latencyOverrides.observeCascadeAbsorption(currentTick);
+          return;
+        }
+        observeTradingEngineCascadeAbsorption(
+          currentTick,
+          target as unknown as TradingCascadeAbsorptionTarget
+        );
       },
       prepareTickLatency: (currentTick, shadowReplay) =>
         latencyOverrides.prepareTickLatency
@@ -310,9 +370,29 @@ export function handleTickForTarget(
         }
       },
       resolveTickBook: (currentTick, metrics, wakeUp, startedAt) =>
-        target.resolveTickBook(currentTick, metrics, wakeUp, startedAt),
+        latencyOverrides.resolveTickBook
+          ? latencyOverrides.resolveTickBook(currentTick, metrics, wakeUp, startedAt)
+          : resolveTradingTickBookForTarget(
+              {
+                tick: currentTick,
+                metrics,
+                wakeUpTimeMs: wakeUp,
+                hotPathStartedAt: startedAt
+              },
+              target as unknown as TradingTickBookTarget
+            ),
       preparePostBookTickContext: (currentTick, book, observedAt, tickOptions) =>
-        target.preparePostBookTickContext(currentTick, book, observedAt, tickOptions),
+        latencyOverrides.preparePostBookTickContext
+          ? latencyOverrides.preparePostBookTickContext(currentTick, book, observedAt, tickOptions)
+          : prepareTradingPostBookTickRuntimeForTarget(
+              {
+                tick: currentTick,
+                book,
+                observedAt,
+                options: tickOptions
+              },
+              target as unknown as TradingPostBookTickRuntimeTarget
+            ),
       evaluateAnomaly: (currentTick, book, domSnapshot, observedAt) =>
         target.anomalyDetector.evaluate({
           tick: currentTick,
@@ -332,19 +412,121 @@ export function handleTickForTarget(
         orderBookUpdateMs,
         startedAt
       ) =>
-        target.handleAnomalyEmergencyPause(
-          currentTick,
-          book,
-          domSnapshot,
-          anomalyResult,
-          anomalyStartedAt,
-          metrics,
-          wakeUp,
-          orderBookUpdateMs,
-          startedAt
-        ),
+        latencyOverrides.handleAnomalyEmergencyPause
+          ? latencyOverrides.handleAnomalyEmergencyPause(
+              currentTick,
+              book,
+              domSnapshot,
+              anomalyResult,
+              anomalyStartedAt,
+              metrics,
+              wakeUp,
+              orderBookUpdateMs,
+              startedAt
+            )
+          : handleTradingEngineAnomalyEmergencyPause(
+              currentTick,
+              book,
+              domSnapshot,
+              anomalyResult,
+              anomalyStartedAt,
+              metrics,
+              wakeUp,
+              orderBookUpdateMs,
+              startedAt,
+              target as unknown as TradingAnomalyEmergencyTarget
+            ),
       processAcceptedDecisionPipeline: (pipeline) =>
-        target.processAcceptedDecisionPipeline(pipeline)
+        latencyOverrides.processAcceptedDecisionPipeline
+          ? latencyOverrides.processAcceptedDecisionPipeline(pipeline)
+          : applyAcceptedDecisionPipelineForTarget(
+              pipeline,
+              target as unknown as AcceptedDecisionPipelineTarget
+            ).then(() => undefined)
+    }
+  );
+}
+
+type ShadowModeResumeTarget = TradingTickHandlingTarget & {
+  readonly cachedConfig: GlobalRiskConfig;
+  readonly env: Env;
+  killSwitchLogged: boolean;
+  readonly macroBias: MacroBias;
+  readonly logger: {
+    warn(eventType: string, message: string, metadata: JsonRecord): void;
+  };
+  publish(type: "RESUME_QUOTES", payload: JsonRecord): void;
+};
+
+type AvailabilityTarget = TradingTickHandlingTarget & {
+  readonly cachedConfig: GlobalRiskConfig;
+  readonly env: Env;
+  killSwitchLogged: boolean;
+  readonly logger: {
+    warn(eventType: string, message: string, metadata: JsonRecord): void;
+  };
+};
+
+function maybeAutoResumeShadowModeForTarget(
+  tick: MarketTick,
+  shadowReplay: boolean,
+  target: TradingTickHandlingTarget
+): void {
+  const runtimeTarget = target as unknown as ShadowModeResumeTarget;
+
+  maybeResumeTradingShadowMode(
+    {
+      tick,
+      shadowReplay,
+      env: runtimeTarget.env,
+      config: runtimeTarget.cachedConfig,
+      macroBias: runtimeTarget.macroBias,
+      currentState: runtimeTarget.engineState
+    },
+    {
+      applyState: (state) => {
+        runtimeTarget.engineState = state;
+      },
+      clearKillSwitchLogged: () => {
+        runtimeTarget.killSwitchLogged = false;
+      },
+      warnResume: (metadata) => {
+        runtimeTarget.logger.warn(
+          "SHADOW_MODE_AUTO_RESUME",
+          "Shadow mode resumed paper trading after a stale halt",
+          metadata
+        );
+      },
+      publishResume: (payload) => {
+        runtimeTarget.publish("RESUME_QUOTES", payload);
+      }
+    }
+  );
+}
+
+function resolveTradingAvailabilityForTarget(
+  tick: MarketTick,
+  shadowReplay: boolean,
+  target: TradingTickHandlingTarget
+): TickIngestResult | null {
+  const runtimeTarget = target as unknown as AvailabilityTarget;
+
+  return resolveTradingTickAvailability(
+    {
+      tick,
+      shadowReplay,
+      env: runtimeTarget.env,
+      config: runtimeTarget.cachedConfig,
+      mode: runtimeTarget.engineState.mode,
+      killSwitchLogged: runtimeTarget.killSwitchLogged
+    },
+    {
+      warn: (event) => {
+        runtimeTarget.logger.warn(event.eventType, event.message, event.metadata);
+      },
+      setKillSwitchLogged: (logged) => {
+        runtimeTarget.killSwitchLogged = logged;
+      }
     }
   );
 }

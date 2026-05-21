@@ -17,14 +17,6 @@ import {
   resetTradingOrderBookForTarget,
   type TradingOrderBookResetTarget
 } from "./book/OrderBookResetRuntime";
-import {
-  resolveTradingTickBookForTarget,
-  type TradingTickBookTarget
-} from "./book/TradingTickBookRuntime";
-import {
-  handleTradingEngineAnomalyEmergencyPause,
-  type TradingAnomalyEmergencyTarget
-} from "./anomaly/TradingAnomalyEmergencyRuntime";
 import { resolveMaxPositionPct } from "./risk/PortfolioRiskRuntime";
 import {
   runTradingAlarmForTarget,
@@ -46,10 +38,6 @@ import {
   tradingLatencyStorageWritesForTarget,
   type TradingLatencyStateTarget
 } from "./performance/TradingLatencyStateRuntime";
-import {
-  observeTradingEngineCascadeAbsorption,
-  type TradingCascadeAbsorptionTarget
-} from "./cascade/CascadeAbsorptionRuntime";
 import {
   applyTradingEngineConfigUpdateForTarget,
   refreshTradingConfigIfDueForTarget,
@@ -109,8 +97,6 @@ import {
   createTradingEngineBootServices,
   tradingEngineLoggerRuntimeContext
 } from "./state/EngineBootServices";
-import { maybeResumeTradingShadowMode } from "./state/TradingShadowModeAutoResumeRuntime";
-import { resolveTradingTickAvailability } from "./state/TradingAvailabilityRuntime";
 import {
   recoverTradingEngineStateForTarget,
   type TradingAdminRecoveryTarget
@@ -169,23 +155,10 @@ import type { AbsorptionConfirmed, CascadeEvent } from "../../strategy/cascade/t
 import { DEFAULT_MAX_LATENCY_MS } from "../../TradingEngineConstants";
 import { defaultEngineState } from "./state/EngineStateDefaults";
 import {
-  applyAcceptedDecisionPipelineForTarget,
-  type AcceptedDecisionPipelineTarget
-} from "./pipelines/AcceptedTickLifecycleRuntime";
-import {
-  prepareTradingPostBookTickRuntimeForTarget,
-  type TradingPostBookTickRuntimeTarget
-} from "./pipelines/PostBookTickRuntime";
-import {
   handleTickForTarget,
   type TradingTickHandlingTarget
 } from "./pipelines/TickHandlingRuntime";
-import type {
-  AcceptedDecisionPipelineInput,
-  PostBookTickContext,
-  TickBookResolution,
-  TickHandlingOptions
-} from "./pipelines/TickPipelineTypes";
+import type { TickHandlingOptions } from "./pipelines/TickPipelineTypes";
 
 export class TradingEngine {
   private readonly startedAt = Date.now();
@@ -409,10 +382,6 @@ export class TradingEngine {
     );
   }
 
-  private observeCascadeAbsorption(tick: MarketTick): void {
-    observeTradingEngineCascadeAbsorption(tick, this as unknown as TradingCascadeAbsorptionTarget);
-  }
-
   private async resetOrderBook(payload: Partial<OrderBookResetRequest>): Promise<void> {
     await resetTradingOrderBookForTarget(payload, this as unknown as TradingOrderBookResetTarget);
   }
@@ -431,124 +400,6 @@ export class TradingEngine {
     return recoverTradingEngineStateForTarget(
       payload,
       this as unknown as TradingAdminRecoveryTarget
-    );
-  }
-
-  private async handleAnomalyEmergencyPause(
-    tick: MarketTick,
-    book: InternalOrderBook,
-    domSnapshot: DomAnalysisSnapshot,
-    anomalyResult: AnomalyDetectionResult,
-    anomalyLogicStartedAt: number,
-    metrics: LatencyMetrics,
-    wakeUpTimeMs: number | null,
-    orderBookUpdateMs: number,
-    hotPathStartedAt: number
-  ): Promise<TickIngestResult> {
-    return handleTradingEngineAnomalyEmergencyPause(
-      tick,
-      book,
-      domSnapshot,
-      anomalyResult,
-      anomalyLogicStartedAt,
-      metrics,
-      wakeUpTimeMs,
-      orderBookUpdateMs,
-      hotPathStartedAt,
-      this as unknown as TradingAnomalyEmergencyTarget
-    );
-  }
-
-  private maybeAutoResumeShadowMode(tick: MarketTick, shadowReplay: boolean): void {
-    maybeResumeTradingShadowMode(
-      {
-        tick,
-        shadowReplay,
-        env: this.env,
-        config: this.cachedConfig,
-        macroBias: this.macroBias,
-        currentState: this.engineState
-      },
-      {
-        applyState: (state) => {
-          this.engineState = state;
-        },
-        clearKillSwitchLogged: () => {
-          this.killSwitchLogged = false;
-        },
-        warnResume: (metadata) =>
-          this.logger.warn(
-            "SHADOW_MODE_AUTO_RESUME",
-            "Shadow mode resumed paper trading after a stale halt",
-            metadata
-          ),
-        publishResume: (payload) => this.publish("RESUME_QUOTES", payload)
-      }
-    );
-  }
-
-  private resolveTradingAvailability(
-    tick: MarketTick,
-    shadowReplay: boolean
-  ): TickIngestResult | null {
-    return resolveTradingTickAvailability(
-      {
-        tick,
-        shadowReplay,
-        env: this.env,
-        config: this.cachedConfig,
-        mode: this.engineState.mode,
-        killSwitchLogged: this.killSwitchLogged
-      },
-      {
-        warn: (event) => this.logger.warn(event.eventType, event.message, event.metadata),
-        setKillSwitchLogged: (logged) => {
-          this.killSwitchLogged = logged;
-        }
-      }
-    );
-  }
-
-  private async resolveTickBook(
-    tick: MarketTick,
-    metrics: LatencyMetrics,
-    wakeUpTimeMs: number | null,
-    hotPathStartedAt: number
-  ): Promise<TickBookResolution> {
-    return resolveTradingTickBookForTarget(
-      {
-        tick,
-        metrics,
-        wakeUpTimeMs,
-        hotPathStartedAt
-      },
-      this as unknown as TradingTickBookTarget
-    );
-  }
-
-  private async preparePostBookTickContext(
-    tick: MarketTick,
-    book: InternalOrderBook,
-    observedAt: string,
-    options: TickHandlingOptions
-  ): Promise<PostBookTickContext> {
-    return prepareTradingPostBookTickRuntimeForTarget(
-      {
-        tick,
-        book,
-        observedAt,
-        options
-      },
-      this as unknown as TradingPostBookTickRuntimeTarget
-    );
-  }
-
-  private async processAcceptedDecisionPipeline(
-    input: AcceptedDecisionPipelineInput
-  ): Promise<void> {
-    await applyAcceptedDecisionPipelineForTarget(
-      input,
-      this as unknown as AcceptedDecisionPipelineTarget
     );
   }
 
