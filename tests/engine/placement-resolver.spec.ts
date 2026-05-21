@@ -21,6 +21,12 @@ import {
   type TopologyWarmUpSideEffectHandlers,
   type TopologyObservationSideEffectHandlers
 } from "../../src/engine/trading/helpers/PlacementResolver";
+import {
+  applyTradingLocationLatencyForTarget,
+  observeTradingTopologyForTarget,
+  warmUpTradingTopologyForTarget,
+  type TradingTopologyTarget
+} from "../../src/engine/trading/helpers/TradingTopologyRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { EdgeTopology, RiskLimits } from "../../src/types";
 
@@ -488,6 +494,87 @@ describe("PlacementResolver", () => {
       maxOrderNotional: 50,
       maxDrawdownPct: 0.04
     });
+  });
+
+  it("applies topology observation, latency, and warm-up through the trading target adapter", async () => {
+    const events: string[] = [];
+    const scheduled: Promise<unknown>[] = [];
+    const target: TradingTopologyTarget = {
+      engineState: defaultEngineState("trading-topology-target"),
+      warmedColo: "DFW",
+      warmedAt: 0,
+      env: {
+        PLACEMENT_TARGET_COLO: undefined,
+        GOLDEN_COLOS: "NRT",
+        HIGH_LATENCY_COLO_RISK_MULTIPLIER: "0.25"
+      },
+      cachedConfig: {
+        version: "risk-v5",
+        TRADING_ENABLED: true,
+        MAX_POSITION_SIZE: 200,
+        MAX_DRAWDOWN_PCT: 0.05,
+        GOLDEN_COLOS: "NRT"
+      },
+      configManager: {
+        fetchConfig() {
+          events.push("config");
+          return Promise.resolve({} as TradingTopologyTarget["cachedConfig"]);
+        }
+      },
+      state: {
+        storage: {
+          get(key) {
+            events.push(`read:${key}`);
+            return Promise.resolve({ ok: true });
+          }
+        },
+        waitUntil(work) {
+          events.push("schedule");
+          scheduled.push(work);
+        }
+      },
+      logger: {
+        info(eventType, _message, metadata) {
+          events.push(`info:${eventType}:${String(metadata?.colo ?? "none")}`);
+        },
+        warn(eventType) {
+          events.push(`warn:${eventType}`);
+        },
+        error(eventType, _message, metadata) {
+          events.push(`error:${eventType}:${String(metadata?.message ?? "none")}`);
+        }
+      },
+      waitUntilStoragePut(key, _value, reason) {
+        events.push(`persist:${key}:${reason}`);
+      }
+    };
+
+    observeTradingTopologyForTarget(edgeTopology({ colo: "DFW", placement: "remote-dfw" }), target);
+    applyTradingLocationLatencyForTarget(42.1234, "2026-05-18T05:01:00.000Z", target);
+    warmUpTradingTopologyForTarget(edgeTopology({ colo: "NRT", placement: "remote-nrt" }), target);
+
+    await Promise.all(scheduled);
+
+    expect(target.engineState.location).toMatchObject({
+      colo: "DFW",
+      placement: "remote-dfw",
+      isGoldenRegion: false,
+      observedLatencyMs: 42.123
+    });
+    expect(target.engineState.risk).toMatchObject({
+      maxOrderNotional: 50,
+      maxDrawdownPct: 0.05
+    });
+    expect(target.warmedColo).toBe("NRT");
+    expect(events).toEqual([
+      "persist:engine:state:COLO_TOPOLOGY_CHANGED",
+      "warn:COLO_TOPOLOGY_CHANGED",
+      "warn:PIT_BOSS_RISK_ADJUSTED",
+      "read:engine:state",
+      "config",
+      "schedule",
+      "info:ENGINE_WARMUP:NRT"
+    ]);
   });
 });
 

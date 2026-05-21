@@ -14,12 +14,11 @@ import { AnomalyDetector, type AnomalyDetectionResult } from "../../agents/Anoma
 import { CroupierAgent, type CroupierDecision } from "../../agents/CroupierAgent";
 import { AdverseSelectionModel } from "../AdverseSelectionModel";
 import {
-  applyTopologyObservationSideEffects,
-  defaultEngineLocation,
-  stateAfterLocationLatency,
-  stateAfterTopologyObservation
-} from "./helpers/PlacementResolver";
-import { applyTopologyWarmUpRuntime } from "./helpers/TopologyWarmUpRuntime";
+  applyTradingLocationLatencyForTarget,
+  observeTradingTopologyForTarget,
+  warmUpTradingTopologyForTarget,
+  type TradingTopologyTarget
+} from "./helpers/TradingTopologyRuntime";
 import { priceKey, SortedBookSide } from "./book/SortedBookSide";
 import { countBookLevels, microstructureFromBook } from "./book/BookReconstruction";
 import { calculateOrderBookPriceDiscovery, currentOrderBookSnapshot } from "./book/BookViews";
@@ -348,7 +347,6 @@ import {
   DEFAULT_HARD_STALE_DROP_MS,
   PERFORMANCE_HISTORY_LIMIT,
   CONFIG_ALARM_INTERVAL_MS,
-  WARM_UP_INTERVAL_MS,
   ADMIN_STREAM_PULSE_INTERVAL_MS,
   STORAGE_WRITE_BACKOFF_MS,
   DEFAULT_SOURCE_WEIGHT,
@@ -2611,59 +2609,19 @@ export class TradingEngine {
   }
 
   private observeTopology(topology: EdgeTopology): void {
-    const observation = stateAfterTopologyObservation({
-      state: this.engineState,
-      topology,
-      env: this.env,
-      config: this.cachedConfig
-    });
-    applyTopologyObservationSideEffects(
-      {
-        observation,
-        maxOrderNotional: observation.state.risk.maxOrderNotional,
-        baseMaxPositionSize: this.cachedConfig.MAX_POSITION_SIZE
-      },
-      {
-        applyState: (state) => {
-          this.engineState = state;
-        },
-        persistState: () =>
-          this.waitUntilStoragePut(ENGINE_STATE_KEY, this.engineState, "COLO_TOPOLOGY_CHANGED"),
-        warn: (event) => this.logger.warn(event.eventType, event.message, event.metadata)
-      }
-    );
+    observeTradingTopologyForTarget(topology, this as unknown as TradingTopologyTarget);
   }
 
   private applyLocationLatency(totalLatencyMs: number, observedAt: string): void {
-    this.engineState = stateAfterLocationLatency({
-      state: this.engineState,
+    applyTradingLocationLatencyForTarget(
       totalLatencyMs,
       observedAt,
-      config: this.cachedConfig
-    });
+      this as unknown as TradingTopologyTarget
+    );
   }
 
   private warmUpForTopology(topology: EdgeTopology): void {
-    applyTopologyWarmUpRuntime(
-      {
-        topology,
-        warmedColo: this.warmedColo,
-        warmedAt: this.warmedAt,
-        intervalMs: WARM_UP_INTERVAL_MS,
-        nowMs: Date.now()
-      },
-      {
-        markWarmUp: (colo, warmedAtMs) => {
-          this.warmedColo = colo;
-          this.warmedAt = warmedAtMs;
-        },
-        readEngineState: () => this.state.storage.get(ENGINE_STATE_KEY),
-        fetchConfig: () => this.configManager.fetchConfig(),
-        info: (eventType, message, metadata) => this.logger.info(eventType, message, metadata),
-        error: (eventType, message, metadata) => this.logger.error(eventType, message, metadata),
-        schedule: (work) => this.state.waitUntil(work)
-      }
-    );
+    warmUpTradingTopologyForTarget(topology, this as unknown as TradingTopologyTarget);
   }
 
   private async refreshConfig(
