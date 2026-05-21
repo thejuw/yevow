@@ -9,6 +9,10 @@ import type {
   OrderBookSnapshot
 } from "../../../types";
 import type { ExecutionTraceInput } from "../performance/LatencyRuntime";
+import {
+  applyTradingNativeHyperliquidLatencyPullForTarget,
+  type TradingNativeHyperliquidLatencyPullTarget
+} from "../performance/StaleLatencyGuardRuntime";
 import type { TickIngestResult } from "../TradingEngineRouteTypes";
 import type { BookSyncState } from "../book/BookTypes";
 import { markBookSyncDesynced, stateAfterDesyncedBook } from "../book/BookRuntimeState";
@@ -97,7 +101,7 @@ export interface TradingHyperliquidL2BookTarget extends TradingBookApplicationTa
   readonly logger: TradingBookApplicationTarget["logger"] & {
     warn(eventType: string, message: string, metadata?: JsonRecord): void;
   };
-  quoteStateStalePull(
+  quoteStateStalePull?(
     instrumentCode: string,
     sequence: number,
     metrics: LatencyMetrics,
@@ -148,7 +152,19 @@ export function handleTradingEngineHyperliquidL2Book(
           observedAt
         ),
       quoteStateStalePull: (instrumentCode, sequence, metrics, observedAt) => {
-        target.quoteStateStalePull(instrumentCode, sequence, metrics, observedAt);
+        if (target.quoteStateStalePull) {
+          target.quoteStateStalePull(instrumentCode, sequence, metrics, observedAt);
+          return;
+        }
+        applyTradingNativeHyperliquidLatencyPullForTarget(
+          {
+            instrumentCode,
+            sequence,
+            metrics,
+            observedAt
+          },
+          target as unknown as TradingNativeHyperliquidLatencyPullTarget
+        );
       },
       observeExecutionProfile: (metrics, trace) => {
         target.observeExecutionProfile(metrics, trace);

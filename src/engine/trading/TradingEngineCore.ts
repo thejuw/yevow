@@ -41,10 +41,6 @@ import {
 } from "./execution/TradingExecutionDispatchRuntime";
 import { type ExecutionTraceInput } from "./performance/LatencyRuntime";
 import {
-  applyTradingNativeHyperliquidLatencyPullForTarget,
-  type TradingNativeHyperliquidLatencyPullTarget
-} from "./performance/StaleLatencyGuardRuntime";
-import {
   resetTradingLatencyBaselineForTarget,
   tradingLatencyStorageWritesForState,
   tradingLatencyStorageWritesForTarget,
@@ -415,23 +411,6 @@ export class TradingEngine {
 
   private observeCascadeAbsorption(tick: MarketTick): void {
     observeTradingEngineCascadeAbsorption(tick, this as unknown as TradingCascadeAbsorptionTarget);
-  }
-
-  private quoteStateStalePull(
-    instrumentCode: string,
-    sequence: number,
-    metrics: LatencyMetrics,
-    observedAt: string
-  ): void {
-    applyTradingNativeHyperliquidLatencyPullForTarget(
-      {
-        instrumentCode,
-        sequence,
-        metrics,
-        observedAt
-      },
-      this as unknown as TradingNativeHyperliquidLatencyPullTarget
-    );
   }
 
   private async resetOrderBook(payload: Partial<OrderBookResetRequest>): Promise<void> {
