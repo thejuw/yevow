@@ -16,11 +16,16 @@ import {
   tradeIntentDispatchBlockedLogMetadata
 } from "../../src/engine/trading/execution/ExecutionPlanDispatchRuntime";
 import {
+  dispatchTradingExecutionIntentForTarget,
+  type TradingExecutionDispatchTarget
+} from "../../src/engine/trading/execution/TradingExecutionDispatchRuntime";
+import {
   dispatchTradeIntentToExecutioner,
   dispatchTradeIntentSideEffects,
   type ExecutionDispatchLogger,
   type TradeIntentDispatchSideEffectHandlers
 } from "../../src/engine/trading/execution/TradeIntentDispatchRuntime";
+import { neutralMacroBias } from "../../src/Governor";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { TradeIntent } from "../../src/types";
 
@@ -501,6 +506,66 @@ describe("ExecutionDispatchRuntime", () => {
       "reserve:default:NEW",
       "persist",
       "enqueue:intent-1:NEW:375"
+    ]);
+  });
+
+  it("dispatches trade intents through the trading target adapter", async () => {
+    const events: string[] = [];
+    const target: TradingExecutionDispatchTarget = {
+      env: {
+        EXECUTIONER: {
+          async fetch() {
+            events.push("fetch");
+            return Response.json({ ok: true });
+          }
+        }
+      },
+      cachedConfig: {
+        TRADING_ENABLED: true,
+        HEDGE_ENABLED: false
+      },
+      macroBias: neutralMacroBias(new Date("2026-05-18T18:00:00.000Z")),
+      logger: {
+        info(eventType) {
+          events.push(`info:${eventType}`);
+        },
+        warn(eventType) {
+          events.push(`warn:${eventType}`);
+        },
+        error(eventType) {
+          events.push(`error:${eventType}`);
+        }
+      },
+      rateLimiter: {
+        reserve(exchangeKey, priority) {
+          events.push(`reserve:${exchangeKey}:${priority}`);
+          return { allowed: false, waitMs: 250 };
+        },
+        exportState() {
+          events.push("export-rate-limit");
+          return { default: { available: 0 } };
+        }
+      },
+      reservePaperExecutionBudget(intent) {
+        events.push(`paper:${intent.intentId}`);
+        return true;
+      },
+      waitUntilStoragePut(key, _value, reason) {
+        events.push(`persist:${key}:${reason}`);
+      },
+      async enqueueExecutionIntent(intent, priority, waitMs) {
+        events.push(`enqueue:${intent.intentId}:${priority}:${waitMs}`);
+      }
+    };
+
+    await dispatchTradingExecutionIntentForTarget(tradeIntent(), 0, target);
+
+    expect(events).toEqual([
+      "paper:intent-1",
+      "reserve:hyperliquid:NEW",
+      "export-rate-limit",
+      "persist:execution:rate-limits:EXECUTION_RATE_LIMIT",
+      "enqueue:intent-1:NEW:250"
     ]);
   });
 

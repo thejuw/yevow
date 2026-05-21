@@ -78,7 +78,10 @@ import {
   dispatchTradingExecutionPlans,
   type TradingExecutionPlanDispatchTarget
 } from "./execution/ExecutionPlanDispatchRuntime";
-import { dispatchTradingExecutionIntent } from "./execution/TradingExecutionDispatchRuntime";
+import {
+  dispatchTradingExecutionIntentForTarget,
+  type TradingExecutionDispatchTarget
+} from "./execution/TradingExecutionDispatchRuntime";
 import {
   applyTradingExecutionReportForTarget,
   type TradingExecutionReportTarget
@@ -406,7 +409,6 @@ import {
   nativeSide
 } from "./helpers/NativeValueRuntime";
 import { highResolutionNow } from "./helpers/RuntimeClock";
-import { wait } from "./helpers/RuntimeMath";
 import {
   prometheusLabels,
   escapePrometheusLabel,
@@ -2369,29 +2371,10 @@ export class TradingEngine {
     intent: NonNullable<EngineState["lastTradeIntent"]>,
     initialDelayMs = 0
   ): Promise<void> {
-    await dispatchTradingExecutionIntent(
-      {
-        intent,
-        initialDelayMs,
-        executioner: this.env.EXECUTIONER,
-        cachedConfig: this.cachedConfig,
-        macroBias: this.macroBias,
-        logger: this.logger
-      },
-      {
-        reservePaperExecutionBudget: (tradeIntent) => this.reservePaperExecutionBudget(tradeIntent),
-        wait,
-        reserveExecutionCapacity: (exchangeKey, priority) =>
-          this.rateLimiter.reserve(exchangeKey, priority),
-        persistRateLimitState: () =>
-          this.waitUntilStoragePut(
-            RATE_LIMIT_STATE_KEY,
-            this.rateLimiter.exportState(),
-            "EXECUTION_RATE_LIMIT"
-          ),
-        enqueueExecutionIntent: (tradeIntent, priority, waitMs) =>
-          this.enqueueExecutionIntent(tradeIntent, priority, waitMs)
-      }
+    await dispatchTradingExecutionIntentForTarget(
+      intent,
+      initialDelayMs,
+      this as unknown as TradingExecutionDispatchTarget
     );
   }
 

@@ -1,5 +1,6 @@
 import { isInventoryHedgeIntent } from "../../../execution/RiskGuards";
-import type { GlobalRiskConfig, JsonRecord, MacroBias, TradeIntent } from "../../../types";
+import { RATE_LIMIT_STATE_KEY } from "../../../TradingEngineConstants";
+import type { Env, GlobalRiskConfig, JsonRecord, MacroBias, TradeIntent } from "../../../types";
 import type { RateLimitPriority } from "../../../utils/RateLimiter";
 import {
   isInstrumentSelectedByMoltworker,
@@ -13,6 +14,7 @@ import type {
   ExecutionDispatchFetcher,
   TradeIntentDispatchReservation
 } from "./TradeIntentDispatchRuntime";
+import { wait } from "../helpers/RuntimeMath";
 
 export interface TradingExecutionDispatchLogger {
   info(eventType: string, message: string, telemetry?: JsonRecord): void;
@@ -42,6 +44,24 @@ export interface TradingExecutionDispatchHandlers {
     priority: RateLimitPriority,
     waitMs: number
   ) => Promise<void>;
+}
+
+export interface TradingExecutionDispatchTarget {
+  readonly env: Pick<Env, "EXECUTIONER">;
+  readonly cachedConfig: Pick<GlobalRiskConfig, "TRADING_ENABLED" | "HEDGE_ENABLED">;
+  readonly macroBias: MacroBias;
+  readonly logger: TradingExecutionDispatchLogger;
+  readonly rateLimiter: {
+    reserve(exchangeKey: string, priority: RateLimitPriority): TradeIntentDispatchReservation;
+    exportState(): unknown;
+  };
+  reservePaperExecutionBudget(intent: TradeIntent): boolean;
+  waitUntilStoragePut(key: string, value: unknown, reason: string): void;
+  enqueueExecutionIntent(
+    intent: TradeIntent,
+    priority: RateLimitPriority,
+    waitMs: number
+  ): Promise<void>;
 }
 
 export async function dispatchTradingExecutionIntent(
@@ -82,6 +102,38 @@ export async function dispatchTradingExecutionIntent(
           intent: tradeIntent
         });
       }
+    }
+  );
+}
+
+export function dispatchTradingExecutionIntentForTarget(
+  intent: TradeIntent,
+  initialDelayMs: number,
+  target: TradingExecutionDispatchTarget
+): Promise<void> {
+  return dispatchTradingExecutionIntent(
+    {
+      intent,
+      initialDelayMs,
+      executioner: target.env.EXECUTIONER,
+      cachedConfig: target.cachedConfig,
+      macroBias: target.macroBias,
+      logger: target.logger
+    },
+    {
+      reservePaperExecutionBudget: (tradeIntent) => target.reservePaperExecutionBudget(tradeIntent),
+      wait,
+      reserveExecutionCapacity: (exchangeKey, priority) =>
+        target.rateLimiter.reserve(exchangeKey, priority),
+      persistRateLimitState: () => {
+        target.waitUntilStoragePut(
+          RATE_LIMIT_STATE_KEY,
+          target.rateLimiter.exportState(),
+          "EXECUTION_RATE_LIMIT"
+        );
+      },
+      enqueueExecutionIntent: (tradeIntent, priority, waitMs) =>
+        target.enqueueExecutionIntent(tradeIntent, priority, waitMs)
     }
   );
 }
