@@ -7,9 +7,12 @@ import {
   buildCascadeAbsorptionObservation,
   cascadeAbsorptionSignedNotional,
   nextCascadeCvd,
+  observeTradingEngineCascadeAbsorption,
   observeTradingCascadeAbsorption,
-  type CascadeAbsorptionConfirmedSideEffectHandlers
+  type CascadeAbsorptionConfirmedSideEffectHandlers,
+  type TradingCascadeAbsorptionTarget
 } from "../../src/engine/trading/cascade/CascadeAbsorptionRuntime";
+import { defaultAbsorptionAnalyzerConfig } from "../../src/strategy/cascade/AbsorptionAnalyzer";
 import type { AbsorptionConfirmed } from "../../src/strategy/cascade/types";
 import type { MarketTick } from "../../src/types";
 
@@ -126,6 +129,63 @@ describe("CascadeAbsorptionRuntime", () => {
       "log:ABSORPTION_CONFIRMED:cascade-1",
       "publish:ABSORPTION_CONFIRMED:cascade-1",
       "alert:CASCADE_ABSORPTION_CONFIRMED:cascade-1:cascade-1"
+    ]);
+  });
+
+  it("observes cascade absorption through the trading engine target adapter", () => {
+    const events: string[] = [];
+    const cvd = new Map<string, number>([["btc", 50]]);
+    const absorptions = new Map<string, AbsorptionConfirmed>();
+    const confirmed = absorptionConfirmed();
+    const target: TradingCascadeAbsorptionTarget = {
+      cachedConfig: { CASCADE_INSTRUMENTS: "btc" },
+      cascadeCvdByInstrument: cvd,
+      absorptionAnalyzer: {
+        configure() {
+          events.push("configure");
+        },
+        observe(observation) {
+          events.push(`observe:${observation.instrumentCode}:${observation.cumulativeVolumeDelta}`);
+          return confirmed;
+        }
+      },
+      cascadeAbsorptionsById: absorptions,
+      logger: {
+        info(event, _message, metadata) {
+          events.push(`log:${event}:${String(metadata.cascadeId)}`);
+        }
+      },
+      currentAbsorptionAnalyzerConfig() {
+        return defaultAbsorptionAnalyzerConfig;
+      },
+      publish(telemetryType, payload) {
+        events.push(`publish:${telemetryType}:${String(payload.cascadeId)}`);
+      },
+      emitCascadeOperationalAlert(eventType, _title, _message, _metadata, dedupeKey) {
+        events.push(`alert:${eventType}:${dedupeKey}`);
+      }
+    };
+
+    const result = observeTradingEngineCascadeAbsorption(
+      tick({
+        instrumentCode: "BTC-PERP",
+        side: "buy",
+        price: 100,
+        size: 2,
+        raw: { eventType: "trade" }
+      }),
+      target
+    );
+
+    expect(result).toBe(confirmed);
+    expect(cvd.get("btc")).toBe(250);
+    expect(absorptions.get("cascade-1")).toBe(confirmed);
+    expect(events).toEqual([
+      "configure",
+      "observe:btc:250",
+      "log:ABSORPTION_CONFIRMED:cascade-1",
+      "publish:ABSORPTION_CONFIRMED:cascade-1",
+      "alert:CASCADE_ABSORPTION_CONFIRMED:cascade-1"
     ]);
   });
 

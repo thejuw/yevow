@@ -120,7 +120,10 @@ import {
   buildCascadeEntryTradeIntent,
   buildCascadeExitTradeIntent
 } from "./cascade/CascadeTradeIntents";
-import { observeTradingCascadeAbsorption } from "./cascade/CascadeAbsorptionRuntime";
+import {
+  observeTradingEngineCascadeAbsorption,
+  type TradingCascadeAbsorptionTarget
+} from "./cascade/CascadeAbsorptionRuntime";
 import {
   applyTradingEngineConfigUpdate,
   refreshTradingEngineConfig
@@ -1120,27 +1123,7 @@ export class TradingEngine {
   }
 
   private observeCascadeAbsorption(tick: MarketTick): void {
-    observeTradingCascadeAbsorption(
-      {
-        tick,
-        cascadeInstruments: this.cachedConfig.CASCADE_INSTRUMENTS
-      },
-      {
-        readCumulativeVolumeDelta: (instrumentCode) =>
-          this.cascadeCvdByInstrument.get(instrumentCode),
-        writeCumulativeVolumeDelta: (instrumentCode, cumulativeVolumeDelta) =>
-          this.cascadeCvdByInstrument.set(instrumentCode, cumulativeVolumeDelta),
-        configureAnalyzer: () =>
-          this.absorptionAnalyzer.configure(this.currentAbsorptionAnalyzerConfig()),
-        observeAbsorption: (observation) => this.absorptionAnalyzer.observe(observation),
-        recordAbsorption: (confirmedAbsorption) =>
-          this.cascadeAbsorptionsById.set(confirmedAbsorption.cascadeId, confirmedAbsorption),
-        logInfo: (event, message, metadata) => this.logger.info(event, message, metadata),
-        publish: (telemetryType, payload) => this.publish(telemetryType, payload),
-        emitOperationalAlert: (eventType, title, message, metadata, dedupeKey) =>
-          this.emitCascadeOperationalAlert(eventType, title, message, metadata, dedupeKey)
-      }
-    );
+    observeTradingEngineCascadeAbsorption(tick, this as unknown as TradingCascadeAbsorptionTarget);
   }
 
   private recordRejectedCascadeSignal(

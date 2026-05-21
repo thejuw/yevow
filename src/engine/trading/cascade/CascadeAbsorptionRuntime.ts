@@ -1,5 +1,9 @@
-import type { JsonRecord, MarketTick } from "../../../types";
-import type { AbsorptionConfirmed, AbsorptionObservation } from "../../../strategy/cascade/types";
+import type { GlobalRiskConfig, JsonRecord, MarketTick } from "../../../types";
+import type {
+  AbsorptionAnalyzerConfig,
+  AbsorptionConfirmed,
+  AbsorptionObservation
+} from "../../../strategy/cascade/types";
 import { normalizeNativeInstrumentCode } from "../helpers/NativeMarketIdentityRuntime";
 import { isTradeTick } from "../state/TickClassification";
 import { isCascadeInstrumentEnabledForConfig } from "./CascadeSelectionRuntime";
@@ -36,6 +40,28 @@ export interface TradingCascadeAbsorptionHandlers extends CascadeAbsorptionConfi
   ) => void;
   readonly configureAnalyzer: () => void;
   readonly observeAbsorption: (observation: AbsorptionObservation) => AbsorptionConfirmed | null;
+}
+
+export interface TradingCascadeAbsorptionTarget {
+  readonly cachedConfig: Pick<GlobalRiskConfig, "CASCADE_INSTRUMENTS">;
+  readonly cascadeCvdByInstrument: Pick<Map<string, number>, "get" | "set">;
+  readonly absorptionAnalyzer: {
+    configure(config: AbsorptionAnalyzerConfig): void;
+    observe(observation: AbsorptionObservation): AbsorptionConfirmed | null;
+  };
+  readonly cascadeAbsorptionsById: Pick<Map<string, AbsorptionConfirmed>, "set">;
+  readonly logger: {
+    info(event: string, message: string, metadata: JsonRecord): void;
+  };
+  currentAbsorptionAnalyzerConfig(): AbsorptionAnalyzerConfig;
+  publish(telemetryType: "ABSORPTION_CONFIRMED", payload: JsonRecord): void;
+  emitCascadeOperationalAlert(
+    eventType: "CASCADE_ABSORPTION_CONFIRMED",
+    title: string,
+    message: string,
+    metadata: JsonRecord,
+    dedupeKey: string
+  ): void;
 }
 
 export function cascadeAbsorptionSignedNotional(
@@ -171,4 +197,39 @@ export function observeTradingCascadeAbsorption(
 
   applyCascadeAbsorptionConfirmedSideEffects(confirmed, handlers);
   return confirmed;
+}
+
+export function observeTradingEngineCascadeAbsorption(
+  tick: MarketTick,
+  target: TradingCascadeAbsorptionTarget
+): AbsorptionConfirmed | null {
+  return observeTradingCascadeAbsorption(
+    {
+      tick,
+      cascadeInstruments: target.cachedConfig.CASCADE_INSTRUMENTS
+    },
+    {
+      readCumulativeVolumeDelta: (instrumentCode) =>
+        target.cascadeCvdByInstrument.get(instrumentCode),
+      writeCumulativeVolumeDelta: (instrumentCode, cumulativeVolumeDelta) => {
+        target.cascadeCvdByInstrument.set(instrumentCode, cumulativeVolumeDelta);
+      },
+      configureAnalyzer: () => {
+        target.absorptionAnalyzer.configure(target.currentAbsorptionAnalyzerConfig());
+      },
+      observeAbsorption: (observation) => target.absorptionAnalyzer.observe(observation),
+      recordAbsorption: (confirmedAbsorption) => {
+        target.cascadeAbsorptionsById.set(confirmedAbsorption.cascadeId, confirmedAbsorption);
+      },
+      logInfo: (event, message, metadata) => {
+        target.logger.info(event, message, metadata);
+      },
+      publish: (telemetryType, payload) => {
+        target.publish(telemetryType, payload);
+      },
+      emitOperationalAlert: (eventType, title, message, metadata, dedupeKey) => {
+        target.emitCascadeOperationalAlert(eventType, title, message, metadata, dedupeKey);
+      }
+    }
+  );
 }
