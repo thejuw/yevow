@@ -23,6 +23,19 @@ export interface HotStorageSnapshotSideEffectHandlers {
   readonly persistSnapshot: (entries: Record<string, unknown>, reason: string) => Promise<void>;
 }
 
+export interface TradingHotStorageSnapshotTarget {
+  lastHotStorageSnapshotAt: number;
+  lastHotStorageSnapshotTick: number;
+  readonly engineState: {
+    readonly processedTicks: number;
+  };
+  readonly env: {
+    readonly HOT_STORAGE_SNAPSHOT_INTERVAL_MS?: string;
+    readonly HOT_STORAGE_SNAPSHOT_TICK_INTERVAL?: string;
+  };
+  safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void>;
+}
+
 export type HotStorageSnapshotDecision =
   | {
       readonly shouldPersist: true;
@@ -77,6 +90,36 @@ export async function applyHotStorageSnapshotSideEffects(
   await handlers.persistSnapshot(input.entries, input.reason);
 
   return decision;
+}
+
+export async function applyHotStorageSnapshotForTarget(
+  entries: Record<string, unknown>,
+  reason: string,
+  target: TradingHotStorageSnapshotTarget,
+  nowMs = Date.now()
+): Promise<HotStorageSnapshotDecision> {
+  return applyHotStorageSnapshotSideEffects(
+    {
+      entries,
+      reason,
+      lastSnapshotAtMs: target.lastHotStorageSnapshotAt,
+      lastSnapshotTick: target.lastHotStorageSnapshotTick,
+      nowMs,
+      tickCount: target.engineState.processedTicks,
+      intervalMs: resolveHotStorageSnapshotIntervalMs(target.env.HOT_STORAGE_SNAPSHOT_INTERVAL_MS),
+      tickInterval: resolveHotStorageSnapshotTickInterval(
+        target.env.HOT_STORAGE_SNAPSHOT_TICK_INTERVAL
+      )
+    },
+    {
+      markSnapshot: (snapshotAtMs, snapshotTick) => {
+        target.lastHotStorageSnapshotAt = snapshotAtMs;
+        target.lastHotStorageSnapshotTick = snapshotTick;
+      },
+      persistSnapshot: (snapshotEntries, snapshotReason) =>
+        target.safeStoragePut(snapshotEntries, snapshotReason)
+    }
+  );
 }
 
 export class StorageWriteGuard {

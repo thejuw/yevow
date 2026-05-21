@@ -20,7 +20,6 @@ import {
   type TradingTopologyTarget
 } from "./helpers/TradingTopologyRuntime";
 import { priceKey, SortedBookSide } from "./book/SortedBookSide";
-import { currentOrderBookSnapshot } from "./book/BookViews";
 import {
   handleTradingEngineInformationalBookNotReady,
   handleTradingEngineRejectedBookDelta,
@@ -40,11 +39,11 @@ import {
   type TradingTickBookTarget
 } from "./book/TradingTickBookRuntime";
 import {
-  buildDomAnalysisSnapshot,
-  createDomAnalyzerContext,
-  currentDomHeatmapSnapshot,
-  type DomAnalyzerContextTarget
-} from "./book/DomAnalyzer";
+  buildTradingDomAnalysisForTarget,
+  currentTradingBookSnapshotForTarget,
+  currentTradingDomHeatmapForTarget,
+  type TradingBookViewTarget
+} from "./book/TradingBookViewRuntime";
 import {
   processTradingShadowQueueTickForTarget,
   type TradingShadowQueueTarget
@@ -263,9 +262,8 @@ import {
   type TradingAdminRecoveryTarget
 } from "./state/RecoveryRuntime";
 import {
-  applyHotStorageSnapshotSideEffects,
-  resolveHotStorageSnapshotIntervalMs,
-  resolveHotStorageSnapshotTickInterval,
+  applyHotStorageSnapshotForTarget,
+  type TradingHotStorageSnapshotTarget,
   type StorageWriteGuard
 } from "./state/StorageWriteGuard";
 import { type LogPruneReport } from "../LogRetention";
@@ -316,7 +314,6 @@ import type {
   LiquidationHeatmapState,
   LiquidityWall,
   MacroBias,
-  MarketDataSource,
   MarketTick,
   OrderBookDelta,
   OrderBookResetRequest,
@@ -355,7 +352,6 @@ import {
   CONFIG_ALARM_INTERVAL_MS,
   ADMIN_STREAM_PULSE_INTERVAL_MS,
   STORAGE_WRITE_BACKOFF_MS,
-  DEFAULT_SOURCE_WEIGHT,
   PROCESSING_LATENCY_SAMPLES_KEY,
   RATE_LIMIT_STATE_KEY,
   HOT_PATH_LOG_THROTTLE_MS,
@@ -394,7 +390,6 @@ import {
   resolveCurrentInstrument,
   hydrateLegacyLevel,
   levelsToBookSide,
-  resolveTickSize,
   parseTickSizeMap,
   parsePositiveNumberMap
 } from "./book/BookRuntimeHelpers";
@@ -871,27 +866,10 @@ export class TradingEngine {
     entries: Record<string, unknown>,
     reason: string
   ): Promise<void> {
-    await applyHotStorageSnapshotSideEffects(
-      {
-        entries,
-        reason,
-        lastSnapshotAtMs: this.lastHotStorageSnapshotAt,
-        lastSnapshotTick: this.lastHotStorageSnapshotTick,
-        nowMs: Date.now(),
-        tickCount: this.engineState.processedTicks,
-        intervalMs: resolveHotStorageSnapshotIntervalMs(this.env.HOT_STORAGE_SNAPSHOT_INTERVAL_MS),
-        tickInterval: resolveHotStorageSnapshotTickInterval(
-          this.env.HOT_STORAGE_SNAPSHOT_TICK_INTERVAL
-        )
-      },
-      {
-        markSnapshot: (snapshotAtMs, snapshotTick) => {
-          this.lastHotStorageSnapshotAt = snapshotAtMs;
-          this.lastHotStorageSnapshotTick = snapshotTick;
-        },
-        persistSnapshot: (snapshotEntries, snapshotReason) =>
-          this.safeStoragePut(snapshotEntries, snapshotReason)
-      }
+    await applyHotStorageSnapshotForTarget(
+      entries,
+      reason,
+      this as unknown as TradingHotStorageSnapshotTarget
     );
   }
 
@@ -1128,16 +1106,8 @@ export class TradingEngine {
     instrumentCode: string | undefined,
     depth: number
   ): BookSnapshotResponse {
-    return currentOrderBookSnapshot(
-      {
-        orderBook: this.orderBook,
-        bids: this.bids,
-        asks: this.asks,
-        microstructure: this.engineState.microstructure,
-        defaultSourceWeight: DEFAULT_SOURCE_WEIGHT,
-        getBookSync: (...args) => this.getBookSync(...args),
-        resolveTickSize: (code) => resolveTickSize(this.env, code)
-      },
+    return currentTradingBookSnapshotForTarget(
+      this as unknown as TradingBookViewTarget,
       instrumentCode,
       depth
     );
@@ -1152,11 +1122,9 @@ export class TradingEngine {
   }
 
   private currentDomHeatmap(instrumentCode: string | undefined): DomAnalysisSnapshot {
-    return currentDomHeatmapSnapshot(
-      this.domAnalyzerContext(),
-      this.engineState.dom,
-      instrumentCode,
-      new Date().toISOString()
+    return currentTradingDomHeatmapForTarget(
+      this as unknown as TradingBookViewTarget,
+      instrumentCode
     );
   }
 
@@ -1166,36 +1134,12 @@ export class TradingEngine {
     tick: MarketTick | undefined,
     persistHistory: boolean
   ): DomAnalysisSnapshot {
-    return buildDomAnalysisSnapshot(
-      this.domAnalyzerContext(),
+    return buildTradingDomAnalysisForTarget(
+      this as unknown as TradingBookViewTarget,
       instrumentCode,
       observedAt,
       tick,
       persistHistory
-    );
-  }
-
-  private domAnalyzerContext() {
-    return createDomAnalyzerContext(this as unknown as DomAnalyzerContextTarget);
-  }
-
-  private getBookSync(
-    marketKey: string,
-    instrumentCode: string,
-    exchangeCode: string | null,
-    sourceExchange: string,
-    tickSize: number,
-    source: MarketDataSource,
-    sourceWeight: number
-  ): BookSyncState {
-    return this.orderBookReconstructor.getBookSync(
-      marketKey,
-      instrumentCode,
-      exchangeCode,
-      sourceExchange,
-      tickSize,
-      source,
-      sourceWeight
     );
   }
 

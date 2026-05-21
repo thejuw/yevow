@@ -19,6 +19,7 @@ import {
 } from "../../src/engine/trading/state/EngineDiagnostics";
 import { hydrateEngineBootCollections } from "../../src/engine/trading/state/EngineBootState";
 import {
+  applyHotStorageSnapshotForTarget,
   applyHotStorageSnapshotSideEffects,
   evaluateHotStorageSnapshotDecision,
   resolveHotStorageSnapshotIntervalMs,
@@ -676,6 +677,40 @@ describe("storage write guard", () => {
     expect(skipped.shouldPersist).toBe(false);
     expect(persisted.shouldPersist).toBe(true);
     expect(events).toEqual(["mark:1500:15", "persist:HOT_SNAPSHOT:engineState"]);
+  });
+
+  it("applies hot storage snapshot cadence against a trading target", async () => {
+    const writes: string[] = [];
+    const target = {
+      lastHotStorageSnapshotAt: 1_000,
+      lastHotStorageSnapshotTick: 20,
+      engineState: {
+        processedTicks: 30
+      },
+      env: {
+        HOT_STORAGE_SNAPSHOT_INTERVAL_MS: "100000",
+        HOT_STORAGE_SNAPSHOT_TICK_INTERVAL: "10"
+      },
+      async safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void> {
+        writes.push(`${reason}:${Object.keys(entries).join(",")}`);
+      }
+    };
+
+    const decision = await applyHotStorageSnapshotForTarget(
+      { engineState: { processedTicks: 30 } },
+      "HOT_SNAPSHOT",
+      target,
+      1_500
+    );
+
+    expect(decision).toMatchObject({
+      shouldPersist: true,
+      nextSnapshotAtMs: 1_500,
+      nextSnapshotTick: 30
+    });
+    expect(target.lastHotStorageSnapshotAt).toBe(1_500);
+    expect(target.lastHotStorageSnapshotTick).toBe(30);
+    expect(writes).toEqual(["HOT_SNAPSHOT:engineState"]);
   });
 
   it("hydrates boot collections with bounded histories and filtered order books", () => {

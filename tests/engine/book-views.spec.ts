@@ -8,6 +8,7 @@ import {
   nullableMarkPriceForInstrument,
   selectOrderBookMarketKey
 } from "../../src/engine/trading/book/BookViews";
+import { currentTradingBookSnapshotForTarget } from "../../src/engine/trading/book/TradingBookViewRuntime";
 import { SortedBookSide } from "../../src/engine/trading/book/SortedBookSide";
 import type { BookSyncState } from "../../src/engine/trading/book/BookTypes";
 import type {
@@ -305,6 +306,59 @@ describe("BookViews", () => {
       midPrice: 100,
       bids: [{ price: 99.5, size: 2, updatedAt: OBSERVED_AT }],
       asks: [{ price: 100.5, size: 3, updatedAt: OBSERVED_AT }]
+    });
+  });
+
+  it("builds current snapshots from a trading book view target", () => {
+    const orderBook = new Map<string, InternalOrderBook>();
+    const bids = new Map<string, SortedBookSide>();
+    const asks = new Map<string, SortedBookSide>();
+    const bid = new SortedBookSide("bid");
+    const ask = new SortedBookSide("ask");
+    bid.upsert(99.5, 2, OBSERVED_AT, 0.5);
+    ask.upsert(100.5, 3, OBSERVED_AT, 0.5);
+    bids.set("hyperliquid:btc-usd", bid);
+    asks.set("hyperliquid:btc-usd", ask);
+    orderBook.set(
+      "hyperliquid:btc-usd",
+      book({
+        marketKey: "hyperliquid:btc-usd",
+        bestBid: 99.5,
+        bestAsk: 100.5,
+        midPrice: 100,
+        spread: 1
+      })
+    );
+
+    const snapshot = currentTradingBookSnapshotForTarget(
+      {
+        orderBook,
+        bids,
+        asks,
+        engineState: {
+          microstructure: micro({ marketKey: "hyperliquid:btc-usd", instrumentCode: "btc-usd" })
+        } as never,
+        domWallHistory: [],
+        domWallHistoryLimit: 50,
+        domScanRangePct: 0.02,
+        domSpoofProximityBps: 10,
+        env: {} as never,
+        domPriceBinSize: 1,
+        orderBookReconstructor: {
+          getBookSync: () => syncState({ instrumentCode: "btc-usd" })
+        }
+      },
+      undefined,
+      1
+    );
+
+    expect(snapshot).toMatchObject({
+      marketKey: "hyperliquid:btc-usd",
+      instrumentCode: "btc-usd",
+      bestBid: 99.5,
+      bestAsk: 100.5,
+      bids: [{ price: 99.5, size: 2 }],
+      asks: [{ price: 100.5, size: 3 }]
     });
   });
 
