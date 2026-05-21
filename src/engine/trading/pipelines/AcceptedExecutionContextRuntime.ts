@@ -11,6 +11,10 @@ import type {
 } from "../../../types";
 import { calculateTradingEnsembleState } from "../ensemble/TradingEnsembleRuntime";
 import { prepareTradingExecutionPlan } from "../execution/TradingExecutionPlanPreparationRuntime";
+import {
+  cancelAllTradingQuotesForTarget,
+  type TradingQuoteCancelAllTarget
+} from "../quotes/QuoteCancelRuntime";
 import { applyTradingQuoteSuppression } from "../quotes/TradingQuoteSuppressionRuntime";
 import type {
   AcceptedDecisionPipelineInput,
@@ -80,7 +84,7 @@ export interface AcceptedExecutionContextTarget {
     warn(eventType: string, message: string, metadata: JsonRecord): void;
   };
   publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
-  cancelAllQuotes(instrumentCode: string, reason: string): Promise<void>;
+  cancelAllQuotes?(instrumentCode: string, reason: string): Promise<void>;
 }
 
 export function prepareAcceptedExecutionContextFlow(
@@ -216,7 +220,15 @@ export function prepareAcceptedExecutionContextForTarget(
               target.publish("SUSPEND_QUOTES", payload);
             },
             cancelQuotes: (reason) => {
-              target.state.waitUntil(target.cancelAllQuotes(instrumentCode, reason));
+              target.state.waitUntil(
+                target.cancelAllQuotes
+                  ? target.cancelAllQuotes(instrumentCode, reason)
+                  : cancelAllTradingQuotesForTarget(
+                      instrumentCode,
+                      reason,
+                      target as unknown as TradingQuoteCancelAllTarget
+                    )
+              );
             }
           }
         )

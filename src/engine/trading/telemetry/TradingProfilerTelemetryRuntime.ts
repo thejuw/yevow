@@ -10,6 +10,10 @@ import {
   acceptTradingAgentSignalForTarget,
   type TradingSignalBusTarget
 } from "./TradingSignalBusRuntime";
+import {
+  cancelAllTradingQuotesForTarget,
+  type TradingQuoteCancelAllTarget
+} from "../quotes/QuoteCancelRuntime";
 
 export interface TradingProfilerTelemetryHandlers {
   readonly publish: (
@@ -26,7 +30,7 @@ export interface TradingProfilerSignalTarget {
   };
   publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
   acceptAgentSignal?(signal: AgentSignal, latencyMs: number): Promise<void>;
-  cancelAllQuotes(instrumentCode: string, reason: "PROFILER_ALERT"): Promise<void>;
+  cancelAllQuotes?(instrumentCode: string, reason: "PROFILER_ALERT"): Promise<void>;
 }
 
 export function publishTradingProfilerAlert(
@@ -87,7 +91,15 @@ export async function handleTradingProfilerSignal(
               target as unknown as TradingSignalBusTarget
             ),
       cancelQuotes: (code, reason) => {
-        target.state.waitUntil(target.cancelAllQuotes(code, reason));
+        target.state.waitUntil(
+          target.cancelAllQuotes
+            ? target.cancelAllQuotes(code, reason)
+            : cancelAllTradingQuotesForTarget(
+                code,
+                reason,
+                target as unknown as TradingQuoteCancelAllTarget
+              ).then(() => undefined)
+        );
       }
     }
   );

@@ -4,6 +4,10 @@ import {
   dispatchTradingQuoteForTarget,
   type TradingQuoteDispatchTarget
 } from "./TradingQuoteDispatchRuntime";
+import {
+  cancelAllTradingQuotesForTarget,
+  type TradingQuoteCancelAllTarget
+} from "./QuoteCancelRuntime";
 
 export interface CroupierQuoteActionInput {
   readonly instrumentCode: string;
@@ -58,7 +62,7 @@ export interface TradingCroupierQuoteActionTarget {
     waitUntil(work: Promise<void>): void;
   };
   publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
-  cancelAllQuotes(instrumentCode: string, reason: string): Promise<void>;
+  cancelAllQuotes?(instrumentCode: string, reason: string): Promise<void>;
   dispatchQuote?(quote: QuoteSignal): Promise<void>;
 }
 
@@ -140,7 +144,14 @@ export function dispatchTradingCroupierQuoteAction(
     schedule: (work) => {
       target.state.waitUntil(work);
     },
-    cancelAllQuotes: (code, reason) => target.cancelAllQuotes(code, reason),
+    cancelAllQuotes: (code, reason) =>
+      target.cancelAllQuotes
+        ? target.cancelAllQuotes(code, reason)
+        : cancelAllTradingQuotesForTarget(
+            code,
+            reason,
+            target as unknown as TradingQuoteCancelAllTarget
+          ).then(() => undefined),
     dispatchQuote: (quote) =>
       target.dispatchQuote
         ? target.dispatchQuote(quote)

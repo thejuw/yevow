@@ -6,6 +6,10 @@ import { evaluateGrpcDrop, isShadowMode } from "../../../utils/CitadelProtocol";
 import { ENGINE_STATE_KEY } from "../../../TradingEngineConstants";
 import type { EngineState, Env, JsonRecord } from "../../../types";
 import type { GrpcFatalDropPayload } from "../TradingEngineRouteTypes";
+import {
+  cancelAllTradingQuotesForTarget,
+  type TradingQuoteCancelAllTarget
+} from "../quotes/QuoteCancelRuntime";
 
 export interface ResolvedGrpcFatalDrop {
   readonly observedAt: string;
@@ -79,7 +83,7 @@ export interface GrpcFatalDropTarget {
     reason: "GRPC_FATAL_DROP"
   ): Promise<unknown>;
   publish(type: string, payload: JsonRecord): void;
-  cancelAllQuotes(instrumentCode: "ALL", reason: "GRPC_FATAL_DROP"): Promise<unknown>;
+  cancelAllQuotes?(instrumentCode: "ALL", reason: "GRPC_FATAL_DROP"): Promise<unknown>;
 }
 
 export function resolveGrpcFatalDropPayload(
@@ -247,7 +251,14 @@ export function handleGrpcFatalDropForTarget(
     publish: (type, publishPayload) => {
       target.publish(type, publishPayload);
     },
-    cancelAllQuotes: (instrumentCode, reason) => target.cancelAllQuotes(instrumentCode, reason)
+    cancelAllQuotes: (instrumentCode, reason) =>
+      target.cancelAllQuotes
+        ? target.cancelAllQuotes(instrumentCode, reason)
+        : cancelAllTradingQuotesForTarget(
+            instrumentCode,
+            reason,
+            target as unknown as TradingQuoteCancelAllTarget
+          )
   });
 
   return artifacts.response;

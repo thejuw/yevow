@@ -18,6 +18,10 @@ import {
   publishTradingTickTelemetryForTarget,
   type TradingHotPathTelemetryTarget
 } from "../telemetry/TradingHotPathTelemetryRuntime";
+import {
+  cancelAllTradingQuotesForTarget,
+  type TradingQuoteCancelAllTarget
+} from "../quotes/QuoteCancelRuntime";
 import type { TickIngestResult } from "../TradingEngineRouteTypes";
 import type { BookSyncState } from "../book/BookTypes";
 import { markBookSyncDesynced, stateAfterDesyncedBook } from "../book/BookRuntimeState";
@@ -113,7 +117,7 @@ export interface TradingHyperliquidL2BookTarget extends TradingBookApplicationTa
     observedAt: string
   ): void;
   observeExecutionProfile?(metrics: LatencyMetrics, trace: ExecutionTraceInput): void;
-  cancelAllQuotes(instrumentCode: string, reason: string): Promise<unknown>;
+  cancelAllQuotes?(instrumentCode: string, reason: string): Promise<unknown>;
   publishTickTelemetry?(
     tick: MarketTick,
     metrics: LatencyMetrics,
@@ -185,7 +189,14 @@ export function handleTradingEngineHyperliquidL2Book(
       schedule: (work) => {
         target.state.waitUntil(work);
       },
-      cancelAllQuotes: (instrumentCode, reason) => target.cancelAllQuotes(instrumentCode, reason),
+      cancelAllQuotes: (instrumentCode, reason) =>
+        target.cancelAllQuotes
+          ? target.cancelAllQuotes(instrumentCode, reason)
+          : cancelAllTradingQuotesForTarget(
+              instrumentCode,
+              reason,
+              target as unknown as TradingQuoteCancelAllTarget
+            ),
       publishTickTelemetry: (tick, metrics, status, telemetryStartedAt) => {
         if (target.publishTickTelemetry) {
           target.publishTickTelemetry(tick, metrics, status, telemetryStartedAt);

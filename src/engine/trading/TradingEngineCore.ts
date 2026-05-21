@@ -24,10 +24,6 @@ import {
 } from "./alarm/TradingAlarmRuntime";
 import type { DispatchedQuoteSnapshot } from "./quotes/QuoteRefreshRuntime";
 import {
-  cancelAllTradingQuotesForTarget,
-  type TradingQuoteCancelAllTarget
-} from "./quotes/QuoteCancelRuntime";
-import {
   dispatchTradingExecutionIntentForTarget,
   type TradingExecutionDispatchTarget
 } from "./execution/TradingExecutionDispatchRuntime";
@@ -390,14 +386,6 @@ export class TradingEngine {
       intent,
       initialDelayMs,
       this as unknown as TradingExecutionDispatchTarget
-    );
-  }
-
-  private async cancelAllQuotes(instrumentCode: string, reason: string): Promise<void> {
-    await cancelAllTradingQuotesForTarget(
-      instrumentCode,
-      reason,
-      this as unknown as TradingQuoteCancelAllTarget
     );
   }
 

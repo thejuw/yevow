@@ -22,6 +22,10 @@ import {
   tradingLatencyStorageWritesForTarget,
   type TradingLatencyStateTarget
 } from "./TradingLatencyStateRuntime";
+import {
+  cancelAllTradingQuotesForTarget,
+  type TradingQuoteCancelAllTarget
+} from "../quotes/QuoteCancelRuntime";
 
 export interface TradingStaleLatencyTarget {
   engineState: EngineState;
@@ -42,7 +46,7 @@ export interface TradingStaleLatencyTarget {
   persistHotStorageSnapshot(writes: Record<string, unknown>, reason: string): Promise<void>;
   logPerformance?(latencyMetrics: LatencyMetrics): void;
   publish(type: "STALE_DATA_KILL_SWITCH", payload: JsonRecord): void;
-  cancelAllQuotes(instrumentCode: string, reason: string): Promise<void>;
+  cancelAllQuotes?(instrumentCode: string, reason: string): Promise<void>;
   observeExecutionProfile?(metrics: LatencyMetrics, trace: ExecutionTraceInput): void;
   publishTickTelemetry?(
     tick: MarketTick,
@@ -92,7 +96,8 @@ export function handleTradingHardStaleTickDrop(
       schedule: (work) => {
         target.state.waitUntil(work);
       },
-      cancelAllQuotes: (instrumentCode, reason) => target.cancelAllQuotes(instrumentCode, reason)
+      cancelAllQuotes: (instrumentCode, reason) =>
+        cancelAllQuotesForStaleLatencyTarget(target, instrumentCode, reason)
     }
   );
 }
@@ -141,7 +146,8 @@ export function handleTradingSoftStaleTick(
       schedule: (work) => {
         target.state.waitUntil(work);
       },
-      cancelAllQuotes: (instrumentCode, reason) => target.cancelAllQuotes(instrumentCode, reason),
+      cancelAllQuotes: (instrumentCode, reason) =>
+        cancelAllQuotesForStaleLatencyTarget(target, instrumentCode, reason),
       publishTickTelemetry: (telemetryTick, telemetryMetrics, status, telemetryStartedAt) => {
         publishTradingStaleTickTelemetry(
           target,
@@ -156,6 +162,20 @@ export function handleTradingSoftStaleTick(
       }
     }
   );
+}
+
+function cancelAllQuotesForStaleLatencyTarget(
+  target: TradingStaleLatencyTarget,
+  instrumentCode: string,
+  reason: string
+): Promise<void> {
+  return target.cancelAllQuotes
+    ? target.cancelAllQuotes(instrumentCode, reason)
+    : cancelAllTradingQuotesForTarget(
+        instrumentCode,
+        reason,
+        target as unknown as TradingQuoteCancelAllTarget
+      ).then(() => undefined);
 }
 
 function tradingStaleLatencyStorageWrites(

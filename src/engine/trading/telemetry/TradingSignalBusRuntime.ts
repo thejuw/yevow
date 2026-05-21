@@ -14,6 +14,10 @@ import {
   recordTradingCascadeUiSignalSideEffects,
   type CascadeSignalOutcome
 } from "./CascadeSignalTelemetryRuntime";
+import {
+  cancelAllTradingQuotesForTarget,
+  type TradingQuoteCancelAllTarget
+} from "../quotes/QuoteCancelRuntime";
 
 export interface TradingSignalBusTarget {
   signals: AgentSignal[];
@@ -32,7 +36,7 @@ export interface TradingSignalBusTarget {
   safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void>;
   safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
   publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
-  cancelAllQuotes(instrumentCode: string, reason: "HAWKES_FLOW_CLUSTER"): Promise<void>;
+  cancelAllQuotes?(instrumentCode: string, reason: "HAWKES_FLOW_CLUSTER"): Promise<void>;
 }
 
 export function acceptTradingAgentSignalForTarget(
@@ -63,7 +67,14 @@ export function acceptTradingAgentSignalForTarget(
       schedule: (work) => {
         target.state.waitUntil(work);
       },
-      cancelAllQuotes: (instrumentCode, reason) => target.cancelAllQuotes(instrumentCode, reason)
+      cancelAllQuotes: (instrumentCode, reason) =>
+        target.cancelAllQuotes
+          ? target.cancelAllQuotes(instrumentCode, reason)
+          : cancelAllTradingQuotesForTarget(
+              instrumentCode,
+              reason,
+              target as unknown as TradingQuoteCancelAllTarget
+            ).then(() => undefined)
     }
   ).then(() => undefined);
 }

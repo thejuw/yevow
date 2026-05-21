@@ -20,6 +20,10 @@ import type { GhostBook } from "../../../utils/GhostBook";
 import { readPositiveNumber } from "../helpers/RuntimeParsing";
 import type { TickHandlingOptions } from "../pipelines/TickPipelineTypes";
 import {
+  cancelAllTradingQuotesForTarget,
+  type TradingQuoteCancelAllTarget
+} from "../quotes/QuoteCancelRuntime";
+import {
   applyShadowQueueDecisionFlow,
   buildShadowQueueGhostFillRuntimeRecord,
   emitShadowQueueGhostFillSideEffects,
@@ -75,7 +79,7 @@ export interface TradingShadowQueueTarget {
     waitUntil(work: Promise<unknown>): void;
   };
   publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
-  cancelAllQuotes(instrumentCode: string, reason: "SHADOW_QUEUE_RED_LIGHT"): Promise<unknown>;
+  cancelAllQuotes?(instrumentCode: string, reason: "SHADOW_QUEUE_RED_LIGHT"): Promise<unknown>;
   dispatchExecution(intent: TradeIntent): Promise<unknown>;
 }
 
@@ -234,7 +238,14 @@ export function processTradingShadowQueueTickForTarget(
       schedule: (work) => {
         target.state.waitUntil(work);
       },
-      cancelAllQuotes: (instrumentCode, reason) => target.cancelAllQuotes(instrumentCode, reason),
+      cancelAllQuotes: (instrumentCode, reason) =>
+        target.cancelAllQuotes
+          ? target.cancelAllQuotes(instrumentCode, reason)
+          : cancelAllTradingQuotesForTarget(
+              instrumentCode,
+              reason,
+              target as unknown as TradingQuoteCancelAllTarget
+            ),
       dispatchExecution: (intent) => target.dispatchExecution(intent),
       traceDecision: (trace) => {
         target.logger.traceDecision(trace);

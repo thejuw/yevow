@@ -21,6 +21,10 @@ import {
   processTradingShadowQueueTickForTarget,
   type TradingShadowQueueTarget
 } from "../shadow/TradingShadowQueueRuntime";
+import {
+  cancelAllTradingQuotesForTarget,
+  type TradingQuoteCancelAllTarget
+} from "../quotes/QuoteCancelRuntime";
 import type { PostBookTickContext, TickHandlingOptions } from "./TickPipelineTypes";
 
 export interface PostBookTickRuntimeInput {
@@ -81,7 +85,7 @@ export interface TradingPostBookTickRuntimeTarget {
     waitUntil(work: Promise<unknown>): void;
   };
   publish(type: "SUSPEND_QUOTES", payload: JsonRecord): void;
-  cancelAllQuotes(instrumentCode: "hype-usd", reason: "BTC_LEAD_MOVE"): Promise<unknown>;
+  cancelAllQuotes?(instrumentCode: "hype-usd", reason: "BTC_LEAD_MOVE"): Promise<unknown>;
   processShadowQueueTick?(
     tick: MarketTick,
     book: InternalOrderBook,
@@ -207,7 +211,14 @@ export function prepareTradingPostBookTickRuntimeForTarget(
       schedule: (work) => {
         target.state.waitUntil(work);
       },
-      cancelAllQuotes: (instrumentCode, reason) => target.cancelAllQuotes(instrumentCode, reason),
+      cancelAllQuotes: (instrumentCode, reason) =>
+        target.cancelAllQuotes
+          ? target.cancelAllQuotes(instrumentCode, reason)
+          : cancelAllTradingQuotesForTarget(
+              instrumentCode,
+              reason,
+              target as unknown as TradingQuoteCancelAllTarget
+            ),
       processShadowQueueTick: (tick, book, observedAt, options) =>
         target.processShadowQueueTick
           ? target.processShadowQueueTick(tick, book, observedAt, options)

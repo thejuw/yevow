@@ -2,6 +2,10 @@ import { DEFAULT_VAR_CONFIDENCE_Z } from "../../../TradingEngineConstants";
 import type { EngineState, Env, GlobalRiskConfig } from "../../../types";
 import type { NotifierEvent } from "../../../utils/Notifier";
 import { applyPortfolioRiskFlow, resolveVarConfidenceZ } from "./PortfolioRiskRuntime";
+import {
+  cancelAllTradingQuotesForTarget,
+  type TradingQuoteCancelAllTarget
+} from "../quotes/QuoteCancelRuntime";
 
 export interface TradingPortfolioRiskInput {
   readonly cachedConfig: GlobalRiskConfig;
@@ -35,7 +39,7 @@ export interface TradingPortfolioRiskTarget {
   readonly notifier: {
     notify(notification: NotifierEvent): void;
   };
-  cancelAllQuotes(instrumentCode: "ALL", reason: "MAX_DRAWDOWN_BREACH"): Promise<unknown>;
+  cancelAllQuotes?(instrumentCode: "ALL", reason: "MAX_DRAWDOWN_BREACH"): Promise<unknown>;
 }
 
 export function updateTradingPortfolioRisk(
@@ -83,7 +87,14 @@ export function updateTradingPortfolioRiskForTarget(
         target.cachedConfig = config;
       },
       writeConfig: (config) => target.configManager.writeConfig(config),
-      cancelAllQuotes: (instrumentCode, reason) => target.cancelAllQuotes(instrumentCode, reason),
+      cancelAllQuotes: (instrumentCode, reason) =>
+        target.cancelAllQuotes
+          ? target.cancelAllQuotes(instrumentCode, reason)
+          : cancelAllTradingQuotesForTarget(
+              instrumentCode,
+              reason,
+              target as unknown as TradingQuoteCancelAllTarget
+            ),
       schedule: (work) => {
         target.state.waitUntil(work);
       },
