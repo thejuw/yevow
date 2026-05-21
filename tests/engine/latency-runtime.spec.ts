@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   applyExecutionProfileFlow,
   applyExecutionProfileSideEffects,
@@ -69,6 +69,10 @@ import {
   updateTradingLatencyAverageForTarget,
   type TradingLatencyStateTarget
 } from "../../src/engine/trading/performance/TradingLatencyStateRuntime";
+import {
+  prepareTradingTickLatencyForTarget,
+  type TradingTickLatencyTarget
+} from "../../src/engine/trading/performance/TradingTickLatencyRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { EngineState, ExecutionProfile, LatencyMetrics, MarketTick } from "../../src/types";
 
@@ -264,6 +268,62 @@ describe("LatencyRuntime", () => {
     });
 
     expect(explicitWrites["engine:state"]).toBe(explicitState);
+  });
+
+  it("prepares tick latency through the trading target adapter", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-18T15:00:00.100Z"));
+
+    try {
+      const events: string[] = [];
+      const engineState = defaultEngineState("latency-prep-target");
+      engineState.averageLatency = 20;
+      engineState.latencySampleCount = 2;
+      engineState.location = location();
+      const target: TradingTickLatencyTarget = {
+        engineState,
+        latencyHistory: [],
+        processingLatencySamples: [],
+        maxLatencyMs: 150,
+        env: {
+          DWELLIR_MAX_LATENCY_MS: "150",
+          HL_STALE_AFTER_MS: "300"
+        },
+        logger: {
+          info(eventType, _message, telemetry) {
+            events.push(`info:${eventType}:${String(telemetry?.reason ?? "none")}`);
+          }
+        },
+        applyLocationLatency(totalLatencyMs, observedAt) {
+          events.push(`location:${totalLatencyMs}:${observedAt}`);
+        }
+      };
+
+      const result = prepareTradingTickLatencyForTarget(
+        {
+          tick: tick(),
+          shadowReplay: false
+        },
+        target
+      );
+
+      expect(result).toMatchObject({
+        streamId: null,
+        hardStaleDropMs: 150,
+        isHardStale: false,
+        metrics: {
+          brainTimestamp: "2026-05-18T15:00:00.100Z",
+          totalLatencyMs: 100,
+          status: "FRESH"
+        }
+      });
+      expect(target.engineState.averageLatency).toBeCloseTo(46.667, 3);
+      expect(target.engineState.latencySampleCount).toBe(3);
+      expect(target.latencyHistory).toHaveLength(1);
+      expect(events).toEqual(["location:100:2026-05-18T15:00:00.100Z"]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("hydrates latency metrics from engine state and appends bounded history", () => {

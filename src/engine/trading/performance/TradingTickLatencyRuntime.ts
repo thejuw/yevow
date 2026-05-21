@@ -5,6 +5,11 @@ import {
   prepareTickLatencyFlow,
   type TickLatencyPreparationResult
 } from "./LatencyTickRuntime";
+import {
+  resetTradingLatencyBaselineForTarget,
+  updateTradingLatencyAverageForTarget,
+  type TradingLatencyStateTarget
+} from "./TradingLatencyStateRuntime";
 
 export interface TradingTickLatencyInput {
   readonly tick: MarketTick;
@@ -21,6 +26,15 @@ export interface TradingTickLatencyHandlers {
   readonly updateLatencyAverage: (totalLatencyMs: number) => void;
   readonly applyLocationLatency: (totalLatencyMs: number, observedAt: string) => void;
   readonly setLatencyHistory: (history: LatencyMetrics[]) => void;
+}
+
+export interface TradingTickLatencyTarget extends TradingLatencyStateTarget {
+  readonly maxLatencyMs: number;
+  readonly env: {
+    readonly DWELLIR_MAX_LATENCY_MS?: string;
+    readonly HL_STALE_AFTER_MS?: string;
+  };
+  applyLocationLatency(totalLatencyMs: number, observedAt: string): void;
 }
 
 export type TradingTickLatencyResult = Pick<
@@ -53,6 +67,37 @@ export function prepareTradingTickLatency(
       hydrateMetrics: (metrics) => hydrateLatencyMetricsFromState(metrics, input.engineState),
       applyLocationLatency: handlers.applyLocationLatency,
       setLatencyHistory: handlers.setLatencyHistory
+    }
+  );
+}
+
+export function prepareTradingTickLatencyForTarget(
+  input: Pick<TradingTickLatencyInput, "tick" | "shadowReplay">,
+  target: TradingTickLatencyTarget
+): TradingTickLatencyResult {
+  return prepareTradingTickLatency(
+    {
+      tick: input.tick,
+      shadowReplay: input.shadowReplay,
+      maxLatencyMs: target.maxLatencyMs,
+      engineState: target.engineState,
+      latencyHistory: target.latencyHistory,
+      dwellirMaxLatencyMs: target.env.DWELLIR_MAX_LATENCY_MS,
+      hlStaleAfterMs: target.env.HL_STALE_AFTER_MS
+    },
+    {
+      resetLatencyBaseline: (observedAt, reason) => {
+        resetTradingLatencyBaselineForTarget(observedAt, reason, target);
+      },
+      updateLatencyAverage: (totalLatencyMs) => {
+        updateTradingLatencyAverageForTarget(totalLatencyMs, target);
+      },
+      applyLocationLatency: (totalLatencyMs, observedAt) => {
+        target.applyLocationLatency(totalLatencyMs, observedAt);
+      },
+      setLatencyHistory: (history) => {
+        target.latencyHistory = history;
+      }
     }
   );
 }

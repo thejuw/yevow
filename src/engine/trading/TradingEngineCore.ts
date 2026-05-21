@@ -112,7 +112,10 @@ import {
   handleTradingSoftStaleTick,
   type TradingStaleLatencyTarget
 } from "./performance/TradingStaleLatencyRuntime";
-import { prepareTradingTickLatency } from "./performance/TradingTickLatencyRuntime";
+import {
+  prepareTradingTickLatencyForTarget,
+  type TradingTickLatencyTarget
+} from "./performance/TradingTickLatencyRuntime";
 import {
   resetTradingLatencyBaselineForTarget,
   tradingLatencyStorageWritesForState,
@@ -1397,25 +1400,12 @@ export class TradingEngine {
     hardStaleDropMs: number;
     isHardStale: boolean;
   } {
-    return prepareTradingTickLatency(
+    return prepareTradingTickLatencyForTarget(
       {
         tick,
-        shadowReplay,
-        maxLatencyMs: this.maxLatencyMs,
-        engineState: this.engineState,
-        latencyHistory: this.latencyHistory,
-        dwellirMaxLatencyMs: this.env.DWELLIR_MAX_LATENCY_MS,
-        hlStaleAfterMs: this.env.HL_STALE_AFTER_MS
+        shadowReplay
       },
-      {
-        resetLatencyBaseline: (observedAt, reason) => this.resetLatencyBaseline(observedAt, reason),
-        updateLatencyAverage: (totalLatencyMs) => this.updateLatencyAverage(totalLatencyMs),
-        applyLocationLatency: (totalLatencyMs, observedAt) =>
-          this.applyLocationLatency(totalLatencyMs, observedAt),
-        setLatencyHistory: (history) => {
-          this.latencyHistory = history;
-        }
-      }
+      this as unknown as TradingTickLatencyTarget
     );
   }
 
