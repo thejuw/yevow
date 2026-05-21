@@ -39,6 +39,11 @@ export interface TradingJanitorMaintenanceInput {
   readonly logger: TradingJanitorLogger;
 }
 
+export type TradingEngineJanitorMaintenanceInput = Omit<
+  TradingJanitorMaintenanceInput,
+  "observedAt"
+>;
+
 export interface TradingJanitorMaintenanceHandlers {
   readonly runBaseReport: (input: {
     readonly orderMap: EngineState["orderMap"];
@@ -54,6 +59,15 @@ export interface TradingJanitorMaintenanceHandlers {
   ) => Promise<void>;
   readonly pruneOperationalLogs: () => Promise<LogPruneReport>;
   readonly applyState: (state: EngineState) => Promise<void>;
+}
+
+export interface TradingEngineJanitorMaintenanceHandlers extends Omit<
+  TradingJanitorMaintenanceHandlers,
+  "applyState"
+> {
+  readonly nowIso: () => string;
+  readonly applyState: (state: EngineState) => void;
+  readonly persistState: (state: EngineState) => Promise<void>;
 }
 
 export interface TradingJanitorCancelInput {
@@ -113,6 +127,27 @@ export async function runTradingJanitorMaintenance(
         input.logger.warn("JANITOR_CLEANUP_REQUIRED", "Janitor found state hygiene work", metadata);
       },
       applyState: handlers.applyState
+    }
+  );
+}
+
+export function runTradingEngineJanitorMaintenance(
+  input: TradingEngineJanitorMaintenanceInput,
+  handlers: TradingEngineJanitorMaintenanceHandlers
+): Promise<void> {
+  return runTradingJanitorMaintenance(
+    {
+      ...input,
+      observedAt: handlers.nowIso()
+    },
+    {
+      runBaseReport: handlers.runBaseReport,
+      cancelOrder: handlers.cancelOrder,
+      pruneOperationalLogs: handlers.pruneOperationalLogs,
+      applyState: async (state) => {
+        handlers.applyState(state);
+        await handlers.persistState(state);
+      }
     }
   );
 }

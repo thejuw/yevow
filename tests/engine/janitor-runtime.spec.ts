@@ -19,7 +19,8 @@ import {
 } from "../../src/engine/trading/janitor/JanitorRuntime";
 import {
   cancelTradingJanitorOrder,
-  pruneTradingOperationalLogs
+  pruneTradingOperationalLogs,
+  runTradingEngineJanitorMaintenance
 } from "../../src/engine/trading/janitor/TradingJanitorRuntime";
 import type { LogPruneReport } from "../../src/engine/LogRetention";
 import type { EngineState, ExchangeOpenOrder, JanitorState, ManagedOrder } from "../../src/types";
@@ -642,6 +643,63 @@ describe("JanitorRuntime", () => {
       "apply"
     ]);
     expect(artifacts.report.zombieOrders).toEqual(["client-1"]);
+  });
+
+  it("wraps trading janitor maintenance with generated observation time and persistence", async () => {
+    const state = {
+      orderMap: {
+        "client-1": order({ clientId: "client-1", exchangeOrderId: "missing", status: "OPEN" })
+      },
+      openPositions: {},
+      janitor: janitorState(),
+      updatedAt: "2026-05-18T15:00:00.000Z",
+      heartbeatAt: "2026-05-18T15:00:00.000Z"
+    } as EngineState;
+    const events: string[] = [];
+
+    await runTradingEngineJanitorMaintenance(
+      {
+        source: "ADMIN",
+        state,
+        orderAckTimeoutMs: "1500",
+        executioner: undefined,
+        logger: loggerSpy().logger
+      },
+      {
+        nowIso() {
+          events.push("now");
+          return OBSERVED_AT;
+        },
+        runBaseReport(input) {
+          events.push(`base:${input.observedAt}:${input.ackTimeoutMs}`);
+          return janitorState({ zombieOrders: ["client-1"] });
+        },
+        cancelOrder(orderId, reason, instrumentCode) {
+          events.push(`cancel:${orderId}:${reason}:${instrumentCode ?? "NONE"}`);
+          return Promise.resolve();
+        },
+        pruneOperationalLogs() {
+          events.push("prune");
+          return Promise.resolve(logPruneReport({ totalRows: 0 }));
+        },
+        applyState(nextState) {
+          events.push(`state:${nextState.updatedAt}`);
+        },
+        persistState(nextState) {
+          events.push(`persist:${nextState.janitor.zombieOrders.join(",")}`);
+          return Promise.resolve();
+        }
+      }
+    );
+
+    expect(events).toEqual([
+      "now",
+      "base:2026-05-18T16:00:00.000Z:1500",
+      "cancel:client-1:JANITOR_ZOMBIE_LOCAL_ORDER:btc-usd",
+      "prune",
+      "state:2026-05-18T16:00:00.000Z",
+      "persist:client-1"
+    ]);
   });
 });
 
