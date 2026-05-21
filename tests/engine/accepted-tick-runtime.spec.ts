@@ -12,7 +12,11 @@ import {
   buildAcceptedTickFinalizationArtifacts,
   finalizeAcceptedTickFlow
 } from "../../src/engine/trading/pipelines/AcceptedTickFinalizationRuntime";
-import { buildAcceptedTickStateTransition } from "../../src/engine/trading/pipelines/AcceptedTickStateTransitionRuntime";
+import {
+  buildAcceptedTickStateTransition,
+  commitAcceptedTickStateForTarget,
+  type AcceptedTickStateCommitTarget
+} from "../../src/engine/trading/pipelines/AcceptedTickStateTransitionRuntime";
 import { buildTickDecisionContextFlow } from "../../src/engine/trading/pipelines/TickDecisionContextRuntime";
 import type {
   AcceptedDecisionPipelineInput,
@@ -219,6 +223,49 @@ describe("AcceptedTickRuntime", () => {
     });
     expect(transition.agentHealth.PROFILER.latencyMs).toBe(2.5);
     expect(transition.agentHealth.CROUPIER.latencyMs).toBe(3.5);
+
+    const target: AcceptedTickStateCommitTarget = {
+      engineState: state,
+      cachedConfig: state.cachedConfig,
+      bids: new Map(),
+      asks: new Map(),
+      maxLatencyMs: 150,
+      macroBias: state.macroBias,
+      env: {
+        MAX_POSITION_PCT: undefined
+      },
+      orderBook: new Map(),
+      profilerRegistry: {
+        forInstrument() {
+          return {
+            snapshot: () => ({ toxicityState: "NORMAL", amVpinScore: 0, obi: null }) as never
+          };
+        }
+      }
+    };
+
+    commitAcceptedTickStateForTarget(artifacts.commitInput, target, (transitionInput) => {
+      expect(transitionInput.internalOrderBookDepth).toBe(0);
+      expect(transitionInput.maxLatencyMs).toBe(150);
+      expect(transitionInput.toxicityScore).toBe(0.42);
+
+      return {
+        ...transitionInput.currentState,
+        processedTicks: transitionInput.currentState.processedTicks + 1,
+        internalOrderBookDepth: transitionInput.internalOrderBookDepth,
+        maxLatencyMs: transitionInput.maxLatencyMs,
+        heartbeatAt: transitionInput.observedAt,
+        toxicityScore: transitionInput.toxicityScore
+      };
+    });
+
+    expect(target.engineState).toMatchObject({
+      processedTicks: state.processedTicks + 1,
+      internalOrderBookDepth: 0,
+      maxLatencyMs: 150,
+      heartbeatAt: OBSERVED_AT,
+      toxicityScore: 0.42
+    });
   });
 
   it("builds tick decision context with risk, inventory, asset, and sentiment gates", () => {

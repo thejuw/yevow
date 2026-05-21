@@ -20,7 +20,6 @@ import {
   type TradingTopologyTarget
 } from "./helpers/TradingTopologyRuntime";
 import { priceKey, SortedBookSide } from "./book/SortedBookSide";
-import { countBookLevels } from "./book/BookReconstruction";
 import { currentOrderBookSnapshot } from "./book/BookViews";
 import {
   handleTradingEngineInformationalBookNotReady,
@@ -255,13 +254,13 @@ import {
   createTradingEngineBootServices,
   tradingEngineLoggerRuntimeContext
 } from "./state/EngineBootServices";
-import { stateAfterAcceptedTick } from "./state/TickStateRuntime";
 import { maybeResumeTradingShadowMode } from "./state/TradingShadowModeAutoResumeRuntime";
 import { resolveTradingTickAvailability } from "./state/TradingAvailabilityRuntime";
 import {
   recordTradingAcceptedTickJournal,
   scheduleTradingAcceptedTickSnapshot
 } from "./state/TradingTickPersistenceRuntime";
+import { stateAfterAcceptedTick } from "./state/TickStateRuntime";
 import { applyTradingAdminRecoveryFlow } from "./state/RecoveryRuntime";
 import {
   applyHotStorageSnapshotSideEffects,
@@ -466,7 +465,10 @@ import {
 } from "./state/EngineStateDefaults";
 import { applyAcceptedDecisionPipelineFlow } from "./pipelines/AcceptedTickLifecycleRuntime";
 import { buildTickDecisionContextFlow } from "./pipelines/TickDecisionContextRuntime";
-import { buildAcceptedTickStateTransition } from "./pipelines/AcceptedTickStateTransitionRuntime";
+import {
+  commitAcceptedTickStateForTarget,
+  type AcceptedTickStateCommitTarget
+} from "./pipelines/AcceptedTickStateTransitionRuntime";
 import { finalizeAcceptedTickFlow } from "./pipelines/AcceptedTickFinalizationRuntime";
 import { prepareAcceptedExecutionContextFlow } from "./pipelines/AcceptedExecutionContextRuntime";
 import { prepareTradingPostBookTickRuntime } from "./pipelines/PostBookTickRuntime";
@@ -1818,28 +1820,10 @@ export class TradingEngine {
   }
 
   private commitAcceptedTickState(input: AcceptedTickStateCommitInput): void {
-    this.engineState = stateAfterAcceptedTick(
-      buildAcceptedTickStateTransition({
-        currentState: this.engineState,
-        config: this.cachedConfig,
-        commit: input,
-        internalOrderBookDepth: countBookLevels(this.bids, this.asks),
-        maxLatencyMs: this.maxLatencyMs,
-        calculateAssetMatrix: (
-          observedAt,
-          latestInstrumentCode,
-          latestOracle,
-          profilerStates,
-          assetQuoteStates
-        ) =>
-          this.calculateAssetMatrix(
-            observedAt,
-            latestInstrumentCode,
-            latestOracle,
-            profilerStates,
-            assetQuoteStates
-          )
-      })
+    commitAcceptedTickStateForTarget(
+      input,
+      this as unknown as AcceptedTickStateCommitTarget,
+      stateAfterAcceptedTick
     );
   }
 

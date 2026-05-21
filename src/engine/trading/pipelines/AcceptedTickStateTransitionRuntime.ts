@@ -1,6 +1,12 @@
 import { aggregateQuoteState } from "../state/AssetStateRuntime";
 import { nextTickAgentHealth } from "../state/AgentHealthRuntime";
 import type { AcceptedTickStateInput } from "../state/TickStateRuntime";
+import { countBookLevels } from "../book/BookReconstruction";
+import type { SortedBookSide } from "../book/SortedBookSide";
+import {
+  calculateTradingAssetMatrixForTarget,
+  type TradingAssetMatrixTarget
+} from "../state/TradingAssetMatrixRuntime";
 import type { AcceptedTickStateCommitInput } from "./TickPipelineTypes";
 import type { EngineState, GlobalRiskConfig } from "../../../types";
 
@@ -26,6 +32,14 @@ export interface AcceptedTickStateTransitionInput {
     profilerStates: EngineState["profilerStates"],
     assetQuoteStates: EngineState["assetQuoteStates"]
   ) => EngineState["assetMatrix"];
+}
+
+export interface AcceptedTickStateCommitTarget extends TradingAssetMatrixTarget {
+  engineState: EngineState;
+  readonly cachedConfig: GlobalRiskConfig;
+  readonly bids: Map<string, SortedBookSide>;
+  readonly asks: Map<string, SortedBookSide>;
+  readonly maxLatencyMs: number;
 }
 
 export function buildAcceptedTickStateTransition(
@@ -97,4 +111,36 @@ export function buildAcceptedTickStateTransition(
     maxLatencyMs: input.maxLatencyMs,
     observedAt: input.commit.observedAt
   };
+}
+
+export function commitAcceptedTickStateForTarget(
+  commit: AcceptedTickStateCommitInput,
+  target: AcceptedTickStateCommitTarget,
+  applyState: (input: AcceptedTickStateInput) => EngineState
+): void {
+  target.engineState = applyState(
+    buildAcceptedTickStateTransition({
+      currentState: target.engineState,
+      config: target.cachedConfig,
+      commit,
+      internalOrderBookDepth: countBookLevels(target.bids, target.asks),
+      maxLatencyMs: target.maxLatencyMs,
+      calculateAssetMatrix: (
+        observedAt,
+        _latestInstrumentCode,
+        latestOracle,
+        profilerStates,
+        assetQuoteStates
+      ) =>
+        calculateTradingAssetMatrixForTarget(
+          {
+            observedAt,
+            latestOracle,
+            profilerStates,
+            assetQuoteStates
+          },
+          target
+        )
+    })
+  );
 }
