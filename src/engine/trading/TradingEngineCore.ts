@@ -120,10 +120,8 @@ import {
   currentTradingCascadePositionSnapshot as buildCurrentCascadePositionSnapshot
 } from "./cascade/CascadeSnapshots";
 import {
-  handleTradingEngineLiquidationEvents,
   recordTradingEngineCascadeLiquidations,
-  type TradingCascadeLiquidationDetectionTarget,
-  type TradingLiquidationIngestTarget
+  type TradingCascadeLiquidationDetectionTarget
 } from "./cascade/CascadeLiquidationRuntime";
 import {
   buildCascadeEntryTradeIntent,
@@ -155,21 +153,13 @@ import {
 } from "./book/OrderBookReconstructorFactory";
 import type { AppliedBookUpdate, BookDeltaWithTicker, BookSyncState } from "./book/BookTypes";
 import {
-  handleTradingEngineHyperliquidL2Book,
-  type TradingHyperliquidL2BookTarget
-} from "./ingest/TradingHyperliquidL2BookRuntime";
-import {
   applyHyperliquidIngestConnectionSideEffects,
-  processHyperliquidAssetContext,
-  processHyperliquidTradeBatch,
   registerHyperliquidIngestConnection,
   type HyperliquidRawIngestPayload
 } from "./ingest/HyperliquidRawRouting";
 import {
-  handleTradingHyperliquidRaw,
-  handleTradingHyperliquidRawMessage,
-  type TradingHyperliquidRawBatchTarget,
-  type TradingHyperliquidRawRouteTarget
+  handleTradingHyperliquidRawForTarget,
+  type TradingHyperliquidRawEngineTarget
 } from "./ingest/TradingHyperliquidRawRuntime";
 import { applyGrpcFatalDropSideEffects, grpcFatalDropArtifacts } from "./ingest/GrpcDropRuntime";
 import {
@@ -908,67 +898,10 @@ export class TradingEngine {
     payload: HyperliquidRawIngestPayload,
     wakeUpTimeMs: number | null
   ): Promise<TickIngestResult> {
-    return handleTradingHyperliquidRaw(
+    return handleTradingHyperliquidRawForTarget(
       payload,
       wakeUpTimeMs,
-      this as unknown as TradingHyperliquidRawBatchTarget
-    );
-  }
-
-  private async handleHyperliquidRawMessage(
-    raw: unknown,
-    payload: HyperliquidRawIngestPayload,
-    wakeUpTimeMs: number | null
-  ): Promise<TickIngestResult> {
-    return handleTradingHyperliquidRawMessage(
-      raw,
-      payload,
-      wakeUpTimeMs,
-      this as unknown as TradingHyperliquidRawRouteTarget
-    );
-  }
-
-  private async handleHyperliquidL2Book(
-    raw: Record<string, unknown>,
-    payload: HyperliquidRawIngestPayload,
-    wakeUpTimeMs: number | null
-  ): Promise<TickIngestResult> {
-    return handleTradingEngineHyperliquidL2Book(
-      raw,
-      payload,
-      wakeUpTimeMs,
-      this as unknown as TradingHyperliquidL2BookTarget
-    );
-  }
-
-  private async handleHyperliquidTrades(
-    raw: Record<string, unknown>,
-    payload: HyperliquidRawIngestPayload,
-    wakeUpTimeMs: number | null
-  ): Promise<TickIngestResult> {
-    return processHyperliquidTradeBatch(raw, payload, wakeUpTimeMs, {
-      processTick: (tick, wakeUp) => this.handleTick(tick, wakeUp)
-    });
-  }
-
-  private async handleHyperliquidAssetContext(
-    raw: Record<string, unknown>,
-    payload: HyperliquidRawIngestPayload,
-    wakeUpTimeMs: number | null
-  ): Promise<TickIngestResult> {
-    return processHyperliquidAssetContext(raw, payload, wakeUpTimeMs, {
-      processTick: (tick, wakeUp) => this.handleTick(tick, wakeUp)
-    });
-  }
-
-  private async handleHyperliquidLiquidationEvents(
-    raw: Record<string, unknown>,
-    payload: HyperliquidRawIngestPayload
-  ): Promise<TickIngestResult> {
-    return handleTradingEngineLiquidationEvents(
-      raw,
-      payload,
-      this as unknown as TradingLiquidationIngestTarget
+      this as unknown as TradingHyperliquidRawEngineTarget
     );
   }
 

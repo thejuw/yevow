@@ -33,8 +33,10 @@ import {
 } from "../../src/engine/trading/ingest/TradingHyperliquidL2BookRuntime";
 import {
   handleTradingHyperliquidRaw,
+  handleTradingHyperliquidRawForTarget,
   handleTradingHyperliquidRawMessage,
   type TradingHyperliquidRawBatchTarget,
+  type TradingHyperliquidRawEngineTarget,
   type TradingHyperliquidRawRouteTarget
 } from "../../src/engine/trading/ingest/TradingHyperliquidRawRuntime";
 import type { InternalOrderBook, MarketTick } from "../../src/types";
@@ -203,6 +205,53 @@ describe("hyperliquid raw ingest helpers", () => {
     await handleTradingHyperliquidRawMessage({ channel: "userEvents" }, {}, 5, target);
 
     expect(calls).toEqual(["l2", "trades", "asset-context", "liquidations"]);
+  });
+
+  it("routes native raw batches through a trading engine target", async () => {
+    const seen: string[] = [];
+    const target = {
+      activeIngestConnections: new Map([
+        [hyperliquidIngestConnectionKey("hyperliquid", "dwellir"), "conn-1"]
+      ]),
+      ingestQueue: Promise.resolve(),
+      handleTick: async (tick: MarketTick, wakeUpTimeMs: number | null) => {
+        seen.push(`${tick.sourceChannel}:${tick.instrumentCode}:${tick.side}:${wakeUpTimeMs}`);
+        return freshResult();
+      }
+    } as unknown as TradingHyperliquidRawEngineTarget;
+
+    const result = await handleTradingHyperliquidRawForTarget(
+      {
+        transport: "grpc",
+        source_exchange: "hyperliquid",
+        streamId: "dwellir",
+        connectionId: "conn-1",
+        receivedAt: "2026-01-01T00:00:00.100Z",
+        messages: [
+          {
+            channel: "trades",
+            data: [{ coin: "BTC", px: "100", sz: "0.25", time: 1_767_000_000_000, isBuy: true }]
+          },
+          {
+            channel: "activeAssetCtx",
+            data: {
+              coin: "BTC",
+              ctx: {
+                midPx: "100.5",
+                markPx: "100.4",
+                funding: "0.0000125"
+              },
+              time: 1_767_000_000_000
+            }
+          }
+        ]
+      },
+      6,
+      target
+    );
+
+    expect(result).toMatchObject({ accepted: true, status: "FRESH", processedCount: 2 });
+    expect(seen).toEqual(["trades:btc-usd:buy:6", "activeAssetCtx:btc-usd:unknown:6"]);
   });
 
   it("resolves book timestamps with drift and invalid timestamp guards", () => {
