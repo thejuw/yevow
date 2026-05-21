@@ -10,11 +10,7 @@ import {
   type ProfilerEvaluation
 } from "../../agents/ProfilerAgent";
 import { ProfilerRegistry } from "../../agents/ProfilerRegistry";
-import {
-  AnomalyDetector,
-  ANOMALY_DETECTOR_STORAGE_KEY,
-  type AnomalyDetectionResult
-} from "../../agents/AnomalyDetector";
+import { AnomalyDetector, type AnomalyDetectionResult } from "../../agents/AnomalyDetector";
 import { CroupierAgent, type CroupierDecision } from "../../agents/CroupierAgent";
 import { AdverseSelectionModel } from "../AdverseSelectionModel";
 import {
@@ -45,8 +41,7 @@ import {
 import { resolveTradingTickBook } from "./book/TradingTickBookRuntime";
 import { buildDomAnalysisSnapshot, currentDomHeatmapSnapshot } from "./book/DomAnalyzer";
 import { processTradingShadowQueueTick } from "./shadow/TradingShadowQueueRuntime";
-import { applyAnomalyEmergencyPauseFlow } from "./anomaly/AnomalyRuntime";
-import { emitTradingAnomalyEmergencyPause } from "./anomaly/TradingAnomalyEmergencyRuntime";
+import { handleTradingAnomalyEmergencyPause } from "./anomaly/TradingAnomalyEmergencyRuntime";
 import { updateLeadLagMetrics as updateLeadLagRuntimeMetrics } from "./leadlag/LeadLagRuntime";
 import { cancelLaggingHypeQuotesForTrading } from "./leadlag/TradingCrossAssetCancelRuntime";
 import { dispatchTradingInventoryHedgeIfNeeded } from "./inventory/TradingInventoryHedgeRuntime";
@@ -2058,34 +2053,23 @@ export class TradingEngine {
     orderBookUpdateMs: number,
     hotPathStartedAt: number
   ): Promise<TickIngestResult> {
-    const anomalyLogicMs = roundLatency(highResolutionNow() - anomalyLogicStartedAt);
-
-    return applyAnomalyEmergencyPauseFlow(
+    return handleTradingAnomalyEmergencyPause(
       {
         currentState: this.engineState,
-        engineStateKey: ENGINE_STATE_KEY,
-        performanceHistoryKey: PERFORMANCE_HISTORY_KEY,
         latencyHistory: this.latencyHistory,
-        processingLatencySamplesKey: PROCESSING_LATENCY_SAMPLES_KEY,
         processingLatencySamples: this.processingLatencySamples,
-        domWallHistoryKey: DOM_WALL_HISTORY_KEY,
         domWallHistory: this.domWallHistory,
-        anomalyDetectorStorageKey: ANOMALY_DETECTOR_STORAGE_KEY,
         anomalyResult,
-        orderBookPrefix: ORDER_BOOK_PREFIX,
         book,
         tick,
         domSnapshot,
         metrics,
-        internalOrderBookDepth: countBookLevels(this.bids, this.asks),
-        observedAt: metrics.brainTimestamp,
-        executionTrace: {
-          wakeUpTimeMs,
-          orderBookUpdateMs,
-          agentLogicMs: anomalyLogicMs,
-          hotPathStartedAt,
-          observedAt: metrics.brainTimestamp
-        }
+        bids: this.bids,
+        asks: this.asks,
+        anomalyLogicStartedAt,
+        wakeUpTimeMs,
+        orderBookUpdateMs,
+        hotPathStartedAt
       },
       {
         observeExecutionProfile: (profileMetrics, trace) =>
@@ -2094,13 +2078,10 @@ export class TradingEngine {
           this.engineState = state;
         },
         persistStorageWrites: (writes) => this.safeStoragePut(writes, "ANOMALY_EMERGENCY_PAUSE"),
-        emitEmergencyPause: (event) =>
-          emitTradingAnomalyEmergencyPause(event, {
-            writeCriticalLog: (source, message, metadata) =>
-              this.logger.writeLog("CRITICAL", source, message, metadata),
-            publish: (type, payload, correlationId) => this.publish(type, payload, correlationId),
-            notify: (notification) => this.notifier.notify(notification)
-          }),
+        writeCriticalLog: (source, message, metadata) =>
+          this.logger.writeLog("CRITICAL", source, message, metadata),
+        publish: (type, payload, correlationId) => this.publish(type, payload, correlationId),
+        notify: (notification) => this.notifier.notify(notification),
         publishTickTelemetry: (telemetryTick, telemetryMetrics, status, telemetryStartedAt) =>
           this.publishTickTelemetry(telemetryTick, telemetryMetrics, status, telemetryStartedAt)
       }

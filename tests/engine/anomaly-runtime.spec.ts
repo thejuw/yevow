@@ -11,6 +11,8 @@ import {
   type AnomalyEmergencyPauseFlowHandlers,
   type AnomalyEmergencyPauseSideEffectHandlers
 } from "../../src/engine/trading/anomaly/AnomalyRuntime";
+import { handleTradingAnomalyEmergencyPause } from "../../src/engine/trading/anomaly/TradingAnomalyEmergencyRuntime";
+import { SortedBookSide } from "../../src/engine/trading/book/SortedBookSide";
 import type { AnomalyDetectionResult } from "../../src/agents/AnomalyDetector";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type {
@@ -264,6 +266,50 @@ describe("AnomalyRuntime", () => {
     ]);
   });
 
+  it("handles trading anomaly emergency pause with book depth and notification side effects", async () => {
+    const sideEffects = tradingAnomalySideEffectSpy();
+    const bidSide = new SortedBookSide("bid");
+    const askSide = new SortedBookSide("ask");
+    bidSide.upsert(99, 1, OBSERVED_AT, 1);
+    askSide.upsert(101, 1, OBSERVED_AT, 1);
+
+    const result = await handleTradingAnomalyEmergencyPause(
+      {
+        currentState: defaultEngineState("trading-anomaly-flow"),
+        latencyHistory: [latency()],
+        processingLatencySamples: [1],
+        domWallHistory: dom().walls,
+        anomalyResult: anomalyResult(),
+        book: book(),
+        tick: tick(),
+        domSnapshot: dom(),
+        metrics: latency(),
+        bids: new Map([["hyperliquid:btc-usd", bidSide]]),
+        asks: new Map([["hyperliquid:btc-usd", askSide]]),
+        anomalyLogicStartedAt: 0,
+        wakeUpTimeMs: 2,
+        orderBookUpdateMs: 1,
+        hotPathStartedAt: 123
+      },
+      sideEffects.handlers
+    );
+
+    expect(result).toMatchObject({
+      accepted: false,
+      status: "ANOMALY_PAUSE",
+      reason: "FLASH_CRASH"
+    });
+    expect(sideEffects.events[0]).toMatch(/^profile:/);
+    expect(sideEffects.events.slice(1)).toEqual([
+      "state:HALTED:2",
+      "persist:8",
+      "log:CRITICAL:TradingEngine:MARKET_ANOMALY_EMERGENCY_PAUSE",
+      "publish:EMERGENCY_PAUSE:anomaly-1",
+      "notify:CRITICAL",
+      "telemetry:FRESH:123"
+    ]);
+  });
+
   it("emits emergency pause audit, bus, and notification side effects in order", () => {
     const event = buildAnomalyEmergencyPauseTelemetry({
       tick: tick(),
@@ -351,6 +397,41 @@ function anomalyFlowSideEffectSpy(): {
       },
       emitEmergencyPause(event) {
         events.push(`emit:${event.correlationId}`);
+      },
+      publishTickTelemetry(_tick, _metrics, status, hotPathStartedAt) {
+        events.push(`telemetry:${status}:${hotPathStartedAt}`);
+      }
+    }
+  };
+}
+
+function tradingAnomalySideEffectSpy(): {
+  events: string[];
+  handlers: Parameters<typeof handleTradingAnomalyEmergencyPause>[1];
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      observeExecutionProfile(_metrics, trace) {
+        events.push(`profile:${String(trace.orderBookUpdateMs)}:${String(trace.agentLogicMs)}`);
+      },
+      applyState(state) {
+        events.push(`state:${state.mode}:${String(state.internalOrderBookDepth)}`);
+      },
+      persistStorageWrites(writes) {
+        events.push(`persist:${Object.keys(writes).length}`);
+        return Promise.resolve();
+      },
+      writeCriticalLog(source, _message, metadata) {
+        events.push(`log:CRITICAL:${source}:${metadata.eventType}`);
+      },
+      publish(type, _payload, correlationId) {
+        events.push(`publish:${type}:${correlationId}`);
+      },
+      notify(notification) {
+        events.push(`notify:${notification.priority}`);
       },
       publishTickTelemetry(_tick, _metrics, status, hotPathStartedAt) {
         events.push(`telemetry:${status}:${hotPathStartedAt}`);
