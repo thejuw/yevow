@@ -20,6 +20,7 @@ import type {
 } from "../../../strategy/cascade/types";
 import { CASCADE_POSITIONS_KEY } from "../../../TradingEngineConstants";
 import type {
+  EngineState,
   Env,
   GlobalRiskConfig,
   JsonRecord,
@@ -143,6 +144,19 @@ export interface TradingCascadeRecoverySignalEvaluationInput {
 export interface TradingCascadeRecoverySignalEvaluationHandlers {
   readonly snapshotCandles: (instrumentCode: string, timeframe: "1m", limit: number) => Candle[];
   readonly isWithinBlackout: (observedAt: Date, baseAsset: string) => { readonly blocked: boolean };
+}
+
+export interface TradingCascadeRecoverySignalTarget {
+  readonly cachedConfig: GlobalRiskConfig;
+  readonly engineState: Pick<EngineState, "microstructure" | "oracle" | "riskMetrics">;
+  readonly cascadeEventsById: ReadonlyMap<string, CascadeEvent>;
+  readonly env: Pick<Env, "CASCADE_ATR_FALLBACK_USD" | "CASCADE_ATR_FALLBACK_PCT">;
+  readonly candleAggregator: {
+    snapshot(instrumentCode: string, timeframe: "1m", limit: number): Candle[];
+  };
+  readonly cascadeNewsCalendar: {
+    isWithinBlackout(observedAt: Date, baseAsset: string): { readonly blocked: boolean };
+  };
 }
 
 export function shouldEvaluateCascadeStrategy(
@@ -331,4 +345,33 @@ export function evaluateTradingCascadeRecoverySignal(
     weeklyLossLimitBreached: false,
     observedAt: input.observedAt
   });
+}
+
+export function evaluateTradingEngineCascadeRecoverySignal(
+  cascade: CascadeEvent,
+  absorption: AbsorptionConfirmed,
+  reclaimCandle: Candle,
+  observedAt: string,
+  target: TradingCascadeRecoverySignalTarget
+): CascadeRecoverySignalResult {
+  return evaluateTradingCascadeRecoverySignal(
+    {
+      cascade,
+      absorption,
+      reclaimCandle,
+      observedAt,
+      config: target.cachedConfig,
+      midPrice: target.engineState.microstructure.midPrice,
+      oracleRegime: target.engineState.oracle.regime ?? "UNKNOWN",
+      riskTradingEnabled: target.engineState.riskMetrics.isTradingEnabled,
+      cascadeEventsById: target.cascadeEventsById,
+      env: target.env
+    },
+    {
+      snapshotCandles: (instrumentCode, timeframe, limit) =>
+        target.candleAggregator.snapshot(instrumentCode, timeframe, limit),
+      isWithinBlackout: (blackoutObservedAt, baseAsset) =>
+        target.cascadeNewsCalendar.isWithinBlackout(blackoutObservedAt, baseAsset)
+    }
+  );
 }

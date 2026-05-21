@@ -149,8 +149,9 @@ import {
   applyCascadeSignalRejectionSideEffects,
   dispatchTradingCascadePositionUpdates,
   evaluateCascadeStrategyFlow,
-  evaluateTradingCascadeRecoverySignal,
+  evaluateTradingEngineCascadeRecoverySignal,
   processAcceptedCascadeSignalFlow,
+  type TradingCascadeRecoverySignalTarget,
   type TradingCascadePositionUpdateTarget
 } from "./cascade/CascadeStrategyRuntime";
 import { OrderBookReconstructor, type OrderBookStores } from "./book/OrderBookReconstructor";
@@ -320,13 +321,11 @@ import type {
 import type {
   AbsorptionAnalyzerConfig,
   AbsorptionConfirmed,
-  Candle,
   CascadeDetectorConfig,
   CascadeEvent,
   CascadePositionIntent,
   CascadeRecoverySignal,
   CascadeRecoverySignalRejection,
-  CascadeRecoverySignalResult,
   LiquidationEvent
 } from "../../strategy/cascade/types";
 
@@ -1155,34 +1154,6 @@ export class TradingEngine {
     );
   }
 
-  private evaluateCascadeRecoverySignal(
-    cascade: CascadeEvent,
-    absorption: AbsorptionConfirmed,
-    reclaimCandle: Candle,
-    observedAt: string
-  ): CascadeRecoverySignalResult {
-    return evaluateTradingCascadeRecoverySignal(
-      {
-        cascade,
-        absorption,
-        reclaimCandle,
-        observedAt,
-        config: this.cachedConfig,
-        midPrice: this.engineState.microstructure.midPrice,
-        oracleRegime: this.engineState.oracle.regime ?? "UNKNOWN",
-        riskTradingEnabled: this.engineState.riskMetrics.isTradingEnabled,
-        cascadeEventsById: this.cascadeEventsById,
-        env: this.env
-      },
-      {
-        snapshotCandles: (instrumentCode, timeframe, limit) =>
-          this.candleAggregator.snapshot(instrumentCode, timeframe, limit),
-        isWithinBlackout: (blackoutObservedAt, baseAsset) =>
-          this.cascadeNewsCalendar.isWithinBlackout(blackoutObservedAt, baseAsset)
-      }
-    );
-  }
-
   private async evaluateCascadeStrategy(tick: MarketTick, observedAt: string): Promise<void> {
     await evaluateCascadeStrategyFlow(
       {
@@ -1211,7 +1182,13 @@ export class TradingEngine {
         cascadeForAbsorption: (absorption) =>
           this.cascadeEventsById.get(absorption.cascadeId) ?? null,
         evaluateSignal: (cascade, absorption, reclaimCandle, signalObservedAt) =>
-          this.evaluateCascadeRecoverySignal(cascade, absorption, reclaimCandle, signalObservedAt),
+          evaluateTradingEngineCascadeRecoverySignal(
+            cascade,
+            absorption,
+            reclaimCandle,
+            signalObservedAt,
+            this as unknown as TradingCascadeRecoverySignalTarget
+          ),
         recordRejectedSignal: (rejection, rejectedAt) =>
           this.recordRejectedCascadeSignal(rejection, rejectedAt),
         processAcceptedSignal: (signal, acceptedAt) => this.processCascadeSignal(signal, acceptedAt)

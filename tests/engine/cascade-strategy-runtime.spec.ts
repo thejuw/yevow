@@ -8,6 +8,7 @@ import {
   closedOneMinuteCandlesForTick,
   dispatchTradingCascadePositionUpdates,
   evaluateCascadeStrategyFlow,
+  evaluateTradingEngineCascadeRecoverySignal,
   evaluateTradingCascadeRecoverySignal,
   processCascadeClosedCandleSignals,
   processAcceptedCascadeSignalFlow,
@@ -16,9 +17,11 @@ import {
   type CascadeSignalRejectionSideEffectHandlers,
   type CascadeStrategyEvaluationHandlers,
   type CascadeSizeRejectionSideEffectHandlers,
+  type TradingCascadeRecoverySignalTarget,
   type TradingCascadePositionUpdateTarget,
   shouldEvaluateCascadeStrategy
 } from "../../src/engine/trading/cascade/CascadeStrategyRuntime";
+import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { CascadeAssetProfile } from "../../src/strategy/cascade/AssetProfiles";
 import type {
   AbsorptionConfirmed,
@@ -407,6 +410,43 @@ describe("CascadeStrategyRuntime", () => {
           return { blocked: false };
         }
       }
+    );
+
+    expect(calls).toEqual(["candles:btc-usd:1m:64", "blackout:BTC"]);
+    expect(result.accepted).toEqual(expect.any(Boolean));
+  });
+
+  it("builds trading cascade recovery signal context through the engine target adapter", () => {
+    const calls: string[] = [];
+    const engineState = defaultEngineState("cascade-recovery-target");
+    engineState.microstructure.midPrice = 100;
+    engineState.oracle.regime = "REGIME_RANGE";
+    engineState.riskMetrics.isTradingEnabled = true;
+    const target: TradingCascadeRecoverySignalTarget = {
+      cachedConfig: defaultConfig,
+      engineState,
+      cascadeEventsById: new Map(),
+      env: {},
+      candleAggregator: {
+        snapshot(instrumentCode, timeframe, limit) {
+          calls.push(`candles:${instrumentCode}:${timeframe}:${limit}`);
+          return [candle({ close: 99 }), candle({ close: 100 }), candle({ close: 101 })];
+        }
+      },
+      cascadeNewsCalendar: {
+        isWithinBlackout(_observedAt, baseAsset) {
+          calls.push(`blackout:${baseAsset}`);
+          return { blocked: false };
+        }
+      }
+    };
+
+    const result = evaluateTradingEngineCascadeRecoverySignal(
+      cascade("cascade-btc-usd", "btc-usd"),
+      absorption("btc-usd"),
+      candle({ close: 101 }),
+      "2026-05-18T20:01:00.000Z",
+      target
     );
 
     expect(calls).toEqual(["candles:btc-usd:1m:64", "blackout:BTC"]);
