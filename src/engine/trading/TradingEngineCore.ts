@@ -154,13 +154,8 @@ import {
   nextLatencyAverage,
   prepareTickLatencyFlow
 } from "./performance/LatencyTickRuntime";
-import {
-  applyCancelJanitorOrderSideEffects,
-  cancelJanitorOrder,
-  fetchJanitorExchangeOpenOrders,
-  recordPostOnlyDustCloseSkips,
-  runJanitorMaintenance
-} from "./janitor/JanitorRuntime";
+import { applyCancelJanitorOrderSideEffects, cancelJanitorOrder } from "./janitor/JanitorRuntime";
+import { runTradingJanitorMaintenance } from "./janitor/TradingJanitorRuntime";
 import {
   currentCascadeActiveSnapshot as buildCurrentCascadeActiveSnapshot,
   currentCascadeHeatSnapshot as buildCurrentCascadeHeatSnapshot,
@@ -3707,42 +3702,20 @@ export class TradingEngine {
 
   private async runJanitor(source: "ALARM" | "ADMIN" = "ALARM"): Promise<void> {
     const observedAt = new Date().toISOString();
-    await runJanitorMaintenance(
+    await runTradingJanitorMaintenance(
       {
         source,
         state: this.engineState,
         observedAt,
-        ackTimeoutMs: readPositiveInteger(
-          this.env.ORDER_ACK_TIMEOUT_MS,
-          DEFAULT_ORDER_ACK_TIMEOUT_MS,
-          100,
-          60_000
-        ),
-        dustThreshold: 0.000001
+        orderAckTimeoutMs: this.env.ORDER_ACK_TIMEOUT_MS,
+        executioner: this.env.EXECUTIONER,
+        logger: this.logger
       },
       {
         runBaseReport: (input) => this.janitorAgent.run(input),
-        fetchExchangeOpenOrders: () =>
-          fetchJanitorExchangeOpenOrders({
-            executioner: this.env.EXECUTIONER,
-            logger: this.logger
-          }),
         cancelOrder: (orderId, reason, instrumentCode) =>
           this.cancelOrder(orderId, reason, instrumentCode),
-        recordDustCloseSkips: (instrumentCodes, dustObservedAt) =>
-          recordPostOnlyDustCloseSkips({
-            openPositions: this.engineState.openPositions,
-            logger: this.logger,
-            instrumentCodes,
-            observedAt: dustObservedAt
-          }),
         pruneOperationalLogs: () => this.pruneOperationalLogs(),
-        warnCleanupRequired: (metadata) =>
-          this.logger.warn(
-            "JANITOR_CLEANUP_REQUIRED",
-            "Janitor found state hygiene work",
-            metadata
-          ),
         applyState: async (state) => {
           this.engineState = state;
           await this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "JANITOR_REPORT");
