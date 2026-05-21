@@ -205,13 +205,13 @@ import {
 import { publishTradingTickTelemetry } from "./telemetry/TradingTickTelemetryRuntime";
 import { type ReplayOptions } from "./routes/ReplayAdminRoutes";
 import { type ReplayJournal } from "./replay/ReplayJournal";
-import { applyShadowReplayPreparation } from "./replay/ReplayPreparationRuntime";
 import { runTradingHistoricalReplay } from "./replay/TradingReplayRunRuntime";
 import {
-  captureEngineReplaySnapshot,
-  restoreReplaySnapshotSideEffects,
+  captureTradingReplaySnapshot,
+  prepareTradingShadowReplayState,
+  restoreTradingReplaySnapshot,
   type EngineReplaySnapshot
-} from "./replay/ReplaySnapshotRuntime";
+} from "./replay/TradingReplayStateRuntime";
 import type { GrpcFatalDropPayload, TickIngestResult } from "./TradingEngineRouteTypes";
 import {
   buildHealthReport,
@@ -381,8 +381,6 @@ import {
   DEFAULT_ANOMALY_TOP_OF_BOOK_WINDOW_MS,
   DEFAULT_EXCHANGE_FEE_BPS,
   DEFAULT_MIN_EV_THRESHOLD,
-  DEFAULT_MAX_POSITION_PCT,
-  DEFAULT_MAX_INVENTORY_UNITS,
   DEFAULT_AMM_MIN_TICK_CHANGE,
   DEFAULT_HEATMAP_PRICE_BIN_SIZE,
   DEFAULT_HEATMAP_CLUSTER_NOTIONAL_USD,
@@ -3417,13 +3415,11 @@ export class TradingEngine {
     startedAt: string,
     replayId: string
   ): void {
-    applyShadowReplayPreparation(
+    prepareTradingShadowReplayState(
       {
         currentConfig: this.cachedConfig,
         liveState: this.engineState,
         initialShadowBankroll,
-        defaultMaxPositionPct: DEFAULT_MAX_POSITION_PCT,
-        defaultMaxInventoryUnits: DEFAULT_MAX_INVENTORY_UNITS,
         startedAt,
         replayId
       },
@@ -3504,7 +3500,7 @@ export class TradingEngine {
   }
 
   private captureReplaySnapshot(): EngineReplaySnapshot {
-    return captureEngineReplaySnapshot({
+    return captureTradingReplaySnapshot({
       engineState: this.engineState,
       orderBooks: this.orderBook.values(),
       latencyHistory: this.latencyHistory,
@@ -3529,7 +3525,7 @@ export class TradingEngine {
   }
 
   private async restoreReplaySnapshot(snapshot: EngineReplaySnapshot): Promise<void> {
-    await restoreReplaySnapshotSideEffects(snapshot, {
+    await restoreTradingReplaySnapshot(snapshot, {
       listPersistedBookKeys: async () =>
         (
           await this.state.storage.list<InternalOrderBook>({
