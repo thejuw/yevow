@@ -207,15 +207,14 @@ import {
   type MultiScaleVolatilitySnapshot
 } from "../MultiScaleVolatility";
 import { QueuePositionModel } from "../QueuePositionModel";
-import { HeatmapAgent, defaultLiquidationHeatmapState } from "../../agents/HeatmapAgent";
+import { HeatmapAgent } from "../../agents/HeatmapAgent";
 import { JanitorAgent } from "../../agents/JanitorAgent";
-import { OracleAgent, defaultOracleState } from "../../agents/OracleAgent";
+import { OracleAgent } from "../../agents/OracleAgent";
 import { PitBossAgent } from "../../agents/PitBossAgent";
 import { SentimentAgent } from "../../agents/SentimentAgent";
 import { RateLimiter, type RateLimitBucketSnapshot } from "../../utils/RateLimiter";
 import type { Notifier } from "../../utils/Notifier";
-import { isShadowMode } from "../../utils/CitadelProtocol";
-import type { GhostBook, GhostBookConfig } from "../../utils/GhostBook";
+import type { GhostBook } from "../../utils/GhostBook";
 import { AbsorptionAnalyzer } from "../../strategy/cascade/AbsorptionAnalyzer";
 import type { Backtester } from "../../strategy/cascade/Backtester";
 import { CascadeCandleAggregator } from "../../strategy/cascade/CandleAggregator";
@@ -227,9 +226,7 @@ import type { CascadeAlertEventType } from "../../strategy/cascade/OperationalSa
 import { PositionManager } from "../../strategy/cascade/PositionManager";
 import type {
   AdminConfigUpdate,
-  AnomalyDetectorState,
   DomAnalysisSnapshot,
-  EngineLocation,
   EngineStabilityStatus,
   AgentName,
   AgentSignal,
@@ -240,16 +237,12 @@ import type {
   InventoryState,
   JsonRecord,
   LatencyMetrics,
-  LiquidationHeatmapState,
   LiquidityWall,
   MacroBias,
   MarketTick,
   OrderBookResetRequest,
-  OrderBookSide,
   OrderBookSnapshot,
-  OrderBookSnapshotLevel,
   Position,
-  RiskLimits,
   SentimentState,
   ShadowQueueState,
   TemporaryGovernanceOverride,
@@ -257,111 +250,8 @@ import type {
 } from "../../types";
 import type { AbsorptionConfirmed, CascadeEvent } from "../../strategy/cascade/types";
 
-import {
-  ORDER_BOOK_PREFIX,
-  PERFORMANCE_HISTORY_KEY,
-  CASCADE_LAST_BACKTEST_REPORT_KEY,
-  RISK_LIMITS_KEY,
-  CONFIG_KEY,
-  DEFAULT_MAX_LATENCY_MS,
-  DEFAULT_HARD_STALE_DROP_MS,
-  ADMIN_STREAM_PULSE_INTERVAL_MS,
-  STORAGE_WRITE_BACKOFF_MS,
-  PROCESSING_LATENCY_SAMPLES_KEY,
-  HOT_PATH_LOG_THROTTLE_MS,
-  DEFAULT_JITTER_SAMPLE_WINDOW,
-  DEFAULT_JITTER_COMPUTE_INTERVAL_TICKS,
-  DEFAULT_JITTER_THRESHOLD_MS,
-  DEFAULT_DOM_PRICE_BIN_SIZE,
-  DEFAULT_DOM_SCAN_RANGE_PCT,
-  DEFAULT_DOM_WALL_HISTORY_LIMIT,
-  DEFAULT_DOM_SPOOF_PROXIMITY_BPS,
-  DEFAULT_ANOMALY_PRICE_Z_THRESHOLD,
-  DEFAULT_ANOMALY_VOLUME_Z_THRESHOLD,
-  DEFAULT_ANOMALY_CANCEL_EXEC_RATIO_THRESHOLD,
-  DEFAULT_ANOMALY_PRICE_WINDOW_MS,
-  DEFAULT_ANOMALY_VOLUME_WINDOW_MS,
-  DEFAULT_ANOMALY_TOP_OF_BOOK_WINDOW_MS,
-  DEFAULT_EXCHANGE_FEE_BPS,
-  DEFAULT_MIN_EV_THRESHOLD,
-  DEFAULT_AMM_MIN_TICK_CHANGE,
-  DEFAULT_HEATMAP_PRICE_BIN_SIZE,
-  DEFAULT_HEATMAP_CLUSTER_NOTIONAL_USD,
-  DEFAULT_CASCADE_DISTANCE_PCT,
-  DEFAULT_MARKET_TICK_MAX_ROWS,
-  DEFAULT_SHADOW_VLO_CAPACITY,
-  DEFAULT_SHADOW_VLO_DRIFT_TRADES,
-  DEFAULT_SHADOW_VLO_QUEUE_DEPTH_MULTIPLIER,
-  DEFAULT_SHADOW_VLO_BASE_SPREAD_BPS,
-  DEFAULT_SHADOW_VLO_LATENCY_BUDGET_MS,
-  TARGET_ASSET_MATRIX,
-  TARGET_INSTRUMENTS,
-  DEFAULT_JANITOR_INTERVAL_MS,
-  AGGREGATED_BUS_TELEMETRY_TYPES
-} from "../../TradingEngineConstants";
-import {
-  resolveBookSide,
-  resolveCurrentInstrument,
-  hydrateLegacyLevel,
-  levelsToBookSide,
-  parseTickSizeMap,
-  parsePositiveNumberMap
-} from "./book/BookRuntimeHelpers";
-import { normalizeNativeCoin, splitNativeInstrument } from "./helpers/NativeMarketIdentityRuntime";
-import { nativeBookSideLevels } from "./helpers/NativeHyperliquidRuntime";
-import {
-  epochMillis,
-  nativeHashSequence,
-  nativeNumber,
-  nativeSide
-} from "./helpers/NativeValueRuntime";
-import {
-  prometheusLabels,
-  escapePrometheusLabel,
-  finiteMetric,
-  nullableFiniteMetric
-} from "./helpers/RuntimeMetrics";
-import {
-  readNumber,
-  readPositiveNumber,
-  clampInteger,
-  assertAgentSignal,
-  finiteNumber,
-  isPlainObject,
-  readHyperliquidRawIngestPayload,
-  readJsonOrNull
-} from "./helpers/RuntimeParsing";
-import { resolveGhostBookConfig } from "./shadow/GhostBookConfigRuntime";
-import {
-  defaultQuoteState,
-  selectedMoltworkerInstruments,
-  normalizeAssetMatrix,
-  defaultAssetMatrix,
-  suspendAssetQuoteStates,
-  quotePriceMovedTicks
-} from "./state/AssetStateRuntime";
-import { defaultEnsembleState, touchAgentHealth } from "./state/AgentStateDefaults";
-import {
-  defaultLeadLagMetrics,
-  defaultMicrostructure,
-  defaultPriceDiscovery
-} from "./state/MarketStateDefaults";
-import {
-  defaultEngineState,
-  defaultAnomalyStatus,
-  normalizeExecutionProfile,
-  defaultInventoryState,
-  normalizeInventoryState,
-  defaultRiskMetrics,
-  defaultShadowQueueState,
-  defaultCitadelState,
-  maintenanceRecoveryInstruments,
-  defaultInventoryGuardState,
-  defaultJanitorState,
-  defaultSlippageAnalytics,
-  defaultRiskLimits,
-  mergeRiskLimits
-} from "./state/EngineStateDefaults";
+import { DEFAULT_MAX_LATENCY_MS } from "../../TradingEngineConstants";
+import { defaultEngineState } from "./state/EngineStateDefaults";
 import {
   applyAcceptedDecisionPipelineForTarget,
   type AcceptedDecisionPipelineTarget
