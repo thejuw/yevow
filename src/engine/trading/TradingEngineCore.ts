@@ -25,21 +25,11 @@ import {
   handleTradingEngineAnomalyEmergencyPause,
   type TradingAnomalyEmergencyTarget
 } from "./anomaly/TradingAnomalyEmergencyRuntime";
-import {
-  updateTradingLeadLagMetricsForTarget,
-  type TradingLeadLagMetricsTarget
-} from "./leadlag/LeadLagRuntime";
 import { resolveMaxPositionPct } from "./risk/PortfolioRiskRuntime";
 import {
   runTradingAlarmForTarget,
   type TradingAlarmRuntimeTarget
 } from "./alarm/TradingAlarmRuntime";
-import {
-  dispatchTradingQuoteForTarget,
-  rememberTradingDispatchedQuoteForTarget,
-  shouldThrottleTradingQuoteDispatchForTarget,
-  type TradingQuoteDispatchTarget
-} from "./quotes/TradingQuoteDispatchRuntime";
 import type { DispatchedQuoteSnapshot } from "./quotes/QuoteRefreshRuntime";
 import {
   cancelAllTradingQuotesForTarget,
@@ -610,40 +600,6 @@ export class TradingEngine {
       options,
       this as unknown as TradingTickHandlingTarget
     );
-  }
-
-  private updateLeadLagMetrics(
-    tick: MarketTick,
-    book: InternalOrderBook,
-    observedAt: string
-  ): EngineState["leadLag"] {
-    return updateTradingLeadLagMetricsForTarget(
-      tick,
-      book,
-      observedAt,
-      this as unknown as TradingLeadLagMetricsTarget
-    );
-  }
-
-  private async dispatchQuote(
-    quote: NonNullable<EngineState["quoteState"]["lastQuote"]>
-  ): Promise<void> {
-    await dispatchTradingQuoteForTarget(quote, this as unknown as TradingQuoteDispatchTarget);
-  }
-
-  private shouldThrottleQuoteDispatch(
-    quote: NonNullable<EngineState["quoteState"]["lastQuote"]>
-  ): boolean {
-    return shouldThrottleTradingQuoteDispatchForTarget(
-      quote,
-      this as unknown as TradingQuoteDispatchTarget
-    );
-  }
-
-  private rememberDispatchedQuote(
-    quote: NonNullable<EngineState["quoteState"]["lastQuote"]>
-  ): void {
-    rememberTradingDispatchedQuoteForTarget(quote, this as unknown as TradingQuoteDispatchTarget);
   }
 
   private async dispatchExecution(

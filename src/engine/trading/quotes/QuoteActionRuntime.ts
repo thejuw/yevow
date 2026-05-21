@@ -1,5 +1,9 @@
 import type { QuoteSignal } from "../../../types";
 import { quoteToTelemetry } from "../execution/ExecutionRuntimeHelpers";
+import {
+  dispatchTradingQuoteForTarget,
+  type TradingQuoteDispatchTarget
+} from "./TradingQuoteDispatchRuntime";
 
 export interface CroupierQuoteActionInput {
   readonly instrumentCode: string;
@@ -55,7 +59,7 @@ export interface TradingCroupierQuoteActionTarget {
   };
   publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
   cancelAllQuotes(instrumentCode: string, reason: string): Promise<void>;
-  dispatchQuote(quote: QuoteSignal): Promise<void>;
+  dispatchQuote?(quote: QuoteSignal): Promise<void>;
 }
 
 export function buildCroupierQuoteAction(input: CroupierQuoteActionInput): CroupierQuoteAction {
@@ -137,6 +141,9 @@ export function dispatchTradingCroupierQuoteAction(
       target.state.waitUntil(work);
     },
     cancelAllQuotes: (code, reason) => target.cancelAllQuotes(code, reason),
-    dispatchQuote: (quote) => target.dispatchQuote(quote)
+    dispatchQuote: (quote) =>
+      target.dispatchQuote
+        ? target.dispatchQuote(quote)
+        : dispatchTradingQuoteForTarget(quote, target as unknown as TradingQuoteDispatchTarget)
   });
 }
