@@ -197,18 +197,9 @@ import {
 } from "./ingest/IngestQueueRuntime";
 import { handleGrpcFatalDropForTarget, type GrpcFatalDropTarget } from "./ingest/GrpcDropRuntime";
 import {
-  createTradingEngineHttpRouteContext,
-  type EngineHttpRouteContext,
-  type EngineHttpRouteContextTarget
-} from "./routes/EngineHttpRoutes";
-import {
   handleTradingEngineFetchForTarget,
   type TradingEngineFetchTarget
 } from "./routes/EngineFetchRuntime";
-import {
-  createTradingEngineStreamContext,
-  type EngineStreamContextTarget
-} from "./routes/EngineWebSocketStreams";
 import type { TradingTelemetryBus } from "./telemetry/TelemetryBus";
 import {
   acceptTradingAgentSignalForTarget,
@@ -656,13 +647,6 @@ export class TradingEngine {
     return handleTradingEngineFetchForTarget(request, this as unknown as TradingEngineFetchTarget);
   }
 
-  private engineHttpRouteContext(wakeUpTimeMs: number | null): EngineHttpRouteContext {
-    return createTradingEngineHttpRouteContext(
-      this as unknown as EngineHttpRouteContextTarget,
-      wakeUpTimeMs
-    );
-  }
-
   healthCheck(): HealthReport {
     return buildTradingHealthReportForTarget(this as unknown as TradingEngineDiagnosticsTarget);
   }
@@ -748,10 +732,6 @@ export class TradingEngine {
       reason,
       error
     );
-  }
-
-  private streamContext() {
-    return createTradingEngineStreamContext(this as unknown as EngineStreamContextTarget);
   }
 
   private enqueueTick(

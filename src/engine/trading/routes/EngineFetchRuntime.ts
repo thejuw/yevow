@@ -2,11 +2,16 @@ import type { EdgeTopology } from "../../../types";
 import { json } from "../helpers/RuntimeParsing";
 import { highResolutionNow, roundLatency } from "../helpers/RuntimeClock";
 import { readTopologyHeaders } from "../helpers/PlacementResolver";
-import { handleTradingEngineHttpRoute, type EngineHttpRouteContext } from "./EngineHttpRoutes";
+import {
+  createTradingEngineHttpRouteContext,
+  handleTradingEngineHttpRoute,
+  type EngineHttpRouteContextTarget
+} from "./EngineHttpRoutes";
 import {
   acceptMarketStream,
   acceptTelemetryStream,
-  type EngineStreamContext
+  createTradingEngineStreamContext,
+  type EngineStreamContextTarget
 } from "./EngineWebSocketStreams";
 
 export type TradingEngineWebSocketRoute = "TELEMETRY_STREAM" | "MARKET_STREAM";
@@ -65,8 +70,6 @@ export interface TradingEngineFetchTarget {
   };
   observeTopology(topology: EdgeTopology): void;
   warmUpForTopology(topology: EdgeTopology): void;
-  streamContext(): EngineStreamContext;
-  engineHttpRouteContext(wakeUpTimeMs: number | null): EngineHttpRouteContext;
 }
 
 const MARKET_DATA_PATHS = new Set([
@@ -171,13 +174,22 @@ export function handleTradingEngineFetchForTarget(
       warmUpForTopology: (topology) => {
         target.warmUpForTopology(topology);
       },
-      acceptTelemetryStream: () => acceptTelemetryStream(target.streamContext()),
-      acceptMarketStream: () => acceptMarketStream(target.streamContext()),
+      acceptTelemetryStream: () =>
+        acceptTelemetryStream(
+          createTradingEngineStreamContext(target as unknown as EngineStreamContextTarget)
+        ),
+      acceptMarketStream: () =>
+        acceptMarketStream(
+          createTradingEngineStreamContext(target as unknown as EngineStreamContextTarget)
+        ),
       handleHttpRoute: (currentRequest, url, wakeUpTimeMs) =>
         handleTradingEngineHttpRoute(
           currentRequest,
           url,
-          target.engineHttpRouteContext(wakeUpTimeMs)
+          createTradingEngineHttpRouteContext(
+            target as unknown as EngineHttpRouteContextTarget,
+            wakeUpTimeMs
+          )
         ),
       logRequestFailure: (failure) => {
         target.logger.error(
