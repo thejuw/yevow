@@ -115,7 +115,10 @@ import {
   type TradingAssetMatrixTarget
 } from "./state/TradingAssetMatrixRuntime";
 import { type ExecutionTraceInput } from "./performance/LatencyRuntime";
-import { applyTradingNativeHyperliquidLatencyPull } from "./performance/StaleLatencyGuardRuntime";
+import {
+  applyTradingNativeHyperliquidLatencyPullForTarget,
+  type TradingNativeHyperliquidLatencyPullTarget
+} from "./performance/StaleLatencyGuardRuntime";
 import {
   handleTradingHardStaleTickDrop,
   handleTradingSoftStaleTick,
@@ -1079,35 +1082,14 @@ export class TradingEngine {
     metrics: LatencyMetrics,
     observedAt: string
   ): void {
-    applyTradingNativeHyperliquidLatencyPull(
+    applyTradingNativeHyperliquidLatencyPullForTarget(
       {
-        currentState: this.engineState,
-        metrics,
         instrumentCode,
         sequence,
-        observedAt,
-        existingLatencyHistory: this.latencyHistory,
-        latencyHistoryLimit: PERFORMANCE_HISTORY_LIMIT,
-        engineStateKey: ENGINE_STATE_KEY,
-        performanceHistoryKey: PERFORMANCE_HISTORY_KEY,
-        processingLatencySamplesKey: PROCESSING_LATENCY_SAMPLES_KEY,
-        processingLatencySamples: this.processingLatencySamples
+        metrics,
+        observedAt
       },
-      {
-        updateLatencyAverage: (totalLatencyMs) => this.updateLatencyAverage(totalLatencyMs),
-        applyLocationLatency: (totalLatencyMs, locationObservedAt) =>
-          this.applyLocationLatency(totalLatencyMs, locationObservedAt),
-        applyLatencyHistory: (latencyHistory) => {
-          this.latencyHistory = latencyHistory;
-        },
-        applyState: (state) => {
-          this.engineState = state;
-        },
-        persistStorage: (writes, reason) => this.persistHotStorageSnapshot(writes, reason),
-        schedule: (work) => this.state.waitUntil(work),
-        logPerformance: (pullMetrics) => this.logPerformance(pullMetrics),
-        publish: (type, payload) => this.publish(type, payload)
-      }
+      this as unknown as TradingNativeHyperliquidLatencyPullTarget
     );
   }
 

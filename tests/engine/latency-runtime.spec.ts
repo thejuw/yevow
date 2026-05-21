@@ -16,6 +16,7 @@ import {
   applySoftStaleTickFlow,
   applyStaleDataKillSwitchSideEffects,
   applyTradingNativeHyperliquidLatencyPull,
+  applyTradingNativeHyperliquidLatencyPullForTarget,
   buildHardStaleTickDropArtifacts,
   buildStaleDataKillSwitchArtifacts,
   hardStalePullTelemetryPayload,
@@ -34,7 +35,8 @@ import {
   type HardStaleTickDropSideEffectHandlers,
   type NativeHyperliquidLatencyPullSideEffectHandlers,
   type SoftStaleTickFlowHandlers,
-  type StaleDataKillSwitchSideEffectHandlers
+  type StaleDataKillSwitchSideEffectHandlers,
+  type TradingNativeHyperliquidLatencyPullTarget
 } from "../../src/engine/trading/performance/StaleLatencyGuardRuntime";
 import {
   handleTradingHardStaleTickDrop,
@@ -1155,6 +1157,68 @@ describe("LatencyRuntime", () => {
       "persist:NATIVE_HL_LATENCY_PULL:3",
       "schedule",
       "performance:210",
+      "publish:STALE_DATA_KILL_SWITCH:PULL_CURRENT_QUOTES"
+    ]);
+
+    await Promise.all(scheduled);
+  });
+
+  it("runs native Hyperliquid latency-pull through the trading target adapter", async () => {
+    const state = defaultEngineState("native-latency-target");
+    const events: string[] = [];
+    const scheduled: Promise<unknown>[] = [];
+    const target: TradingNativeHyperliquidLatencyPullTarget = {
+      engineState: state,
+      latencyHistory: [latencyMetrics({ sequence: 4, totalLatencyMs: 80 })],
+      processingLatencySamples: [1, 2],
+      state: {
+        waitUntil(work) {
+          events.push("schedule");
+          scheduled.push(work);
+        }
+      },
+      updateLatencyAverage(totalLatencyMs) {
+        events.push(`average:${totalLatencyMs}`);
+        target.engineState = {
+          ...target.engineState,
+          averageLatency: totalLatencyMs,
+          latencySampleCount: target.engineState.latencySampleCount + 1
+        };
+      },
+      applyLocationLatency(totalLatencyMs, observedAt) {
+        events.push(`location:${totalLatencyMs}:${observedAt}`);
+      },
+      persistHotStorageSnapshot(writes, reason) {
+        events.push(`persist:${reason}:${Object.keys(writes).length}`);
+        return Promise.resolve();
+      },
+      logPerformance(metrics) {
+        events.push(`performance:${metrics.totalLatencyMs}:${metrics.averageLatencyMs}`);
+      },
+      publish(type, payload) {
+        events.push(`publish:${type}:${payload.action as string}`);
+      }
+    };
+
+    const artifacts = applyTradingNativeHyperliquidLatencyPullForTarget(
+      {
+        metrics: latencyMetrics({ sequence: 5, totalLatencyMs: 190, maxLatencyMs: 150 }),
+        instrumentCode: "btc-usd",
+        sequence: 5,
+        observedAt: "2026-05-18T15:00:02.000Z"
+      },
+      target
+    );
+
+    expect(artifacts.latencyHistory).toHaveLength(2);
+    expect(target.latencyHistory).toHaveLength(2);
+    expect(target.engineState.staleTickCount).toBe(1);
+    expect(events).toEqual([
+      "average:190",
+      "location:190:2026-05-18T15:00:02.000Z",
+      "persist:NATIVE_HL_LATENCY_PULL:3",
+      "schedule",
+      "performance:190:0",
       "publish:STALE_DATA_KILL_SWITCH:PULL_CURRENT_QUOTES"
     ]);
 

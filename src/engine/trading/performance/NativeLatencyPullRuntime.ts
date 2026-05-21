@@ -1,5 +1,11 @@
 import { aggregateQuoteState, suspendAssetQuoteStates } from "../state/AssetStateRuntime";
 import type { EngineState, LatencyMetrics } from "../../../types";
+import {
+  ENGINE_STATE_KEY,
+  PERFORMANCE_HISTORY_KEY,
+  PERFORMANCE_HISTORY_LIMIT,
+  PROCESSING_LATENCY_SAMPLES_KEY
+} from "../../../TradingEngineConstants";
 
 export interface NativeHyperliquidLatencyPullInput {
   readonly currentState: EngineState;
@@ -56,6 +62,23 @@ export interface TradingNativeHyperliquidLatencyPullHandlers extends NativeHyper
   readonly updateLatencyAverage: (totalLatencyMs: number) => void;
   readonly applyLocationLatency: (totalLatencyMs: number, observedAt: string) => void;
   readonly applyLatencyHistory: (latencyHistory: LatencyMetrics[]) => void;
+}
+
+export interface TradingNativeHyperliquidLatencyPullTarget {
+  engineState: EngineState;
+  latencyHistory: LatencyMetrics[];
+  readonly processingLatencySamples: readonly number[];
+  readonly state: {
+    waitUntil(work: Promise<unknown>): void;
+  };
+  updateLatencyAverage(totalLatencyMs: number): void;
+  applyLocationLatency(totalLatencyMs: number, observedAt: string): void;
+  persistHotStorageSnapshot(
+    writes: Record<string, unknown>,
+    reason: "NATIVE_HL_LATENCY_PULL"
+  ): Promise<unknown>;
+  logPerformance(metrics: LatencyMetrics): void;
+  publish(type: "STALE_DATA_KILL_SWITCH", payload: Record<string, unknown>): void;
 }
 
 export interface LatencySnapshotStorageInput {
@@ -165,6 +188,51 @@ export function applyTradingNativeHyperliquidLatencyPull(
   applyNativeHyperliquidLatencyPullSideEffects(artifacts, handlers);
 
   return artifacts;
+}
+
+export function applyTradingNativeHyperliquidLatencyPullForTarget(
+  input: Pick<
+    NativeHyperliquidLatencyPullArtifactsInput,
+    "instrumentCode" | "sequence" | "metrics" | "observedAt"
+  >,
+  target: TradingNativeHyperliquidLatencyPullTarget
+): NativeHyperliquidLatencyPullArtifacts {
+  return applyTradingNativeHyperliquidLatencyPull(
+    {
+      ...input,
+      currentState: target.engineState,
+      existingLatencyHistory: target.latencyHistory,
+      latencyHistoryLimit: PERFORMANCE_HISTORY_LIMIT,
+      engineStateKey: ENGINE_STATE_KEY,
+      performanceHistoryKey: PERFORMANCE_HISTORY_KEY,
+      processingLatencySamplesKey: PROCESSING_LATENCY_SAMPLES_KEY,
+      processingLatencySamples: target.processingLatencySamples
+    },
+    {
+      updateLatencyAverage: (totalLatencyMs) => {
+        target.updateLatencyAverage(totalLatencyMs);
+      },
+      applyLocationLatency: (totalLatencyMs, observedAt) => {
+        target.applyLocationLatency(totalLatencyMs, observedAt);
+      },
+      applyLatencyHistory: (latencyHistory) => {
+        target.latencyHistory = latencyHistory;
+      },
+      applyState: (state) => {
+        target.engineState = state;
+      },
+      persistStorage: (writes, reason) => target.persistHotStorageSnapshot(writes, reason),
+      schedule: (work) => {
+        target.state.waitUntil(work);
+      },
+      logPerformance: (metrics) => {
+        target.logPerformance(metrics);
+      },
+      publish: (type, payload) => {
+        target.publish(type, payload);
+      }
+    }
+  );
 }
 
 export function latencySnapshotStorageWrites(
