@@ -144,16 +144,10 @@ import {
   type TradingOrderBookStoresTarget
 } from "./book/OrderBookReconstructorFactory";
 import type { AppliedBookUpdate, BookDeltaWithTicker, BookSyncState } from "./book/BookTypes";
-import { type HyperliquidRawIngestPayload } from "./ingest/HyperliquidRawRouting";
-import {
-  handleTradingHyperliquidRawForTarget,
-  type TradingHyperliquidRawEngineTarget
-} from "./ingest/TradingHyperliquidRawRuntime";
 import {
   enqueueTradingIngestJob,
   type TradingIngestQueueTarget
 } from "./ingest/IngestQueueRuntime";
-import { handleGrpcFatalDropForTarget, type GrpcFatalDropTarget } from "./ingest/GrpcDropRuntime";
 import {
   handleTradingEngineFetchForTarget,
   type TradingEngineFetchTarget
@@ -172,7 +166,7 @@ import {
   type TradingHotPathTelemetryTarget
 } from "./telemetry/TradingHotPathTelemetryRuntime";
 import { type ReplayJournal } from "./replay/ReplayJournal";
-import type { GrpcFatalDropPayload, TickIngestResult } from "./TradingEngineRouteTypes";
+import type { TickIngestResult } from "./TradingEngineRouteTypes";
 import {
   createBootAbsorptionAnalyzer,
   createBootAnomalyDetector,
@@ -629,25 +623,8 @@ export class TradingEngine {
     );
   }
 
-  private async handleHyperliquidRaw(
-    payload: HyperliquidRawIngestPayload,
-    wakeUpTimeMs: number | null
-  ): Promise<TickIngestResult> {
-    return handleTradingHyperliquidRawForTarget(
-      payload,
-      wakeUpTimeMs,
-      this as unknown as TradingHyperliquidRawEngineTarget
-    );
-  }
-
   private observeCascadeAbsorption(tick: MarketTick): void {
     observeTradingEngineCascadeAbsorption(tick, this as unknown as TradingCascadeAbsorptionTarget);
-  }
-
-  private async handleGrpcFatalDrop(
-    payload: GrpcFatalDropPayload
-  ): Promise<{ status: "GRPC_FATAL_DROP" }> {
-    return handleGrpcFatalDropForTarget(payload, this as unknown as GrpcFatalDropTarget);
   }
 
   private quoteStateStalePull(

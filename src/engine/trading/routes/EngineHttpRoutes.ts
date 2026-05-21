@@ -13,8 +13,14 @@ import {
 } from "../book/TradingBookViewRuntime";
 import {
   registerHyperliquidIngestConnectionForTarget,
-  type HyperliquidIngestConnectionTarget
+  type HyperliquidIngestConnectionTarget,
+  type HyperliquidRawIngestPayload
 } from "../ingest/HyperliquidRawRouting";
+import {
+  handleTradingHyperliquidRawForTarget,
+  type TradingHyperliquidRawEngineTarget
+} from "../ingest/TradingHyperliquidRawRuntime";
+import { handleGrpcFatalDropForTarget, type GrpcFatalDropTarget } from "../ingest/GrpcDropRuntime";
 import {
   enqueueTradingIngestJob,
   type TradingIngestQueueTarget
@@ -179,8 +185,6 @@ export interface EngineHttpRouteContextTarget {
   applySnapshot(snapshot: OrderBookSnapshot): Promise<unknown>;
   applyDelta(delta: OrderBookDelta, observedAt: string): Promise<AppliedBookUpdate>;
   enqueueTick(tick: MarketTick, wakeUpTimeMs: number | null): Promise<TickIngestResult>;
-  handleHyperliquidRaw(payload: unknown, wakeUpTimeMs: number | null): Promise<TickIngestResult>;
-  handleGrpcFatalDrop(payload: GrpcFatalDropPayload): Promise<{ status: string }>;
   acceptAgentSignal(signal: AgentSignal, latencyMs: number): Promise<void>;
   applyConfigUpdate(update: AdminConfigUpdate): Promise<void>;
 }
@@ -295,8 +299,16 @@ export function createTradingEngineHttpRouteContext(
       );
     },
     enqueueTick: (tick, wakeUp) => target.enqueueTick(tick, wakeUp),
-    handleHyperliquidRaw: (payload, wakeUp) => target.handleHyperliquidRaw(payload, wakeUp),
-    handleGrpcFatalDrop: (payload) => target.handleGrpcFatalDrop(payload),
+    handleHyperliquidRaw: (payload, wakeUp) =>
+      handleTradingHyperliquidRawForTarget(
+        payload as HyperliquidRawIngestPayload,
+        wakeUp,
+        target as unknown as TradingHyperliquidRawEngineTarget
+      ),
+    handleGrpcFatalDrop: (payload) =>
+      Promise.resolve(
+        handleGrpcFatalDropForTarget(payload, target as unknown as GrpcFatalDropTarget)
+      ),
     acceptAgentSignal: (signal, latencyMs) => target.acceptAgentSignal(signal, latencyMs),
     applyConfigUpdate: (update) => target.applyConfigUpdate(update)
   };
