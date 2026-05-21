@@ -53,6 +53,26 @@ export interface TradingReplayHandlers {
   readonly writeCompletionLog: (metadata: JsonRecord) => void;
 }
 
+export interface TradingHistoricalReplayEngineTarget {
+  readonly replayJournal: TradingReplayHandlers["replayJournal"];
+  readonly engineState: Pick<EngineState, "bankroll" | "lastTradeIntent" | "oracle" | "sentiment">;
+  readonly logger: {
+    warn(eventType: string, message: string, telemetry?: JsonRecord): void;
+  };
+  captureReplaySnapshot(): EngineReplaySnapshot;
+  prepareShadowReplayState(
+    initialShadowBankroll: number,
+    startedAt: string,
+    replayId: string
+  ): void;
+  enqueueTick(
+    tick: MarketTick,
+    colo: string | null,
+    options: { readonly shadowReplay: boolean }
+  ): Promise<TickIngestResult>;
+  restoreReplaySnapshot(snapshot: EngineReplaySnapshot): Promise<void>;
+}
+
 export async function runTradingShadowReplayWithRestore(
   input: Parameters<typeof runShadowReplayWithRestoreRuntime>[0],
   handlers: Pick<
@@ -155,4 +175,31 @@ export async function runTradingHistoricalReplay(
         )
     }
   );
+}
+
+export function runTradingHistoricalReplayForTarget(
+  input: TradingHistoricalReplayInput,
+  target: TradingHistoricalReplayEngineTarget
+): Promise<ReplayResult> {
+  return runTradingHistoricalReplay(input, {
+    replayJournal: target.replayJournal,
+    nowIso: () => new Date().toISOString(),
+    createReplayId: () => crypto.randomUUID(),
+    captureReplaySnapshot: () => target.captureReplaySnapshot(),
+    currentLiveBankroll: () => ({
+      equity: target.engineState.bankroll.equity,
+      cash: target.engineState.bankroll.cash
+    }),
+    prepareShadowReplayState: (initialShadowBankroll, replayStartedAt, replayId) => {
+      target.prepareShadowReplayState(initialShadowBankroll, replayStartedAt, replayId);
+    },
+    enqueueShadowReplayTick: (tick) => target.enqueueTick(tick, null, { shadowReplay: true }),
+    lastTradeIntent: () => target.engineState.lastTradeIntent,
+    oracleRegime: () => target.engineState.oracle.regime,
+    currentSentiment: () => target.engineState.sentiment,
+    restoreReplaySnapshot: (snapshot) => target.restoreReplaySnapshot(snapshot),
+    writeCompletionLog: (metadata) => {
+      target.logger.warn("REPLAY_COMPLETED", "Historical shadow replay completed", metadata);
+    }
+  });
 }

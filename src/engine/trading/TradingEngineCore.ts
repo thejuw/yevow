@@ -203,7 +203,10 @@ import {
 import { publishTradingTickTelemetry } from "./telemetry/TradingTickTelemetryRuntime";
 import { type ReplayOptions } from "./routes/ReplayAdminRoutes";
 import { type ReplayJournal } from "./replay/ReplayJournal";
-import { runTradingHistoricalReplay } from "./replay/TradingReplayRunRuntime";
+import {
+  runTradingHistoricalReplayForTarget,
+  type TradingHistoricalReplayEngineTarget
+} from "./replay/TradingReplayRunRuntime";
 import {
   captureTradingReplaySnapshotFromSource,
   prepareTradingShadowReplayStateForTarget,
@@ -2610,7 +2613,7 @@ export class TradingEngine {
       actor: "admin"
     }
   ): Promise<ReplayResult> {
-    return runTradingHistoricalReplay(
+    return runTradingHistoricalReplayForTarget(
       {
         limit,
         shadowBankroll,
@@ -2619,25 +2622,7 @@ export class TradingEngine {
         dateTo,
         replayOptions
       },
-      {
-        replayJournal: this.replayJournal,
-        nowIso: () => new Date().toISOString(),
-        createReplayId: () => crypto.randomUUID(),
-        captureReplaySnapshot: () => this.captureReplaySnapshot(),
-        currentLiveBankroll: () => ({
-          equity: this.engineState.bankroll.equity,
-          cash: this.engineState.bankroll.cash
-        }),
-        prepareShadowReplayState: (initialShadowBankroll, replayStartedAt, runtimeReplayId) =>
-          this.prepareShadowReplayState(initialShadowBankroll, replayStartedAt, runtimeReplayId),
-        enqueueShadowReplayTick: (tick) => this.enqueueTick(tick, null, { shadowReplay: true }),
-        lastTradeIntent: () => this.engineState.lastTradeIntent,
-        oracleRegime: () => this.engineState.oracle.regime,
-        currentSentiment: () => this.engineState.sentiment,
-        restoreReplaySnapshot: (snapshot) => this.restoreReplaySnapshot(snapshot),
-        writeCompletionLog: (metadata) =>
-          this.logger.warn("REPLAY_COMPLETED", "Historical shadow replay completed", metadata)
-      }
+      this as unknown as TradingHistoricalReplayEngineTarget
     );
   }
 

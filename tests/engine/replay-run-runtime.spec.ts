@@ -3,6 +3,11 @@ import {
   runHistoricalReplayRuntime,
   runShadowReplayWithRestoreRuntime
 } from "../../src/engine/trading/replay/ReplayRunRuntime";
+import {
+  runTradingHistoricalReplayForTarget,
+  type TradingHistoricalReplayEngineTarget
+} from "../../src/engine/trading/replay/TradingReplayRunRuntime";
+import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { ReplayOptions } from "../../src/engine/trading/routes/ReplayAdminRoutes";
 import type { EngineReplaySnapshot } from "../../src/engine/trading/replay/ReplaySnapshotRuntime";
 import type { ShadowReplayWithRestoreInput } from "../../src/engine/trading/pipelines/TickPipelineTypes";
@@ -138,6 +143,81 @@ describe("ReplayRunRuntime", () => {
       "loop:2:350:true",
       "complete:2:350:1:1"
     ]);
+  });
+
+  it("runs historical replay through the trading engine target adapter", async () => {
+    const calls: string[] = [];
+    const engineState = defaultEngineState("trading-replay-target");
+    engineState.bankroll.cash = 350;
+    engineState.bankroll.equity = 250;
+    const liveSnapshot = { engineState: { engineId: "live" } } as unknown as EngineReplaySnapshot;
+    const replayTick = tick("2026-05-01T00:00:00.000Z", 100);
+    const target: TradingHistoricalReplayEngineTarget = {
+      replayJournal: {
+        async loadTicks(limit, dateFrom, dateTo) {
+          calls.push(`ticks:${limit}:${dateFrom}:${dateTo}`);
+          return [replayTick];
+        },
+        async loadTrades(startedAt, completedAt) {
+          calls.push(`trades:${startedAt}:${completedAt}`);
+          return [];
+        },
+        async recordBacktestRun(result, _options, dateFrom, dateTo) {
+          calls.push(`record:${result.ticksReplayed}:${dateFrom}:${dateTo}`);
+        },
+        async writeStatus(status) {
+          calls.push(`status:${status.status}:${status.ticksProcessed}:${status.shadowBankroll}`);
+        }
+      },
+      engineState,
+      logger: {
+        warn(eventType, _message, metadata) {
+          calls.push(`warn:${eventType}:${metadata?.replayId as string}`);
+        }
+      },
+      captureReplaySnapshot() {
+        calls.push("snapshot");
+        return liveSnapshot;
+      },
+      prepareShadowReplayState(initialShadowBankroll, startedAt, replayId) {
+        calls.push(`prepare:${initialShadowBankroll}:${startedAt.length}:${replayId.length}`);
+      },
+      async enqueueTick(currentTick, colo, options) {
+        calls.push(`enqueue:${currentTick.price}:${String(colo)}:${String(options.shadowReplay)}`);
+        return { accepted: true, reason: "ACCEPTED" };
+      },
+      async restoreReplaySnapshot(snapshot) {
+        calls.push(`restore:${snapshot === liveSnapshot}`);
+      }
+    };
+
+    const result = await runTradingHistoricalReplayForTarget(
+      {
+        limit: 5,
+        shadowBankroll: 0,
+        speedMultiplier: 1_000_000,
+        dateFrom: "2026-05-01",
+        dateTo: "2026-05-02",
+        replayOptions: replayOptions()
+      },
+      target
+    );
+
+    expect(result.ticksReplayed).toBe(1);
+    expect(calls.slice(0, 9)).toEqual([
+      "status:RUNNING:0:0",
+      "snapshot",
+      "ticks:5:2026-05-01:2026-05-02",
+      "status:RUNNING:0:5000",
+      "trades:2026-05-01T00:00:00.000Z:2026-05-01T00:00:00.000Z",
+      "prepare:5000:24:36",
+      "enqueue:100:null:true",
+      "status:RUNNING:1:5000",
+      "restore:true"
+    ]);
+    expect(calls[9]?.startsWith("warn:REPLAY_COMPLETED:")).toBe(true);
+    expect(calls[10]).toBe("record:1:2026-05-01:2026-05-02");
+    expect(calls[11]).toBe("status:COMPLETED:1:5000");
   });
 });
 
