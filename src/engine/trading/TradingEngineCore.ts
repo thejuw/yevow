@@ -30,8 +30,7 @@ import {
   calculateOrderBookPriceDiscovery,
   currentMarkPriceForInstrument,
   currentOrderBookSnapshot,
-  findBestAssetBook as findBestOrderBookForAsset,
-  nullableMarkPriceForInstrument
+  findBestAssetBook as findBestOrderBookForAsset
 } from "./book/BookViews";
 import {
   applyBookDeltaFlow,
@@ -114,8 +113,8 @@ import { runTradingJanitorMaintenance } from "./janitor/TradingJanitorRuntime";
 import {
   currentCascadeActiveSnapshot as buildCurrentCascadeActiveSnapshot,
   currentCascadeHeatSnapshot as buildCurrentCascadeHeatSnapshot,
-  currentCascadePositionSnapshot as buildCurrentCascadePositionSnapshot,
-  currentCascadeSignalSnapshot as buildCurrentCascadeSignalSnapshot
+  currentCascadeSignalSnapshot as buildCurrentCascadeSignalSnapshot,
+  currentTradingCascadePositionSnapshot as buildCurrentCascadePositionSnapshot
 } from "./cascade/CascadeSnapshots";
 import {
   buildCascadeDetectedArtifacts,
@@ -1325,17 +1324,14 @@ export class TradingEngine {
   }
 
   private currentCascadePositionSnapshot(): JsonRecord[] {
-    const markPriceContext = {
-      orderBook: this.orderBook,
-      assetMatrix: this.engineState.assetMatrix,
-      microstructure: this.engineState.microstructure
-    };
-
     return buildCurrentCascadePositionSnapshot({
       positions: this.cascadePositionManager.snapshot(),
       nowMs: Date.now(),
-      markPriceForInstrument: (instrumentCode) =>
-        nullableMarkPriceForInstrument(markPriceContext, instrumentCode)
+      markPriceContext: {
+        orderBook: this.orderBook,
+        assetMatrix: this.engineState.assetMatrix,
+        microstructure: this.engineState.microstructure
+      }
     });
   }
 

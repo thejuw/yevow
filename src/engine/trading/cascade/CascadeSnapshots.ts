@@ -1,5 +1,6 @@
 import { isOpenCascadePosition } from "./CascadeSelectionRuntime";
 import { roundMetric } from "../book/SortedBookSide";
+import { nullableMarkPriceForInstrument, type NullableMarkPriceContext } from "../book/BookViews";
 import type { AgentSignal, JsonRecord } from "../../../types";
 import type {
   AbsorptionConfirmed,
@@ -101,6 +102,23 @@ export interface CascadePositionSnapshotInput {
   readonly positions: readonly CascadeOpenPosition[];
   readonly nowMs: number;
   readonly markPriceForInstrument: (instrumentCode: string) => number | null;
+}
+
+export interface TradingCascadePositionSnapshotInput {
+  readonly positions: readonly CascadeOpenPosition[];
+  readonly nowMs: number;
+  readonly markPriceContext: NullableMarkPriceContext;
+}
+
+export function currentTradingCascadePositionSnapshot(
+  input: TradingCascadePositionSnapshotInput
+): JsonRecord[] {
+  return currentCascadePositionSnapshot({
+    positions: input.positions,
+    nowMs: input.nowMs,
+    markPriceForInstrument: (instrumentCode) =>
+      nullableMarkPriceForInstrument(input.markPriceContext, instrumentCode)
+  });
 }
 
 export function currentCascadePositionSnapshot(input: CascadePositionSnapshotInput): JsonRecord[] {
