@@ -25,6 +25,7 @@ import {
   processHyperliquidAssetContext,
   processHyperliquidTradeBatch,
   registerHyperliquidIngestConnection,
+  registerHyperliquidIngestConnectionForTarget,
   routeHyperliquidRawMessage
 } from "../../src/engine/trading/ingest/HyperliquidRawRouting";
 import {
@@ -1105,6 +1106,42 @@ describe("hyperliquid raw ingest helpers", () => {
     expect(events).toEqual([
       "state:2026-05-18T13:00:00.000Z",
       "persist:engineState:INGEST_CONNECTION_REGISTERED:2026-05-18T13:00:00.000Z"
+    ]);
+  });
+
+  it("registers active ingest connections through the trading target adapter", () => {
+    const state = defaultEngineState("ingest-target");
+    const events: string[] = [];
+    const target = {
+      activeIngestConnections: new Map<string, string>(),
+      engineState: state,
+      waitUntilStoragePut(key: string, value: unknown, reason: string) {
+        const nextState = value as typeof state;
+        events.push(`persist:${key}:${reason}:${nextState.updatedAt}`);
+      }
+    };
+
+    const response = registerHyperliquidIngestConnectionForTarget(
+      {
+        source_exchange: "HyperLiquid",
+        streamId: "book",
+        connectionId: "conn-book",
+        reason: "STREAM_RECOVERED"
+      },
+      target
+    );
+
+    expect(response).toMatchObject({
+      registered: true,
+      source_exchange: "hyperliquid",
+      streamId: "book",
+      connectionId: "conn-book",
+      reason: "STREAM_RECOVERED"
+    });
+    expect(target.activeIngestConnections.get("hyperliquid:book")).toBe("conn-book");
+    expect(target.engineState.updatedAt).toBe((response as { observedAt: string }).observedAt);
+    expect(events).toEqual([
+      `persist:engine:state:INGEST_CONNECTION_REGISTERED:${(response as { observedAt: string }).observedAt}`
     ]);
   });
 

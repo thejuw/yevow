@@ -180,8 +180,8 @@ import {
 } from "./book/OrderBookReconstructorFactory";
 import type { AppliedBookUpdate, BookDeltaWithTicker, BookSyncState } from "./book/BookTypes";
 import {
-  applyHyperliquidIngestConnectionSideEffects,
-  registerHyperliquidIngestConnection,
+  registerHyperliquidIngestConnectionForTarget,
+  type HyperliquidIngestConnectionTarget,
   type HyperliquidRawIngestPayload
 } from "./ingest/HyperliquidRawRouting";
 import {
@@ -1088,24 +1088,9 @@ export class TradingEngine {
   private registerIngestConnection(
     payload: Partial<OrderBookResetRequest>
   ): Record<string, unknown> {
-    const registration = registerHyperliquidIngestConnection(this.activeIngestConnections, payload);
-
-    if (!registration.registered) {
-      return registration as unknown as Record<string, unknown>;
-    }
-
-    return applyHyperliquidIngestConnectionSideEffects(
-      {
-        registration,
-        currentState: this.engineState,
-        engineStateKey: ENGINE_STATE_KEY
-      },
-      {
-        applyState: (state) => {
-          this.engineState = state;
-        },
-        persistState: (key, state, reason) => this.waitUntilStoragePut(key, state, reason)
-      }
+    return registerHyperliquidIngestConnectionForTarget(
+      payload,
+      this as unknown as HyperliquidIngestConnectionTarget
     );
   }
 

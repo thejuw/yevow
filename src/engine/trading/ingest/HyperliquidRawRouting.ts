@@ -6,6 +6,7 @@ import { normalizeSourceExchange } from "../helpers/NativeMarketIdentityRuntime"
 import { isNativeRecord, nativeObject, nativeString } from "../helpers/NativeValueRuntime";
 import type { TickIngestResult } from "../TradingEngineRouteTypes";
 import type { EngineState, MarketTick } from "../../../types";
+import { ENGINE_STATE_KEY } from "../../../TradingEngineConstants";
 
 export interface HyperliquidRawIngestPayload {
   streamId?: string;
@@ -60,6 +61,12 @@ export interface HyperliquidIngestConnectionSideEffectInput {
 export interface HyperliquidIngestConnectionSideEffectHandlers {
   readonly applyState: (state: EngineState) => void;
   readonly persistState: (key: string, state: EngineState, reason: string) => void;
+}
+
+export interface HyperliquidIngestConnectionTarget {
+  readonly activeIngestConnections: Map<string, string>;
+  engineState: EngineState;
+  waitUntilStoragePut(key: string, value: unknown, reason: string): void;
 }
 
 export type HyperliquidRawMessageRoute =
@@ -347,6 +354,38 @@ export function applyHyperliquidIngestConnectionSideEffects(
   handlers.persistState(input.engineStateKey, nextState, "INGEST_CONNECTION_REGISTERED");
 
   return input.registration;
+}
+
+export function registerHyperliquidIngestConnectionForTarget(
+  payload: {
+    source_exchange?: string | null;
+    streamId?: string | null;
+    connectionId?: string | null;
+    reason?: unknown;
+  },
+  target: HyperliquidIngestConnectionTarget
+): Record<string, unknown> {
+  const registration = registerHyperliquidIngestConnection(target.activeIngestConnections, payload);
+
+  if (!registration.registered) {
+    return registration;
+  }
+
+  return applyHyperliquidIngestConnectionSideEffects(
+    {
+      registration,
+      currentState: target.engineState,
+      engineStateKey: ENGINE_STATE_KEY
+    },
+    {
+      applyState: (state) => {
+        target.engineState = state;
+      },
+      persistState: (key, state, reason) => {
+        target.waitUntilStoragePut(key, state, reason);
+      }
+    }
+  );
 }
 
 export function hyperliquidRawMessages(
