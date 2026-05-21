@@ -6,6 +6,7 @@ import {
   applyCascadeSignalRejectionSideEffects,
   applyCascadeSizeRejectionSideEffects,
   closedOneMinuteCandlesForTick,
+  dispatchTradingCascadePositionUpdates,
   evaluateCascadeStrategyFlow,
   evaluateTradingCascadeRecoverySignal,
   processCascadeClosedCandleSignals,
@@ -15,6 +16,7 @@ import {
   type CascadeSignalRejectionSideEffectHandlers,
   type CascadeStrategyEvaluationHandlers,
   type CascadeSizeRejectionSideEffectHandlers,
+  type TradingCascadePositionUpdateTarget,
   shouldEvaluateCascadeStrategy
 } from "../../src/engine/trading/cascade/CascadeStrategyRuntime";
 import type { CascadeAssetProfile } from "../../src/strategy/cascade/AssetProfiles";
@@ -133,6 +135,64 @@ describe("CascadeStrategyRuntime", () => {
     );
 
     expect(calls).toEqual(["dispatch:close", "alert:STOP_HIT:position-1", "persist"]);
+  });
+
+  it("dispatches cascade position updates through the trading engine target adapter", async () => {
+    const scheduled: Promise<void>[] = [];
+    const calls: string[] = [];
+    const close = positionIntent("close", "STOP_LOSS", 1);
+    const target: TradingCascadePositionUpdateTarget = {
+      cascadePositionManager: {
+        onTick(input) {
+          calls.push(`tick:${input.instrumentCode}:${input.price}:${String(input.atr)}`);
+          return [{ position: position(), intents: [close] }];
+        },
+        snapshot() {
+          calls.push("snapshot");
+          return [position()];
+        }
+      },
+      candleAggregator: {
+        snapshot(instrumentCode, timeframe, limit) {
+          calls.push(`candles:${instrumentCode}:${timeframe}:${limit}`);
+          return [candle({ instrumentCode })];
+        }
+      },
+      state: {
+        waitUntil(work) {
+          calls.push("schedule");
+          scheduled.push(work);
+        }
+      },
+      tradeIntentFromCascadePositionIntent(intent, observedAt) {
+        calls.push(`intent:${intent.intentId}:${observedAt}`);
+        return tradeIntent({ intentId: `trade-${intent.intentId}` });
+      },
+      async dispatchExecution(intent) {
+        calls.push(`dispatch:${intent.intentId}`);
+      },
+      emitCascadeOperationalAlert(eventType, _title, _message, metadata, dedupeKey) {
+        calls.push(`alert:${eventType}:${metadata.positionId as string}:${dedupeKey}`);
+      },
+      async safeStoragePut(key, value, reason) {
+        calls.push(`persist:${key}:${(value as unknown[]).length}:${reason}`);
+      }
+    };
+
+    await dispatchTradingCascadePositionUpdates(marketTick(), "2026-05-18T20:01:00.000Z", target);
+    await Promise.all(scheduled);
+
+    expect(calls).toEqual([
+      "candles:btc-usd:1m:32",
+      "tick:btc-usd:100:null",
+      "intent:close:2026-05-18T20:01:00.000Z",
+      "dispatch:trade-close",
+      "schedule",
+      "alert:STOP_HIT:position-1:position-1",
+      "snapshot",
+      "persist:cascade:positions:1:CASCADE_POSITION_UPDATE",
+      "schedule"
+    ]);
   });
 
   it("emits cascade open-position side effects in order", async () => {
@@ -504,7 +564,7 @@ function positionIntent(
   };
 }
 
-function tradeIntent(): TradeIntent {
+function tradeIntent(overrides: Partial<TradeIntent> = {}): TradeIntent {
   return {
     schemaVersion: "trade-intent.v1",
     intentId: "intent-1",
@@ -533,7 +593,8 @@ function tradeIntent(): TradeIntent {
     maxSlippageBps: 8,
     confidence: 0.8,
     rationale: "test cascade entry",
-    createdAt: "2026-05-18T20:01:00.000Z"
+    createdAt: "2026-05-18T20:01:00.000Z",
+    ...overrides
   };
 }
 

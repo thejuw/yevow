@@ -146,11 +146,12 @@ import {
 } from "./cascade/CascadeConfigRuntime";
 import { ensureCascadePaperModeArmedRuntime } from "./cascade/CascadePaperModeRuntime";
 import {
-  applyCascadePositionUpdateSideEffects,
   applyCascadeSignalRejectionSideEffects,
+  dispatchTradingCascadePositionUpdates,
   evaluateCascadeStrategyFlow,
   evaluateTradingCascadeRecoverySignal,
-  processAcceptedCascadeSignalFlow
+  processAcceptedCascadeSignalFlow,
+  type TradingCascadePositionUpdateTarget
 } from "./cascade/CascadeStrategyRuntime";
 import { OrderBookReconstructor, type OrderBookStores } from "./book/OrderBookReconstructor";
 import {
@@ -271,7 +272,6 @@ import type { CascadeAssetProfile } from "../../strategy/cascade/AssetProfiles";
 import type { Backtester } from "../../strategy/cascade/Backtester";
 import { CascadeCandleAggregator } from "../../strategy/cascade/CandleAggregator";
 import { CascadeDetector } from "../../strategy/cascade/CascadeDetector";
-import { calculateAtr } from "../../strategy/cascade/indicators/ATR";
 import { HyperliquidLiquidationStream } from "../../strategy/cascade/LiquidationStream";
 import { HeatManager } from "../../strategy/cascade/HeatManager";
 import type { NewsCalendar } from "../../strategy/cascade/NewsCalendar";
@@ -1193,7 +1193,11 @@ export class TradingEngine {
       {
         ingestTick: (currentTick) => this.candleAggregator.ingestTick(currentTick),
         dispatchPositionUpdates: (currentTick, updateObservedAt) =>
-          this.dispatchCascadePositionUpdates(currentTick, updateObservedAt),
+          dispatchTradingCascadePositionUpdates(
+            currentTick,
+            updateObservedAt,
+            this as unknown as TradingCascadePositionUpdateTarget
+          ),
         isInstrumentEnabled: (instrumentCode) =>
           isCascadeInstrumentEnabledForConfig(
             this.cachedConfig.CASCADE_INSTRUMENTS,
@@ -1213,41 +1217,6 @@ export class TradingEngine {
         processAcceptedSignal: (signal, acceptedAt) => this.processCascadeSignal(signal, acceptedAt)
       }
     );
-  }
-
-  private async dispatchCascadePositionUpdates(
-    tick: MarketTick,
-    observedAt: string
-  ): Promise<void> {
-    const updates = this.cascadePositionManager.onTick({
-      instrumentCode: tick.instrumentCode,
-      price: tick.price,
-      observedAt,
-      atr: calculateAtr(this.candleAggregator.snapshot(tick.instrumentCode, "1m", 32), 14)
-    });
-
-    applyCascadePositionUpdateSideEffects(updates, observedAt, {
-      dispatchCloseIntent: (intent) =>
-        this.state.waitUntil(
-          this.dispatchExecution(this.tradeIntentFromCascadePositionIntent(intent, observedAt))
-        ),
-      emitOperationalAlert: (alert) =>
-        this.emitCascadeOperationalAlert(
-          alert.eventType,
-          alert.title,
-          alert.message,
-          alert.metadata,
-          alert.dedupeKey
-        ),
-      persistPositions: () =>
-        this.state.waitUntil(
-          this.safeStoragePut(
-            CASCADE_POSITIONS_KEY,
-            this.cascadePositionManager.snapshot(),
-            "CASCADE_POSITION_UPDATE"
-          )
-        )
-    });
   }
 
   private async processCascadeSignal(

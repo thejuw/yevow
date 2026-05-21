@@ -6,17 +6,27 @@ import { CascadeRecoverySignalEngine } from "../../../strategy/cascade/CascadeRe
 import { calculateAtr } from "../../../strategy/cascade/indicators/ATR";
 import { cumulativeVolumeDelta } from "../../../strategy/cascade/indicators/CumulativeVolumeDelta";
 import { calculateVwap } from "../../../strategy/cascade/indicators/VWAP";
+import type { CascadeAlertEventType } from "../../../strategy/cascade/OperationalSafeguards";
 import type {
   AbsorptionConfirmed,
   Candle,
   CascadeEvent,
+  CascadeOpenPosition,
   CascadePositionIntent,
   CascadeRecoverySignal,
   CascadeRecoverySignalRejection,
   CascadeRecoverySignalResult,
   PositionManagerUpdate
 } from "../../../strategy/cascade/types";
-import type { Env, GlobalRiskConfig, MarketRegime, MarketTick } from "../../../types";
+import { CASCADE_POSITIONS_KEY } from "../../../TradingEngineConstants";
+import type {
+  Env,
+  GlobalRiskConfig,
+  JsonRecord,
+  MarketRegime,
+  MarketTick,
+  TradeIntent
+} from "../../../types";
 import { baseAssetFromInstrument } from "../helpers/NativeMarketIdentityRuntime";
 import { cascadeRecoverySignalConfig, resolveCascadeAtr1h } from "./CascadeConfigRuntime";
 import {
@@ -46,6 +56,37 @@ export interface CascadePositionUpdateSideEffectHandlers {
   readonly dispatchCloseIntent: (intent: CascadePositionIntent) => void;
   readonly emitOperationalAlert: (alert: CascadePositionUpdateAlert) => void;
   readonly persistPositions: () => void;
+}
+
+export interface TradingCascadePositionUpdateTarget {
+  readonly cascadePositionManager: {
+    onTick(input: {
+      readonly instrumentCode: string;
+      readonly price: number;
+      readonly observedAt: string;
+      readonly atr: number | null;
+    }): readonly PositionManagerUpdate[];
+    snapshot(): readonly CascadeOpenPosition[];
+  };
+  readonly candleAggregator: {
+    snapshot(instrumentCode: string, timeframe: "1m", limit: number): Candle[];
+  };
+  readonly state: {
+    waitUntil(work: Promise<void>): void;
+  };
+  tradeIntentFromCascadePositionIntent(
+    intent: CascadePositionIntent,
+    observedAt: string
+  ): TradeIntent;
+  dispatchExecution(intent: TradeIntent): Promise<void>;
+  emitCascadeOperationalAlert(
+    eventType: CascadeAlertEventType,
+    title: string,
+    message: string,
+    metadata: JsonRecord,
+    dedupeKey: string
+  ): void;
+  safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
 }
 
 export interface CascadeClosedCandleSignalHandlers {
@@ -143,6 +184,47 @@ export function applyCascadePositionUpdateSideEffects(
   if (updates.length > 0) {
     handlers.persistPositions();
   }
+}
+
+export function dispatchTradingCascadePositionUpdates(
+  tick: MarketTick,
+  observedAt: string,
+  target: TradingCascadePositionUpdateTarget
+): Promise<void> {
+  const updates = target.cascadePositionManager.onTick({
+    instrumentCode: tick.instrumentCode,
+    price: tick.price,
+    observedAt,
+    atr: calculateAtr(target.candleAggregator.snapshot(tick.instrumentCode, "1m", 32), 14)
+  });
+
+  applyCascadePositionUpdateSideEffects(updates, observedAt, {
+    dispatchCloseIntent: (intent) => {
+      target.state.waitUntil(
+        target.dispatchExecution(target.tradeIntentFromCascadePositionIntent(intent, observedAt))
+      );
+    },
+    emitOperationalAlert: (alert) => {
+      target.emitCascadeOperationalAlert(
+        alert.eventType,
+        alert.title,
+        alert.message,
+        alert.metadata,
+        alert.dedupeKey
+      );
+    },
+    persistPositions: () => {
+      target.state.waitUntil(
+        target.safeStoragePut(
+          CASCADE_POSITIONS_KEY,
+          target.cascadePositionManager.snapshot(),
+          "CASCADE_POSITION_UPDATE"
+        )
+      );
+    }
+  });
+
+  return Promise.resolve();
 }
 
 export async function processCascadeClosedCandleSignals(
