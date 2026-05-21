@@ -196,6 +196,10 @@ import {
   handleTradingHyperliquidRawForTarget,
   type TradingHyperliquidRawEngineTarget
 } from "./ingest/TradingHyperliquidRawRuntime";
+import {
+  enqueueTradingIngestJob,
+  type TradingIngestQueueTarget
+} from "./ingest/IngestQueueRuntime";
 import { handleGrpcFatalDropForTarget, type GrpcFatalDropTarget } from "./ingest/GrpcDropRuntime";
 import {
   createTradingEngineHttpRouteContext,
@@ -864,12 +868,9 @@ export class TradingEngine {
     wakeUpTimeMs: number | null = this.latestWakeUpTimeMs,
     options: TickHandlingOptions = {}
   ): Promise<TickIngestResult> {
-    const job = this.ingestQueue.then(() => this.handleTick(tick, wakeUpTimeMs, options));
-    this.ingestQueue = job.then(
-      () => undefined,
-      () => undefined
+    return enqueueTradingIngestJob(this as unknown as TradingIngestQueueTarget, () =>
+      this.handleTick(tick, wakeUpTimeMs, options)
     );
-    return job;
   }
 
   private async handleHyperliquidRaw(
@@ -997,12 +998,9 @@ export class TradingEngine {
   }
 
   private enqueueOrderBookReset(payload: Partial<OrderBookResetRequest>): Promise<void> {
-    const job = this.ingestQueue.then(() => this.resetOrderBook(payload));
-    this.ingestQueue = job.then(
-      () => undefined,
-      () => undefined
+    return enqueueTradingIngestJob(this as unknown as TradingIngestQueueTarget, () =>
+      this.resetOrderBook(payload)
     );
-    return job;
   }
 
   private registerIngestConnection(
