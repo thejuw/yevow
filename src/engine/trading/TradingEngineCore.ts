@@ -62,7 +62,7 @@ import {
 import { calculateTradingInventoryState } from "./inventory/TradingInventoryStateRuntime";
 import { resolveMaxPositionPct } from "./risk/PortfolioRiskRuntime";
 import { updateTradingPortfolioRisk } from "./risk/TradingPortfolioRiskRuntime";
-import { calculateEnsembleState as calculateRuntimeEnsembleState } from "./ensemble/EnsembleRuntime";
+import { calculateTradingEnsembleState } from "./ensemble/TradingEnsembleRuntime";
 import { stateAfterFundingTick } from "./funding/FundingRuntime";
 import {
   nextQuoteStateForInstrument as nextRuntimeQuoteStateForInstrument,
@@ -3042,7 +3042,7 @@ export class TradingEngine {
     anomalyStatus: EngineState["anomaly"],
     observedAt: string
   ): EngineState["ensemble"] {
-    return calculateRuntimeEnsembleState({
+    return calculateTradingEnsembleState({
       intent,
       profilerState,
       oracleState,
