@@ -38,11 +38,14 @@ import {
   resolveCascadeAtr1h
 } from "./CascadeConfigRuntime";
 import {
+  isCascadeInstrumentEnabledForConfig,
+  latestAbsorptionForInstrument,
   latestCascadeAtForInstrument,
   recentSwingHigh,
   recentSwingLow
 } from "./CascadeSelectionRuntime";
 import {
+  applyCascadeSignalRejectionSideEffects,
   processAcceptedCascadeSignalFlow,
   type CascadeAcceptedSignalFlowResult
 } from "./CascadeSignalEntryRuntime";
@@ -196,7 +199,66 @@ export interface TradingAcceptedCascadeSignalTarget {
     size: number,
     observedAt: string
   ): TradeIntent;
-  recordCascadeUiSignal(signal: AgentSignal, outcome: "TAKEN"): void;
+  tradeIntentFromCascadePositionIntent(
+    intent: CascadePositionIntent,
+    observedAt: string
+  ): TradeIntent;
+  recordCascadeUiSignal(signal: AgentSignal, outcome: "TAKEN" | "SKIPPED" | "CLOSED"): void;
+  dispatchExecution(intent: TradeIntent): Promise<void>;
+  safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
+  emitCascadeOperationalAlert(
+    eventType: CascadeAlertEventType,
+    title: string,
+    message: string,
+    metadata: JsonRecord,
+    dedupeKey: string
+  ): void;
+}
+
+export interface TradingCascadeStrategyTarget {
+  readonly cachedConfig: GlobalRiskConfig;
+  readonly engineState: Pick<
+    EngineState,
+    "engineId" | "bankroll" | "microstructure" | "oracle" | "riskMetrics"
+  >;
+  readonly cascadePositionManager: {
+    onTick(input: {
+      readonly instrumentCode: string;
+      readonly price: number;
+      readonly observedAt: string;
+      readonly atr: number | null;
+    }): readonly PositionManagerUpdate[];
+    snapshot(): readonly CascadeOpenPosition[];
+    registerFromSignal(
+      signal: CascadeRecoverySignal,
+      sizeDecision: PositionSizeDecision,
+      observedAt: string
+    ): CascadeOpenPosition;
+  };
+  readonly cascadeHeatManager: TradingAcceptedCascadeSignalTarget["cascadeHeatManager"];
+  readonly logger: TradingAcceptedCascadeSignalTarget["logger"] & {
+    info(eventType: string, message: string, telemetry?: JsonRecord): void;
+  };
+  readonly candleAggregator: TradingCascadePositionUpdateTarget["candleAggregator"] & {
+    ingestTick(tick: MarketTick): readonly Candle[];
+  };
+  readonly cascadeNewsCalendar: TradingCascadeRecoverySignalTarget["cascadeNewsCalendar"] & {
+    refresh(): Promise<void>;
+  };
+  readonly state: TradingAcceptedCascadeSignalTarget["state"];
+  readonly cascadeAbsorptionsById: ReadonlyMap<string, AbsorptionConfirmed>;
+  readonly cascadeEventsById: ReadonlyMap<string, CascadeEvent>;
+  readonly env: Pick<Env, "CASCADE_ATR_FALLBACK_USD" | "CASCADE_ATR_FALLBACK_PCT">;
+  tradeIntentFromCascadeSignal(
+    signal: CascadeRecoverySignal,
+    size: number,
+    observedAt: string
+  ): TradeIntent;
+  tradeIntentFromCascadePositionIntent(
+    intent: CascadePositionIntent,
+    observedAt: string
+  ): TradeIntent;
+  recordCascadeUiSignal(signal: AgentSignal, outcome: "TAKEN" | "SKIPPED" | "CLOSED"): void;
   dispatchExecution(intent: TradeIntent): Promise<void>;
   safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
   emitCascadeOperationalAlert(
@@ -353,6 +415,73 @@ export async function evaluateCascadeStrategyFlow(
     closedCandles,
     reason: "EVALUATED"
   };
+}
+
+export function recordTradingRejectedCascadeSignal(
+  rejection: CascadeRecoverySignalRejection,
+  observedAt: string,
+  target: TradingCascadeStrategyTarget
+): void {
+  applyCascadeSignalRejectionSideEffects(
+    {
+      rejection,
+      engineId: target.engineState.engineId,
+      observedAt,
+      entryWindowMs: target.cachedConfig.ENTRY_WINDOW_SECONDS * 1_000
+    },
+    {
+      logInfo: (event, message, metadata) => {
+        target.logger.info(event, message, metadata);
+      },
+      recordUiSignal: (signal, outcome) => {
+        target.recordCascadeUiSignal(signal, outcome);
+      }
+    }
+  );
+}
+
+export function evaluateTradingCascadeStrategy(
+  tick: MarketTick,
+  observedAt: string,
+  target: TradingCascadeStrategyTarget
+): Promise<CascadeStrategyEvaluationResult> {
+  return evaluateCascadeStrategyFlow(
+    {
+      strategyMode: target.cachedConfig.STRATEGY_MODE,
+      tick,
+      observedAt
+    },
+    {
+      ingestTick: (currentTick) => target.candleAggregator.ingestTick(currentTick),
+      dispatchPositionUpdates: (currentTick, updateObservedAt) =>
+        dispatchTradingCascadePositionUpdates(currentTick, updateObservedAt, target),
+      isInstrumentEnabled: (instrumentCode) =>
+        isCascadeInstrumentEnabledForConfig(
+          target.cachedConfig.CASCADE_INSTRUMENTS,
+          instrumentCode
+        ),
+      refreshNewsCalendar: async () => {
+        await target.cascadeNewsCalendar.refresh();
+      },
+      latestAbsorptionForInstrument: (instrumentCode) =>
+        latestAbsorptionForInstrument(target.cascadeAbsorptionsById, instrumentCode),
+      cascadeForAbsorption: (absorption) =>
+        target.cascadeEventsById.get(absorption.cascadeId) ?? null,
+      evaluateSignal: (cascade, absorption, reclaimCandle, signalObservedAt) =>
+        evaluateTradingEngineCascadeRecoverySignal(
+          cascade,
+          absorption,
+          reclaimCandle,
+          signalObservedAt,
+          target
+        ),
+      recordRejectedSignal: (rejection, rejectedAt) => {
+        recordTradingRejectedCascadeSignal(rejection, rejectedAt, target);
+      },
+      processAcceptedSignal: (signal, acceptedAt) =>
+        processTradingAcceptedCascadeSignal(signal, acceptedAt, target).then(() => undefined)
+    }
+  );
 }
 
 export function evaluateTradingCascadeRecoverySignal(

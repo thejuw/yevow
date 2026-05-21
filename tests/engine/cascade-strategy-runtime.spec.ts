@@ -8,6 +8,7 @@ import {
   closedOneMinuteCandlesForTick,
   dispatchTradingCascadePositionUpdates,
   evaluateCascadeStrategyFlow,
+  evaluateTradingCascadeStrategy,
   evaluateTradingEngineCascadeRecoverySignal,
   evaluateTradingCascadeRecoverySignal,
   processCascadeClosedCandleSignals,
@@ -20,6 +21,7 @@ import {
   type CascadeSizeRejectionSideEffectHandlers,
   type TradingAcceptedCascadeSignalTarget,
   type TradingCascadeRecoverySignalTarget,
+  type TradingCascadeStrategyTarget,
   type TradingCascadePositionUpdateTarget,
   shouldEvaluateCascadeStrategy
 } from "../../src/engine/trading/cascade/CascadeStrategyRuntime";
@@ -99,6 +101,119 @@ describe("CascadeStrategyRuntime", () => {
       "cascade:cascade-btc-usd",
       "evaluate:100.5",
       "accept:signal-flow:2026-05-18T20:01:00.000Z"
+    ]);
+  });
+
+  it("evaluates cascade strategy through the trading engine target adapter", async () => {
+    const calls: string[] = [];
+    const scheduled: Promise<void>[] = [];
+    const engineState = defaultEngineState("cascade-strategy-target");
+    engineState.bankroll.equity = 10_000;
+    engineState.microstructure.midPrice = 100;
+    engineState.oracle.regime = "REGIME_RANGE";
+    engineState.riskMetrics.isTradingEnabled = true;
+    const target: TradingCascadeStrategyTarget = {
+      cachedConfig: {
+        ...defaultConfig,
+        STRATEGY_MODE: "CASCADE_RECOVERY",
+        CASCADE_INSTRUMENTS: "BTC",
+        RISK_PER_TRADE_PCT: 0.01,
+        HEAT_CAP_PCT: 0.5
+      },
+      engineState,
+      cascadeAbsorptionsById: new Map(),
+      cascadeEventsById: new Map(),
+      env: {},
+      candleAggregator: {
+        ingestTick(tick) {
+          calls.push(`ingest:${tick.instrumentCode}`);
+          return [candle({ instrumentCode: tick.instrumentCode })];
+        },
+        snapshot(instrumentCode, timeframe, limit) {
+          calls.push(`snapshot:${instrumentCode}:${timeframe}:${limit}`);
+          return [candle({ instrumentCode })];
+        }
+      },
+      cascadePositionManager: {
+        onTick(input) {
+          calls.push(`position:${input.instrumentCode}:${input.price}:${String(input.atr)}`);
+          return [];
+        },
+        snapshot() {
+          calls.push("positions:snapshot");
+          return [];
+        },
+        registerFromSignal(signal) {
+          calls.push(`register:${signal.signalId}`);
+          return position({ signalId: signal.signalId });
+        }
+      },
+      cascadeHeatManager: {
+        currentHeat(positions) {
+          calls.push(`heat:${positions.length}`);
+          return 0;
+        }
+      },
+      cascadeNewsCalendar: {
+        async refresh() {
+          calls.push("refresh-news");
+        },
+        isWithinBlackout(_observedAt, baseAsset) {
+          calls.push(`blackout:${baseAsset}`);
+          return { blocked: false };
+        }
+      },
+      state: {
+        waitUntil(work) {
+          calls.push("schedule");
+          scheduled.push(work);
+        }
+      },
+      logger: {
+        info(eventType, _message, metadata) {
+          calls.push(`info:${eventType}:${metadata?.cascadeId as string}`);
+        },
+        traceDecision(decision) {
+          calls.push(`trace:${decision.decisionId}`);
+        },
+        warn(eventType, _message, metadata) {
+          calls.push(`warn:${eventType}:${metadata?.signalId as string}`);
+        }
+      },
+      tradeIntentFromCascadeSignal(signal) {
+        calls.push(`intent:${signal.signalId}`);
+        return tradeIntent({ intentId: `intent-${signal.signalId}` });
+      },
+      tradeIntentFromCascadePositionIntent(intent, observedAt) {
+        calls.push(`position-intent:${intent.intentId}:${observedAt}`);
+        return tradeIntent({ intentId: `position-${intent.intentId}` });
+      },
+      recordCascadeUiSignal(agentSignal, outcome) {
+        calls.push(`signal:${agentSignal.signalId}:${outcome}`);
+      },
+      async dispatchExecution(intent) {
+        calls.push(`dispatch:${intent.intentId}`);
+      },
+      async safeStoragePut(key, value, reason) {
+        calls.push(`persist:${key}:${(value as unknown[]).length}:${reason}`);
+      },
+      emitCascadeOperationalAlert(eventType, _title, _message, _metadata, dedupeKey) {
+        calls.push(`alert:${eventType}:${dedupeKey}`);
+      }
+    };
+
+    const result = await evaluateTradingCascadeStrategy(
+      marketTick(),
+      "2026-05-18T20:01:00.000Z",
+      target
+    );
+
+    expect(result.reason).toBe("EVALUATED");
+    expect(calls).toEqual([
+      "ingest:btc-usd",
+      "snapshot:btc-usd:1m:32",
+      "position:btc-usd:100:null",
+      "refresh-news"
     ]);
   });
 

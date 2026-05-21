@@ -146,14 +146,8 @@ import {
 } from "./cascade/CascadeConfigRuntime";
 import { ensureCascadePaperModeArmedRuntime } from "./cascade/CascadePaperModeRuntime";
 import {
-  applyCascadeSignalRejectionSideEffects,
-  dispatchTradingCascadePositionUpdates,
-  evaluateCascadeStrategyFlow,
-  evaluateTradingEngineCascadeRecoverySignal,
-  processTradingAcceptedCascadeSignal,
-  type TradingAcceptedCascadeSignalTarget,
-  type TradingCascadeRecoverySignalTarget,
-  type TradingCascadePositionUpdateTarget
+  evaluateTradingCascadeStrategy,
+  type TradingCascadeStrategyTarget
 } from "./cascade/CascadeStrategyRuntime";
 import { OrderBookReconstructor, type OrderBookStores } from "./book/OrderBookReconstructor";
 import {
@@ -326,7 +320,6 @@ import type {
   CascadeEvent,
   CascadePositionIntent,
   CascadeRecoverySignal,
-  CascadeRecoverySignalRejection,
   LiquidationEvent
 } from "../../strategy/cascade/types";
 
@@ -391,10 +384,6 @@ import {
   parseTickSizeMap,
   parsePositiveNumberMap
 } from "./book/BookRuntimeHelpers";
-import {
-  isCascadeInstrumentEnabledForConfig,
-  latestAbsorptionForInstrument
-} from "./cascade/CascadeSelectionRuntime";
 import { closeTradingCascadePosition } from "./cascade/TradingCascadeManualCloseRuntime";
 import { normalizeNativeCoin, splitNativeInstrument } from "./helpers/NativeMarketIdentityRuntime";
 import { nativeBookSideLevels } from "./helpers/NativeHyperliquidRuntime";
@@ -1137,71 +1126,6 @@ export class TradingEngine {
     observeTradingEngineCascadeAbsorption(tick, this as unknown as TradingCascadeAbsorptionTarget);
   }
 
-  private recordRejectedCascadeSignal(
-    rejection: CascadeRecoverySignalRejection,
-    observedAt: string
-  ): void {
-    applyCascadeSignalRejectionSideEffects(
-      {
-        rejection,
-        engineId: this.engineState.engineId,
-        observedAt,
-        entryWindowMs: this.cachedConfig.ENTRY_WINDOW_SECONDS * 1_000
-      },
-      {
-        logInfo: (event, message, metadata) => this.logger.info(event, message, metadata),
-        recordUiSignal: (signal, outcome) => this.recordCascadeUiSignal(signal, outcome)
-      }
-    );
-  }
-
-  private async evaluateCascadeStrategy(tick: MarketTick, observedAt: string): Promise<void> {
-    await evaluateCascadeStrategyFlow(
-      {
-        strategyMode: this.cachedConfig.STRATEGY_MODE,
-        tick,
-        observedAt
-      },
-      {
-        ingestTick: (currentTick) => this.candleAggregator.ingestTick(currentTick),
-        dispatchPositionUpdates: (currentTick, updateObservedAt) =>
-          dispatchTradingCascadePositionUpdates(
-            currentTick,
-            updateObservedAt,
-            this as unknown as TradingCascadePositionUpdateTarget
-          ),
-        isInstrumentEnabled: (instrumentCode) =>
-          isCascadeInstrumentEnabledForConfig(
-            this.cachedConfig.CASCADE_INSTRUMENTS,
-            instrumentCode
-          ),
-        refreshNewsCalendar: async () => {
-          await this.cascadeNewsCalendar.refresh();
-        },
-        latestAbsorptionForInstrument: (instrumentCode) =>
-          latestAbsorptionForInstrument(this.cascadeAbsorptionsById, instrumentCode),
-        cascadeForAbsorption: (absorption) =>
-          this.cascadeEventsById.get(absorption.cascadeId) ?? null,
-        evaluateSignal: (cascade, absorption, reclaimCandle, signalObservedAt) =>
-          evaluateTradingEngineCascadeRecoverySignal(
-            cascade,
-            absorption,
-            reclaimCandle,
-            signalObservedAt,
-            this as unknown as TradingCascadeRecoverySignalTarget
-          ),
-        recordRejectedSignal: (rejection, rejectedAt) =>
-          this.recordRejectedCascadeSignal(rejection, rejectedAt),
-        processAcceptedSignal: (signal, acceptedAt) =>
-          processTradingAcceptedCascadeSignal(
-            signal,
-            acceptedAt,
-            this as unknown as TradingAcceptedCascadeSignalTarget
-          ).then(() => undefined)
-      }
-    );
-  }
-
   private tradeIntentFromCascadeSignal(
     signal: CascadeRecoverySignal,
     size: number,
@@ -1850,7 +1774,11 @@ export class TradingEngine {
       },
       {
         evaluateCascadeStrategy: (currentTick, currentObservedAt) =>
-          this.evaluateCascadeStrategy(currentTick, currentObservedAt),
+          evaluateTradingCascadeStrategy(
+            currentTick,
+            currentObservedAt,
+            this as unknown as TradingCascadeStrategyTarget
+          ).then(() => undefined),
         updateVolatility: (instrumentCode, midPrice, currentObservedAt) =>
           this.multiScaleVolatility.update(instrumentCode, midPrice, currentObservedAt),
         markHypeCancelCooldown: (instrumentCode, nowMs) =>
