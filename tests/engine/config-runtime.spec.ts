@@ -20,8 +20,10 @@ import {
   type RuntimeConfigUpdateSideEffectHandlers
 } from "../../src/engine/trading/config/ConfigRuntime";
 import {
+  applyTradingEngineConfigUpdate,
   refreshTradingEngineConfig,
-  type TradingEngineConfigRefreshHandlers
+  type TradingEngineConfigRefreshHandlers,
+  type TradingEngineConfigUpdateHandlers
 } from "../../src/engine/trading/config/TradingConfigControlRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { AdminConfigUpdate } from "../../src/types";
@@ -615,6 +617,38 @@ describe("ConfigRuntime", () => {
     expect(result?.state.bankroll.equity).toBe(275);
     expect(sideEffects.events).toEqual(["runtime:HALTED:250"]);
   });
+
+  it("wraps engine config updates with generated timestamps", async () => {
+    const sideEffects = tradingEngineConfigUpdateSpy();
+
+    await applyTradingEngineConfigUpdate(
+      {
+        update: {
+          mode: "HALTED",
+          bankroll: {
+            equity: 444
+          }
+        },
+        currentState: defaultEngineState("trading-config-update-flow"),
+        cachedConfig: {
+          ...defaultConfig,
+          version: "config-current"
+        },
+        macroBias: neutralMacroBias(),
+        temporaryOverride: null,
+        currentMaxLatencyMs: 250
+      },
+      sideEffects.handlers
+    );
+
+    expect(sideEffects.events).toEqual([
+      "now",
+      "latency:250",
+      "state:HALTED:2026-05-18T17:00:00.000Z",
+      "persist",
+      "warn:config-current"
+    ]);
+  });
 });
 
 function configRefreshSideEffectSpy(): {
@@ -812,6 +846,44 @@ function adminConfigUpdateFlowSpy(): {
       applyRuntimeUpdate(update) {
         events.push(`runtime:${update.state.mode}:${update.maxLatencyMs}`);
         return Promise.resolve();
+      }
+    }
+  };
+}
+
+function tradingEngineConfigUpdateSpy(): {
+  events: string[];
+  handlers: TradingEngineConfigUpdateHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      nowIso() {
+        events.push("now");
+        return "2026-05-18T17:00:00.000Z";
+      },
+      refreshConfig(config) {
+        events.push(`refresh:${config?.version ?? "none"}`);
+        return Promise.resolve();
+      },
+      scheduleConfigRefresh() {
+        events.push("schedule");
+        return Promise.resolve();
+      },
+      setMaxLatencyMs(maxLatencyMs) {
+        events.push(`latency:${maxLatencyMs}`);
+      },
+      applyState(state) {
+        events.push(`state:${state.mode}:${state.updatedAt}`);
+      },
+      persistAppliedState() {
+        events.push("persist");
+        return Promise.resolve();
+      },
+      warnApplied(metadata) {
+        events.push(`warn:${String(metadata.riskConfigVersion)}`);
       }
     }
   };

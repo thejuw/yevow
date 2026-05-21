@@ -72,6 +72,8 @@ export interface TradingConfigUpdateInput {
   readonly observedAt: string;
 }
 
+export type TradingEngineConfigUpdateInput = Omit<TradingConfigUpdateInput, "observedAt">;
+
 export interface TradingConfigUpdateHandlers {
   readonly refreshConfig: (directConfig?: GlobalRiskConfig) => Promise<void>;
   readonly scheduleConfigRefresh: () => Promise<void>;
@@ -79,6 +81,10 @@ export interface TradingConfigUpdateHandlers {
   readonly applyState: (state: EngineState) => void;
   readonly persistAppliedState: () => Promise<void>;
   readonly warnApplied: (metadata: JsonRecord) => void;
+}
+
+export interface TradingEngineConfigUpdateHandlers extends TradingConfigUpdateHandlers {
+  readonly nowIso: () => string;
 }
 
 export async function refreshTradingConfig(
@@ -143,4 +149,17 @@ export async function applyTradingConfigUpdate(
         warnApplied: handlers.warnApplied
       })
   });
+}
+
+export function applyTradingEngineConfigUpdate(
+  input: TradingEngineConfigUpdateInput,
+  handlers: TradingEngineConfigUpdateHandlers
+): Promise<void> {
+  return applyTradingConfigUpdate(
+    {
+      ...input,
+      observedAt: handlers.nowIso()
+    },
+    handlers
+  );
 }

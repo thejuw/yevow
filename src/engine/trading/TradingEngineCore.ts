@@ -116,7 +116,7 @@ import {
 } from "./cascade/CascadeTradeIntents";
 import { observeTradingCascadeAbsorption } from "./cascade/CascadeAbsorptionRuntime";
 import {
-  applyTradingConfigUpdate,
+  applyTradingEngineConfigUpdate,
   refreshTradingEngineConfig
 } from "./config/TradingConfigControlRuntime";
 import {
@@ -3641,17 +3641,17 @@ export class TradingEngine {
   }
 
   private async applyConfigUpdate(update: AdminConfigUpdate): Promise<void> {
-    await applyTradingConfigUpdate(
+    await applyTradingEngineConfigUpdate(
       {
         update,
         currentState: this.engineState,
         cachedConfig: this.cachedConfig,
         macroBias: this.macroBias,
         temporaryOverride: this.activeTemporaryOverride,
-        currentMaxLatencyMs: this.maxLatencyMs,
-        observedAt: new Date().toISOString()
+        currentMaxLatencyMs: this.maxLatencyMs
       },
       {
+        nowIso: () => new Date().toISOString(),
         refreshConfig: (directConfig) => this.refreshConfig("ADMIN_SIGNAL", directConfig),
         scheduleConfigRefresh: () => this.scheduleConfigRefresh(),
         setMaxLatencyMs: (maxLatencyMs) => {
