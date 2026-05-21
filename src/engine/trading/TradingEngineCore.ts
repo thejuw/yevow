@@ -415,10 +415,7 @@ import {
   recentSwingLow,
   recentSwingHigh
 } from "./cascade/CascadeSelectionRuntime";
-import {
-  applyCascadeManualCloseSideEffects,
-  buildCascadeManualCloseRuntimeResult
-} from "./cascade/CascadeManualCloseRuntime";
+import { closeTradingCascadePosition } from "./cascade/TradingCascadeManualCloseRuntime";
 import {
   normalizeNativeCoin,
   normalizeNativeInstrumentCode,
@@ -1360,45 +1357,45 @@ export class TradingEngine {
     reason: string
   ): Promise<{ ok: boolean; error?: string; position?: JsonRecord; intents?: JsonRecord[] }> {
     const observedAt = new Date().toISOString();
-    const markPriceContext = {
-      orderBook: this.orderBook,
-      assetMatrix: this.engineState.assetMatrix,
-      microstructure: this.engineState.microstructure
-    };
-    const closeResult = buildCascadeManualCloseRuntimeResult({
-      positions: this.cascadePositionManager.snapshot(),
-      positionId,
-      actor,
-      reason,
-      observedAt,
-      markPriceForInstrument: (instrumentCode) =>
-        nullableMarkPriceForInstrument(markPriceContext, instrumentCode),
-      requestManualClose: (id, closeObservedAt, markPrice) =>
-        this.cascadePositionManager.requestManualClose(id, closeObservedAt, markPrice)
-    });
 
-    return applyCascadeManualCloseSideEffects(closeResult, {
-      dispatchIntent: (intent) =>
-        this.state.waitUntil(
-          this.dispatchExecution(this.tradeIntentFromCascadePositionIntent(intent, observedAt))
-        ),
-      logManualClose: (metadata) =>
-        this.logger.warn(
-          "CASCADE_POSITION_MANUAL_CLOSE",
-          "Operator requested cascade position close",
-          metadata
-        ),
-      publishManualClose: (payload, correlationId) =>
-        this.publish("CASCADE_POSITION_MANUAL_CLOSE", payload, correlationId),
-      persistPositions: () =>
-        this.state.waitUntil(
-          this.safeStoragePut(
-            CASCADE_POSITIONS_KEY,
-            this.cascadePositionManager.snapshot(),
-            "CASCADE_POSITION_MANUAL_CLOSE"
+    return closeTradingCascadePosition(
+      {
+        positions: this.cascadePositionManager.snapshot(),
+        positionId,
+        actor,
+        reason,
+        observedAt,
+        markPriceContext: {
+          orderBook: this.orderBook,
+          assetMatrix: this.engineState.assetMatrix,
+          microstructure: this.engineState.microstructure
+        }
+      },
+      {
+        requestManualClose: (id, closeObservedAt, markPrice) =>
+          this.cascadePositionManager.requestManualClose(id, closeObservedAt, markPrice),
+        dispatchIntent: (intent) =>
+          this.state.waitUntil(
+            this.dispatchExecution(this.tradeIntentFromCascadePositionIntent(intent, observedAt))
+          ),
+        logManualClose: (metadata) =>
+          this.logger.warn(
+            "CASCADE_POSITION_MANUAL_CLOSE",
+            "Operator requested cascade position close",
+            metadata
+          ),
+        publishManualClose: (payload, correlationId) =>
+          this.publish("CASCADE_POSITION_MANUAL_CLOSE", payload, correlationId),
+        persistPositions: () =>
+          this.state.waitUntil(
+            this.safeStoragePut(
+              CASCADE_POSITIONS_KEY,
+              this.cascadePositionManager.snapshot(),
+              "CASCADE_POSITION_MANUAL_CLOSE"
+            )
           )
-        )
-    });
+      }
+    );
   }
 
   private currentCascadeDetectorConfig(instrumentCode: string): CascadeDetectorConfig {
