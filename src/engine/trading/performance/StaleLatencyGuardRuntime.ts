@@ -35,6 +35,7 @@ export {
 } from "./SoftStaleLatencyRuntime";
 export {
   applyNativeHyperliquidLatencyPullSideEffects,
+  applyTradingNativeHyperliquidLatencyPull,
   latencySnapshotStorageWrites,
   nativeHyperliquidLatencyPullArtifacts,
   nativeHyperliquidLatencyPullStorageWrites,
@@ -45,5 +46,7 @@ export {
   type NativeHyperliquidLatencyPullInput,
   type NativeHyperliquidLatencyPullResult,
   type NativeHyperliquidLatencyPullSideEffectHandlers,
-  type NativeHyperliquidLatencyPullStorageInput
+  type NativeHyperliquidLatencyPullStorageInput,
+  type TradingNativeHyperliquidLatencyPullHandlers,
+  type TradingNativeHyperliquidLatencyPullInput
 } from "./NativeLatencyPullRuntime";

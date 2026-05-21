@@ -15,6 +15,7 @@ import {
   applyNativeHyperliquidLatencyPullSideEffects,
   applySoftStaleTickFlow,
   applyStaleDataKillSwitchSideEffects,
+  applyTradingNativeHyperliquidLatencyPull,
   buildHardStaleTickDropArtifacts,
   buildStaleDataKillSwitchArtifacts,
   hardStalePullTelemetryPayload,
@@ -902,6 +903,59 @@ describe("LatencyRuntime", () => {
     ]);
 
     await Promise.all(sideEffects.scheduled);
+  });
+
+  it("runs trading native Hyperliquid latency-pull hooks before side effects", async () => {
+    const state = defaultEngineState("native-latency-trading-flow");
+    const events: string[] = [];
+    const scheduled: Promise<unknown>[] = [];
+
+    const artifacts = applyTradingNativeHyperliquidLatencyPull(
+      {
+        currentState: state,
+        metrics: latencyMetrics({ sequence: 3, totalLatencyMs: 210, maxLatencyMs: 150 }),
+        instrumentCode: "btc-usd",
+        sequence: 3,
+        observedAt: "2026-05-18T15:00:01.000Z",
+        existingLatencyHistory: [latencyMetrics({ sequence: 2, totalLatencyMs: 90 })],
+        latencyHistoryLimit: 4,
+        engineStateKey: "engine:state",
+        performanceHistoryKey: "latency:history",
+        processingLatencySamplesKey: "latency:samples",
+        processingLatencySamples: [2, 3]
+      },
+      {
+        updateLatencyAverage: (totalLatencyMs) => events.push(`average:${totalLatencyMs}`),
+        applyLocationLatency: (totalLatencyMs, observedAt) =>
+          events.push(`location:${totalLatencyMs}:${observedAt}`),
+        applyLatencyHistory: (history) => events.push(`history:${history.length}`),
+        applyState: (nextState) => events.push(`state:${nextState.staleTickCount}`),
+        persistStorage: (writes, reason) => {
+          events.push(`persist:${reason}:${Object.keys(writes).length}`);
+          return Promise.resolve();
+        },
+        schedule: (work) => {
+          events.push("schedule");
+          scheduled.push(work);
+        },
+        logPerformance: (metrics) => events.push(`performance:${metrics.totalLatencyMs}`),
+        publish: (type, payload) => events.push(`publish:${type}:${payload.action}`)
+      }
+    );
+
+    expect(artifacts.latencyHistory).toHaveLength(2);
+    expect(events).toEqual([
+      "average:210",
+      "location:210:2026-05-18T15:00:01.000Z",
+      "history:2",
+      "state:1",
+      "persist:NATIVE_HL_LATENCY_PULL:3",
+      "schedule",
+      "performance:210",
+      "publish:STALE_DATA_KILL_SWITCH:PULL_CURRENT_QUOTES"
+    ]);
+
+    await Promise.all(scheduled);
   });
 
   it("builds generic latency snapshot storage writes with optional extra entries", () => {

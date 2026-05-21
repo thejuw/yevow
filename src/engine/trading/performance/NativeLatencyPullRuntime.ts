@@ -50,6 +50,14 @@ export interface NativeHyperliquidLatencyPullSideEffectHandlers {
   readonly publish: (type: "STALE_DATA_KILL_SWITCH", payload: Record<string, unknown>) => void;
 }
 
+export type TradingNativeHyperliquidLatencyPullInput = NativeHyperliquidLatencyPullArtifactsInput;
+
+export interface TradingNativeHyperliquidLatencyPullHandlers extends NativeHyperliquidLatencyPullSideEffectHandlers {
+  readonly updateLatencyAverage: (totalLatencyMs: number) => void;
+  readonly applyLocationLatency: (totalLatencyMs: number, observedAt: string) => void;
+  readonly applyLatencyHistory: (latencyHistory: LatencyMetrics[]) => void;
+}
+
 export interface LatencySnapshotStorageInput {
   readonly engineStateKey: string;
   readonly state: EngineState;
@@ -142,6 +150,21 @@ export function applyNativeHyperliquidLatencyPullSideEffects(
   handlers.schedule(handlers.persistStorage(artifacts.storageWrites, "NATIVE_HL_LATENCY_PULL"));
   handlers.logPerformance(artifacts.metrics);
   handlers.publish(artifacts.telemetryType, artifacts.telemetryPayload);
+}
+
+export function applyTradingNativeHyperliquidLatencyPull(
+  input: TradingNativeHyperliquidLatencyPullInput,
+  handlers: TradingNativeHyperliquidLatencyPullHandlers
+): NativeHyperliquidLatencyPullArtifacts {
+  handlers.updateLatencyAverage(input.metrics.totalLatencyMs);
+  handlers.applyLocationLatency(input.metrics.totalLatencyMs, input.observedAt);
+
+  const artifacts = nativeHyperliquidLatencyPullArtifacts(input);
+
+  handlers.applyLatencyHistory([...artifacts.latencyHistory]);
+  applyNativeHyperliquidLatencyPullSideEffects(artifacts, handlers);
+
+  return artifacts;
 }
 
 export function latencySnapshotStorageWrites(

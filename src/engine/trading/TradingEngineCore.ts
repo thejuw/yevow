@@ -83,10 +83,9 @@ import { buildTradingPerformanceMetricsResponse } from "./performance/TradingPer
 import { observeTradingExecutionProfile } from "./performance/TradingExecutionProfileRuntime";
 import {
   applyHardStaleTickDropFlow,
-  applyNativeHyperliquidLatencyPullSideEffects,
   applySoftStaleTickFlow,
-  latencySnapshotStorageWrites,
-  nativeHyperliquidLatencyPullArtifacts
+  applyTradingNativeHyperliquidLatencyPull,
+  latencySnapshotStorageWrites
 } from "./performance/StaleLatencyGuardRuntime";
 import {
   applyLatencyBaselineResetSideEffects,
@@ -1571,31 +1570,36 @@ export class TradingEngine {
     metrics: LatencyMetrics,
     observedAt: string
   ): void {
-    this.updateLatencyAverage(metrics.totalLatencyMs);
-    this.applyLocationLatency(metrics.totalLatencyMs, observedAt);
-    const artifacts = nativeHyperliquidLatencyPullArtifacts({
-      currentState: this.engineState,
-      metrics,
-      instrumentCode,
-      sequence,
-      observedAt,
-      existingLatencyHistory: this.latencyHistory,
-      latencyHistoryLimit: PERFORMANCE_HISTORY_LIMIT,
-      engineStateKey: ENGINE_STATE_KEY,
-      performanceHistoryKey: PERFORMANCE_HISTORY_KEY,
-      processingLatencySamplesKey: PROCESSING_LATENCY_SAMPLES_KEY,
-      processingLatencySamples: this.processingLatencySamples
-    });
-    this.latencyHistory = [...artifacts.latencyHistory];
-    applyNativeHyperliquidLatencyPullSideEffects(artifacts, {
-      applyState: (state) => {
-        this.engineState = state;
+    applyTradingNativeHyperliquidLatencyPull(
+      {
+        currentState: this.engineState,
+        metrics,
+        instrumentCode,
+        sequence,
+        observedAt,
+        existingLatencyHistory: this.latencyHistory,
+        latencyHistoryLimit: PERFORMANCE_HISTORY_LIMIT,
+        engineStateKey: ENGINE_STATE_KEY,
+        performanceHistoryKey: PERFORMANCE_HISTORY_KEY,
+        processingLatencySamplesKey: PROCESSING_LATENCY_SAMPLES_KEY,
+        processingLatencySamples: this.processingLatencySamples
       },
-      persistStorage: (writes, reason) => this.persistHotStorageSnapshot(writes, reason),
-      schedule: (work) => this.state.waitUntil(work),
-      logPerformance: (pullMetrics) => this.logPerformance(pullMetrics),
-      publish: (type, payload) => this.publish(type, payload)
-    });
+      {
+        updateLatencyAverage: (totalLatencyMs) => this.updateLatencyAverage(totalLatencyMs),
+        applyLocationLatency: (totalLatencyMs, locationObservedAt) =>
+          this.applyLocationLatency(totalLatencyMs, locationObservedAt),
+        applyLatencyHistory: (latencyHistory) => {
+          this.latencyHistory = latencyHistory;
+        },
+        applyState: (state) => {
+          this.engineState = state;
+        },
+        persistStorage: (writes, reason) => this.persistHotStorageSnapshot(writes, reason),
+        schedule: (work) => this.state.waitUntil(work),
+        logPerformance: (pullMetrics) => this.logPerformance(pullMetrics),
+        publish: (type, payload) => this.publish(type, payload)
+      }
+    );
   }
 
   private enqueueOrderBookReset(payload: Partial<OrderBookResetRequest>): Promise<void> {
