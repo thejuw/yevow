@@ -90,7 +90,11 @@ export interface TradingEngineJanitorMaintenanceTarget {
       readonly dustThreshold: number;
     }): JanitorState;
   };
-  cancelOrder(orderId: string, reason: JanitorCancelReason, instrumentCode?: string): Promise<void>;
+  cancelOrder?(
+    orderId: string,
+    reason: JanitorCancelReason,
+    instrumentCode?: string
+  ): Promise<void>;
   pruneOperationalLogs(): Promise<LogPruneReport>;
   safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
 }
@@ -205,7 +209,14 @@ export function runTradingEngineJanitorMaintenanceForTarget(
       nowIso: () => new Date().toISOString(),
       runBaseReport: (input) => target.janitorAgent.run(input),
       cancelOrder: (orderId, reason, instrumentCode) =>
-        target.cancelOrder(orderId, reason, instrumentCode),
+        target.cancelOrder
+          ? target.cancelOrder(orderId, reason, instrumentCode)
+          : cancelTradingJanitorOrderForTarget(
+              orderId,
+              reason,
+              instrumentCode,
+              target as unknown as TradingJanitorCancelTarget
+            ),
       pruneOperationalLogs: () => target.pruneOperationalLogs(),
       applyState: (state) => {
         target.engineState = state;

@@ -60,10 +60,6 @@ import {
   type TradingLatencyStateTarget
 } from "./performance/TradingLatencyStateRuntime";
 import {
-  cancelTradingJanitorOrderForTarget,
-  type TradingJanitorCancelTarget
-} from "./janitor/TradingJanitorRuntime";
-import {
   observeTradingEngineCascadeAbsorption,
   type TradingCascadeAbsorptionTarget
 } from "./cascade/CascadeAbsorptionRuntime";
@@ -635,19 +631,6 @@ export class TradingEngine {
       instrumentCode,
       reason,
       this as unknown as TradingQuoteCancelAllTarget
-    );
-  }
-
-  private async cancelOrder(
-    orderId: string,
-    reason: string,
-    instrumentCode?: string
-  ): Promise<void> {
-    await cancelTradingJanitorOrderForTarget(
-      orderId,
-      reason,
-      instrumentCode,
-      this as unknown as TradingJanitorCancelTarget
     );
   }
 
