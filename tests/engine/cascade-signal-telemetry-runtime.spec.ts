@@ -20,6 +20,13 @@ import {
   type CascadeUiSignalSideEffectHandlers,
   type TradingCascadeUiSignalSideEffectHandlers
 } from "../../src/engine/trading/telemetry/CascadeSignalTelemetryRuntime";
+import {
+  acceptTradingAgentSignalForTarget,
+  emitTradingCascadeOperationalAlertForTarget,
+  recordTradingCascadeUiSignalForTarget,
+  type TradingSignalBusTarget
+} from "../../src/engine/trading/telemetry/TradingSignalBusRuntime";
+import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { AgentName, AgentSignal, TradeIntent } from "../../src/types";
 import type { CascadeAssetProfile } from "../../src/strategy/cascade/AssetProfiles";
 import type {
@@ -120,6 +127,47 @@ describe("CascadeSignalTelemetryRuntime", () => {
     expect(sideEffects.events).toEqual([
       "persist:signal:new-cascade-signal:new-cascade-signal:CASCADE_SIGNAL",
       "publish:CASCADE_SIGNAL:new-cascade-signal"
+    ]);
+  });
+
+  it("routes agent signals, cascade UI records, and alerts through the trading target adapter", async () => {
+    const events: string[] = [];
+    const scheduled: Promise<unknown>[] = [];
+    const target = tradingSignalBusTarget(events, scheduled);
+
+    await acceptTradingAgentSignalForTarget(
+      signal({ signalId: "agent-signal", sourceAgent: "ORACLE", action: "HOLD" }),
+      12,
+      target
+    );
+    recordTradingCascadeUiSignalForTarget(
+      signal({ signalId: "ui-signal", sourceAgent: "PIT_BOSS" }),
+      "TAKEN",
+      target
+    );
+    emitTradingCascadeOperationalAlertForTarget(
+      "POSITION_OPENED",
+      "Cascade position opened",
+      "Paper cascade entry opened",
+      { positionId: "position-1" },
+      "position-1",
+      target
+    );
+
+    await Promise.all(scheduled);
+
+    expect(target.engineState.acceptedSignals).toBe(1);
+    expect(target.signals.map((item) => item.signalId)).toEqual(["agent-signal", "ui-signal"]);
+    expect(target.latestAgentSignals.get("PIT_BOSS")?.signalId).toBe("ui-signal");
+    expect(events).toEqual([
+      "persist:entries:AGENT_SIGNAL:2",
+      "agent:agent-signal:12",
+      "publish:AGENT_SIGNAL:agent-signal",
+      "persist:key:signal:ui-signal:CASCADE_SIGNAL",
+      "schedule",
+      "publish:CASCADE_SIGNAL:ui-signal",
+      "publish:CASCADE_ALERT:position-1",
+      "notify:HIGH"
     ]);
   });
 
@@ -414,6 +462,59 @@ function tradingCascadeUiSignalSideEffectSpy(): {
       publish(telemetryType, _payload, correlationId) {
         events.push(`publish:${telemetryType}:${correlationId}`);
       }
+    }
+  };
+}
+
+function tradingSignalBusTarget(
+  events: string[],
+  scheduled: Promise<unknown>[]
+): TradingSignalBusTarget {
+  async function safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void>;
+  async function safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
+  async function safeStoragePut(
+    first: string | Record<string, unknown>,
+    second: unknown,
+    third?: string
+  ): Promise<void> {
+    if (typeof first === "string") {
+      events.push(`persist:key:${first}:${String(third)}`);
+      return;
+    }
+
+    events.push(`persist:entries:${String(second)}:${Object.keys(first).length}`);
+  }
+
+  return {
+    signals: [],
+    latestAgentSignals: new Map(),
+    engineState: defaultEngineState("signal-bus-target"),
+    cachedConfig: {
+      TRADING_ENABLED: true
+    },
+    state: {
+      waitUntil(work) {
+        events.push("schedule");
+        scheduled.push(work);
+      }
+    },
+    logger: {
+      agentDecision(agentSignal, latencyMs) {
+        events.push(`agent:${agentSignal.signalId}:${latencyMs}`);
+      }
+    },
+    notifier: {
+      notify(notification) {
+        events.push(`notify:${notification.priority}`);
+      }
+    },
+    safeStoragePut,
+    publish(telemetryType, _payload, correlationId) {
+      events.push(`publish:${telemetryType}:${correlationId ?? "none"}`);
+    },
+    cancelAllQuotes(instrumentCode, reason) {
+      events.push(`cancel:${instrumentCode}:${reason}`);
+      return Promise.resolve();
     }
   };
 }

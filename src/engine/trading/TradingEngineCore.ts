@@ -196,13 +196,13 @@ import {
   type EngineStreamContextTarget
 } from "./routes/EngineWebSocketStreams";
 import type { TradingTelemetryBus } from "./telemetry/TelemetryBus";
-import { acceptTradingAgentSignal } from "./telemetry/AgentSignalRuntime";
 import { maybePublishTradingAgentSnapshot } from "./telemetry/TradingAgentSnapshotRuntime";
 import {
-  buildCascadeOperationalAlertTelemetry,
-  emitCascadeOperationalAlertSideEffects,
-  recordTradingCascadeUiSignalSideEffects
-} from "./telemetry/CascadeSignalTelemetryRuntime";
+  acceptTradingAgentSignalForTarget,
+  emitTradingCascadeOperationalAlertForTarget,
+  recordTradingCascadeUiSignalForTarget,
+  type TradingSignalBusTarget
+} from "./telemetry/TradingSignalBusRuntime";
 import {
   handleTradingProfilerSignal,
   publishTradingAmVpinTelemetry,
@@ -2650,27 +2650,10 @@ export class TradingEngine {
   }
 
   private async acceptAgentSignal(signal: AgentSignal, latencyMs: number): Promise<void> {
-    await acceptTradingAgentSignal(
-      {
-        signals: this.signals,
-        latestAgentSignals: this.latestAgentSignals,
-        engineState: this.engineState,
-        signal,
-        latencyMs,
-        tradingEnabled: this.cachedConfig.TRADING_ENABLED
-      },
-      {
-        applyState: (state) => {
-          this.engineState = state;
-        },
-        persistStorageEntries: (entries) => this.safeStoragePut(entries, "AGENT_SIGNAL"),
-        logAgentDecision: (agentSignal, signalLatencyMs) =>
-          this.logger.agentDecision(agentSignal, signalLatencyMs),
-        publish: (telemetryType, payload, correlationId) =>
-          this.publish(telemetryType, payload, correlationId),
-        schedule: (work) => this.state.waitUntil(work),
-        cancelAllQuotes: (instrumentCode, reason) => this.cancelAllQuotes(instrumentCode, reason)
-      }
+    await acceptTradingAgentSignalForTarget(
+      signal,
+      latencyMs,
+      this as unknown as TradingSignalBusTarget
     );
   }
 
@@ -2681,19 +2664,14 @@ export class TradingEngine {
     metadata: JsonRecord,
     dedupeKey: string
   ): void {
-    const event = buildCascadeOperationalAlertTelemetry(
+    emitTradingCascadeOperationalAlertForTarget(
       eventType,
       title,
       message,
       metadata,
-      dedupeKey
+      dedupeKey,
+      this as unknown as TradingSignalBusTarget
     );
-
-    emitCascadeOperationalAlertSideEffects(event, {
-      publish: (telemetryType, payload, correlationId) =>
-        this.publish(telemetryType, payload, correlationId),
-      notify: (notification) => this.notifier.notify(notification)
-    });
   }
 
   private async ensureCascadePaperModeArmed(observedAt: string): Promise<void> {
@@ -2721,20 +2699,10 @@ export class TradingEngine {
     signal: AgentSignal,
     outcome: "TAKEN" | "SKIPPED" | "CLOSED"
   ): void {
-    recordTradingCascadeUiSignalSideEffects(
-      {
-        signals: this.signals,
-        latestAgentSignals: this.latestAgentSignals,
-        signal,
-        outcome
-      },
-      {
-        schedule: (work) => this.state.waitUntil(work),
-        persistStorageSignal: (key, signalToPersist, reason) =>
-          this.safeStoragePut(key, signalToPersist, reason),
-        publish: (telemetryType, payload, correlationId) =>
-          this.publish(telemetryType, payload, correlationId)
-      }
+    recordTradingCascadeUiSignalForTarget(
+      signal,
+      outcome,
+      this as unknown as TradingSignalBusTarget
     );
   }
 
