@@ -31,12 +31,6 @@ import {
   dispatchTradingExecutionIntentForTarget,
   type TradingExecutionDispatchTarget
 } from "./execution/TradingExecutionDispatchRuntime";
-import { type ExecutionTraceInput } from "./performance/LatencyRuntime";
-import {
-  tradingLatencyStorageWritesForState,
-  tradingLatencyStorageWritesForTarget,
-  type TradingLatencyStateTarget
-} from "./performance/TradingLatencyStateRuntime";
 import { OrderBookReconstructor } from "./book/OrderBookReconstructor";
 import {
   buildTradingOrderBookStoresForTarget,
@@ -53,12 +47,6 @@ import {
   type TradingEngineFetchTarget
 } from "./routes/EngineFetchRuntime";
 import type { TradingTelemetryBus } from "./telemetry/TelemetryBus";
-import {
-  logTradingPerformanceForTarget,
-  observeTradingExecutionProfileForTarget,
-  publishTradingTickTelemetryForTarget,
-  type TradingHotPathTelemetryTarget
-} from "./telemetry/TradingHotPathTelemetryRuntime";
 import { type ReplayJournal } from "./replay/ReplayJournal";
 import type { TickIngestResult } from "./TradingEngineRouteTypes";
 import {
@@ -410,55 +398,6 @@ export class TradingEngine {
       instrumentCode,
       reason,
       this as unknown as TradingQuoteCancelAllTarget
-    );
-  }
-
-  private latencyStorageWrites(extra?: Record<string, unknown>): Record<string, unknown> {
-    return tradingLatencyStorageWritesForTarget(
-      this as unknown as TradingLatencyStateTarget,
-      extra
-    );
-  }
-
-  private latencyStorageWritesForState(
-    state: EngineState,
-    extra?: Record<string, unknown>
-  ): Record<string, unknown> {
-    return tradingLatencyStorageWritesForState({
-      state,
-      latencyHistory: this.latencyHistory,
-      processingLatencySamples: this.processingLatencySamples,
-      extra
-    });
-  }
-
-  private observeExecutionProfile(metrics: LatencyMetrics, trace: ExecutionTraceInput): void {
-    observeTradingExecutionProfileForTarget(
-      metrics,
-      trace,
-      this as unknown as TradingHotPathTelemetryTarget
-    );
-  }
-
-  private publishTickTelemetry(
-    tick: MarketTick,
-    metrics: LatencyMetrics,
-    status: LatencyMetrics["status"],
-    hotPathStartedAt: number
-  ): void {
-    publishTradingTickTelemetryForTarget(
-      tick,
-      metrics,
-      status,
-      hotPathStartedAt,
-      this as unknown as TradingHotPathTelemetryTarget
-    );
-  }
-
-  private logPerformance(latencyMetrics: LatencyMetrics): void {
-    logTradingPerformanceForTarget(
-      latencyMetrics,
-      this as unknown as TradingHotPathTelemetryTarget
     );
   }
 

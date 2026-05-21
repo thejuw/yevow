@@ -13,6 +13,11 @@ import {
   applyTradingNativeHyperliquidLatencyPullForTarget,
   type TradingNativeHyperliquidLatencyPullTarget
 } from "../performance/StaleLatencyGuardRuntime";
+import {
+  observeTradingExecutionProfileForTarget,
+  publishTradingTickTelemetryForTarget,
+  type TradingHotPathTelemetryTarget
+} from "../telemetry/TradingHotPathTelemetryRuntime";
 import type { TickIngestResult } from "../TradingEngineRouteTypes";
 import type { BookSyncState } from "../book/BookTypes";
 import { markBookSyncDesynced, stateAfterDesyncedBook } from "../book/BookRuntimeState";
@@ -107,9 +112,9 @@ export interface TradingHyperliquidL2BookTarget extends TradingBookApplicationTa
     metrics: LatencyMetrics,
     observedAt: string
   ): void;
-  observeExecutionProfile(metrics: LatencyMetrics, trace: ExecutionTraceInput): void;
+  observeExecutionProfile?(metrics: LatencyMetrics, trace: ExecutionTraceInput): void;
   cancelAllQuotes(instrumentCode: string, reason: string): Promise<unknown>;
-  publishTickTelemetry(
+  publishTickTelemetry?(
     tick: MarketTick,
     metrics: LatencyMetrics,
     status: LatencyMetrics["status"],
@@ -167,14 +172,32 @@ export function handleTradingEngineHyperliquidL2Book(
         );
       },
       observeExecutionProfile: (metrics, trace) => {
-        target.observeExecutionProfile(metrics, trace);
+        if (target.observeExecutionProfile) {
+          target.observeExecutionProfile(metrics, trace);
+          return;
+        }
+        observeTradingExecutionProfileForTarget(
+          metrics,
+          trace,
+          target as unknown as TradingHotPathTelemetryTarget
+        );
       },
       schedule: (work) => {
         target.state.waitUntil(work);
       },
       cancelAllQuotes: (instrumentCode, reason) => target.cancelAllQuotes(instrumentCode, reason),
       publishTickTelemetry: (tick, metrics, status, telemetryStartedAt) => {
-        target.publishTickTelemetry(tick, metrics, status, telemetryStartedAt);
+        if (target.publishTickTelemetry) {
+          target.publishTickTelemetry(tick, metrics, status, telemetryStartedAt);
+          return;
+        }
+        publishTradingTickTelemetryForTarget(
+          tick,
+          metrics,
+          status,
+          telemetryStartedAt,
+          target as unknown as TradingHotPathTelemetryTarget
+        );
       },
       warnDesync: (metadata) => {
         target.logger.warn(

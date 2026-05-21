@@ -14,6 +14,10 @@ import {
   updateTradingLatencyAverageForTarget,
   type TradingLatencyStateTarget
 } from "./TradingLatencyStateRuntime";
+import {
+  logTradingPerformanceForTarget,
+  type TradingHotPathTelemetryTarget
+} from "../telemetry/TradingHotPathTelemetryRuntime";
 
 export interface NativeHyperliquidLatencyPullInput {
   readonly currentState: EngineState;
@@ -84,7 +88,7 @@ export interface TradingNativeHyperliquidLatencyPullTarget {
     writes: Record<string, unknown>,
     reason: "NATIVE_HL_LATENCY_PULL"
   ): Promise<unknown>;
-  logPerformance(metrics: LatencyMetrics): void;
+  logPerformance?(metrics: LatencyMetrics): void;
   publish(type: "STALE_DATA_KILL_SWITCH", payload: Record<string, unknown>): void;
 }
 
@@ -240,7 +244,11 @@ export function applyTradingNativeHyperliquidLatencyPullForTarget(
         target.state.waitUntil(work);
       },
       logPerformance: (metrics) => {
-        target.logPerformance(metrics);
+        if (target.logPerformance) {
+          target.logPerformance(metrics);
+          return;
+        }
+        logTradingPerformanceForTarget(metrics, target as unknown as TradingHotPathTelemetryTarget);
       },
       publish: (type, payload) => {
         target.publish(type, payload);

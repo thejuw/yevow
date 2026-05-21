@@ -26,6 +26,11 @@ import {
   emitAnomalyEmergencyPauseSideEffects,
   type AnomalyEmergencyPauseTelemetry
 } from "./AnomalyRuntime";
+import {
+  observeTradingExecutionProfileForTarget,
+  publishTradingTickTelemetryForTarget,
+  type TradingHotPathTelemetryTarget
+} from "../telemetry/TradingHotPathTelemetryRuntime";
 
 export type { AnomalyEmergencyPauseTelemetry };
 
@@ -78,10 +83,10 @@ export interface TradingAnomalyEmergencyTarget {
   readonly notifier: {
     notify(notification: AnomalyEmergencyPauseTelemetry["notification"]): void;
   };
-  observeExecutionProfile(metrics: LatencyMetrics, trace: ExecutionTraceInput): void;
+  observeExecutionProfile?(metrics: LatencyMetrics, trace: ExecutionTraceInput): void;
   safeStoragePut(writes: Record<string, unknown>, reason: string): Promise<void>;
   publish(type: "EMERGENCY_PAUSE", payload: JsonRecord, correlationId: string): void;
-  publishTickTelemetry(
+  publishTickTelemetry?(
     tick: MarketTick,
     metrics: LatencyMetrics,
     status: "FRESH",
@@ -180,7 +185,15 @@ export function handleTradingEngineAnomalyEmergencyPause(
     },
     {
       observeExecutionProfile: (profileMetrics, trace) => {
-        target.observeExecutionProfile(profileMetrics, trace);
+        if (target.observeExecutionProfile) {
+          target.observeExecutionProfile(profileMetrics, trace);
+          return;
+        }
+        observeTradingExecutionProfileForTarget(
+          profileMetrics,
+          trace,
+          target as unknown as TradingHotPathTelemetryTarget
+        );
       },
       applyState: (state) => {
         target.engineState = state;
@@ -196,7 +209,17 @@ export function handleTradingEngineAnomalyEmergencyPause(
         target.notifier.notify(notification);
       },
       publishTickTelemetry: (telemetryTick, telemetryMetrics, status, telemetryStartedAt) => {
-        target.publishTickTelemetry(telemetryTick, telemetryMetrics, status, telemetryStartedAt);
+        if (target.publishTickTelemetry) {
+          target.publishTickTelemetry(telemetryTick, telemetryMetrics, status, telemetryStartedAt);
+          return;
+        }
+        publishTradingTickTelemetryForTarget(
+          telemetryTick,
+          telemetryMetrics,
+          status,
+          telemetryStartedAt,
+          target as unknown as TradingHotPathTelemetryTarget
+        );
       }
     }
   );

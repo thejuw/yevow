@@ -9,6 +9,15 @@ import {
   bookDesyncStorageExtra
 } from "./BookEarlyReturnRuntime";
 import type { SortedBookSide } from "./SortedBookSide";
+import {
+  observeTradingExecutionProfileForTarget,
+  publishTradingTickTelemetryForTarget,
+  type TradingHotPathTelemetryTarget
+} from "../telemetry/TradingHotPathTelemetryRuntime";
+import {
+  tradingLatencyStorageWritesForState,
+  type TradingLatencyStateTarget
+} from "../performance/TradingLatencyStateRuntime";
 
 export interface TradingBookEarlyReturnHandlers {
   readonly observeExecutionProfile: (metrics: LatencyMetrics, trace: ExecutionTraceInput) => void;
@@ -56,13 +65,13 @@ export interface TradingBookEarlyReturnTarget {
   readonly maxLatencyMs: number;
   readonly bids: Map<string, SortedBookSide>;
   readonly asks: Map<string, SortedBookSide>;
-  observeExecutionProfile(metrics: LatencyMetrics, trace: ExecutionTraceInput): void;
-  latencyStorageWritesForState(
+  observeExecutionProfile?(metrics: LatencyMetrics, trace: ExecutionTraceInput): void;
+  latencyStorageWritesForState?(
     state: EngineState,
     extra?: Record<string, unknown>
   ): Record<string, unknown>;
   persistHotStorageSnapshot(writes: Record<string, unknown>, reason: string): Promise<unknown>;
-  publishTickTelemetry(
+  publishTickTelemetry?(
     tick: MarketTick,
     metrics: LatencyMetrics,
     status: "FRESH",
@@ -75,15 +84,42 @@ export function createTradingBookEarlyReturnHandlers(
 ): TradingBookEarlyReturnHandlers {
   return {
     observeExecutionProfile: (profileMetrics, trace) => {
-      target.observeExecutionProfile(profileMetrics, trace);
+      if (target.observeExecutionProfile) {
+        target.observeExecutionProfile(profileMetrics, trace);
+        return;
+      }
+      observeTradingExecutionProfileForTarget(
+        profileMetrics,
+        trace,
+        target as unknown as TradingHotPathTelemetryTarget
+      );
     },
-    storageWritesForState: (state, extra) => target.latencyStorageWritesForState(state, extra),
+    storageWritesForState: (state, extra) =>
+      target.latencyStorageWritesForState
+        ? target.latencyStorageWritesForState(state, extra)
+        : tradingLatencyStorageWritesForState({
+            state,
+            latencyHistory: (target as unknown as TradingLatencyStateTarget).latencyHistory,
+            processingLatencySamples: (target as unknown as TradingLatencyStateTarget)
+              .processingLatencySamples,
+            extra
+          }),
     applyState: (state) => {
       target.engineState = state;
     },
     persistStorage: (writes, reason) => target.persistHotStorageSnapshot(writes, reason),
     publishTickTelemetry: (telemetryTick, telemetryMetrics, status, telemetryStartedAt) => {
-      target.publishTickTelemetry(telemetryTick, telemetryMetrics, status, telemetryStartedAt);
+      if (target.publishTickTelemetry) {
+        target.publishTickTelemetry(telemetryTick, telemetryMetrics, status, telemetryStartedAt);
+        return;
+      }
+      publishTradingTickTelemetryForTarget(
+        telemetryTick,
+        telemetryMetrics,
+        status,
+        telemetryStartedAt,
+        target as unknown as TradingHotPathTelemetryTarget
+      );
     }
   };
 }

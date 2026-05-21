@@ -12,6 +12,16 @@ import type { ExecutionTraceInput } from "./LatencyRuntime";
 import { resolveQuoteHibernateMs } from "../quotes/QuoteLifecycleRuntime";
 import { applyHardStaleTickDropFlow } from "./HardStaleLatencyRuntime";
 import { applySoftStaleTickFlow } from "./SoftStaleLatencyRuntime";
+import {
+  logTradingPerformanceForTarget,
+  observeTradingExecutionProfileForTarget,
+  publishTradingTickTelemetryForTarget,
+  type TradingHotPathTelemetryTarget
+} from "../telemetry/TradingHotPathTelemetryRuntime";
+import {
+  tradingLatencyStorageWritesForTarget,
+  type TradingLatencyStateTarget
+} from "./TradingLatencyStateRuntime";
 
 export interface TradingStaleLatencyTarget {
   engineState: EngineState;
@@ -28,13 +38,13 @@ export interface TradingStaleLatencyTarget {
     notify(notification: NotifierEvent): void;
   };
   resetLatencyBaseline(observedAt: string, reason: string): void;
-  latencyStorageWrites(extra?: Record<string, unknown>): Record<string, unknown>;
+  latencyStorageWrites?(extra?: Record<string, unknown>): Record<string, unknown>;
   persistHotStorageSnapshot(writes: Record<string, unknown>, reason: string): Promise<void>;
-  logPerformance(latencyMetrics: LatencyMetrics): void;
+  logPerformance?(latencyMetrics: LatencyMetrics): void;
   publish(type: "STALE_DATA_KILL_SWITCH", payload: JsonRecord): void;
   cancelAllQuotes(instrumentCode: string, reason: string): Promise<void>;
-  observeExecutionProfile(metrics: LatencyMetrics, trace: ExecutionTraceInput): void;
-  publishTickTelemetry(
+  observeExecutionProfile?(metrics: LatencyMetrics, trace: ExecutionTraceInput): void;
+  publishTickTelemetry?(
     tick: MarketTick,
     metrics: LatencyMetrics,
     status: LatencyMetrics["status"],
@@ -67,14 +77,14 @@ export function handleTradingHardStaleTickDrop(
         target.resetLatencyBaseline(observedAt, reason);
       },
       persistLatencySnapshot: (reason) =>
-        target.persistHotStorageSnapshot(target.latencyStorageWrites(), reason),
+        target.persistHotStorageSnapshot(tradingStaleLatencyStorageWrites(target), reason),
       warnHardStale: (metadata) => {
         target.logger.warn("HARD_STALE_TICK_DROPPED", "Dropped tick beyond hard stale threshold", {
           ...metadata
         });
       },
       logPerformance: (staleMetrics) => {
-        target.logPerformance(staleMetrics);
+        logTradingStalePerformance(target, staleMetrics);
       },
       publishPull: (payload) => {
         target.publish("STALE_DATA_KILL_SWITCH", payload);
@@ -112,15 +122,15 @@ export function handleTradingSoftStaleTick(
     {
       readCurrentState: () => target.engineState,
       observeExecutionProfile: (profileMetrics, trace) => {
-        target.observeExecutionProfile(profileMetrics, trace);
+        observeTradingStaleExecutionProfile(target, profileMetrics, trace);
       },
       applyState: (state) => {
         target.engineState = state;
       },
       persistLatencySnapshot: (extra, reason) =>
-        target.persistHotStorageSnapshot(target.latencyStorageWrites(extra), reason),
+        target.persistHotStorageSnapshot(tradingStaleLatencyStorageWrites(target, extra), reason),
       logPerformance: (staleMetrics) => {
-        target.logPerformance(staleMetrics);
+        logTradingStalePerformance(target, staleMetrics);
       },
       publishKillSwitch: (payload) => {
         target.publish("STALE_DATA_KILL_SWITCH", payload);
@@ -133,11 +143,76 @@ export function handleTradingSoftStaleTick(
       },
       cancelAllQuotes: (instrumentCode, reason) => target.cancelAllQuotes(instrumentCode, reason),
       publishTickTelemetry: (telemetryTick, telemetryMetrics, status, telemetryStartedAt) => {
-        target.publishTickTelemetry(telemetryTick, telemetryMetrics, status, telemetryStartedAt);
+        publishTradingStaleTickTelemetry(
+          target,
+          telemetryTick,
+          telemetryMetrics,
+          status,
+          telemetryStartedAt
+        );
       },
       recordAgentSnapshot: (observedAt) => {
         target.maybeRecordAgentSnapshot(observedAt);
       }
     }
+  );
+}
+
+function tradingStaleLatencyStorageWrites(
+  target: TradingStaleLatencyTarget,
+  extra?: Record<string, unknown>
+): Record<string, unknown> {
+  return target.latencyStorageWrites
+    ? target.latencyStorageWrites(extra)
+    : tradingLatencyStorageWritesForTarget(target as unknown as TradingLatencyStateTarget, extra);
+}
+
+function logTradingStalePerformance(
+  target: TradingStaleLatencyTarget,
+  metrics: LatencyMetrics
+): void {
+  if (target.logPerformance) {
+    target.logPerformance(metrics);
+    return;
+  }
+
+  logTradingPerformanceForTarget(metrics, target as unknown as TradingHotPathTelemetryTarget);
+}
+
+function observeTradingStaleExecutionProfile(
+  target: TradingStaleLatencyTarget,
+  metrics: LatencyMetrics,
+  trace: ExecutionTraceInput
+): void {
+  if (target.observeExecutionProfile) {
+    target.observeExecutionProfile(metrics, trace);
+    return;
+  }
+
+  observeTradingExecutionProfileForTarget(
+    metrics,
+    trace,
+    target as unknown as TradingHotPathTelemetryTarget
+  );
+}
+
+function publishTradingStaleTickTelemetry(
+  target: TradingStaleLatencyTarget,
+  tick: MarketTick,
+  metrics: LatencyMetrics,
+  status: LatencyMetrics["status"],
+  hotPathStartedAt: number
+): void {
+  if (target.publishTickTelemetry) {
+    target.publishTickTelemetry(tick, metrics, status, hotPathStartedAt);
+    return;
+  }
+
+  publishTradingTickTelemetryForTarget(
+    tick,
+    metrics,
+    status,
+    hotPathStartedAt,
+    target as unknown as TradingHotPathTelemetryTarget
   );
 }

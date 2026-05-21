@@ -12,6 +12,10 @@ import {
   evaluateProfilerRuntime,
   type ProfilerRuntimeEvaluationResult
 } from "./AgentEvaluationRuntime";
+import {
+  observeTradingExecutionProfileForTarget,
+  type TradingHotPathTelemetryTarget
+} from "../telemetry/TradingHotPathTelemetryRuntime";
 
 export interface TradingProfilerEvaluationInput {
   readonly profilerRegistry: ProfilerRegistry;
@@ -36,7 +40,7 @@ export interface TradingProfilerEvaluationTarget {
   readonly profilerRegistry: ProfilerRegistry;
   readonly cachedConfig: Pick<GlobalRiskConfig, "PROFILER_ENABLED">;
   readonly engineState: Pick<EngineState, "engineId" | "liquidationHeatmap">;
-  observeExecutionProfile(metrics: LatencyMetrics, trace: ExecutionTraceInput): void;
+  observeExecutionProfile?(metrics: LatencyMetrics, trace: ExecutionTraceInput): void;
 }
 
 export function evaluateTradingProfiler(
@@ -82,7 +86,15 @@ export function evaluateTradingProfilerForTarget(
     },
     {
       observeExecutionProfile: (metrics, trace) => {
-        target.observeExecutionProfile(metrics, trace);
+        if (target.observeExecutionProfile) {
+          target.observeExecutionProfile(metrics, trace);
+          return;
+        }
+        observeTradingExecutionProfileForTarget(
+          metrics,
+          trace,
+          target as unknown as TradingHotPathTelemetryTarget
+        );
       }
     }
   );
