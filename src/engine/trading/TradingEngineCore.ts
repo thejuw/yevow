@@ -28,10 +28,10 @@ import {
   findBestAssetBook as findBestOrderBookForAsset
 } from "./book/BookViews";
 import {
-  applyInformationalBookNotReadyFlow,
-  applyRejectedBookDeltaFlow,
-  bookDesyncStorageExtra
-} from "./book/BookRuntimeState";
+  handleTradingInformationalBookNotReady,
+  handleTradingRejectedBookDelta,
+  type TradingBookEarlyReturnHandlers
+} from "./book/TradingBookEarlyReturnRuntime";
 import {
   applyTradingBookDelta,
   applyTradingBookSnapshot
@@ -1887,7 +1887,7 @@ export class TradingEngine {
     orderBookUpdateMs: number,
     hotPathStartedAt: number
   ): Promise<TickIngestResult> {
-    return applyInformationalBookNotReadyFlow(
+    return handleTradingInformationalBookNotReady(
       {
         currentState: this.engineState,
         tradingEnabled: this.cachedConfig.TRADING_ENABLED,
@@ -1898,17 +1898,7 @@ export class TradingEngine {
         orderBookUpdateMs,
         hotPathStartedAt
       },
-      {
-        observeExecutionProfile: (profileMetrics, trace) =>
-          this.observeExecutionProfile(profileMetrics, trace),
-        storageWritesForState: (state) => this.latencyStorageWritesForState(state),
-        applyState: (state) => {
-          this.engineState = state;
-        },
-        persistStorage: (writes, reason) => this.persistHotStorageSnapshot(writes, reason),
-        publishTickTelemetry: (telemetryTick, telemetryMetrics, status, telemetryStartedAt) =>
-          this.publishTickTelemetry(telemetryTick, telemetryMetrics, status, telemetryStartedAt)
-      }
+      this.bookEarlyReturnHandlers()
     );
   }
 
@@ -1920,10 +1910,11 @@ export class TradingEngine {
     orderBookUpdateMs: number,
     hotPathStartedAt: number
   ): Promise<TickIngestResult> {
-    return applyRejectedBookDeltaFlow(
+    return handleTradingRejectedBookDelta(
       {
         currentState: this.engineState,
-        internalOrderBookDepth: countBookLevels(this.bids, this.asks),
+        bids: this.bids,
+        asks: this.asks,
         tick,
         metrics,
         applied,
@@ -1932,19 +1923,22 @@ export class TradingEngine {
         orderBookUpdateMs,
         hotPathStartedAt
       },
-      {
-        observeExecutionProfile: (profileMetrics, trace) =>
-          this.observeExecutionProfile(profileMetrics, trace),
-        storageWritesForState: (state, extra) => this.latencyStorageWritesForState(state, extra),
-        bookDesyncStorageExtra,
-        applyState: (state) => {
-          this.engineState = state;
-        },
-        persistStorage: (writes, reason) => this.persistHotStorageSnapshot(writes, reason),
-        publishTickTelemetry: (telemetryTick, telemetryMetrics, status, telemetryStartedAt) =>
-          this.publishTickTelemetry(telemetryTick, telemetryMetrics, status, telemetryStartedAt)
-      }
+      this.bookEarlyReturnHandlers()
     );
+  }
+
+  private bookEarlyReturnHandlers(): TradingBookEarlyReturnHandlers {
+    return {
+      observeExecutionProfile: (profileMetrics, trace) =>
+        this.observeExecutionProfile(profileMetrics, trace),
+      storageWritesForState: (state, extra) => this.latencyStorageWritesForState(state, extra),
+      applyState: (state) => {
+        this.engineState = state;
+      },
+      persistStorage: (writes, reason) => this.persistHotStorageSnapshot(writes, reason),
+      publishTickTelemetry: (telemetryTick, telemetryMetrics, status, telemetryStartedAt) =>
+        this.publishTickTelemetry(telemetryTick, telemetryMetrics, status, telemetryStartedAt)
+    };
   }
 
   private async handleAnomalyEmergencyPause(

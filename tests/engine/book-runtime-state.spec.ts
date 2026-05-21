@@ -32,6 +32,11 @@ import {
   applyTradingBookDelta,
   applyTradingBookSnapshot
 } from "../../src/engine/trading/book/TradingBookApplicationRuntime";
+import {
+  handleTradingInformationalBookNotReady,
+  handleTradingRejectedBookDelta,
+  type TradingBookEarlyReturnHandlers
+} from "../../src/engine/trading/book/TradingBookEarlyReturnRuntime";
 import type {
   AppliedBookUpdate,
   BookDeltaWithTicker
@@ -40,6 +45,7 @@ import type {
   AppliedBookSnapshot,
   OrderBookReconstructor
 } from "../../src/engine/trading/book/OrderBookReconstructor";
+import { SortedBookSide } from "../../src/engine/trading/book/SortedBookSide";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type {
   DomAnalysisSnapshot,
@@ -656,6 +662,36 @@ describe("BookRuntimeState", () => {
     ]);
   });
 
+  it("routes trading informational ticks through the book early-return adapter", async () => {
+    const flow = tradingBookEarlyReturnSpy();
+    const result = await handleTradingInformationalBookNotReady(
+      {
+        currentState: defaultEngineState("trading-book-not-ready-flow"),
+        tradingEnabled: true,
+        tick: marketTick(),
+        metrics: latencyMetrics(),
+        maxLatencyMs: 150,
+        wakeUpTimeMs: 3,
+        orderBookUpdateMs: 4,
+        hotPathStartedAt: 12
+      },
+      flow.handlers
+    );
+
+    expect(result).toMatchObject({
+      accepted: false,
+      status: "BOOK_NOT_READY",
+      reason: "INFORMATIONAL_TICK_WITHOUT_BOOK"
+    });
+    expect(flow.events).toEqual([
+      "profile:3:4",
+      "storage:1",
+      "state:1:0",
+      "persist:INFORMATIONAL_TICK_BOOK_NOT_READY:1",
+      "telemetry:FRESH:12"
+    ]);
+  });
+
   it("updates compact state after rejected book deltas", () => {
     const currentState = defaultEngineState("engine-test");
     currentState.processedTicks = 8;
@@ -754,6 +790,45 @@ describe("BookRuntimeState", () => {
       "desync-extra:SEQUENCE_GAP",
       "storage:2",
       "state:1",
+      "persist:BOOK_DESYNC:2",
+      "telemetry:FRESH:14"
+    ]);
+  });
+
+  it("routes trading rejected deltas through the book early-return adapter", async () => {
+    const bids = new Map([["hyperliquid:btc-usd", new SortedBookSide("bid")]]);
+    const asks = new Map([["hyperliquid:btc-usd", new SortedBookSide("ask")]]);
+    bids.get("hyperliquid:btc-usd")?.upsert(100, 1, OBSERVED_AT, 0.5);
+    asks.get("hyperliquid:btc-usd")?.upsert(101, 2, OBSERVED_AT, 0.5);
+    const flow = tradingBookEarlyReturnSpy();
+
+    const result = await handleTradingRejectedBookDelta(
+      {
+        currentState: defaultEngineState("trading-book-desync-flow"),
+        bids,
+        asks,
+        tick: marketTick(),
+        metrics: latencyMetrics(),
+        applied: {
+          accepted: false,
+          reason: "SEQUENCE_GAP",
+          expectedSequence: 10,
+          actualSequence: 11,
+          timeToBookMs: null
+        },
+        maxLatencyMs: 150,
+        wakeUpTimeMs: 3,
+        orderBookUpdateMs: 4,
+        hotPathStartedAt: 14
+      },
+      flow.handlers
+    );
+
+    expect(result.status).toBe("DESYNC");
+    expect(flow.events).toEqual([
+      "profile:3:4",
+      "storage:2",
+      "state:1:2",
       "persist:BOOK_DESYNC:2",
       "telemetry:FRESH:14"
     ]);
@@ -1221,6 +1296,37 @@ function rejectedBookDeltaFlowSpy(): {
       bookDesyncStorageExtra(input) {
         events.push(`desync-extra:${input.reason}`);
         return bookDesyncStorageExtra(input);
+      }
+    }
+  };
+}
+
+function tradingBookEarlyReturnSpy(): {
+  events: string[];
+  handlers: TradingBookEarlyReturnHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      observeExecutionProfile(_metrics, trace) {
+        events.push(`profile:${trace.wakeUpTimeMs}:${trace.orderBookUpdateMs}`);
+      },
+      storageWritesForState(state, extra) {
+        const writes = { "engine:state": state, ...extra };
+        events.push(`storage:${Object.keys(writes).length}`);
+        return writes;
+      },
+      applyState(state) {
+        events.push(`state:${state.processedTicks}:${state.internalOrderBookDepth}`);
+      },
+      persistStorage(writes, reason) {
+        events.push(`persist:${reason}:${Object.keys(writes).length}`);
+        return Promise.resolve();
+      },
+      publishTickTelemetry(_tick, _metrics, status, hotPathStartedAt) {
+        events.push(`telemetry:${status}:${hotPathStartedAt}`);
       }
     }
   };
