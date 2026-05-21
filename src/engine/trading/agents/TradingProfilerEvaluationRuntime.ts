@@ -32,6 +32,13 @@ export interface TradingProfilerEvaluationHandlers {
   readonly observeExecutionProfile: (metrics: LatencyMetrics, trace: ExecutionTraceInput) => void;
 }
 
+export interface TradingProfilerEvaluationTarget {
+  readonly profilerRegistry: ProfilerRegistry;
+  readonly cachedConfig: Pick<GlobalRiskConfig, "PROFILER_ENABLED">;
+  readonly engineState: Pick<EngineState, "engineId" | "liquidationHeatmap">;
+  observeExecutionProfile(metrics: LatencyMetrics, trace: ExecutionTraceInput): void;
+}
+
 export function evaluateTradingProfiler(
   input: TradingProfilerEvaluationInput,
   handlers: TradingProfilerEvaluationHandlers
@@ -60,4 +67,23 @@ export function evaluateTradingProfiler(
   });
 
   return result;
+}
+
+export function evaluateTradingProfilerForTarget(
+  input: Omit<TradingProfilerEvaluationInput, "profilerRegistry" | "config" | "engineState">,
+  target: TradingProfilerEvaluationTarget
+): ProfilerRuntimeEvaluationResult {
+  return evaluateTradingProfiler(
+    {
+      profilerRegistry: target.profilerRegistry,
+      config: target.cachedConfig,
+      engineState: target.engineState,
+      ...input
+    },
+    {
+      observeExecutionProfile: (metrics, trace) => {
+        target.observeExecutionProfile(metrics, trace);
+      }
+    }
+  );
 }

@@ -16,6 +16,14 @@ import {
   evaluateTradingCroupierForTarget,
   type TradingCroupierEvaluationTarget
 } from "../../src/engine/trading/agents/TradingCroupierEvaluationRuntime";
+import {
+  evaluateTradingOracleForTarget,
+  type TradingOracleEvaluationTarget
+} from "../../src/engine/trading/agents/TradingOracleEvaluationRuntime";
+import {
+  evaluateTradingProfilerForTarget,
+  type TradingProfilerEvaluationTarget
+} from "../../src/engine/trading/agents/TradingProfilerEvaluationRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { CroupierDecision, CroupierInput } from "../../src/agents/CroupierAgent";
 import type {
@@ -156,6 +164,57 @@ describe("AgentEvaluationRuntime", () => {
     });
   });
 
+  it("evaluates profiler runtime through a trading target adapter", () => {
+    const state = defaultEngineState("profiler-target");
+    const profilerState = profilerStateSnapshot();
+    const events: string[] = [];
+    const target = {
+      profilerRegistry: {
+        forInstrument(instrumentCode: string) {
+          events.push(`agent:${instrumentCode}`);
+          return {
+            processTick() {
+              return {
+                processed: true,
+                skippedReason: null,
+                closedBuckets: 0,
+                toxicityScore: 0.5,
+                state: profilerState,
+                signal: null
+              };
+            },
+            snapshot() {
+              return profilerState;
+            }
+          };
+        }
+      },
+      cachedConfig: defaultConfig,
+      engineState: state,
+      observeExecutionProfile(_metrics: unknown, trace: { agentLogicMs: number }) {
+        events.push(`profile:${trace.agentLogicMs >= 0}`);
+      }
+    } as unknown as TradingProfilerEvaluationTarget;
+
+    const result = evaluateTradingProfilerForTarget(
+      {
+        tick: tick(),
+        book: book(),
+        domSnapshot: dom(),
+        observedAt: OBSERVED_AT,
+        jumpDetected: false,
+        metrics: { status: "FRESH" } as never,
+        wakeUpTimeMs: null,
+        orderBookUpdateMs: 1,
+        hotPathStartedAt: 123
+      },
+      target
+    );
+
+    expect(result.profilerResult.toxicityScore).toBe(0.5);
+    expect(events).toEqual(["agent:btc-usd", "profile:true"]);
+  });
+
   it("evaluates oracle runtime branches with disabled fallback", () => {
     const state = defaultEngineState("engine-1");
     let capturedInput: unknown = null;
@@ -205,6 +264,42 @@ describe("AgentEvaluationRuntime", () => {
         bayesianTrace: null,
         regimeChanged: false,
         state: { updatedAt: OBSERVED_AT }
+      }
+    });
+  });
+
+  it("evaluates oracle runtime through a trading target adapter", () => {
+    const state = defaultEngineState("oracle-target");
+    let capturedInput: unknown = null;
+    const target = {
+      oracleAgent: {
+        processTick(input: unknown) {
+          capturedInput = input;
+          return {
+            state: { ...state.oracle, updatedAt: OBSERVED_AT },
+            bayesianTrace: null,
+            regimeChanged: true
+          };
+        }
+      },
+      cachedConfig: defaultConfig,
+      engineState: state
+    } as unknown as TradingOracleEvaluationTarget;
+
+    const result = evaluateTradingOracleForTarget(
+      {
+        tick: tick(),
+        book: book(),
+        observedAt: OBSERVED_AT
+      },
+      target
+    );
+
+    expect(result.oracleResult.regimeChanged).toBe(true);
+    expect(capturedInput).toMatchObject({
+      observedAt: OBSERVED_AT,
+      config: {
+        ORACLE_GOVERNANCE_MODE: defaultConfig.ORACLE_GOVERNANCE_MODE
       }
     });
   });

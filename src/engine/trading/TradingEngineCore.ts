@@ -80,8 +80,14 @@ import {
   evaluateTradingCroupierForTarget,
   type TradingCroupierEvaluationTarget
 } from "./agents/TradingCroupierEvaluationRuntime";
-import { evaluateTradingOracle } from "./agents/TradingOracleEvaluationRuntime";
-import { evaluateTradingProfiler } from "./agents/TradingProfilerEvaluationRuntime";
+import {
+  evaluateTradingOracleForTarget,
+  type TradingOracleEvaluationTarget
+} from "./agents/TradingOracleEvaluationRuntime";
+import {
+  evaluateTradingProfilerForTarget,
+  type TradingProfilerEvaluationTarget
+} from "./agents/TradingProfilerEvaluationRuntime";
 import {
   reservePaperExecutionBudgetForTarget,
   type TradingPaperExecutionBudgetTarget
@@ -1509,11 +1515,8 @@ export class TradingEngine {
     orderBookUpdateMs: number,
     hotPathStartedAt: number
   ): { profilerResult: ProfilerEvaluation; profilerLatencyMs: number } {
-    return evaluateTradingProfiler(
+    return evaluateTradingProfilerForTarget(
       {
-        profilerRegistry: this.profilerRegistry,
-        config: this.cachedConfig,
-        engineState: this.engineState,
         tick,
         book,
         domSnapshot,
@@ -1524,10 +1527,7 @@ export class TradingEngine {
         orderBookUpdateMs,
         hotPathStartedAt
       },
-      {
-        observeExecutionProfile: (profileMetrics, trace) =>
-          this.observeExecutionProfile(profileMetrics, trace)
-      }
+      this as unknown as TradingProfilerEvaluationTarget
     );
   }
 
@@ -1536,14 +1536,14 @@ export class TradingEngine {
     book: InternalOrderBook,
     observedAt: string
   ): { oracleResult: OracleTickResult; oracleLatencyMs: number } {
-    return evaluateTradingOracle({
-      oracleAgent: this.oracleAgent,
-      config: this.cachedConfig,
-      oracle: this.engineState.oracle,
-      tick,
-      book,
-      observedAt
-    });
+    return evaluateTradingOracleForTarget(
+      {
+        tick,
+        book,
+        observedAt
+      },
+      this as unknown as TradingOracleEvaluationTarget
+    );
   }
 
   private buildTickDecisionContext(

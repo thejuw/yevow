@@ -14,6 +14,12 @@ export interface TradingOracleEvaluationInput {
   readonly observedAt: string;
 }
 
+export interface TradingOracleEvaluationTarget {
+  readonly oracleAgent: OracleAgent;
+  readonly cachedConfig: GlobalRiskConfig;
+  readonly engineState: Pick<EngineState, "oracle">;
+}
+
 export function evaluateTradingOracle(
   input: TradingOracleEvaluationInput
 ): OracleRuntimeEvaluationResult {
@@ -25,5 +31,17 @@ export function evaluateTradingOracle(
     book: input.book,
     observedAt: input.observedAt,
     config: input.config
+  });
+}
+
+export function evaluateTradingOracleForTarget(
+  input: Omit<TradingOracleEvaluationInput, "oracleAgent" | "config" | "oracle">,
+  target: TradingOracleEvaluationTarget
+): OracleRuntimeEvaluationResult {
+  return evaluateTradingOracle({
+    oracleAgent: target.oracleAgent,
+    config: target.cachedConfig,
+    oracle: target.engineState.oracle,
+    ...input
   });
 }
