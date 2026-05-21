@@ -85,10 +85,8 @@ import {
   applyQuoteCancelAllSideEffects,
   dispatchQuoteCancelAll
 } from "./quotes/QuoteCancelRuntime";
-import {
-  prepareApprovedExecutionPlan,
-  type ApprovedExecutionPlan
-} from "./execution/ExecutionPlanRuntime";
+import { type ApprovedExecutionPlan } from "./execution/ExecutionPlanRuntime";
+import { prepareTradingExecutionPlan } from "./execution/TradingExecutionPlanPreparationRuntime";
 import { dispatchExecutionPlanSideEffects } from "./execution/ExecutionPlanDispatchRuntime";
 import { dispatchTradingExecutionIntent } from "./execution/TradingExecutionDispatchRuntime";
 import { applyExecutionReportFlow } from "./execution/ExecutionReportRuntime";
@@ -422,7 +420,6 @@ import {
   TARGET_ASSET_MATRIX,
   TARGET_INSTRUMENTS,
   DEFAULT_JANITOR_INTERVAL_MS,
-  DEFAULT_ORDER_ACK_TIMEOUT_MS,
   AGGREGATED_BUS_TELEMETRY_TYPES
 } from "../../TradingEngineConstants";
 import {
@@ -470,7 +467,6 @@ import {
 import {
   readNumber,
   readPositiveNumber,
-  readPositiveInteger,
   clampInteger,
   assertAgentSignal,
   finiteNumber,
@@ -3062,38 +3058,18 @@ export class TradingEngine {
       kellyFractionOverride?: number;
     } = {}
   ): ApprovedExecutionPlan | null {
-    const riskState = options.stateOverride ?? this.engineState;
-
-    return prepareApprovedExecutionPlan(
+    return prepareTradingExecutionPlan(
       {
         intent,
-        riskState,
-        config: this.cachedConfig,
         observedAt,
-        bypassQuoteSuspension: options.bypassQuoteSuspension,
-        maxPositionPct: resolveMaxPositionPct(
-          this.cachedConfig,
-          this.env.MAX_POSITION_PCT,
-          DEFAULT_MAX_POSITION_PCT
-        ),
-        kellyFraction: options.kellyFractionOverride ?? this.cachedConfig.KELLY_FRACTION,
+        options,
+        engineState: this.engineState,
+        config: this.cachedConfig,
+        env: this.env,
         orderBooks: this.orderBook.values(),
-        ackTimeoutMs: readPositiveInteger(
-          this.env.ORDER_ACK_TIMEOUT_MS,
-          DEFAULT_ORDER_ACK_TIMEOUT_MS,
-          100,
-          60_000
-        )
+        pitBossAgent: this.pitBossAgent
       },
       {
-        approveIntent: (candidateIntent, candidateRiskState, config, maxPositionPct, kelly) =>
-          this.pitBossAgent.approve(
-            candidateIntent,
-            candidateRiskState,
-            config,
-            maxPositionPct,
-            kelly
-          ),
         logResidualLiquidityShortfall: (metadata) =>
           this.logger.warn(
             "SOR_RESIDUAL_LIQUIDITY_SHORTFALL",
