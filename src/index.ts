@@ -3,9 +3,9 @@ import { AuthManager } from "./AuthManager";
 import { ActiveTokenStore, JwtRevocationStore } from "./auth/JwtRevocation";
 import { hasScope } from "./auth/ScopeMatcher";
 import { calibrateGoldenColos, type ColoCalibrationOptions } from "./ColoCalibrator";
-import { ConfigManager, configDefaultsFromEnv } from "./ConfigManager";
+import { ConfigManager } from "./ConfigManager";
 import { Governor } from "./Governor";
-import { Logger, createLogSink, structuredConsoleLogsEnabled } from "./Logger";
+import { Logger } from "./Logger";
 import { readNotificationSettings, writeNotificationSettings } from "./NotificationSettings";
 import { buildPaperLedger, type PaperLedger, type PaperLedgerFillInput } from "./PaperLedger";
 import {
@@ -23,6 +23,7 @@ import {
   subjectRateLimitKey
 } from "./gateway/middleware/RateLimitMiddleware";
 import { adminUiResponse } from "./gateway/AdminUi";
+import { gatewayRuntime, type GatewayHono } from "./gateway/GatewayRuntime";
 import { gatewayCatalogResponse } from "./gateway/RouteCatalog";
 import {
   encryptSecret,
@@ -33,12 +34,7 @@ import {
   sanitizeReason
 } from "./gateway/AdminValidation";
 import { corsPreflight, json, readJsonBody, withCors } from "./gateway/ResponseHelpers";
-import {
-  extractEdgeTopology,
-  placementColo,
-  topologyTelemetry,
-  withTopologyHeaders
-} from "./gateway/Topology";
+import { placementColo, topologyTelemetry, withTopologyHeaders } from "./gateway/Topology";
 import type { AdminScope, AuthClaims } from "./AuthManager";
 import type {
   AdminConfigUpdate,
@@ -264,8 +260,6 @@ interface DateRangeFilter {
   to: string | null;
 }
 
-type GatewayHono = { Bindings: Env };
-
 const gatewayRouter = new Hono<GatewayHono>();
 
 gatewayRouter.options("*", () => corsPreflight());
@@ -366,25 +360,6 @@ export default {
     return gatewayRouter.fetch(request, env, ctx);
   }
 } satisfies ExportedHandler<Env>;
-
-function gatewayRuntime(c: Context<GatewayHono>): {
-  logger: Logger;
-  configManager: ConfigManager;
-  topology: EdgeTopology;
-} {
-  return {
-    logger: new Logger(
-      c.env.TRADING_DB,
-      (promise) => c.executionCtx.waitUntil(promise),
-      "GatewayWorker",
-      undefined,
-      createLogSink(c.env),
-      structuredConsoleLogsEnabled(c.env)
-    ),
-    configManager: new ConfigManager(c.env.CONFIG_STORE, configDefaultsFromEnv(c.env)),
-    topology: extractEdgeTopology(c.req.raw, c.env)
-  };
-}
 
 async function routeAuthenticatedIngest(c: Context<GatewayHono>): Promise<Response> {
   const runtime = gatewayRuntime(c);
