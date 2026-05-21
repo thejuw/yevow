@@ -150,7 +150,8 @@ import {
   dispatchTradingCascadePositionUpdates,
   evaluateCascadeStrategyFlow,
   evaluateTradingEngineCascadeRecoverySignal,
-  processAcceptedCascadeSignalFlow,
+  processTradingAcceptedCascadeSignal,
+  type TradingAcceptedCascadeSignalTarget,
   type TradingCascadeRecoverySignalTarget,
   type TradingCascadePositionUpdateTarget
 } from "./cascade/CascadeStrategyRuntime";
@@ -1191,46 +1192,12 @@ export class TradingEngine {
           ),
         recordRejectedSignal: (rejection, rejectedAt) =>
           this.recordRejectedCascadeSignal(rejection, rejectedAt),
-        processAcceptedSignal: (signal, acceptedAt) => this.processCascadeSignal(signal, acceptedAt)
-      }
-    );
-  }
-
-  private async processCascadeSignal(
-    signal: CascadeRecoverySignal,
-    observedAt: string
-  ): Promise<void> {
-    const assetProfile = this.cascadeAssetProfile(signal.instrumentCode);
-    const currentHeat = this.cascadeHeatManager.currentHeat(this.cascadePositionManager.snapshot());
-    processAcceptedCascadeSignalFlow(
-      {
-        signal,
-        observedAt,
-        engineId: this.engineState.engineId,
-        equity: this.engineState.bankroll.equity,
-        riskPerTradePct: this.cachedConfig.RISK_PER_TRADE_PCT,
-        assetProfile,
-        currentHeat,
-        heatCapPct: this.cachedConfig.HEAT_CAP_PCT
-      },
-      {
-        emitOperationalAlert: (eventType, title, message, metadata, dedupeKey) =>
-          this.emitCascadeOperationalAlert(eventType, title, message, metadata, dedupeKey),
-        registerPosition: (acceptedSignal, sizeDecision, acceptedAt) =>
-          this.cascadePositionManager.registerFromSignal(acceptedSignal, sizeDecision, acceptedAt),
-        buildEntryIntent: (acceptedSignal, size, acceptedAt) =>
-          this.tradeIntentFromCascadeSignal(acceptedSignal, size, acceptedAt),
-        recordUiSignal: (agentSignal, outcome) => this.recordCascadeUiSignal(agentSignal, outcome),
-        traceDecision: (decision) => this.logger.traceDecision(decision),
-        schedule: (work) => this.state.waitUntil(work),
-        dispatchExecution: (tradeIntent) => this.dispatchExecution(tradeIntent),
-        persistPositions: () =>
-          this.safeStoragePut(
-            CASCADE_POSITIONS_KEY,
-            this.cascadePositionManager.snapshot(),
-            "CASCADE_POSITION_OPENED"
-          ),
-        logWarn: (event, message, metadata) => this.logger.warn(event, message, metadata)
+        processAcceptedSignal: (signal, acceptedAt) =>
+          processTradingAcceptedCascadeSignal(
+            signal,
+            acceptedAt,
+            this as unknown as TradingAcceptedCascadeSignalTarget
+          ).then(() => undefined)
       }
     );
   }

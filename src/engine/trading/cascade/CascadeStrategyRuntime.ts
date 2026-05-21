@@ -16,10 +16,13 @@ import type {
   CascadeRecoverySignal,
   CascadeRecoverySignalRejection,
   CascadeRecoverySignalResult,
+  PositionSizeDecision,
   PositionManagerUpdate
 } from "../../../strategy/cascade/types";
 import { CASCADE_POSITIONS_KEY } from "../../../TradingEngineConstants";
 import type {
+  AgentDecisionTrace,
+  AgentSignal,
   EngineState,
   Env,
   GlobalRiskConfig,
@@ -29,12 +32,20 @@ import type {
   TradeIntent
 } from "../../../types";
 import { baseAssetFromInstrument } from "../helpers/NativeMarketIdentityRuntime";
-import { cascadeRecoverySignalConfig, resolveCascadeAtr1h } from "./CascadeConfigRuntime";
+import {
+  cascadeAssetProfileFromConfig,
+  cascadeRecoverySignalConfig,
+  resolveCascadeAtr1h
+} from "./CascadeConfigRuntime";
 import {
   latestCascadeAtForInstrument,
   recentSwingHigh,
   recentSwingLow
 } from "./CascadeSelectionRuntime";
+import {
+  processAcceptedCascadeSignalFlow,
+  type CascadeAcceptedSignalFlowResult
+} from "./CascadeSignalEntryRuntime";
 export {
   applyCascadeOpenPositionSideEffects,
   applyCascadeSignalRejectionSideEffects,
@@ -157,6 +168,44 @@ export interface TradingCascadeRecoverySignalTarget {
   readonly cascadeNewsCalendar: {
     isWithinBlackout(observedAt: Date, baseAsset: string): { readonly blocked: boolean };
   };
+}
+
+export interface TradingAcceptedCascadeSignalTarget {
+  readonly cachedConfig: GlobalRiskConfig;
+  readonly engineState: Pick<EngineState, "engineId" | "bankroll">;
+  readonly cascadePositionManager: {
+    snapshot(): readonly CascadeOpenPosition[];
+    registerFromSignal(
+      signal: CascadeRecoverySignal,
+      sizeDecision: PositionSizeDecision,
+      observedAt: string
+    ): CascadeOpenPosition;
+  };
+  readonly cascadeHeatManager: {
+    currentHeat(positions: readonly CascadeOpenPosition[]): number;
+  };
+  readonly state: {
+    waitUntil(work: Promise<void>): void;
+  };
+  readonly logger: {
+    traceDecision(decision: AgentDecisionTrace): void;
+    warn(eventType: string, message: string, telemetry?: JsonRecord): void;
+  };
+  tradeIntentFromCascadeSignal(
+    signal: CascadeRecoverySignal,
+    size: number,
+    observedAt: string
+  ): TradeIntent;
+  recordCascadeUiSignal(signal: AgentSignal, outcome: "TAKEN"): void;
+  dispatchExecution(intent: TradeIntent): Promise<void>;
+  safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
+  emitCascadeOperationalAlert(
+    eventType: CascadeAlertEventType,
+    title: string,
+    message: string,
+    metadata: JsonRecord,
+    dedupeKey: string
+  ): void;
 }
 
 export function shouldEvaluateCascadeStrategy(
@@ -374,4 +423,56 @@ export function evaluateTradingEngineCascadeRecoverySignal(
         target.cascadeNewsCalendar.isWithinBlackout(blackoutObservedAt, baseAsset)
     }
   );
+}
+
+export function processTradingAcceptedCascadeSignal(
+  signal: CascadeRecoverySignal,
+  observedAt: string,
+  target: TradingAcceptedCascadeSignalTarget
+): Promise<CascadeAcceptedSignalFlowResult> {
+  const currentHeat = target.cascadeHeatManager.currentHeat(
+    target.cascadePositionManager.snapshot()
+  );
+  const result = processAcceptedCascadeSignalFlow(
+    {
+      signal,
+      observedAt,
+      engineId: target.engineState.engineId,
+      equity: target.engineState.bankroll.equity,
+      riskPerTradePct: target.cachedConfig.RISK_PER_TRADE_PCT,
+      assetProfile: cascadeAssetProfileFromConfig(signal.instrumentCode, target.cachedConfig),
+      currentHeat,
+      heatCapPct: target.cachedConfig.HEAT_CAP_PCT
+    },
+    {
+      emitOperationalAlert: (eventType, title, message, metadata, dedupeKey) => {
+        target.emitCascadeOperationalAlert(eventType, title, message, metadata, dedupeKey);
+      },
+      registerPosition: (acceptedSignal, sizeDecision, acceptedAt) =>
+        target.cascadePositionManager.registerFromSignal(acceptedSignal, sizeDecision, acceptedAt),
+      buildEntryIntent: (acceptedSignal, size, acceptedAt) =>
+        target.tradeIntentFromCascadeSignal(acceptedSignal, size, acceptedAt),
+      recordUiSignal: (agentSignal, outcome) => {
+        target.recordCascadeUiSignal(agentSignal, outcome);
+      },
+      traceDecision: (decision) => {
+        target.logger.traceDecision(decision);
+      },
+      schedule: (work) => {
+        target.state.waitUntil(work);
+      },
+      dispatchExecution: (tradeIntent) => target.dispatchExecution(tradeIntent),
+      persistPositions: () =>
+        target.safeStoragePut(
+          CASCADE_POSITIONS_KEY,
+          target.cascadePositionManager.snapshot(),
+          "CASCADE_POSITION_OPENED"
+        ),
+      logWarn: (event, message, metadata) => {
+        target.logger.warn(event, message, metadata);
+      }
+    }
+  );
+
+  return Promise.resolve(result);
 }

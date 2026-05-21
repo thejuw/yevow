@@ -12,11 +12,13 @@ import {
   evaluateTradingCascadeRecoverySignal,
   processCascadeClosedCandleSignals,
   processAcceptedCascadeSignalFlow,
+  processTradingAcceptedCascadeSignal,
   type CascadeAcceptedSignalFlowHandlers,
   type CascadeOpenPositionSideEffectHandlers,
   type CascadeSignalRejectionSideEffectHandlers,
   type CascadeStrategyEvaluationHandlers,
   type CascadeSizeRejectionSideEffectHandlers,
+  type TradingAcceptedCascadeSignalTarget,
   type TradingCascadeRecoverySignalTarget,
   type TradingCascadePositionUpdateTarget,
   shouldEvaluateCascadeStrategy
@@ -333,6 +335,92 @@ describe("CascadeStrategyRuntime", () => {
       "alert:SIGNAL_EMITTED:signal-rejected",
       "warn:CASCADE_SIZE_REJECTED:signal-rejected:HEAT",
       "alert:HEAT_CAP_EXCEEDED:signal-rejected"
+    ]);
+  });
+
+  it("processes accepted cascade signals through the trading engine target adapter", async () => {
+    const calls: string[] = [];
+    const scheduled: Promise<void>[] = [];
+    const engineState = defaultEngineState("accepted-cascade-target");
+    engineState.bankroll.equity = 10_000;
+    const target: TradingAcceptedCascadeSignalTarget = {
+      cachedConfig: {
+        ...defaultConfig,
+        RISK_PER_TRADE_PCT: 0.01,
+        HEAT_CAP_PCT: 0.5
+      },
+      engineState,
+      cascadePositionManager: {
+        snapshot() {
+          calls.push("snapshot");
+          return [position()];
+        },
+        registerFromSignal(signal, sizeDecision) {
+          calls.push(`register:${signal.signalId}:${sizeDecision.units}`);
+          return position({ signalId: signal.signalId });
+        }
+      },
+      cascadeHeatManager: {
+        currentHeat(positions) {
+          calls.push(`heat:${positions.length}`);
+          return 0.1;
+        }
+      },
+      state: {
+        waitUntil(work) {
+          calls.push("schedule");
+          scheduled.push(work);
+        }
+      },
+      logger: {
+        traceDecision(decision) {
+          calls.push(`trace:${decision.decisionId}`);
+        },
+        warn(eventType, _message, metadata) {
+          calls.push(`warn:${eventType}:${metadata?.signalId as string}`);
+        }
+      },
+      tradeIntentFromCascadeSignal(signal, size) {
+        calls.push(`intent:${signal.signalId}:${size}`);
+        return tradeIntent({ intentId: `intent-${signal.signalId}` });
+      },
+      recordCascadeUiSignal(agentSignal, outcome) {
+        calls.push(`signal:${agentSignal.signalId}:${outcome}`);
+      },
+      async dispatchExecution(intent) {
+        calls.push(`dispatch:${intent.intentId}`);
+      },
+      async safeStoragePut(key, value, reason) {
+        calls.push(`persist:${key}:${(value as unknown[]).length}:${reason}`);
+      },
+      emitCascadeOperationalAlert(eventType, _title, _message, _metadata, dedupeKey) {
+        calls.push(`alert:${eventType}:${dedupeKey}`);
+      }
+    };
+
+    const result = await processTradingAcceptedCascadeSignal(
+      recoverySignal("signal-target", "btc-usd"),
+      "2026-05-18T20:01:00.000Z",
+      target
+    );
+    await Promise.all(scheduled);
+
+    expect(result.position?.signalId).toBe("signal-target");
+    expect(result.intent?.intentId).toBe("intent-signal-target");
+    expect(calls).toEqual([
+      "snapshot",
+      "heat:1",
+      "alert:SIGNAL_EMITTED:signal-target",
+      "register:signal-target:20",
+      "intent:signal-target:20",
+      "signal:signal-target:TAKEN",
+      "trace:cascade-entry-signal-target",
+      "dispatch:intent-signal-target",
+      "schedule",
+      "snapshot",
+      "persist:cascade:positions:1:CASCADE_POSITION_OPENED",
+      "schedule",
+      "alert:POSITION_OPENED:position-1"
     ]);
   });
 
