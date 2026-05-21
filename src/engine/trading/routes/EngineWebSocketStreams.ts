@@ -27,6 +27,40 @@ export interface EngineStreamContext {
   nextBusSequence(): number;
 }
 
+export interface EngineStreamContextTarget {
+  readonly adminSockets: Set<WebSocket>;
+  readonly engineState: EngineState;
+  readonly signals: AgentSignal[];
+  readonly latencyHistory: LatencyMetrics[];
+  readonly macroBias: MacroBias;
+  readonly activeTemporaryOverride: TemporaryGovernanceOverride | null;
+  readonly state: DurableObjectState;
+  readonly telemetryBus: { nextSequence(): number };
+  enqueueTick(tick: MarketTick): Promise<TickIngestResult>;
+  publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
+}
+
+export function createTradingEngineStreamContext(
+  target: EngineStreamContextTarget
+): EngineStreamContext {
+  return {
+    adminSockets: target.adminSockets,
+    getEngineState: () => target.engineState,
+    getSignals: () => target.signals,
+    getLatencyHistory: () => target.latencyHistory,
+    getMacroBias: () => target.macroBias,
+    getTemporaryOverride: () => target.activeTemporaryOverride,
+    enqueueTick: (tick) => target.enqueueTick(tick),
+    waitUntil: (promise) => {
+      target.state.waitUntil(promise);
+    },
+    publish: (type, payload, correlationId) => {
+      target.publish(type, payload, correlationId);
+    },
+    nextBusSequence: () => target.telemetryBus.nextSequence()
+  };
+}
+
 export function acceptMarketStream(context: EngineStreamContext): Response {
   const pair = new WebSocketPair();
   const [client, server] = Object.values(pair) as [WebSocket, WebSocket];

@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  createTradingEngineStreamContext,
   dashboardPulsePayload,
   acceptMarketStream,
   acceptTelemetryStream,
-  type EngineStreamContext
+  type EngineStreamContext,
+  type EngineStreamContextTarget
 } from "../../src/engine/trading/routes/EngineWebSocketStreams";
 import {
   buildHealthReport,
@@ -54,6 +56,49 @@ describe("engine stream helpers", () => {
       exchange_to_receipt_ms: 2,
       location: "TYO"
     });
+  });
+
+  it("creates stream context from engine runtime bindings", async () => {
+    const state = engineState();
+    const calls: string[] = [];
+    const pending: Promise<unknown>[] = [];
+    const target = {
+      adminSockets: new Set<WebSocket>(),
+      engineState: state,
+      signals: [agentSignal()],
+      latencyHistory: [latencyMetric()],
+      macroBias: { direction: "NEUTRAL" } as MacroBias,
+      activeTemporaryOverride: null,
+      state: {
+        waitUntil: (promise: Promise<unknown>) => {
+          pending.push(promise);
+        }
+      } as unknown as DurableObjectState,
+      telemetryBus: { nextSequence: sequenceCounter() },
+      enqueueTick: async (tick: MarketTick) => {
+        calls.push(`tick:${tick.instrumentCode}`);
+        return { accepted: true, status: "FRESH" } as never;
+      },
+      publish: (type: string) => {
+        calls.push(`publish:${type}`);
+      }
+    } as unknown as EngineStreamContextTarget;
+
+    const context = createTradingEngineStreamContext(target);
+    const queued = Promise.resolve();
+
+    context.waitUntil(queued);
+    context.publish("STREAM_READY", {});
+    await context.enqueueTick(marketTick());
+
+    expect(context.getEngineState()).toBe(state);
+    expect(context.getSignals()).toHaveLength(1);
+    expect(context.getLatencyHistory()[0]?.totalLatencyMs).toBe(3);
+    expect(context.getMacroBias()).toEqual({ direction: "NEUTRAL" });
+    expect(context.getTemporaryOverride()).toBeNull();
+    expect(context.nextBusSequence()).toBe(1);
+    expect(pending).toEqual([queued]);
+    expect(calls).toEqual(["publish:STREAM_READY", "tick:btc-usd"]);
   });
 
   it("accepts telemetry streams and responds to admin pings", () => {

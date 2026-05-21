@@ -163,7 +163,9 @@ import {
 import { handleTradingEngineFetchRuntime } from "./routes/EngineFetchRuntime";
 import {
   acceptMarketStream as acceptTradingMarketStream,
-  acceptTelemetryStream as acceptTradingTelemetryStream
+  acceptTelemetryStream as acceptTradingTelemetryStream,
+  createTradingEngineStreamContext,
+  type EngineStreamContextTarget
 } from "./routes/EngineWebSocketStreams";
 import type { TradingTelemetryBus } from "./telemetry/TelemetryBus";
 import { acceptTradingAgentSignal } from "./telemetry/AgentSignalRuntime";
@@ -909,19 +911,7 @@ export class TradingEngine {
   }
 
   private streamContext() {
-    return {
-      adminSockets: this.adminSockets,
-      getEngineState: () => this.engineState,
-      getSignals: () => this.signals,
-      getLatencyHistory: () => this.latencyHistory,
-      getMacroBias: () => this.macroBias,
-      getTemporaryOverride: () => this.activeTemporaryOverride,
-      enqueueTick: (tick: MarketTick) => this.enqueueTick(tick),
-      waitUntil: (promise: Promise<unknown>) => this.state.waitUntil(promise),
-      publish: (type: string, payload: Record<string, unknown>, correlationId?: string) =>
-        this.publish(type, payload, correlationId),
-      nextBusSequence: () => this.telemetryBus.nextSequence()
-    };
+    return createTradingEngineStreamContext(this as unknown as EngineStreamContextTarget);
   }
 
   private enqueueTick(
