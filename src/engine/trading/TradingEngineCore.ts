@@ -165,7 +165,10 @@ import {
 } from "./cascade/CascadeAbsorptionRuntime";
 import {
   applyTradingEngineConfigUpdateForTarget,
+  refreshTradingConfigIfDueForTarget,
   refreshTradingEngineConfigForTarget,
+  scheduleTradingConfigRefreshForTarget,
+  type TradingConfigRefreshCadenceTarget,
   type TradingEngineConfigControlTarget
 } from "./config/TradingConfigControlRuntime";
 import {
@@ -353,7 +356,6 @@ import {
   DEFAULT_MAX_LATENCY_MS,
   DEFAULT_HARD_STALE_DROP_MS,
   PERFORMANCE_HISTORY_LIMIT,
-  CONFIG_ALARM_INTERVAL_MS,
   ADMIN_STREAM_PULSE_INTERVAL_MS,
   STORAGE_WRITE_BACKOFF_MS,
   PROCESSING_LATENCY_SAMPLES_KEY,
@@ -1725,18 +1727,16 @@ export class TradingEngine {
   }
 
   private async refreshConfigIfDue(source: "ALARM" | "ADMIN_SIGNAL"): Promise<void> {
-    const now = Date.now();
-
-    if (now - this.lastConfigRefreshAttemptAt < CONFIG_ALARM_INTERVAL_MS) {
-      return;
-    }
-
-    this.lastConfigRefreshAttemptAt = now;
-    await this.refreshConfig(source);
+    await refreshTradingConfigIfDueForTarget(
+      source,
+      this as unknown as TradingConfigRefreshCadenceTarget
+    );
   }
 
   private async scheduleConfigRefresh(): Promise<void> {
-    await this.safeSetAlarm(Date.now() + CONFIG_ALARM_INTERVAL_MS, "CONFIG_REFRESH_ALARM");
+    await scheduleTradingConfigRefreshForTarget(
+      this as unknown as TradingConfigRefreshCadenceTarget
+    );
   }
 
   private async acceptAgentSignal(signal: AgentSignal, latencyMs: number): Promise<void> {

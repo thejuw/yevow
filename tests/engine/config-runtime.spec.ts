@@ -22,12 +22,15 @@ import {
 import {
   applyTradingEngineConfigUpdate,
   applyTradingEngineConfigUpdateForTarget,
+  refreshTradingConfigIfDueForTarget,
   refreshTradingEngineConfig,
   refreshTradingEngineConfigForTarget,
+  scheduleTradingConfigRefreshForTarget,
   type TradingEngineConfigControlTarget,
   type TradingEngineConfigRefreshHandlers,
   type TradingEngineConfigUpdateHandlers
 } from "../../src/engine/trading/config/TradingConfigControlRuntime";
+import { CONFIG_ALARM_INTERVAL_MS } from "../../src/TradingEngineConstants";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { AdminConfigUpdate, EngineState } from "../../src/types";
 
@@ -540,6 +543,33 @@ describe("ConfigRuntime", () => {
       "configure:config-target-effective",
       "persist:CONFIG_REFRESH",
       "warn:CONFIG_REFRESHED:config-target-effective"
+    ]);
+  });
+
+  it("gates config refresh cadence and schedules the next alarm", async () => {
+    const events: string[] = [];
+    const target = {
+      lastConfigRefreshAttemptAt: 1_000,
+      refreshConfig(source: "ALARM" | "ADMIN_SIGNAL") {
+        events.push(`refresh:${source}`);
+        return Promise.resolve();
+      },
+      safeSetAlarm(timestamp: number, reason: string) {
+        events.push(`alarm:${reason}:${timestamp}`);
+        return Promise.resolve();
+      }
+    };
+
+    await expect(refreshTradingConfigIfDueForTarget("ALARM", target, 1_500)).resolves.toBe(false);
+    await expect(
+      refreshTradingConfigIfDueForTarget("ADMIN_SIGNAL", target, 1_000 + CONFIG_ALARM_INTERVAL_MS)
+    ).resolves.toBe(true);
+    await scheduleTradingConfigRefreshForTarget(target, 2_000);
+
+    expect(target.lastConfigRefreshAttemptAt).toBe(1_000 + CONFIG_ALARM_INTERVAL_MS);
+    expect(events).toEqual([
+      "refresh:ADMIN_SIGNAL",
+      `alarm:CONFIG_REFRESH_ALARM:${2_000 + CONFIG_ALARM_INTERVAL_MS}`
     ]);
   });
 

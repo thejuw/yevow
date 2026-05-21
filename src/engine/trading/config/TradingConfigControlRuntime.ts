@@ -123,6 +123,12 @@ export interface TradingEngineConfigControlTarget {
   safeSetAlarm(timestamp: number, reason: string): Promise<void>;
 }
 
+export interface TradingConfigRefreshCadenceTarget {
+  lastConfigRefreshAttemptAt: number;
+  refreshConfig(source: "ALARM" | "ADMIN_SIGNAL"): Promise<void>;
+  safeSetAlarm(timestamp: number, reason: string): Promise<void>;
+}
+
 export async function refreshTradingConfig(
   input: TradingConfigRefreshInput,
   handlers: TradingConfigRefreshHandlers
@@ -258,6 +264,27 @@ export function refreshTradingEngineConfigForTarget(
   );
 }
 
+export async function refreshTradingConfigIfDueForTarget(
+  source: "ALARM" | "ADMIN_SIGNAL",
+  target: TradingConfigRefreshCadenceTarget,
+  nowMs = Date.now()
+): Promise<boolean> {
+  if (nowMs - target.lastConfigRefreshAttemptAt < CONFIG_ALARM_INTERVAL_MS) {
+    return false;
+  }
+
+  target.lastConfigRefreshAttemptAt = nowMs;
+  await target.refreshConfig(source);
+  return true;
+}
+
+export async function scheduleTradingConfigRefreshForTarget(
+  target: Pick<TradingConfigRefreshCadenceTarget, "safeSetAlarm">,
+  nowMs = Date.now()
+): Promise<void> {
+  await target.safeSetAlarm(nowMs + CONFIG_ALARM_INTERVAL_MS, "CONFIG_REFRESH_ALARM");
+}
+
 export function applyTradingEngineConfigUpdateForTarget(
   update: AdminConfigUpdate,
   target: TradingEngineConfigControlTarget
@@ -278,8 +305,7 @@ export function applyTradingEngineConfigUpdateForTarget(
           { source: "ADMIN_SIGNAL", configSnapshot: directConfig },
           target
         ),
-      scheduleConfigRefresh: () =>
-        target.safeSetAlarm(Date.now() + CONFIG_ALARM_INTERVAL_MS, "CONFIG_REFRESH_ALARM"),
+      scheduleConfigRefresh: () => scheduleTradingConfigRefreshForTarget(target),
       setMaxLatencyMs: (maxLatencyMs) => {
         target.maxLatencyMs = maxLatencyMs;
       },
