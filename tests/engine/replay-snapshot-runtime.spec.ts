@@ -7,6 +7,10 @@ import {
   type EngineReplaySnapshot
 } from "../../src/engine/trading/replay/ReplaySnapshotRuntime";
 import {
+  applyTradingReplaySnapshotToTarget,
+  type TradingReplaySnapshotTarget
+} from "../../src/engine/trading/replay/TradingReplayStateRuntime";
+import {
   DOM_WALL_HISTORY_KEY,
   ENGINE_STATE_KEY,
   ORDER_BOOK_PREFIX,
@@ -164,6 +168,34 @@ describe("ReplaySnapshotRuntime", () => {
       "write-state"
     ]);
   });
+
+  it("applies hydrated replay snapshots to mutable trading runtime targets", () => {
+    const snapshot = replaySnapshot();
+    const hydrated = hydrateReplayOrderBooks(snapshot);
+    const calls: string[] = [];
+    const target = replaySnapshotTarget(calls);
+
+    applyTradingReplaySnapshotToTarget(target, snapshot, hydrated);
+
+    expect(target.engineState).toBe(snapshot.engineState);
+    expect(target.orderBook.get("hyperliquid:btc-usd")?.midPrice).toBe(100);
+    expect(target.bids.get("hyperliquid:btc-usd")?.top(1)[0]?.price).toBe(99);
+    expect(target.asks.get("hyperliquid:btc-usd")?.top(1)[0]?.price).toBe(101);
+    expect(target.bookSync.get("hyperliquid:btc-usd")?.isSynced).toBe(true);
+    expect(target.leadLagSamples.get("btc-usd")?.[0]?.price).toBe(100);
+    expect(target.cachedConfig).toBe(snapshot.cachedConfig);
+    expect(target.maxLatencyMs).toBe(150);
+    expect(target.lastTickTimestamp).toBe(OBSERVED_AT);
+    expect(target.signals).toBe(snapshot.signals);
+    expect(calls).toEqual([
+      "rebind",
+      "profiler:1:none",
+      "anomaly:anomaly-detector.v1",
+      "oracle",
+      "sentiment",
+      "rate-limits:0"
+    ]);
+  });
 });
 
 function replaySnapshot(): EngineReplaySnapshot {
@@ -251,5 +283,54 @@ function latencyMetrics(): LatencyMetrics {
     placement: "tokyo",
     latencyRiskMultiplier: 1,
     positionSizeMultiplier: 1
+  };
+}
+
+function replaySnapshotTarget(calls: string[]): TradingReplaySnapshotTarget {
+  const engineState = defaultEngineState("old-replay-target");
+
+  return {
+    engineState,
+    orderBook: new Map(),
+    bids: new Map(),
+    asks: new Map(),
+    bookSync: new Map(),
+    latencyHistory: [],
+    processingLatencySamples: [],
+    domWallHistory: [],
+    leadLagSamples: new Map(),
+    cachedConfig: engineState.cachedConfig,
+    maxLatencyMs: 0,
+    lastTickTimestamp: null,
+    signals: [],
+    latestAgentSignals: new Map(),
+    profilerRegistry: {
+      hydrate(legacyState, states) {
+        calls.push(`profiler:${states.size}:${legacyState?.toxicityScore ?? "none"}`);
+      }
+    },
+    anomalyDetector: {
+      hydrate(state) {
+        calls.push(`anomaly:${state.schemaVersion}`);
+      }
+    },
+    oracleAgent: {
+      hydrate() {
+        calls.push("oracle");
+      }
+    },
+    sentimentAgent: {
+      hydrate() {
+        calls.push("sentiment");
+      }
+    },
+    rateLimiter: {
+      hydrate(snapshot) {
+        calls.push(`rate-limits:${Object.keys(snapshot).length}`);
+      }
+    },
+    rebindOrderBookReconstructor() {
+      calls.push("rebind");
+    }
   };
 }
