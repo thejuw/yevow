@@ -180,21 +180,7 @@ import {
   publishTradingTickTelemetryForTarget,
   type TradingHotPathTelemetryTarget
 } from "./telemetry/TradingHotPathTelemetryRuntime";
-import { type ReplayOptions } from "./routes/ReplayAdminRoutes";
 import { type ReplayJournal } from "./replay/ReplayJournal";
-import {
-  runTradingHistoricalReplayForTarget,
-  type TradingHistoricalReplayEngineTarget
-} from "./replay/TradingReplayRunRuntime";
-import {
-  captureTradingReplaySnapshotFromSource,
-  prepareTradingShadowReplayStateForTarget,
-  restoreTradingReplaySnapshotForTarget,
-  type EngineReplaySnapshot,
-  type TradingReplayRestoreTarget,
-  type TradingReplaySnapshotSource,
-  type TradingShadowReplayStateTarget
-} from "./replay/TradingReplayStateRuntime";
 import type { GrpcFatalDropPayload, TickIngestResult } from "./TradingEngineRouteTypes";
 import {
   createBootAbsorptionAnalyzer,
@@ -280,7 +266,6 @@ import type {
   OrderBookSnapshotLevel,
   Position,
   ProfilerState,
-  ReplayResult,
   RiskLimits,
   SentimentState,
   ShadowQueueState,
@@ -1211,59 +1196,6 @@ export class TradingEngine {
       reason,
       instrumentCode,
       this as unknown as TradingJanitorCancelTarget
-    );
-  }
-
-  private prepareShadowReplayState(
-    initialShadowBankroll: number,
-    startedAt: string,
-    replayId: string
-  ): void {
-    prepareTradingShadowReplayStateForTarget(
-      { initialShadowBankroll, startedAt, replayId },
-      this as unknown as TradingShadowReplayStateTarget
-    );
-  }
-
-  private async runHistoricalReplay(
-    limit: number,
-    shadowBankroll: number,
-    speedMultiplier: number,
-    dateFrom: string | null = null,
-    dateTo: string | null = null,
-    replayOptions: ReplayOptions = {
-      scenario: "BASELINE",
-      latencyMs: 10,
-      slippageBps: 1,
-      feeBps: 0,
-      exitAfterTicks: 10,
-      walkForward: false,
-      sentimentAblation: true,
-      strategyVersionId: null,
-      actor: "admin"
-    }
-  ): Promise<ReplayResult> {
-    return runTradingHistoricalReplayForTarget(
-      {
-        limit,
-        shadowBankroll,
-        speedMultiplier,
-        dateFrom,
-        dateTo,
-        replayOptions
-      },
-      this as unknown as TradingHistoricalReplayEngineTarget
-    );
-  }
-
-  private captureReplaySnapshot(): EngineReplaySnapshot {
-    return captureTradingReplaySnapshotFromSource(this as unknown as TradingReplaySnapshotSource);
-  }
-
-  private async restoreReplaySnapshot(snapshot: EngineReplaySnapshot): Promise<void> {
-    await restoreTradingReplaySnapshotForTarget(
-      snapshot,
-      this as unknown as TradingReplayRestoreTarget
     );
   }
 

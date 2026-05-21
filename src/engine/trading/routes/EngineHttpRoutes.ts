@@ -26,6 +26,10 @@ import {
 } from "../execution/TradingExecutionReportRuntime";
 import { pruneTradingOperationalLogs } from "../janitor/TradingJanitorRuntime";
 import {
+  runTradingHistoricalReplayForStatefulTarget,
+  type TradingHistoricalReplayStatefulTarget
+} from "../replay/TradingReplayRunRuntime";
+import {
   buildTradingEngineDiagnosticsForTarget,
   buildTradingHealthReportForTarget,
   syncTradingStateMicrostructureForTarget,
@@ -174,14 +178,6 @@ export interface EngineHttpRouteContextTarget {
   ): Promise<unknown>;
   applySnapshot(snapshot: OrderBookSnapshot): Promise<unknown>;
   applyDelta(delta: OrderBookDelta, observedAt: string): Promise<AppliedBookUpdate>;
-  runHistoricalReplay(
-    limit: number,
-    shadowBankroll: number,
-    speedMultiplier: number,
-    dateFrom: string | null,
-    dateTo: string | null,
-    replayOptions: ReplayOptions
-  ): Promise<ReplayResult>;
   enqueueTick(tick: MarketTick, wakeUpTimeMs: number | null): Promise<TickIngestResult>;
   handleHyperliquidRaw(payload: unknown, wakeUpTimeMs: number | null): Promise<TickIngestResult>;
   handleGrpcFatalDrop(payload: GrpcFatalDropPayload): Promise<{ status: string }>;
@@ -251,8 +247,25 @@ export function createTradingEngineHttpRouteContext(
         payload,
         target as unknown as HyperliquidIngestConnectionTarget
       ),
-    runHistoricalReplay: (limit, shadowBankroll, speedMultiplier, dateFrom, dateTo, options) =>
-      target.runHistoricalReplay(limit, shadowBankroll, speedMultiplier, dateFrom, dateTo, options),
+    runHistoricalReplay: (
+      limit,
+      shadowBankroll,
+      speedMultiplier,
+      dateFrom,
+      dateTo,
+      replayOptions
+    ) =>
+      runTradingHistoricalReplayForStatefulTarget(
+        {
+          limit,
+          shadowBankroll,
+          speedMultiplier,
+          dateFrom,
+          dateTo,
+          replayOptions
+        },
+        target as unknown as TradingHistoricalReplayStatefulTarget
+      ),
     currentReplayStatus: () => target.replayJournal.currentStatus(),
     currentCascadeActiveSnapshot: () =>
       currentTradingCascadeActiveSnapshotForTarget(

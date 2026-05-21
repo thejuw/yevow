@@ -21,6 +21,14 @@ import {
 } from "./ReplayResultRuntime";
 import { runHistoricalReplayRuntime, runShadowReplayWithRestoreRuntime } from "./ReplayRunRuntime";
 import type { EngineReplaySnapshot } from "./ReplaySnapshotRuntime";
+import {
+  captureTradingReplaySnapshotFromSource,
+  prepareTradingShadowReplayStateForTarget,
+  restoreTradingReplaySnapshotForTarget,
+  type TradingReplayRestoreTarget,
+  type TradingReplaySnapshotSource,
+  type TradingShadowReplayStateTarget
+} from "./TradingReplayStateRuntime";
 
 export interface TradingHistoricalReplayInput {
   readonly limit: number;
@@ -72,6 +80,11 @@ export interface TradingHistoricalReplayEngineTarget {
   ): Promise<TickIngestResult>;
   restoreReplaySnapshot(snapshot: EngineReplaySnapshot): Promise<void>;
 }
+
+export type TradingHistoricalReplayStatefulTarget = Omit<
+  TradingHistoricalReplayEngineTarget,
+  "captureReplaySnapshot" | "prepareShadowReplayState" | "restoreReplaySnapshot"
+>;
 
 export async function runTradingShadowReplayWithRestore(
   input: Parameters<typeof runShadowReplayWithRestoreRuntime>[0],
@@ -198,6 +211,41 @@ export function runTradingHistoricalReplayForTarget(
     oracleRegime: () => target.engineState.oracle.regime,
     currentSentiment: () => target.engineState.sentiment,
     restoreReplaySnapshot: (snapshot) => target.restoreReplaySnapshot(snapshot),
+    writeCompletionLog: (metadata) => {
+      target.logger.warn("REPLAY_COMPLETED", "Historical shadow replay completed", metadata);
+    }
+  });
+}
+
+export function runTradingHistoricalReplayForStatefulTarget(
+  input: TradingHistoricalReplayInput,
+  target: TradingHistoricalReplayStatefulTarget
+): Promise<ReplayResult> {
+  return runTradingHistoricalReplay(input, {
+    replayJournal: target.replayJournal,
+    nowIso: () => new Date().toISOString(),
+    createReplayId: () => crypto.randomUUID(),
+    captureReplaySnapshot: () =>
+      captureTradingReplaySnapshotFromSource(target as unknown as TradingReplaySnapshotSource),
+    currentLiveBankroll: () => ({
+      equity: target.engineState.bankroll.equity,
+      cash: target.engineState.bankroll.cash
+    }),
+    prepareShadowReplayState: (initialShadowBankroll, replayStartedAt, replayId) => {
+      prepareTradingShadowReplayStateForTarget(
+        { initialShadowBankroll, startedAt: replayStartedAt, replayId },
+        target as unknown as TradingShadowReplayStateTarget
+      );
+    },
+    enqueueShadowReplayTick: (tick) => target.enqueueTick(tick, null, { shadowReplay: true }),
+    lastTradeIntent: () => target.engineState.lastTradeIntent,
+    oracleRegime: () => target.engineState.oracle.regime,
+    currentSentiment: () => target.engineState.sentiment,
+    restoreReplaySnapshot: (snapshot) =>
+      restoreTradingReplaySnapshotForTarget(
+        snapshot,
+        target as unknown as TradingReplayRestoreTarget
+      ),
     writeCompletionLog: (metadata) => {
       target.logger.warn("REPLAY_COMPLETED", "Historical shadow replay completed", metadata);
     }
