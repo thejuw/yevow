@@ -5,7 +5,9 @@ import {
   buildExecutionQueueEnqueuePlan,
   compareExecutionQueueItems,
   drainTradingExecutionQueue,
+  drainTradingExecutionQueueForTarget,
   enqueueTradingExecutionIntent,
+  enqueueTradingExecutionIntentForTarget,
   type ExecutionQueueDrainSideEffectHandlers,
   executionQueueDeferralLogMetadata,
   type ExecutionQueueEnqueueSideEffectHandlers,
@@ -13,7 +15,8 @@ import {
   shouldLogExecutionQueueDeferral,
   splitExecutionQueueForDrain,
   type ExecutionQueuePriority,
-  type QueuedExecutionIntent
+  type QueuedExecutionIntent,
+  type TradingExecutionQueueTarget
 } from "../../src/engine/trading/execution/ExecutionQueueRuntime";
 import type { TradeIntent } from "../../src/types";
 
@@ -315,6 +318,41 @@ describe("ExecutionQueueRuntime", () => {
       "alarm:EXECUTION_QUEUE_NEXT_WAKE:6000"
     ]);
   });
+
+  it("enqueues execution intents through the trading target adapter", async () => {
+    const target = executionQueueTarget([]);
+
+    const plan = await enqueueTradingExecutionIntentForTarget(
+      tradeIntent({ intentId: "target-queued" }),
+      "NEW",
+      0,
+      target
+    );
+
+    expect(plan.queue.map((item) => item.intent.intentId)).toEqual(["target-queued"]);
+    expect(target.rateLimitDeferralLogAt).toBeGreaterThan(0);
+    expect(target.events).toEqual([
+      "read:execution:deferred-queue",
+      "persist:execution:deferred-queue:EXECUTION_QUEUE_ENQUEUE:target-queued",
+      "alarm:EXECUTION_QUEUE_ALARM",
+      "warn:EXECUTION_DEFERRED_BY_RATE_LIMIT:target-queued"
+    ]);
+  });
+
+  it("drains execution intents through the trading target adapter", async () => {
+    const target = executionQueueTarget([
+      queuedIntent({ id: "target-due", priority: "NEW", runAfterMs: 0 })
+    ]);
+
+    const plan = await drainTradingExecutionQueueForTarget(target);
+
+    expect(plan?.due.map((item) => item.intent.intentId)).toEqual(["target-due"]);
+    expect(target.events).toEqual([
+      "read:execution:deferred-queue",
+      "persist:execution:deferred-queue:EXECUTION_QUEUE_DRAIN:",
+      "dispatch:target-due"
+    ]);
+  });
 });
 
 function enqueueSideEffectSpy(input: { queue: QueuedExecutionIntent[] }): {
@@ -373,6 +411,49 @@ function drainSideEffectSpy(input: { queue: QueuedExecutionIntent[] }): {
         events.push(`alarm:${timestampMs}`);
         return Promise.resolve();
       }
+    }
+  };
+}
+
+function executionQueueTarget(
+  queue: QueuedExecutionIntent[]
+): TradingExecutionQueueTarget & { events: string[] } {
+  const events: string[] = [];
+
+  return {
+    events,
+    rateLimitDeferralLogAt: 0,
+    state: {
+      storage: {
+        get(key) {
+          events.push(`read:${key}`);
+          return Promise.resolve(queue);
+        }
+      }
+    },
+    logger: {
+      warn(eventType, _message, metadata) {
+        events.push(`warn:${eventType}:${metadata?.intentId as string}`);
+      }
+    },
+    handleStorageWriteFailure(reason) {
+      events.push(`failure:${reason}`);
+    },
+    safeStoragePut(key, value, reason) {
+      events.push(
+        `persist:${key}:${reason}:${(value as QueuedExecutionIntent[])
+          .map((item) => item.intent.intentId)
+          .join(",")}`
+      );
+      return Promise.resolve();
+    },
+    safeSetAlarm(_timestampMs, reason) {
+      events.push(`alarm:${reason}`);
+      return Promise.resolve();
+    },
+    dispatchExecution(intent) {
+      events.push(`dispatch:${intent.intentId}`);
+      return Promise.resolve();
     }
   };
 }

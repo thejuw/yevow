@@ -89,9 +89,10 @@ import {
   type TradingPaperExecutionBudgetTarget
 } from "./execution/PaperExecutionBudgetRuntime";
 import {
-  drainTradingExecutionQueue,
-  enqueueTradingExecutionIntent,
-  type QueuedExecutionIntent
+  drainTradingExecutionQueueForTarget,
+  enqueueTradingExecutionIntentForTarget,
+  type QueuedExecutionIntent,
+  type TradingExecutionQueueTarget
 } from "./execution/ExecutionQueueRuntime";
 import { calculateTradingAssetMatrix } from "./state/TradingAssetMatrixRuntime";
 import { type ExecutionTraceInput } from "./performance/LatencyRuntime";
@@ -348,7 +349,6 @@ import {
   DEFAULT_SOURCE_WEIGHT,
   PROCESSING_LATENCY_SAMPLES_KEY,
   RATE_LIMIT_STATE_KEY,
-  EXECUTION_QUEUE_KEY,
   PAPER_SESSION_STARTED_AT_KEY,
   HOT_PATH_LOG_THROTTLE_MS,
   DEFAULT_JITTER_SAMPLE_WINDOW,
@@ -2404,45 +2404,16 @@ export class TradingEngine {
     priority: QueuedExecutionIntent["priority"],
     waitMs: number
   ): Promise<void> {
-    await enqueueTradingExecutionIntent(
-      {
-        intent,
-        priority,
-        waitMs,
-        nowMs: Date.now(),
-        lastDeferralLoggedAtMs: this.rateLimitDeferralLogAt
-      },
-      {
-        readStoredQueue: () => this.state.storage.get<QueuedExecutionIntent[]>(EXECUTION_QUEUE_KEY),
-        handleStorageFailure: (reason, error) => this.handleStorageWriteFailure(reason, error),
-        persistQueue: (key, queue, reason) => this.safeStoragePut(key, queue, reason),
-        setAlarm: (timestampMs, reason) => this.safeSetAlarm(timestampMs, reason),
-        markDeferralLogged: (loggedAtMs) => {
-          this.rateLimitDeferralLogAt = loggedAtMs;
-        },
-        warnDeferral: (metadata) =>
-          this.logger.warn(
-            "EXECUTION_DEFERRED_BY_RATE_LIMIT",
-            "Execution intent deferred by durable rate limiter",
-            metadata
-          )
-      }
+    await enqueueTradingExecutionIntentForTarget(
+      intent,
+      priority,
+      waitMs,
+      this as unknown as TradingExecutionQueueTarget
     );
   }
 
   private async drainExecutionQueue(): Promise<void> {
-    await drainTradingExecutionQueue(
-      {
-        nowMs: Date.now()
-      },
-      {
-        readStoredQueue: () => this.state.storage.get<QueuedExecutionIntent[]>(EXECUTION_QUEUE_KEY),
-        handleStorageFailure: (reason, error) => this.handleStorageWriteFailure(reason, error),
-        persistQueue: (key, queue, reason) => this.safeStoragePut(key, queue, reason),
-        dispatchExecution: (intent) => this.dispatchExecution(intent),
-        setAlarm: (timestampMs, reason) => this.safeSetAlarm(timestampMs, reason)
-      }
-    );
+    await drainTradingExecutionQueueForTarget(this as unknown as TradingExecutionQueueTarget);
   }
 
   private async cancelAllQuotes(instrumentCode: string, reason: string): Promise<void> {

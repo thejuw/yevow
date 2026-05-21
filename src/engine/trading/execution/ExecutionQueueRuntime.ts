@@ -120,6 +120,22 @@ export interface TradingExecutionQueueDrainHandlers extends TradingExecutionQueu
   readonly dispatchExecution: (intent: TradeIntent) => Promise<void>;
 }
 
+export interface TradingExecutionQueueTarget {
+  rateLimitDeferralLogAt: number;
+  readonly state: {
+    readonly storage: {
+      get<T>(key: string): Promise<T | undefined>;
+    };
+  };
+  readonly logger: {
+    warn(eventType: string, message: string, telemetry?: JsonRecord): void;
+  };
+  handleStorageWriteFailure(reason: string, error: unknown): void;
+  safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
+  safeSetAlarm(timestampMs: number, reason: string): Promise<void>;
+  dispatchExecution(intent: TradeIntent): Promise<void>;
+}
+
 const DEFAULT_MAX_QUEUE_SIZE = 1_000;
 const PRIORITY_WEIGHT: Record<ExecutionQueuePriority, number> = {
   CANCEL: 0,
@@ -319,6 +335,60 @@ export async function drainTradingExecutionQueue(
         handlers.persistQueue(EXECUTION_QUEUE_KEY, queue, "EXECUTION_QUEUE_DRAIN"),
       dispatchExecution: handlers.dispatchExecution,
       setAlarm: (timestampMs) => handlers.setAlarm(timestampMs, "EXECUTION_QUEUE_NEXT_WAKE")
+    }
+  );
+}
+
+export function enqueueTradingExecutionIntentForTarget(
+  intent: TradeIntent,
+  priority: ExecutionQueuePriority,
+  waitMs: number,
+  target: TradingExecutionQueueTarget
+): Promise<ExecutionQueueEnqueuePlan> {
+  return enqueueTradingExecutionIntent(
+    {
+      intent,
+      priority,
+      waitMs,
+      nowMs: Date.now(),
+      lastDeferralLoggedAtMs: target.rateLimitDeferralLogAt
+    },
+    {
+      readStoredQueue: () => target.state.storage.get<QueuedExecutionIntent[]>(EXECUTION_QUEUE_KEY),
+      handleStorageFailure: (reason, error) => {
+        target.handleStorageWriteFailure(reason, error);
+      },
+      persistQueue: (key, queue, reason) => target.safeStoragePut(key, queue, reason),
+      setAlarm: (timestampMs, reason) => target.safeSetAlarm(timestampMs, reason),
+      markDeferralLogged: (loggedAtMs) => {
+        target.rateLimitDeferralLogAt = loggedAtMs;
+      },
+      warnDeferral: (metadata) => {
+        target.logger.warn(
+          "EXECUTION_DEFERRED_BY_RATE_LIMIT",
+          "Execution intent deferred by durable rate limiter",
+          metadata
+        );
+      }
+    }
+  );
+}
+
+export function drainTradingExecutionQueueForTarget(
+  target: TradingExecutionQueueTarget
+): Promise<ExecutionQueueDrainPlan | null> {
+  return drainTradingExecutionQueue(
+    {
+      nowMs: Date.now()
+    },
+    {
+      readStoredQueue: () => target.state.storage.get<QueuedExecutionIntent[]>(EXECUTION_QUEUE_KEY),
+      handleStorageFailure: (reason, error) => {
+        target.handleStorageWriteFailure(reason, error);
+      },
+      persistQueue: (key, queue, reason) => target.safeStoragePut(key, queue, reason),
+      dispatchExecution: (intent) => target.dispatchExecution(intent),
+      setAlarm: (timestampMs, reason) => target.safeSetAlarm(timestampMs, reason)
     }
   );
 }
