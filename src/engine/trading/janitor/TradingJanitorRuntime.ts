@@ -1,4 +1,4 @@
-import { DEFAULT_ORDER_ACK_TIMEOUT_MS } from "../../../TradingEngineConstants";
+import { DEFAULT_ORDER_ACK_TIMEOUT_MS, ENGINE_STATE_KEY } from "../../../TradingEngineConstants";
 import type { RateLimitPriority } from "../../../utils/RateLimiter";
 import type { EngineState, ExchangeOpenOrder, JanitorState, JsonRecord } from "../../../types";
 import {
@@ -68,6 +68,27 @@ export interface TradingEngineJanitorMaintenanceHandlers extends Omit<
   readonly nowIso: () => string;
   readonly applyState: (state: EngineState) => void;
   readonly persistState: (state: EngineState) => Promise<void>;
+}
+
+export interface TradingEngineJanitorMaintenanceTarget {
+  engineState: EngineState;
+  readonly env: {
+    readonly ORDER_ACK_TIMEOUT_MS?: string;
+    readonly EXECUTIONER?: JanitorExecutionerFetcher;
+  };
+  readonly logger: TradingJanitorLogger;
+  readonly janitorAgent: {
+    run(input: {
+      readonly orderMap: EngineState["orderMap"];
+      readonly positions: EngineState["openPositions"];
+      readonly observedAt: string;
+      readonly ackTimeoutMs: number;
+      readonly dustThreshold: number;
+    }): JanitorState;
+  };
+  cancelOrder(orderId: string, reason: JanitorCancelReason, instrumentCode?: string): Promise<void>;
+  pruneOperationalLogs(): Promise<LogPruneReport>;
+  safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
 }
 
 export interface TradingJanitorCancelInput {
@@ -148,6 +169,32 @@ export function runTradingEngineJanitorMaintenance(
         handlers.applyState(state);
         await handlers.persistState(state);
       }
+    }
+  );
+}
+
+export function runTradingEngineJanitorMaintenanceForTarget(
+  source: "ALARM" | "ADMIN",
+  target: TradingEngineJanitorMaintenanceTarget
+): Promise<void> {
+  return runTradingEngineJanitorMaintenance(
+    {
+      source,
+      state: target.engineState,
+      orderAckTimeoutMs: target.env.ORDER_ACK_TIMEOUT_MS,
+      executioner: target.env.EXECUTIONER,
+      logger: target.logger
+    },
+    {
+      nowIso: () => new Date().toISOString(),
+      runBaseReport: (input) => target.janitorAgent.run(input),
+      cancelOrder: (orderId, reason, instrumentCode) =>
+        target.cancelOrder(orderId, reason, instrumentCode),
+      pruneOperationalLogs: () => target.pruneOperationalLogs(),
+      applyState: (state) => {
+        target.engineState = state;
+      },
+      persistState: (state) => target.safeStoragePut(ENGINE_STATE_KEY, state, "JANITOR_REPORT")
     }
   );
 }

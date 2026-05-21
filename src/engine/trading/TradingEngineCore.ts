@@ -135,7 +135,8 @@ import {
 import {
   cancelTradingJanitorOrder,
   pruneTradingOperationalLogs,
-  runTradingEngineJanitorMaintenance
+  runTradingEngineJanitorMaintenanceForTarget,
+  type TradingEngineJanitorMaintenanceTarget
 } from "./janitor/TradingJanitorRuntime";
 import {
   currentCascadeActiveSnapshot as buildCurrentCascadeActiveSnapshot,
@@ -1770,25 +1771,9 @@ export class TradingEngine {
   }
 
   private async runJanitor(source: "ALARM" | "ADMIN" = "ALARM"): Promise<void> {
-    await runTradingEngineJanitorMaintenance(
-      {
-        source,
-        state: this.engineState,
-        orderAckTimeoutMs: this.env.ORDER_ACK_TIMEOUT_MS,
-        executioner: this.env.EXECUTIONER,
-        logger: this.logger
-      },
-      {
-        nowIso: () => new Date().toISOString(),
-        runBaseReport: (input) => this.janitorAgent.run(input),
-        cancelOrder: (orderId, reason, instrumentCode) =>
-          this.cancelOrder(orderId, reason, instrumentCode),
-        pruneOperationalLogs: () => this.pruneOperationalLogs(),
-        applyState: (state) => {
-          this.engineState = state;
-        },
-        persistState: (state) => this.safeStoragePut(ENGINE_STATE_KEY, state, "JANITOR_REPORT")
-      }
+    await runTradingEngineJanitorMaintenanceForTarget(
+      source,
+      this as unknown as TradingEngineJanitorMaintenanceTarget
     );
   }
 

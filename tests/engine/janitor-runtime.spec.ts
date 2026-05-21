@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   applyCancelJanitorOrderSideEffects,
   applyJanitorRunSideEffects,
@@ -20,7 +20,9 @@ import {
 import {
   cancelTradingJanitorOrder,
   pruneTradingOperationalLogs,
-  runTradingEngineJanitorMaintenance
+  runTradingEngineJanitorMaintenance,
+  runTradingEngineJanitorMaintenanceForTarget,
+  type TradingEngineJanitorMaintenanceTarget
 } from "../../src/engine/trading/janitor/TradingJanitorRuntime";
 import type { LogPruneReport } from "../../src/engine/LogRetention";
 import type { EngineState, ExchangeOpenOrder, JanitorState, ManagedOrder } from "../../src/types";
@@ -700,6 +702,63 @@ describe("JanitorRuntime", () => {
       "state:2026-05-18T16:00:00.000Z",
       "persist:client-1"
     ]);
+  });
+
+  it("runs trading janitor maintenance through the engine target adapter", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(OBSERVED_AT));
+
+    try {
+      const state = {
+        orderMap: {
+          "client-1": order({ clientId: "client-1", exchangeOrderId: "missing", status: "OPEN" })
+        },
+        openPositions: {},
+        janitor: janitorState(),
+        updatedAt: "2026-05-18T15:00:00.000Z",
+        heartbeatAt: "2026-05-18T15:00:00.000Z"
+      } as EngineState;
+      const events: string[] = [];
+      const target: TradingEngineJanitorMaintenanceTarget = {
+        engineState: state,
+        env: {
+          ORDER_ACK_TIMEOUT_MS: "1250",
+          EXECUTIONER: undefined
+        },
+        logger: loggerSpy().logger,
+        janitorAgent: {
+          run(input) {
+            events.push(`base:${input.observedAt}:${input.ackTimeoutMs}`);
+            return janitorState({ zombieOrders: ["client-1"] });
+          }
+        },
+        cancelOrder(orderId, reason, instrumentCode) {
+          events.push(`cancel:${orderId}:${reason}:${instrumentCode ?? "NONE"}`);
+          return Promise.resolve();
+        },
+        pruneOperationalLogs() {
+          events.push("prune");
+          return Promise.resolve(logPruneReport({ totalRows: 0 }));
+        },
+        safeStoragePut(key, value, reason) {
+          const next = value as EngineState;
+          events.push(`persist:${key}:${reason}:${next.janitor.zombieOrders.join(",")}`);
+          return Promise.resolve();
+        }
+      };
+
+      await runTradingEngineJanitorMaintenanceForTarget("ADMIN", target);
+
+      expect(target.engineState.updatedAt).toBe(OBSERVED_AT);
+      expect(events).toEqual([
+        "base:2026-05-18T16:00:00.000Z:1250",
+        "cancel:client-1:JANITOR_ZOMBIE_LOCAL_ORDER:btc-usd",
+        "prune",
+        "persist:engine:state:JANITOR_REPORT:client-1"
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
