@@ -166,7 +166,10 @@ import {
   cascadeAssetProfileFromConfig,
   cascadeDetectorConfigFromRuntime
 } from "./cascade/CascadeConfigRuntime";
-import { ensureCascadePaperModeArmedRuntime } from "./cascade/CascadePaperModeRuntime";
+import {
+  ensureCascadePaperModeArmedForTarget,
+  type CascadePaperModeArmingTarget
+} from "./cascade/CascadePaperModeRuntime";
 import { OrderBookReconstructor, type OrderBookStores } from "./book/OrderBookReconstructor";
 import {
   buildOrderBookStores,
@@ -338,7 +341,6 @@ import {
   ENGINE_STATE_KEY,
   ORDER_BOOK_PREFIX,
   PERFORMANCE_HISTORY_KEY,
-  CASCADE_PAPER_ARMED_AT_KEY,
   CASCADE_LAST_BACKTEST_REPORT_KEY,
   RISK_LIMITS_KEY,
   CONFIG_KEY,
@@ -2004,23 +2006,9 @@ export class TradingEngine {
   }
 
   private async ensureCascadePaperModeArmed(observedAt: string): Promise<void> {
-    await ensureCascadePaperModeArmedRuntime(
-      {
-        observedAt,
-        cachedConfig: this.cachedConfig,
-        shadowMode: isShadowMode(this.env)
-      },
-      {
-        getArmedAt: () => this.env.CONFIG_STORE.get(CASCADE_PAPER_ARMED_AT_KEY),
-        putArmedAt: (armedAt) => this.env.CONFIG_STORE.put(CASCADE_PAPER_ARMED_AT_KEY, armedAt),
-        warnArmed: (metadata) =>
-          this.logger.warn(
-            "CASCADE_PAPER_MODE_ARMED",
-            "Cascade recovery paper-mode clock started",
-            metadata
-          ),
-        handleError: (error) => this.handleStorageWriteFailure("CASCADE_PAPER_MODE_ARMING", error)
-      }
+    await ensureCascadePaperModeArmedForTarget(
+      observedAt,
+      this as unknown as CascadePaperModeArmingTarget
     );
   }
 

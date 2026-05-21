@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  ensureCascadePaperModeArmedForTarget,
   ensureCascadePaperModeArmedRuntime,
+  type CascadePaperModeArmingTarget,
   type CascadePaperModeArmingHandlers
 } from "../../src/engine/trading/cascade/CascadePaperModeRuntime";
 import { defaultConfig } from "../../src/ConfigManager";
@@ -68,6 +70,50 @@ describe("CascadePaperModeRuntime", () => {
     ).resolves.toBe(false);
 
     expect(sideEffects.events).toEqual(["get", "error:kv unavailable"]);
+  });
+
+  it("arms cascade paper mode through the trading target adapter", async () => {
+    const events: string[] = [];
+    const store = new Map<string, string>();
+    const target: CascadePaperModeArmingTarget = {
+      cachedConfig: {
+        ...defaultConfig,
+        STRATEGY_MODE: "CASCADE_RECOVERY",
+        TRADING_ENABLED: false
+      },
+      env: {
+        SHADOW_MODE: "true",
+        CONFIG_STORE: {
+          get(key: string) {
+            events.push(`get:${key}`);
+            return Promise.resolve(store.get(key) ?? null);
+          },
+          put(key: string, value: string) {
+            events.push(`put:${key}:${value}`);
+            store.set(key, value);
+            return Promise.resolve();
+          }
+        } as unknown as KVNamespace
+      },
+      logger: {
+        warn(eventType, _message, metadata) {
+          events.push(
+            `warn:${eventType}:${String(metadata?.strategyMode)}:${String(metadata?.shadowMode)}`
+          );
+        }
+      },
+      handleStorageWriteFailure(reason, error) {
+        events.push(`error:${reason}:${error instanceof Error ? error.message : "UNKNOWN"}`);
+      }
+    };
+
+    await expect(ensureCascadePaperModeArmedForTarget(OBSERVED_AT, target)).resolves.toBe(true);
+
+    expect(events).toEqual([
+      "get:cascade:paper_armed_at",
+      "put:cascade:paper_armed_at:2026-05-20T06:00:00.000Z",
+      "warn:CASCADE_PAPER_MODE_ARMED:CASCADE_RECOVERY:true"
+    ]);
   });
 });
 
