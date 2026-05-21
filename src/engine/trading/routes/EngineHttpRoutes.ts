@@ -2,6 +2,11 @@ import type { Logger } from "../../../Logger";
 import type { Backtester } from "../../../strategy/cascade/Backtester";
 import type { NewsCalendar } from "../../../strategy/cascade/NewsCalendar";
 import type { AppliedBookUpdate } from "../book/BookTypes";
+import {
+  currentTradingBookSnapshotForTarget,
+  currentTradingDomHeatmapForTarget,
+  type TradingBookViewTarget
+} from "../book/TradingBookViewRuntime";
 import type { ReplayOptions, ReplayStatus } from "./ReplayAdminRoutes";
 import { handleBookAdminRoute } from "./BookAdminRoutes";
 import { handleCascadeAdminRoute } from "./CascadeAdminRoutes";
@@ -136,8 +141,6 @@ export interface EngineHttpRouteContextTarget {
     payload: Parameters<EngineHttpRouteContext["recoverEngineState"]>[0]
   ): Promise<unknown>;
   pruneOperationalLogs(): Promise<LogPruneReport>;
-  currentBookSnapshot(instrumentCode: string | undefined, depth: number): BookSnapshotResponse;
-  currentDomHeatmap(instrumentCode: string | undefined): DomAnalysisSnapshot;
   applySnapshot(snapshot: OrderBookSnapshot): Promise<unknown>;
   applyDelta(delta: OrderBookDelta, observedAt: string): Promise<AppliedBookUpdate>;
   enqueueOrderBookReset(payload: Partial<OrderBookResetRequest>): Promise<unknown>;
@@ -204,8 +207,13 @@ export function createTradingEngineHttpRouteContext(
     recoverEngineState: (payload) => target.recoverEngineState(payload),
     pruneOperationalLogs: () => target.pruneOperationalLogs(),
     currentBookSnapshot: (instrumentCode, depth) =>
-      target.currentBookSnapshot(instrumentCode, depth),
-    currentDomHeatmap: (instrumentCode) => target.currentDomHeatmap(instrumentCode),
+      currentTradingBookSnapshotForTarget(
+        target as unknown as TradingBookViewTarget,
+        instrumentCode,
+        depth
+      ),
+    currentDomHeatmap: (instrumentCode) =>
+      currentTradingDomHeatmapForTarget(target as unknown as TradingBookViewTarget, instrumentCode),
     applySnapshot: (snapshot) => target.applySnapshot(snapshot),
     applyDelta: (delta, observedAt) => target.applyDelta(delta, observedAt),
     enqueueOrderBookReset: (payload) => target.enqueueOrderBookReset(payload),

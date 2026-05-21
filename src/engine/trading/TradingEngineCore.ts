@@ -39,11 +39,6 @@ import {
   type TradingTickBookTarget
 } from "./book/TradingTickBookRuntime";
 import {
-  currentTradingBookSnapshotForTarget,
-  currentTradingDomHeatmapForTarget,
-  type TradingBookViewTarget
-} from "./book/TradingBookViewRuntime";
-import {
   processTradingShadowQueueTickForTarget,
   type TradingShadowQueueTarget
 } from "./shadow/TradingShadowQueueRuntime";
@@ -320,7 +315,6 @@ import type {
   AgentName,
   AgentSignal,
   AssetRuntimeState,
-  BookSnapshotResponse,
   ExecutionReport,
   EngineState,
   Env,
@@ -334,7 +328,6 @@ import type {
   LiquidityWall,
   MacroBias,
   MarketTick,
-  OrderBookDelta,
   OrderBookResetRequest,
   OrderBookSide,
   OrderBookSnapshot,
@@ -950,24 +943,6 @@ export class TradingEngine {
       delta,
       updatedAt,
       this as unknown as TradingBookApplicationTarget
-    );
-  }
-
-  private currentBookSnapshot(
-    instrumentCode: string | undefined,
-    depth: number
-  ): BookSnapshotResponse {
-    return currentTradingBookSnapshotForTarget(
-      this as unknown as TradingBookViewTarget,
-      instrumentCode,
-      depth
-    );
-  }
-
-  private currentDomHeatmap(instrumentCode: string | undefined): DomAnalysisSnapshot {
-    return currentTradingDomHeatmapForTarget(
-      this as unknown as TradingBookViewTarget,
-      instrumentCode
     );
   }
 
