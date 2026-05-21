@@ -1,4 +1,4 @@
-import type { EngineState, LatencyMetrics, MarketTick } from "../../../types";
+import type { EngineState, GlobalRiskConfig, LatencyMetrics, MarketTick } from "../../../types";
 import type { TickIngestResult } from "../TradingEngineRouteTypes";
 import type { ExecutionTraceInput } from "../performance/LatencyRuntime";
 import { countBookLevels } from "./BookReconstruction";
@@ -48,6 +48,93 @@ export interface TradingRejectedBookDeltaInput {
   readonly wakeUpTimeMs: number | null;
   readonly orderBookUpdateMs: number;
   readonly hotPathStartedAt: number;
+}
+
+export interface TradingBookEarlyReturnTarget {
+  engineState: EngineState;
+  readonly cachedConfig: Pick<GlobalRiskConfig, "TRADING_ENABLED">;
+  readonly maxLatencyMs: number;
+  readonly bids: Map<string, SortedBookSide>;
+  readonly asks: Map<string, SortedBookSide>;
+  observeExecutionProfile(metrics: LatencyMetrics, trace: ExecutionTraceInput): void;
+  latencyStorageWritesForState(
+    state: EngineState,
+    extra?: Record<string, unknown>
+  ): Record<string, unknown>;
+  persistHotStorageSnapshot(writes: Record<string, unknown>, reason: string): Promise<unknown>;
+  publishTickTelemetry(
+    tick: MarketTick,
+    metrics: LatencyMetrics,
+    status: "FRESH",
+    hotPathStartedAt: number
+  ): void;
+}
+
+export function createTradingBookEarlyReturnHandlers(
+  target: TradingBookEarlyReturnTarget
+): TradingBookEarlyReturnHandlers {
+  return {
+    observeExecutionProfile: (profileMetrics, trace) => {
+      target.observeExecutionProfile(profileMetrics, trace);
+    },
+    storageWritesForState: (state, extra) => target.latencyStorageWritesForState(state, extra),
+    applyState: (state) => {
+      target.engineState = state;
+    },
+    persistStorage: (writes, reason) => target.persistHotStorageSnapshot(writes, reason),
+    publishTickTelemetry: (telemetryTick, telemetryMetrics, status, telemetryStartedAt) => {
+      target.publishTickTelemetry(telemetryTick, telemetryMetrics, status, telemetryStartedAt);
+    }
+  };
+}
+
+export function handleTradingEngineInformationalBookNotReady(
+  tick: MarketTick,
+  metrics: LatencyMetrics,
+  wakeUpTimeMs: number | null,
+  orderBookUpdateMs: number,
+  hotPathStartedAt: number,
+  target: TradingBookEarlyReturnTarget
+): Promise<TickIngestResult> {
+  return handleTradingInformationalBookNotReady(
+    {
+      currentState: target.engineState,
+      tradingEnabled: target.cachedConfig.TRADING_ENABLED,
+      tick,
+      metrics,
+      maxLatencyMs: target.maxLatencyMs,
+      wakeUpTimeMs,
+      orderBookUpdateMs,
+      hotPathStartedAt
+    },
+    createTradingBookEarlyReturnHandlers(target)
+  );
+}
+
+export function handleTradingEngineRejectedBookDelta(
+  tick: MarketTick,
+  metrics: LatencyMetrics,
+  applied: AppliedBookUpdate,
+  wakeUpTimeMs: number | null,
+  orderBookUpdateMs: number,
+  hotPathStartedAt: number,
+  target: TradingBookEarlyReturnTarget
+): Promise<TickIngestResult> {
+  return handleTradingRejectedBookDelta(
+    {
+      currentState: target.engineState,
+      bids: target.bids,
+      asks: target.asks,
+      tick,
+      metrics,
+      applied,
+      maxLatencyMs: target.maxLatencyMs,
+      wakeUpTimeMs,
+      orderBookUpdateMs,
+      hotPathStartedAt
+    },
+    createTradingBookEarlyReturnHandlers(target)
+  );
 }
 
 export function handleTradingInformationalBookNotReady(

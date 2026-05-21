@@ -33,8 +33,11 @@ import {
   applyTradingBookSnapshot
 } from "../../src/engine/trading/book/TradingBookApplicationRuntime";
 import {
+  handleTradingEngineInformationalBookNotReady,
+  handleTradingEngineRejectedBookDelta,
   handleTradingInformationalBookNotReady,
   handleTradingRejectedBookDelta,
+  type TradingBookEarlyReturnTarget,
   type TradingBookEarlyReturnHandlers
 } from "../../src/engine/trading/book/TradingBookEarlyReturnRuntime";
 import type {
@@ -829,6 +832,73 @@ describe("BookRuntimeState", () => {
       "profile:3:4",
       "storage:2",
       "state:1:2",
+      "persist:BOOK_DESYNC:2",
+      "telemetry:FRESH:14"
+    ]);
+  });
+
+  it("routes book early returns through the trading engine target adapter", async () => {
+    const bids = new Map([["hyperliquid:btc-usd", new SortedBookSide("bid")]]);
+    const asks = new Map([["hyperliquid:btc-usd", new SortedBookSide("ask")]]);
+    bids.get("hyperliquid:btc-usd")?.upsert(100, 1, OBSERVED_AT, 0.5);
+    asks.get("hyperliquid:btc-usd")?.upsert(101, 2, OBSERVED_AT, 0.5);
+    const events: string[] = [];
+    const target: TradingBookEarlyReturnTarget = {
+      engineState: defaultEngineState("trading-book-target-flow"),
+      cachedConfig: { TRADING_ENABLED: true },
+      maxLatencyMs: 150,
+      bids,
+      asks,
+      observeExecutionProfile(_metrics, trace) {
+        events.push(`profile:${trace.wakeUpTimeMs}:${trace.orderBookUpdateMs}`);
+      },
+      latencyStorageWritesForState(state, extra) {
+        const writes = { "engine:state": state, ...extra };
+        events.push(`storage:${Object.keys(writes).length}`);
+        return writes;
+      },
+      async persistHotStorageSnapshot(writes, reason) {
+        events.push(`persist:${reason}:${Object.keys(writes).length}`);
+      },
+      publishTickTelemetry(_tick, _metrics, status, hotPathStartedAt) {
+        events.push(`telemetry:${status}:${hotPathStartedAt}`);
+      }
+    };
+
+    const informational = await handleTradingEngineInformationalBookNotReady(
+      marketTick(),
+      latencyMetrics(),
+      3,
+      4,
+      12,
+      target
+    );
+    const rejected = await handleTradingEngineRejectedBookDelta(
+      marketTick(),
+      latencyMetrics(),
+      {
+        accepted: false,
+        reason: "SEQUENCE_GAP",
+        expectedSequence: 10,
+        actualSequence: 11,
+        timeToBookMs: null
+      },
+      5,
+      6,
+      14,
+      target
+    );
+
+    expect(informational.status).toBe("BOOK_NOT_READY");
+    expect(rejected.status).toBe("DESYNC");
+    expect(target.engineState.internalOrderBookDepth).toBe(2);
+    expect(events).toEqual([
+      "profile:3:4",
+      "storage:1",
+      "persist:INFORMATIONAL_TICK_BOOK_NOT_READY:1",
+      "telemetry:FRESH:12",
+      "profile:5:6",
+      "storage:2",
       "persist:BOOK_DESYNC:2",
       "telemetry:FRESH:14"
     ]);

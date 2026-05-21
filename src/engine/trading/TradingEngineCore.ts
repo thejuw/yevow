@@ -28,9 +28,9 @@ import {
   findBestAssetBook as findBestOrderBookForAsset
 } from "./book/BookViews";
 import {
-  handleTradingInformationalBookNotReady,
-  handleTradingRejectedBookDelta,
-  type TradingBookEarlyReturnHandlers
+  handleTradingEngineInformationalBookNotReady,
+  handleTradingEngineRejectedBookDelta,
+  type TradingBookEarlyReturnTarget
 } from "./book/TradingBookEarlyReturnRuntime";
 import {
   applyTradingBookDelta,
@@ -1648,18 +1648,13 @@ export class TradingEngine {
     orderBookUpdateMs: number,
     hotPathStartedAt: number
   ): Promise<TickIngestResult> {
-    return handleTradingInformationalBookNotReady(
-      {
-        currentState: this.engineState,
-        tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-        tick,
-        metrics,
-        maxLatencyMs: this.maxLatencyMs,
-        wakeUpTimeMs,
-        orderBookUpdateMs,
-        hotPathStartedAt
-      },
-      this.bookEarlyReturnHandlers()
+    return handleTradingEngineInformationalBookNotReady(
+      tick,
+      metrics,
+      wakeUpTimeMs,
+      orderBookUpdateMs,
+      hotPathStartedAt,
+      this as unknown as TradingBookEarlyReturnTarget
     );
   }
 
@@ -1671,35 +1666,15 @@ export class TradingEngine {
     orderBookUpdateMs: number,
     hotPathStartedAt: number
   ): Promise<TickIngestResult> {
-    return handleTradingRejectedBookDelta(
-      {
-        currentState: this.engineState,
-        bids: this.bids,
-        asks: this.asks,
-        tick,
-        metrics,
-        applied,
-        maxLatencyMs: this.maxLatencyMs,
-        wakeUpTimeMs,
-        orderBookUpdateMs,
-        hotPathStartedAt
-      },
-      this.bookEarlyReturnHandlers()
+    return handleTradingEngineRejectedBookDelta(
+      tick,
+      metrics,
+      applied,
+      wakeUpTimeMs,
+      orderBookUpdateMs,
+      hotPathStartedAt,
+      this as unknown as TradingBookEarlyReturnTarget
     );
-  }
-
-  private bookEarlyReturnHandlers(): TradingBookEarlyReturnHandlers {
-    return {
-      observeExecutionProfile: (profileMetrics, trace) =>
-        this.observeExecutionProfile(profileMetrics, trace),
-      storageWritesForState: (state, extra) => this.latencyStorageWritesForState(state, extra),
-      applyState: (state) => {
-        this.engineState = state;
-      },
-      persistStorage: (writes, reason) => this.persistHotStorageSnapshot(writes, reason),
-      publishTickTelemetry: (telemetryTick, telemetryMetrics, status, telemetryStartedAt) =>
-        this.publishTickTelemetry(telemetryTick, telemetryMetrics, status, telemetryStartedAt)
-    };
   }
 
   private async handleAnomalyEmergencyPause(
