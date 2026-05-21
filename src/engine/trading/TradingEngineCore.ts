@@ -149,13 +149,17 @@ import {
 } from "./ingest/TradingHyperliquidL2BookRuntime";
 import {
   applyHyperliquidIngestConnectionSideEffects,
-  dispatchHyperliquidRawMessageRoute,
-  handleHyperliquidRawBatch,
   processHyperliquidAssetContext,
   processHyperliquidTradeBatch,
   registerHyperliquidIngestConnection,
   type HyperliquidRawIngestPayload
 } from "./ingest/HyperliquidRawRouting";
+import {
+  handleTradingHyperliquidRaw,
+  handleTradingHyperliquidRawMessage,
+  type TradingHyperliquidRawBatchTarget,
+  type TradingHyperliquidRawRouteTarget
+} from "./ingest/TradingHyperliquidRawRuntime";
 import { applyGrpcFatalDropSideEffects, grpcFatalDropArtifacts } from "./ingest/GrpcDropRuntime";
 import {
   createTradingEngineHttpRouteContext,
@@ -934,27 +938,11 @@ export class TradingEngine {
     payload: HyperliquidRawIngestPayload,
     wakeUpTimeMs: number | null
   ): Promise<TickIngestResult> {
-    return handleHyperliquidRawBatch(payload, wakeUpTimeMs, {
-      activeIngestConnections: this.activeIngestConnections,
-      enqueueRawMessage: (raw, rawPayload, wakeUp) =>
-        this.enqueueHyperliquidRawMessage(raw, rawPayload, wakeUp)
-    });
-  }
-
-  private enqueueHyperliquidRawMessage(
-    raw: unknown,
-    payload: HyperliquidRawIngestPayload,
-    wakeUpTimeMs: number | null
-  ): Promise<TickIngestResult> {
-    const job = this.ingestQueue.then(() =>
-      this.handleHyperliquidRawMessage(raw, payload, wakeUpTimeMs)
+    return handleTradingHyperliquidRaw(
+      payload,
+      wakeUpTimeMs,
+      this as unknown as TradingHyperliquidRawBatchTarget
     );
-    this.ingestQueue = job.then(
-      () => undefined,
-      () => undefined
-    );
-
-    return job;
   }
 
   private async handleHyperliquidRawMessage(
@@ -962,16 +950,12 @@ export class TradingEngine {
     payload: HyperliquidRawIngestPayload,
     wakeUpTimeMs: number | null
   ): Promise<TickIngestResult> {
-    return dispatchHyperliquidRawMessageRoute(raw, payload, wakeUpTimeMs, {
-      handleL2Book: (routeRaw, routePayload, wakeUp) =>
-        this.handleHyperliquidL2Book(routeRaw, routePayload, wakeUp),
-      handleTrades: (routeRaw, routePayload, wakeUp) =>
-        this.handleHyperliquidTrades(routeRaw, routePayload, wakeUp),
-      handleAssetContext: (routeRaw, routePayload, wakeUp) =>
-        this.handleHyperliquidAssetContext(routeRaw, routePayload, wakeUp),
-      handleLiquidationEvents: (routeRaw, routePayload) =>
-        this.handleHyperliquidLiquidationEvents(routeRaw, routePayload)
-    });
+    return handleTradingHyperliquidRawMessage(
+      raw,
+      payload,
+      wakeUpTimeMs,
+      this as unknown as TradingHyperliquidRawRouteTarget
+    );
   }
 
   private async handleHyperliquidL2Book(

@@ -31,6 +31,12 @@ import {
   handleTradingEngineHyperliquidL2Book,
   type TradingHyperliquidL2BookTarget
 } from "../../src/engine/trading/ingest/TradingHyperliquidL2BookRuntime";
+import {
+  handleTradingHyperliquidRaw,
+  handleTradingHyperliquidRawMessage,
+  type TradingHyperliquidRawBatchTarget,
+  type TradingHyperliquidRawRouteTarget
+} from "../../src/engine/trading/ingest/TradingHyperliquidRawRuntime";
 import type { InternalOrderBook, MarketTick } from "../../src/types";
 import type { BookSyncState } from "../../src/engine/trading/book/BookTypes";
 import type { TickIngestResult } from "../../src/engine/trading/TradingEngineRouteTypes";
@@ -134,6 +140,67 @@ describe("hyperliquid raw ingest helpers", () => {
       reason: "IGNORED_HYPERLIQUID_CHANNEL_ignored",
       processedCount: 0
     });
+
+    expect(calls).toEqual(["l2", "trades", "asset-context", "liquidations"]);
+  });
+
+  it("serializes native raw batches through the trading ingest adapter", async () => {
+    const calls: string[] = [];
+    const target: TradingHyperliquidRawBatchTarget = {
+      activeIngestConnections: new Map([
+        [hyperliquidIngestConnectionKey("hyperliquid", "book"), "conn-1"]
+      ]),
+      ingestQueue: Promise.resolve(),
+      handleHyperliquidRawMessage: async (raw, _payload, wakeUpTimeMs) => {
+        const channel =
+          typeof raw === "object" && raw !== null && "channel" in raw
+            ? String(raw.channel)
+            : "unknown";
+        calls.push(`${channel}:${wakeUpTimeMs ?? "NONE"}`);
+        return freshResult();
+      }
+    };
+
+    const result = await handleTradingHyperliquidRaw(
+      {
+        source_exchange: "hyperliquid",
+        streamId: "book",
+        connectionId: "conn-1",
+        messages: [{ channel: "trades" }, { channel: "activeAssetCtx" }]
+      },
+      11,
+      target
+    );
+
+    expect(result).toMatchObject({ accepted: true, status: "FRESH", processedCount: 2 });
+    expect(calls).toEqual(["trades:11", "activeAssetCtx:11"]);
+  });
+
+  it("routes native raw messages through the trading route adapter", async () => {
+    const calls: string[] = [];
+    const target: TradingHyperliquidRawRouteTarget = {
+      handleHyperliquidL2Book: async () => {
+        calls.push("l2");
+        return freshResult();
+      },
+      handleHyperliquidTrades: async () => {
+        calls.push("trades");
+        return freshResult();
+      },
+      handleHyperliquidAssetContext: async () => {
+        calls.push("asset-context");
+        return freshResult();
+      },
+      handleHyperliquidLiquidationEvents: async () => {
+        calls.push("liquidations");
+        return freshResult();
+      }
+    };
+
+    await handleTradingHyperliquidRawMessage({ channel: "l2Book" }, {}, 5, target);
+    await handleTradingHyperliquidRawMessage({ channel: "trades" }, {}, 5, target);
+    await handleTradingHyperliquidRawMessage({ channel: "activeAssetCtx" }, {}, 5, target);
+    await handleTradingHyperliquidRawMessage({ channel: "userEvents" }, {}, 5, target);
 
     expect(calls).toEqual(["l2", "trades", "asset-context", "liquidations"]);
   });
