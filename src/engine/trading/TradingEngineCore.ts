@@ -31,7 +31,10 @@ import {
   applyTradingBookDelta,
   applyTradingBookSnapshot
 } from "./book/TradingBookApplicationRuntime";
-import { resetTradingOrderBook } from "./book/OrderBookResetRuntime";
+import {
+  resetTradingOrderBookForTarget,
+  type TradingOrderBookResetTarget
+} from "./book/OrderBookResetRuntime";
 import { resolveTradingTickBook } from "./book/TradingTickBookRuntime";
 import {
   buildDomAnalysisSnapshot,
@@ -1191,33 +1194,7 @@ export class TradingEngine {
   }
 
   private async resetOrderBook(payload: Partial<OrderBookResetRequest>): Promise<void> {
-    await resetTradingOrderBook(
-      {
-        payload,
-        currentState: this.engineState,
-        stores: this.orderBookStores(),
-        orderBook: this.orderBook,
-        activeIngestConnections: this.activeIngestConnections
-      },
-      {
-        listPersistedBooks: (prefix) => this.state.storage.list<InternalOrderBook>({ prefix }),
-        handleListFailure: (error) =>
-          this.handleStorageWriteFailure("ORDER_BOOK_RESET_LIST", error),
-        applyState: (state) => {
-          this.engineState = state;
-        },
-        resetLatencyBaseline: (observedAt, reason) => this.resetLatencyBaseline(observedAt, reason),
-        persistWrites: (writes) => this.safeStoragePut(writes, "ORDER_BOOK_RESET"),
-        deleteStorageKeys: (keys) => this.safeStorageDelete([...keys], "ORDER_BOOK_RESET_DELETE"),
-        logReset: (telemetry) =>
-          this.logger.warn(
-            "ORDER_BOOK_RESET",
-            "Internal order book purged after stream recovery",
-            telemetry
-          ),
-        publishReset: (telemetry) => this.publish("ORDER_BOOK_RESET", telemetry)
-      }
-    );
+    await resetTradingOrderBookForTarget(payload, this as unknown as TradingOrderBookResetTarget);
   }
 
   private clearRecoveryShadowQueue(): void {

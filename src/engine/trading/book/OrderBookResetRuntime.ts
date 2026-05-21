@@ -106,6 +106,26 @@ export interface TradingOrderBookResetHandlers {
   readonly publishReset: (telemetry: JsonRecord) => void;
 }
 
+export interface TradingOrderBookResetTarget {
+  engineState: EngineState;
+  readonly orderBook: Map<string, InternalOrderBook>;
+  readonly activeIngestConnections: Map<string, string>;
+  orderBookStores(): OrderBookResetStores;
+  readonly state: {
+    readonly storage: {
+      list<T = unknown>(options: { prefix: string }): Promise<Map<string, T>>;
+    };
+  };
+  handleStorageWriteFailure(reason: string, error: unknown): void;
+  resetLatencyBaseline(observedAt: string, reason: string): void;
+  safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void>;
+  safeStorageDelete(keys: string[], reason: string): Promise<void>;
+  readonly logger: {
+    warn(eventType: string, message: string, telemetry?: JsonRecord): void;
+  };
+  publish(type: string, payload: Record<string, unknown>): void;
+}
+
 export function resolveOrderBookReset(
   payload: Partial<OrderBookResetRequest>,
   now = new Date().toISOString()
@@ -338,6 +358,45 @@ export async function resetTradingOrderBook(
       deleteStorageKeys: handlers.deleteStorageKeys,
       logReset: handlers.logReset,
       publishReset: handlers.publishReset
+    }
+  );
+}
+
+export async function resetTradingOrderBookForTarget(
+  payload: Partial<OrderBookResetRequest>,
+  target: TradingOrderBookResetTarget
+): Promise<OrderBookResetRuntimeArtifacts> {
+  return resetTradingOrderBook(
+    {
+      payload,
+      currentState: target.engineState,
+      stores: target.orderBookStores(),
+      orderBook: target.orderBook,
+      activeIngestConnections: target.activeIngestConnections
+    },
+    {
+      listPersistedBooks: (prefix) => target.state.storage.list<InternalOrderBook>({ prefix }),
+      handleListFailure: (error) => {
+        target.handleStorageWriteFailure("ORDER_BOOK_RESET_LIST", error);
+      },
+      applyState: (state) => {
+        target.engineState = state;
+      },
+      resetLatencyBaseline: (observedAt, reason) => {
+        target.resetLatencyBaseline(observedAt, reason);
+      },
+      persistWrites: (writes) => target.safeStoragePut(writes, "ORDER_BOOK_RESET"),
+      deleteStorageKeys: (keys) => target.safeStorageDelete([...keys], "ORDER_BOOK_RESET_DELETE"),
+      logReset: (telemetry) => {
+        target.logger.warn(
+          "ORDER_BOOK_RESET",
+          "Internal order book purged after stream recovery",
+          telemetry
+        );
+      },
+      publishReset: (telemetry) => {
+        target.publish("ORDER_BOOK_RESET", telemetry);
+      }
     }
   );
 }
