@@ -159,12 +159,12 @@ import {
   acceptTelemetryStream as acceptTradingTelemetryStream
 } from "./routes/EngineWebSocketStreams";
 import type { TradingTelemetryBus } from "./telemetry/TelemetryBus";
-import { acceptTradingAgentSignal, agentSignalStorageKey } from "./telemetry/AgentSignalRuntime";
+import { acceptTradingAgentSignal } from "./telemetry/AgentSignalRuntime";
 import { maybePublishTradingAgentSnapshot } from "./telemetry/TradingAgentSnapshotRuntime";
 import {
   buildCascadeOperationalAlertTelemetry,
   emitCascadeOperationalAlertSideEffects,
-  recordCascadeUiSignalSideEffects
+  recordTradingCascadeUiSignalSideEffects
 } from "./telemetry/CascadeSignalTelemetryRuntime";
 import { applyProfilerSignalSideEffects } from "./telemetry/ProfilerTelemetryRuntime";
 import {
@@ -310,7 +310,6 @@ import {
   PERFORMANCE_HISTORY_LIMIT,
   CONFIG_ALARM_INTERVAL_MS,
   WARM_UP_INTERVAL_MS,
-  SIGNAL_BUFFER_LIMIT,
   ADMIN_STREAM_PULSE_INTERVAL_MS,
   STORAGE_WRITE_BACKOFF_MS,
   DEFAULT_SOURCE_WEIGHT,
@@ -3624,22 +3623,17 @@ export class TradingEngine {
     signal: AgentSignal,
     outcome: "TAKEN" | "SKIPPED" | "CLOSED"
   ): void {
-    recordCascadeUiSignalSideEffects(
+    recordTradingCascadeUiSignalSideEffects(
       {
         signals: this.signals,
         latestAgentSignals: this.latestAgentSignals,
         signal,
-        outcome,
-        signalBufferLimit: SIGNAL_BUFFER_LIMIT
+        outcome
       },
       {
         schedule: (work) => this.state.waitUntil(work),
-        persistSignal: (signalToPersist) =>
-          this.safeStoragePut(
-            agentSignalStorageKey(signalToPersist),
-            signalToPersist,
-            "CASCADE_SIGNAL"
-          ),
+        persistStorageSignal: (key, signalToPersist, reason) =>
+          this.safeStoragePut(key, signalToPersist, reason),
         publish: (telemetryType, payload, correlationId) =>
           this.publish(telemetryType, payload, correlationId)
       }

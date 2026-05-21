@@ -16,7 +16,9 @@ import {
   emitCascadeOperationalAlertSideEffects,
   type CascadeOperationalAlertSideEffectHandlers,
   recordCascadeUiSignalSideEffects,
-  type CascadeUiSignalSideEffectHandlers
+  recordTradingCascadeUiSignalSideEffects,
+  type CascadeUiSignalSideEffectHandlers,
+  type TradingCascadeUiSignalSideEffectHandlers
 } from "../../src/engine/trading/telemetry/CascadeSignalTelemetryRuntime";
 import type { AgentName, AgentSignal, TradeIntent } from "../../src/types";
 import type { CascadeAssetProfile } from "../../src/strategy/cascade/AssetProfiles";
@@ -90,6 +92,35 @@ describe("CascadeSignalTelemetryRuntime", () => {
     expect(signals.map((item) => item.signalId)).toEqual(["signal-1"]);
     expect(latestAgentSignals.get("PIT_BOSS")?.signalId).toBe("signal-1");
     expect(sideEffects.events).toEqual(["persist:signal-1", "publish:CASCADE_SIGNAL:signal-1"]);
+  });
+
+  it("records trading cascade UI signals with storage-key defaults and capped buffers", async () => {
+    const signals = Array.from({ length: 500 }, (_, index) =>
+      signal({ signalId: `existing-${index}`, sourceAgent: "PIT_BOSS" })
+    );
+    const latestAgentSignals = new Map<AgentName, AgentSignal>();
+    const sideEffects = tradingCascadeUiSignalSideEffectSpy();
+
+    recordTradingCascadeUiSignalSideEffects(
+      {
+        signals,
+        latestAgentSignals,
+        signal: signal({ signalId: "new-cascade-signal", sourceAgent: "PIT_BOSS" }),
+        outcome: "TAKEN"
+      },
+      sideEffects.handlers
+    );
+
+    await Promise.all(sideEffects.scheduled);
+
+    expect(signals).toHaveLength(500);
+    expect(signals[0].signalId).toBe("existing-1");
+    expect(signals[signals.length - 1]?.signalId).toBe("new-cascade-signal");
+    expect(latestAgentSignals.get("PIT_BOSS")?.signalId).toBe("new-cascade-signal");
+    expect(sideEffects.events).toEqual([
+      "persist:signal:new-cascade-signal:new-cascade-signal:CASCADE_SIGNAL",
+      "publish:CASCADE_SIGNAL:new-cascade-signal"
+    ]);
   });
 
   it("builds dashboard-only operational alerts without external notifications", () => {
@@ -352,6 +383,32 @@ function cascadeUiSignalSideEffectSpy(): {
       },
       persistSignal(signalToPersist) {
         events.push(`persist:${signalToPersist.signalId}`);
+        return Promise.resolve();
+      },
+      publish(telemetryType, _payload, correlationId) {
+        events.push(`publish:${telemetryType}:${correlationId}`);
+      }
+    }
+  };
+}
+
+function tradingCascadeUiSignalSideEffectSpy(): {
+  events: string[];
+  scheduled: Promise<void>[];
+  handlers: TradingCascadeUiSignalSideEffectHandlers;
+} {
+  const events: string[] = [];
+  const scheduled: Promise<void>[] = [];
+
+  return {
+    events,
+    scheduled,
+    handlers: {
+      schedule(work) {
+        scheduled.push(work);
+      },
+      persistStorageSignal(key, signalToPersist, reason) {
+        events.push(`persist:${key}:${signalToPersist.signalId}:${reason}`);
         return Promise.resolve();
       },
       publish(telemetryType, _payload, correlationId) {

@@ -8,7 +8,8 @@ import type {
   TradeIntent
 } from "../../../types";
 import type { NotifierEvent } from "../../../utils/Notifier";
-import { recordAgentSignalInBuffers } from "./AgentSignalRuntime";
+import { SIGNAL_BUFFER_LIMIT } from "../../../TradingEngineConstants";
+import { agentSignalStorageKey, recordAgentSignalInBuffers } from "./AgentSignalRuntime";
 import type { CascadeAssetProfile } from "../../../strategy/cascade/AssetProfiles";
 import type {
   CascadeOpenPosition,
@@ -42,6 +43,21 @@ export interface CascadeUiSignalSideEffectHandlers {
     payload: CascadeSignalTelemetry["payload"],
     correlationId: string
   ) => void;
+}
+
+export type TradingCascadeUiSignalSideEffectInput = Omit<
+  CascadeUiSignalSideEffectInput,
+  "signalBufferLimit"
+>;
+
+export interface TradingCascadeUiSignalSideEffectHandlers {
+  readonly schedule: (work: Promise<void>) => void;
+  readonly persistStorageSignal: (
+    key: string,
+    signal: AgentSignal,
+    reason: "CASCADE_SIGNAL"
+  ) => Promise<void>;
+  readonly publish: CascadeUiSignalSideEffectHandlers["publish"];
 }
 
 export interface CascadeOperationalAlertSideEffectHandlers {
@@ -145,6 +161,24 @@ export function recordCascadeUiSignalSideEffects(
   handlers.schedule(handlers.persistSignal(input.signal));
   const event = buildCascadeSignalTelemetry(input.signal, input.outcome);
   handlers.publish(event.telemetryType, event.payload, event.correlationId);
+}
+
+export function recordTradingCascadeUiSignalSideEffects(
+  input: TradingCascadeUiSignalSideEffectInput,
+  handlers: TradingCascadeUiSignalSideEffectHandlers
+): void {
+  recordCascadeUiSignalSideEffects(
+    {
+      ...input,
+      signalBufferLimit: SIGNAL_BUFFER_LIMIT
+    },
+    {
+      schedule: handlers.schedule,
+      persistSignal: (signal) =>
+        handlers.persistStorageSignal(agentSignalStorageKey(signal), signal, "CASCADE_SIGNAL"),
+      publish: handlers.publish
+    }
+  );
 }
 
 export function cascadeSignalRejectionLogMetadata(
