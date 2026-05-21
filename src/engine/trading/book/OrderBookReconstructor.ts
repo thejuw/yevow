@@ -16,14 +16,17 @@ import type { AppliedBookUpdate, BookDeltaWithTicker, BookSyncState } from "./Bo
 import {
   applyDeltaBookSyncState,
   applySnapshotBookSyncState,
-  getOrCreateBookSyncState,
-  markBookDesynced
+  getOrCreateBookSyncState
 } from "./BookSyncRuntime";
 import {
   applyTopOfBookCrossCheckSync,
   evaluateTopOfBookCrossCheck
 } from "./TopOfBookCrossCheckRuntime";
 import { SortedBookSide } from "./SortedBookSide";
+import {
+  applyCrossedBookSideEffects,
+  applyOrderBookSequenceGapSideEffects
+} from "./OrderBookDesyncRuntime";
 
 export interface AppliedBookSnapshot {
   book: InternalOrderBook;
@@ -271,24 +274,17 @@ export class OrderBookReconstructor {
       book.sourceWeight
     );
 
-    markBookDesynced(syncState, "CROSSED_BOOK", observedAt, timeToBookMs);
-
-    this.logCrossedBook(
-      "Crossed snapshot detected; purging local book",
-      book,
-      sequence,
-      timeToBookMs
+    await applyCrossedBookSideEffects(
+      {
+        book,
+        sequence,
+        timeToBookMs,
+        observedAt,
+        syncState,
+        message: "Crossed snapshot detected; purging local book"
+      },
+      this.config
     );
-
-    await this.config.resetOrderBook({
-      source: "SYSTEM",
-      reason: "CROSSED_BOOK",
-      instrumentCode: book.instrumentCode,
-      source_exchange: book.source_exchange,
-      connectionId: null,
-      blackoutDurationMs: null,
-      recoveredAt: observedAt
-    });
   }
 
   rebuildBookSnapshot(
@@ -377,34 +373,19 @@ export class OrderBookReconstructor {
       this.config.normalizeSourceWeight(delta.sourceWeight)
     );
 
-    markBookDesynced(syncState, "SEQUENCE_GAP", observedAt, timeToBookMs);
-
-    this.config.error("ORDER_BOOK_DESYNC", "Sequence gap detected; purging local book", {
-      instrumentCode,
-      exchangeCode,
-      expectedSequence,
-      actualSequence: delta.sequence,
-      lastSequence: syncState.lastSequence,
-      timeToBookMs
-    });
-    this.config.publish("ORDER_BOOK_DESYNC", {
-      instrumentCode,
-      exchangeCode,
-      expectedSequence,
-      actualSequence: delta.sequence,
-      lastSequence: syncState.lastSequence,
-      timeToBookMs
-    });
-
-    await this.config.resetOrderBook({
-      source: "SYSTEM",
-      reason: "SEQUENCE_GAP",
-      instrumentCode,
-      source_exchange: sourceExchange,
-      connectionId: null,
-      blackoutDurationMs: null,
-      recoveredAt: observedAt
-    });
+    await applyOrderBookSequenceGapSideEffects(
+      {
+        delta,
+        expectedSequence,
+        syncState,
+        instrumentCode,
+        exchangeCode,
+        sourceExchange,
+        timeToBookMs,
+        observedAt
+      },
+      this.config
+    );
   }
 
   private async handleCrossedBook(
@@ -423,24 +404,17 @@ export class OrderBookReconstructor {
       book.sourceWeight
     );
 
-    markBookDesynced(syncState, "CROSSED_BOOK", observedAt, timeToBookMs);
-
-    this.logCrossedBook(
-      "Crossed book detected; purging local book",
-      book,
-      delta.sequence,
-      timeToBookMs
+    await applyCrossedBookSideEffects(
+      {
+        book,
+        sequence: delta.sequence,
+        timeToBookMs,
+        observedAt,
+        syncState,
+        message: "Crossed book detected; purging local book"
+      },
+      this.config
     );
-
-    await this.config.resetOrderBook({
-      source: "SYSTEM",
-      reason: "CROSSED_BOOK",
-      instrumentCode: book.instrumentCode,
-      source_exchange: book.source_exchange,
-      connectionId: null,
-      blackoutDurationMs: null,
-      recoveredAt: observedAt
-    });
   }
 
   private maybeCrossCheckTopOfBook(delta: BookDeltaWithTicker, book: InternalOrderBook): void {
@@ -477,26 +451,5 @@ export class OrderBookReconstructor {
       ...result.payload
     });
     this.config.publish("ORDER_BOOK_CROSS_CHECK_FAILED", result.payload);
-  }
-
-  private logCrossedBook(
-    message: string,
-    book: InternalOrderBook,
-    sequence: number,
-    timeToBookMs: number | null
-  ): void {
-    const payload = {
-      instrumentCode: book.instrumentCode,
-      exchangeCode: book.exchangeCode,
-      source_exchange: book.source_exchange,
-      sequence,
-      bestBid: book.bestBid,
-      bestAsk: book.bestAsk,
-      spread: book.spread,
-      timeToBookMs
-    };
-
-    this.config.error("ORDER_BOOK_CROSSED", message, payload);
-    this.config.publish("ORDER_BOOK_CROSSED", payload);
   }
 }
