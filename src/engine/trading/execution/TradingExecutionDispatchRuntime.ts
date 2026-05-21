@@ -7,6 +7,14 @@ import {
   selectedMoltworkerInstruments
 } from "../state/AssetSelectionRuntime";
 import {
+  enqueueTradingExecutionIntentForTarget,
+  type TradingExecutionQueueTarget
+} from "./ExecutionQueueRuntime";
+import {
+  reservePaperExecutionBudgetForTarget,
+  type TradingPaperExecutionBudgetTarget
+} from "./PaperExecutionBudgetRuntime";
+import {
   dispatchTradeIntentSideEffects,
   dispatchTradeIntentToExecutioner
 } from "./TradeIntentDispatchRuntime";
@@ -55,9 +63,9 @@ export interface TradingExecutionDispatchTarget {
     reserve(exchangeKey: string, priority: RateLimitPriority): TradeIntentDispatchReservation;
     exportState(): unknown;
   };
-  reservePaperExecutionBudget(intent: TradeIntent): boolean;
+  reservePaperExecutionBudget?(intent: TradeIntent): boolean;
   waitUntilStoragePut(key: string, value: unknown, reason: string): void;
-  enqueueExecutionIntent(
+  enqueueExecutionIntent?(
     intent: TradeIntent,
     priority: RateLimitPriority,
     waitMs: number
@@ -121,7 +129,13 @@ export function dispatchTradingExecutionIntentForTarget(
       logger: target.logger
     },
     {
-      reservePaperExecutionBudget: (tradeIntent) => target.reservePaperExecutionBudget(tradeIntent),
+      reservePaperExecutionBudget: (tradeIntent) =>
+        target.reservePaperExecutionBudget
+          ? target.reservePaperExecutionBudget(tradeIntent)
+          : reservePaperExecutionBudgetForTarget(
+              tradeIntent,
+              target as unknown as TradingPaperExecutionBudgetTarget
+            ),
       wait,
       reserveExecutionCapacity: (exchangeKey, priority) =>
         target.rateLimiter.reserve(exchangeKey, priority),
@@ -133,7 +147,14 @@ export function dispatchTradingExecutionIntentForTarget(
         );
       },
       enqueueExecutionIntent: (tradeIntent, priority, waitMs) =>
-        target.enqueueExecutionIntent(tradeIntent, priority, waitMs)
+        target.enqueueExecutionIntent
+          ? target.enqueueExecutionIntent(tradeIntent, priority, waitMs)
+          : enqueueTradingExecutionIntentForTarget(
+              tradeIntent,
+              priority,
+              waitMs,
+              target as unknown as TradingExecutionQueueTarget
+            ).then(() => undefined)
     }
   );
 }

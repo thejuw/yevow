@@ -39,15 +39,6 @@ import {
   dispatchTradingExecutionIntentForTarget,
   type TradingExecutionDispatchTarget
 } from "./execution/TradingExecutionDispatchRuntime";
-import {
-  reservePaperExecutionBudgetForTarget,
-  type TradingPaperExecutionBudgetTarget
-} from "./execution/PaperExecutionBudgetRuntime";
-import {
-  enqueueTradingExecutionIntentForTarget,
-  type QueuedExecutionIntent,
-  type TradingExecutionQueueTarget
-} from "./execution/ExecutionQueueRuntime";
 import { type ExecutionTraceInput } from "./performance/LatencyRuntime";
 import {
   applyTradingNativeHyperliquidLatencyPullForTarget,
@@ -603,26 +594,6 @@ export class TradingEngine {
       intent,
       initialDelayMs,
       this as unknown as TradingExecutionDispatchTarget
-    );
-  }
-
-  private reservePaperExecutionBudget(intent: TradeIntent): boolean {
-    return reservePaperExecutionBudgetForTarget(
-      intent,
-      this as unknown as TradingPaperExecutionBudgetTarget
-    );
-  }
-
-  private async enqueueExecutionIntent(
-    intent: TradeIntent,
-    priority: QueuedExecutionIntent["priority"],
-    waitMs: number
-  ): Promise<void> {
-    await enqueueTradingExecutionIntentForTarget(
-      intent,
-      priority,
-      waitMs,
-      this as unknown as TradingExecutionQueueTarget
     );
   }
 
