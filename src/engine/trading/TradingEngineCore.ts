@@ -63,17 +63,14 @@ import { updateTradingPortfolioRisk } from "./risk/TradingPortfolioRiskRuntime";
 import { calculateTradingEnsembleState } from "./ensemble/TradingEnsembleRuntime";
 import { stateAfterFundingTick } from "./funding/FundingRuntime";
 import { resolveQuoteHibernateMs } from "./quotes/QuoteLifecycleRuntime";
-import {
-  nextTradingQuoteStateForInstrument,
-  resumeTradingQuotesIfExpired
-} from "./quotes/TradingQuoteStateRuntime";
+import { resumeTradingQuotesIfExpired } from "./quotes/TradingQuoteStateRuntime";
 import { applyTradingQuoteSuppression } from "./quotes/TradingQuoteSuppressionRuntime";
 import { dispatchTradingQuote } from "./quotes/TradingQuoteDispatchRuntime";
+import type { DispatchedQuoteSnapshot } from "./quotes/QuoteRefreshRuntime";
 import {
-  applyQuoteRefreshThrottleSideEffects,
-  buildQuoteRefreshRuntimeDecision,
-  dispatchedQuoteSnapshot
-} from "./quotes/QuoteRefreshRuntime";
+  rememberTradingDispatchedQuote,
+  shouldThrottleTradingQuoteRefresh
+} from "./quotes/TradingQuoteRefreshRuntime";
 import {
   dispatchCroupierQuoteActionSideEffects,
   type CroupierQuoteAction
@@ -795,7 +792,19 @@ export class TradingEngine {
     await this.refreshConfig("ALARM");
     await this.drainExecutionQueue();
     await this.runJanitor("ALARM");
-    this.maybeResumeQuotes(new Date().toISOString());
+    const observedAt = new Date().toISOString();
+    resumeTradingQuotesIfExpired(
+      {
+        engineState: this.engineState,
+        observedAt
+      },
+      {
+        applyState: (state) => {
+          this.engineState = state;
+        },
+        publishResume: (payload) => this.publish("RESUME_QUOTES", payload)
+      }
+    );
     await this.scheduleConfigRefresh();
   }
 
@@ -3092,39 +3101,6 @@ export class TradingEngine {
     );
   }
 
-  private nextQuoteStateForInstrument(
-    instrumentCode: string,
-    quote: EngineState["quoteState"]["lastQuote"],
-    pullAllQuotes: boolean,
-    observedAt: string
-  ): EngineState["quoteState"] {
-    return nextTradingQuoteStateForInstrument({
-      instrumentCode,
-      quote,
-      pullAllQuotes,
-      observedAt,
-      engineState: this.engineState,
-      config: this.cachedConfig,
-      macroBias: this.macroBias,
-      env: this.env
-    });
-  }
-
-  private maybeResumeQuotes(observedAt: string): void {
-    resumeTradingQuotesIfExpired(
-      {
-        engineState: this.engineState,
-        observedAt
-      },
-      {
-        applyState: (state) => {
-          this.engineState = state;
-        },
-        publishResume: (payload) => this.publish("RESUME_QUOTES", payload)
-      }
-    );
-  }
-
   private async dispatchQuote(
     quote: NonNullable<EngineState["quoteState"]["lastQuote"]>
   ): Promise<void> {
@@ -3157,35 +3133,24 @@ export class TradingEngine {
     quote: NonNullable<EngineState["quoteState"]["lastQuote"]>
   ): boolean {
     const last = this.lastDispatchedQuoteByInstrument.get(quote.instrumentCode);
-
-    if (!last) {
-      return false;
-    }
-
     const book = findBestOrderBookForAsset(this.orderBook, quote.instrumentCode);
-    const logKey = quote.instrumentCode;
-    const logAt = this.quoteRefreshThrottleLogAt.get(logKey) ?? 0;
-    const nowMs = Date.now();
-    const refresh = buildQuoteRefreshRuntimeDecision({
-      previousQuote: last,
-      quote,
-      book: book ?? null,
-      nowMs,
-      lastLogAtMs: logAt,
-      logThrottleMs: HOT_PATH_LOG_THROTTLE_MS,
-      minIntervalMsValue: this.env.QUOTE_REFRESH_MIN_INTERVAL_MS,
-      minPriceTicksValue: this.env.QUOTE_REFRESH_MIN_PRICE_TICKS,
-      adviseRefresh: (input) => this.queuePositionModel.adviseRefresh(input)
-    });
-    applyQuoteRefreshThrottleSideEffects(
-      { quote, logKey, refresh },
+
+    return shouldThrottleTradingQuoteRefresh(
+      {
+        quote,
+        previousQuote: last,
+        book: book ?? null,
+        nowMs: Date.now(),
+        lastLogAtMs: this.quoteRefreshThrottleLogAt.get(quote.instrumentCode) ?? 0,
+        logThrottleMs: HOT_PATH_LOG_THROTTLE_MS,
+        env: this.env
+      },
       {
         markLogAt: (key, loggedAtMs) => this.quoteRefreshThrottleLogAt.set(key, loggedAtMs),
-        logInfo: (event, message, metadata) => this.logger.info(event, message, metadata)
+        logInfo: (event, message, metadata) => this.logger.info(event, message, metadata),
+        adviseRefresh: (input) => this.queuePositionModel.adviseRefresh(input)
       }
     );
-
-    return refresh.throttle.shouldThrottle;
   }
 
   private rememberDispatchedQuote(
@@ -3193,7 +3158,7 @@ export class TradingEngine {
   ): void {
     this.lastDispatchedQuoteByInstrument.set(
       quote.instrumentCode,
-      dispatchedQuoteSnapshot(quote, Date.now())
+      rememberTradingDispatchedQuote(quote, Date.now())
     );
   }
 
