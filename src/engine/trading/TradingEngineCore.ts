@@ -44,7 +44,6 @@ import {
   type TradingPaperExecutionBudgetTarget
 } from "./execution/PaperExecutionBudgetRuntime";
 import {
-  drainTradingExecutionQueueForTarget,
   enqueueTradingExecutionIntentForTarget,
   type QueuedExecutionIntent,
   type TradingExecutionQueueTarget
@@ -62,9 +61,7 @@ import {
 } from "./performance/TradingLatencyStateRuntime";
 import {
   cancelTradingJanitorOrderForTarget,
-  runTradingEngineJanitorMaintenanceForTarget,
-  type TradingJanitorCancelTarget,
-  type TradingEngineJanitorMaintenanceTarget
+  type TradingJanitorCancelTarget
 } from "./janitor/TradingJanitorRuntime";
 import {
   observeTradingEngineCascadeAbsorption,
@@ -633,22 +630,11 @@ export class TradingEngine {
     );
   }
 
-  private async drainExecutionQueue(): Promise<void> {
-    await drainTradingExecutionQueueForTarget(this as unknown as TradingExecutionQueueTarget);
-  }
-
   private async cancelAllQuotes(instrumentCode: string, reason: string): Promise<void> {
     await cancelAllTradingQuotesForTarget(
       instrumentCode,
       reason,
       this as unknown as TradingQuoteCancelAllTarget
-    );
-  }
-
-  private async runJanitor(source: "ALARM" | "ADMIN" = "ALARM"): Promise<void> {
-    await runTradingEngineJanitorMaintenanceForTarget(
-      source,
-      this as unknown as TradingEngineJanitorMaintenanceTarget
     );
   }
 

@@ -1,12 +1,20 @@
 import type { EngineState } from "../../../types";
+import {
+  drainTradingExecutionQueueForTarget,
+  type TradingExecutionQueueTarget
+} from "../execution/ExecutionQueueRuntime";
+import {
+  runTradingEngineJanitorMaintenanceForTarget,
+  type TradingEngineJanitorMaintenanceTarget
+} from "../janitor/TradingJanitorRuntime";
 import { resumeTradingQuotesIfExpired } from "../quotes/TradingQuoteStateRuntime";
 
 export interface TradingAlarmRuntimeTarget {
   readonly initialized: Promise<void>;
   engineState: EngineState;
   refreshConfig(source: "ALARM"): Promise<void>;
-  drainExecutionQueue(): Promise<void>;
-  runJanitor(source: "ALARM"): Promise<void>;
+  drainExecutionQueue?(): Promise<void>;
+  runJanitor?(source: "ALARM"): Promise<void>;
   scheduleConfigRefresh(): Promise<void>;
   publish(type: "RESUME_QUOTES", payload: Record<string, unknown>): void;
 }
@@ -14,8 +22,15 @@ export interface TradingAlarmRuntimeTarget {
 export async function runTradingAlarmForTarget(target: TradingAlarmRuntimeTarget): Promise<void> {
   await target.initialized;
   await target.refreshConfig("ALARM");
-  await target.drainExecutionQueue();
-  await target.runJanitor("ALARM");
+  await (target.drainExecutionQueue
+    ? target.drainExecutionQueue()
+    : drainTradingExecutionQueueForTarget(target as unknown as TradingExecutionQueueTarget));
+  await (target.runJanitor
+    ? target.runJanitor("ALARM")
+    : runTradingEngineJanitorMaintenanceForTarget(
+        "ALARM",
+        target as unknown as TradingEngineJanitorMaintenanceTarget
+      ));
 
   const observedAt = new Date().toISOString();
   resumeTradingQuotesIfExpired(
