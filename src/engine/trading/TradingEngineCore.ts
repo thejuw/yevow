@@ -288,9 +288,9 @@ import { stateAfterAcceptedTick } from "./state/TickStateRuntime";
 import { maybeResumeTradingShadowMode } from "./state/TradingShadowModeAutoResumeRuntime";
 import { resolveTradingTickAvailability } from "./state/TradingAvailabilityRuntime";
 import {
-  recordAcceptedTickJournalSideEffects,
-  scheduleHotPathTickSnapshotSideEffects
-} from "./state/TickPersistenceRuntime";
+  recordTradingAcceptedTickJournal,
+  scheduleTradingAcceptedTickSnapshot
+} from "./state/TradingTickPersistenceRuntime";
 import { applyAdminRecoveryFlow, resolveAdminRecoveryPaperBankroll } from "./state/RecoveryRuntime";
 import {
   applyHotStorageSnapshotSideEffects,
@@ -2417,17 +2417,16 @@ export class TradingEngine {
     anomalyResult: AnomalyDetectionResult,
     profilerResult: ProfilerEvaluation
   ): void {
-    scheduleHotPathTickSnapshotSideEffects(
+    scheduleTradingAcceptedTickSnapshot(
       {
         engineState: this.engineState,
         latencyHistory: this.latencyHistory,
         processingLatencySamples: this.processingLatencySamples,
         domWallHistory: this.domWallHistory,
-        anomalyDetectorState: anomalyResult.state,
+        anomalyResult,
         book,
         tick,
-        profilerProcessed: profilerResult.processed,
-        profilerState: profilerResult.state
+        profilerResult
       },
       {
         persistSnapshot: (writes, reason) => this.persistHotStorageSnapshot(writes, reason),
@@ -2441,15 +2440,13 @@ export class TradingEngine {
     metrics: LatencyMetrics,
     bayesianTrace: BayesianUpdateTrace | null
   ): void {
-    recordAcceptedTickJournalSideEffects(
+    recordTradingAcceptedTickJournal(
       {
         tick,
         metrics,
         bayesianTrace,
-        processedTicks: this.engineState.processedTicks,
-        averageLatencyMs: this.engineState.averageLatency,
-        marketTickJournalInterval: this.env.MARKET_TICK_JOURNAL_INTERVAL,
-        bayesianSnapshotInterval: AGENT_SNAPSHOT_TICK_INTERVAL
+        engineState: this.engineState,
+        marketTickJournalInterval: this.env.MARKET_TICK_JOURNAL_INTERVAL
       },
       {
         recordMarketTick: (marketTick) => this.logger.recordMarketTick(marketTick),
