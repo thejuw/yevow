@@ -286,10 +286,7 @@ import {
 } from "./state/EngineBootServices";
 import { stateAfterAcceptedTick } from "./state/TickStateRuntime";
 import { maybeResumeTradingShadowMode } from "./state/TradingShadowModeAutoResumeRuntime";
-import {
-  applyTickAvailabilitySideEffects,
-  evaluateTickAvailability
-} from "./state/TickAvailabilityRuntime";
+import { resolveTradingTickAvailability } from "./state/TradingAvailabilityRuntime";
 import {
   recordAcceptedTickJournalSideEffects,
   scheduleHotPathTickSnapshotSideEffects
@@ -2396,22 +2393,22 @@ export class TradingEngine {
     tick: MarketTick,
     shadowReplay: boolean
   ): TickIngestResult | null {
-    const availability = evaluateTickAvailability({
-      tick,
-      shadowReplay,
-      shadowMode: isShadowMode(this.env),
-      tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-      mode: this.engineState.mode,
-      configVersion: this.cachedConfig.version,
-      killSwitchLogged: this.killSwitchLogged
-    });
-
-    return applyTickAvailabilitySideEffects(availability, {
-      warn: (event) => this.logger.warn(event.eventType, event.message, event.metadata),
-      setKillSwitchLogged: (logged) => {
-        this.killSwitchLogged = logged;
+    return resolveTradingTickAvailability(
+      {
+        tick,
+        shadowReplay,
+        env: this.env,
+        config: this.cachedConfig,
+        mode: this.engineState.mode,
+        killSwitchLogged: this.killSwitchLogged
+      },
+      {
+        warn: (event) => this.logger.warn(event.eventType, event.message, event.metadata),
+        setKillSwitchLogged: (logged) => {
+          this.killSwitchLogged = logged;
+        }
       }
-    });
+    );
   }
 
   private scheduleAcceptedTickSnapshot(
