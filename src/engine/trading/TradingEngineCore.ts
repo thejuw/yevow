@@ -22,11 +22,7 @@ import {
 import { applyTopologyWarmUpRuntime } from "./helpers/TopologyWarmUpRuntime";
 import { priceKey, SortedBookSide } from "./book/SortedBookSide";
 import { countBookLevels, microstructureFromBook } from "./book/BookReconstruction";
-import {
-  calculateOrderBookPriceDiscovery,
-  currentOrderBookSnapshot,
-  findBestAssetBook as findBestOrderBookForAsset
-} from "./book/BookViews";
+import { calculateOrderBookPriceDiscovery, currentOrderBookSnapshot } from "./book/BookViews";
 import {
   handleTradingEngineInformationalBookNotReady,
   handleTradingEngineRejectedBookDelta,
@@ -61,12 +57,13 @@ import { calculateTradingEnsembleState } from "./ensemble/TradingEnsembleRuntime
 import { stateAfterFundingTick } from "./funding/FundingRuntime";
 import { resumeTradingQuotesIfExpired } from "./quotes/TradingQuoteStateRuntime";
 import { applyTradingQuoteSuppression } from "./quotes/TradingQuoteSuppressionRuntime";
-import { dispatchTradingQuote } from "./quotes/TradingQuoteDispatchRuntime";
-import type { DispatchedQuoteSnapshot } from "./quotes/QuoteRefreshRuntime";
 import {
-  rememberTradingDispatchedQuote,
-  shouldThrottleTradingQuoteRefresh
-} from "./quotes/TradingQuoteRefreshRuntime";
+  dispatchTradingQuoteForTarget,
+  rememberTradingDispatchedQuoteForTarget,
+  shouldThrottleTradingQuoteDispatchForTarget,
+  type TradingQuoteDispatchTarget
+} from "./quotes/TradingQuoteDispatchRuntime";
+import type { DispatchedQuoteSnapshot } from "./quotes/QuoteRefreshRuntime";
 import {
   dispatchTradingCroupierQuoteAction,
   type TradingCroupierQuoteActionTarget
@@ -2312,62 +2309,22 @@ export class TradingEngine {
   private async dispatchQuote(
     quote: NonNullable<EngineState["quoteState"]["lastQuote"]>
   ): Promise<void> {
-    await dispatchTradingQuote(
-      {
-        quote,
-        engineState: this.engineState,
-        cachedConfig: this.cachedConfig,
-        macroBias: this.macroBias,
-        hasExecutioner: Boolean(this.env.EXECUTIONER),
-        maxPositionPctValue: this.env.MAX_POSITION_PCT
-      },
-      {
-        logInfo: (event, message, metadata) => this.logger.info(event, message, metadata),
-        logSkippedOrder: (skipped) =>
-          this.logger.warn(
-            "QUOTE_ORDER_RISK_CAP_ZERO",
-            "Skipped quote order with no remaining risk budget",
-            { ...skipped }
-          ),
-        dispatchExecution: (intent) => this.dispatchExecution(intent),
-        rememberDispatchedQuote: (dispatchedQuote) => this.rememberDispatchedQuote(dispatchedQuote),
-        shouldThrottleQuoteDispatch: (candidateQuote) =>
-          this.shouldThrottleQuoteDispatch(candidateQuote)
-      }
-    );
+    await dispatchTradingQuoteForTarget(quote, this as unknown as TradingQuoteDispatchTarget);
   }
 
   private shouldThrottleQuoteDispatch(
     quote: NonNullable<EngineState["quoteState"]["lastQuote"]>
   ): boolean {
-    const last = this.lastDispatchedQuoteByInstrument.get(quote.instrumentCode);
-    const book = findBestOrderBookForAsset(this.orderBook, quote.instrumentCode);
-
-    return shouldThrottleTradingQuoteRefresh(
-      {
-        quote,
-        previousQuote: last,
-        book: book ?? null,
-        nowMs: Date.now(),
-        lastLogAtMs: this.quoteRefreshThrottleLogAt.get(quote.instrumentCode) ?? 0,
-        logThrottleMs: HOT_PATH_LOG_THROTTLE_MS,
-        env: this.env
-      },
-      {
-        markLogAt: (key, loggedAtMs) => this.quoteRefreshThrottleLogAt.set(key, loggedAtMs),
-        logInfo: (event, message, metadata) => this.logger.info(event, message, metadata),
-        adviseRefresh: (input) => this.queuePositionModel.adviseRefresh(input)
-      }
+    return shouldThrottleTradingQuoteDispatchForTarget(
+      quote,
+      this as unknown as TradingQuoteDispatchTarget
     );
   }
 
   private rememberDispatchedQuote(
     quote: NonNullable<EngineState["quoteState"]["lastQuote"]>
   ): void {
-    this.lastDispatchedQuoteByInstrument.set(
-      quote.instrumentCode,
-      rememberTradingDispatchedQuote(quote, Date.now())
-    );
+    rememberTradingDispatchedQuoteForTarget(quote, this as unknown as TradingQuoteDispatchTarget);
   }
 
   private async dispatchExecution(

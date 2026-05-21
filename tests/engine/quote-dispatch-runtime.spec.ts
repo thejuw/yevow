@@ -16,6 +16,12 @@ import {
   type TradingCroupierQuoteActionTarget
 } from "../../src/engine/trading/quotes/QuoteActionRuntime";
 import {
+  dispatchTradingQuoteForTarget,
+  rememberTradingDispatchedQuoteForTarget,
+  shouldThrottleTradingQuoteDispatchForTarget,
+  type TradingQuoteDispatchTarget
+} from "../../src/engine/trading/quotes/TradingQuoteDispatchRuntime";
+import {
   applyQuoteRefreshThrottleSideEffects,
   buildQuoteRefreshRuntimeDecision,
   dispatchedQuoteSnapshot,
@@ -24,6 +30,7 @@ import {
   type QuoteRefreshThrottleSideEffectHandlers
 } from "../../src/engine/trading/quotes/QuoteRefreshRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
+import { neutralMacroBias } from "../../src/Governor";
 import type { InternalOrderBook, QuoteSignal } from "../../src/types";
 
 describe("QuoteDispatchRuntime", () => {
@@ -471,6 +478,31 @@ describe("QuoteDispatchRuntime", () => {
     expect(calls).toEqual(["dispatch:quote-1"]);
   });
 
+  it("dispatches quotes through the trading engine target adapter", async () => {
+    const events: string[] = [];
+    const target = tradingQuoteDispatchTarget(events);
+
+    await dispatchTradingQuoteForTarget(quoteSignal(), target);
+
+    expect(events).toEqual(["dispatch:bid-1:BUY", "dispatch:ask-1:SELL"]);
+    expect(target.lastDispatchedQuoteByInstrument.get("btc-usd")).toMatchObject({
+      bid: 100,
+      ask: 101,
+      updatedAtMs: Date.parse("2026-05-18T17:00:00.000Z")
+    });
+  });
+
+  it("remembers and throttles quotes through the trading engine target adapter", () => {
+    const events: string[] = [];
+    const target = tradingQuoteDispatchTarget(events);
+
+    rememberTradingDispatchedQuoteForTarget(quoteSignal(), target);
+
+    expect(shouldThrottleTradingQuoteDispatchForTarget(quoteSignal(), target)).toBe(true);
+    expect(events).toEqual(["advise:0", "info:QUOTE_REFRESH_THROTTLED:HOLD_FRONT_OF_QUEUE"]);
+    expect(target.quoteRefreshThrottleLogAt.get("btc-usd")).toBeGreaterThan(0);
+  });
+
   it("evaluates quote refresh throttles from queue advice and log cadence", () => {
     const previousQuote = { bid: 100, ask: 101, updatedAtMs: Date.parse(quoteSignal().createdAt) };
     const quote = quoteSignal({ createdAt: "2026-05-18T17:00:00.750Z" });
@@ -776,6 +808,89 @@ function quoteRefreshThrottleSideEffectSpy(): {
       logInfo(event, _message, metadata) {
         events.push(`log:${event}:${metadata.signalId}:${metadata.queueReason}`);
       }
+    }
+  };
+}
+
+function tradingQuoteDispatchTarget(events: string[]): TradingQuoteDispatchTarget {
+  const engineState = defaultEngineState("quote-target");
+  const activeQuoteState = {
+    ...engineState.quoteState,
+    status: "ACTIVE" as const,
+    reason: null,
+    suspendedUntil: null
+  };
+  const btcRuntime = engineState.assetMatrix["btc-usd"];
+
+  if (!btcRuntime) {
+    throw new Error("missing btc-usd asset runtime fixture");
+  }
+
+  engineState.bankroll = {
+    ...engineState.bankroll,
+    cash: 1_000,
+    equity: 1_000
+  };
+  engineState.cachedConfig = {
+    ...engineState.cachedConfig,
+    TRADING_ENABLED: true,
+    MAX_POSITION_SIZE: 100,
+    MAX_POSITION_PCT: 0.1
+  };
+  engineState.assetMatrix["btc-usd"] = {
+    ...btcRuntime,
+    selectedByMoltworker: true,
+    capitalAllocationPct: 1,
+    quoteStatus: "ACTIVE",
+    quoteReason: null,
+    quoteEligible: true
+  };
+  engineState.quoteState = activeQuoteState;
+  engineState.assetQuoteStates["btc-usd"] = activeQuoteState;
+  engineState.microstructure = {
+    ...engineState.microstructure,
+    source_exchange: "hyperliquid",
+    spreadBps: 2
+  };
+
+  return {
+    engineState,
+    cachedConfig: engineState.cachedConfig,
+    macroBias: neutralMacroBias(new Date("2026-05-18T18:00:00.000Z")),
+    env: {
+      EXECUTIONER: {
+        async fetch() {
+          return Response.json({ ok: true });
+        }
+      },
+      MAX_POSITION_PCT: "0.1",
+      QUOTE_REFRESH_MIN_INTERVAL_MS: "60000",
+      QUOTE_REFRESH_MIN_PRICE_TICKS: "100"
+    },
+    orderBook: new Map(),
+    logger: {
+      info(eventType, _message, telemetry) {
+        events.push(`info:${eventType}:${String(telemetry?.queueReason ?? "none")}`);
+      },
+      warn(eventType, _message, telemetry) {
+        events.push(`warn:${eventType}:${String(telemetry?.side ?? "none")}`);
+      }
+    },
+    queuePositionModel: {
+      adviseRefresh(input) {
+        events.push(`advise:${input.elapsedMs}`);
+        return {
+          shouldRefresh: false,
+          reason: "HOLD_FRONT_OF_QUEUE",
+          queuePressure: 0.1
+        };
+      }
+    },
+    lastDispatchedQuoteByInstrument: new Map(),
+    quoteRefreshThrottleLogAt: new Map(),
+    dispatchExecution(intent) {
+      events.push(`dispatch:${intent.intentId}:${intent.action}`);
+      return Promise.resolve();
     }
   };
 }
