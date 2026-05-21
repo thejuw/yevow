@@ -232,7 +232,7 @@ import {
   agentSignalStorageKey,
   applyAcceptedAgentSignalSideEffects
 } from "./telemetry/AgentSignalRuntime";
-import { emitAgentStateSnapshot } from "./telemetry/AgentSnapshotRuntime";
+import { maybePublishTradingAgentSnapshot } from "./telemetry/TradingAgentSnapshotRuntime";
 import {
   buildCascadeOperationalAlertTelemetry,
   emitCascadeOperationalAlertSideEffects,
@@ -4115,12 +4115,11 @@ export class TradingEngine {
   }
 
   private maybeRecordAgentSnapshot(observedAt: string): void {
-    emitAgentStateSnapshot(
+    maybePublishTradingAgentSnapshot(
       {
         engineState: this.engineState,
         latestAgentSignals: this.latestAgentSignals,
-        observedAt,
-        snapshotIntervalTicks: AGENT_SNAPSHOT_TICK_INTERVAL
+        observedAt
       },
       {
         publish: (type, payload, correlationId) => this.publish(type, payload, correlationId)
