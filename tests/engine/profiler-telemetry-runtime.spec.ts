@@ -8,6 +8,11 @@ import {
   shouldCancelQuotesForProfilerSignal,
   type ProfilerTelemetryPublishHandlers
 } from "../../src/engine/trading/telemetry/ProfilerTelemetryRuntime";
+import {
+  handleTradingProfilerSignal,
+  type TradingProfilerSignalTarget
+} from "../../src/engine/trading/telemetry/TradingProfilerTelemetryRuntime";
+import type { ProfilerEvaluation } from "../../src/agents/ProfilerAgent";
 import type { AgentSignal, ProfilerState } from "../../src/types";
 
 describe("ProfilerTelemetryRuntime", () => {
@@ -150,6 +155,45 @@ describe("ProfilerTelemetryRuntime", () => {
       "cancel:btc-usd:PROFILER_ALERT"
     ]);
   });
+
+  it("handles profiler signals through the trading engine target adapter", async () => {
+    const calls: string[] = [];
+    const scheduled: Promise<void>[] = [];
+    const target: TradingProfilerSignalTarget = {
+      cachedConfig: { TRADING_ENABLED: true },
+      state: {
+        waitUntil(work) {
+          scheduled.push(work);
+        }
+      },
+      publish(type, _payload, correlationId) {
+        calls.push(`publish:${type}:${correlationId}`);
+      },
+      async acceptAgentSignal(agentSignal, latencyMs) {
+        calls.push(`accept:${agentSignal.signalId}:${latencyMs}`);
+      },
+      async cancelAllQuotes(instrumentCode, reason) {
+        calls.push(`cancel:${instrumentCode}:${reason}`);
+      }
+    };
+
+    await handleTradingProfilerSignal(
+      "btc-usd",
+      profilerEvaluation(),
+      4,
+      true,
+      false,
+      true,
+      target
+    );
+    await Promise.all(scheduled);
+
+    expect(calls).toEqual([
+      "publish:PROFILER_ALERT:signal-1",
+      "accept:signal-1:4",
+      "cancel:btc-usd:PROFILER_ALERT"
+    ]);
+  });
 });
 
 function profilerTelemetryPublishSpy(): {
@@ -234,6 +278,18 @@ function profilerState(overrides: Partial<ProfilerState> = {}): ProfilerState {
     tradeSizeWindow: [],
     quoteSuspendedUntil: null,
     updatedAt: "2026-05-19T12:00:00.000Z",
+    ...overrides
+  };
+}
+
+function profilerEvaluation(overrides: Partial<ProfilerEvaluation> = {}): ProfilerEvaluation {
+  return {
+    processed: true,
+    skippedReason: null,
+    closedBuckets: 1,
+    toxicityScore: 0.8,
+    state: profilerState(),
+    signal: signal(),
     ...overrides
   };
 }

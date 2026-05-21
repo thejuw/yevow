@@ -197,10 +197,10 @@ import {
   emitCascadeOperationalAlertSideEffects,
   recordTradingCascadeUiSignalSideEffects
 } from "./telemetry/CascadeSignalTelemetryRuntime";
-import { applyProfilerSignalSideEffects } from "./telemetry/ProfilerTelemetryRuntime";
 import {
+  handleTradingProfilerSignal,
   publishTradingAmVpinTelemetry,
-  publishTradingProfilerAlert
+  type TradingProfilerSignalTarget
 } from "./telemetry/TradingProfilerTelemetryRuntime";
 import { publishTradingTickTelemetry } from "./telemetry/TradingTickTelemetryRuntime";
 import { type ReplayOptions } from "./routes/ReplayAdminRoutes";
@@ -1711,40 +1711,6 @@ export class TradingEngine {
     );
   }
 
-  private async handleProfilerSignal(
-    instrumentCode: string,
-    profilerResult: ProfilerEvaluation,
-    profilerLatencyMs: number,
-    isProfilerQuoteHalt: boolean,
-    shadowReplay: boolean,
-    croupierHasQuote: boolean
-  ): Promise<void> {
-    if (!profilerResult.signal) {
-      return;
-    }
-
-    await applyProfilerSignalSideEffects(
-      {
-        signal: profilerResult.signal,
-        profilerState: profilerResult.state,
-        latencyMs: profilerLatencyMs,
-        instrumentCode,
-        profilerQuoteHalt: isProfilerQuoteHalt,
-        shadowReplay,
-        tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-        croupierHasQuote
-      },
-      {
-        publishAlert: (signal, profilerState) =>
-          publishTradingProfilerAlert(signal, profilerState, {
-            publish: (type, payload, correlationId) => this.publish(type, payload, correlationId)
-          }),
-        acceptSignal: (signal, latencyMs) => this.acceptAgentSignal(signal, latencyMs),
-        cancelQuotes: (code, reason) => this.state.waitUntil(this.cancelAllQuotes(code, reason))
-      }
-    );
-  }
-
   private maybeAutoResumeShadowMode(tick: MarketTick, shadowReplay: boolean): void {
     maybeResumeTradingShadowMode(
       {
@@ -2227,13 +2193,14 @@ export class TradingEngine {
           shadowReplay,
           hasQuote
         ) =>
-          this.handleProfilerSignal(
+          handleTradingProfilerSignal(
             instrumentCode,
             profilerResult,
             profilerLatencyMs,
             isProfilerQuoteHalt,
             shadowReplay,
-            hasQuote
+            hasQuote,
+            this as unknown as TradingProfilerSignalTarget
           ),
         publishTickTelemetry: (tick, metrics, status, hotPathStartedAt) =>
           this.publishTickTelemetry(tick, metrics, status, hotPathStartedAt),
