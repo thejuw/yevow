@@ -15,6 +15,10 @@ import {
   handleTradingEngineHyperliquidL2Book,
   type TradingHyperliquidL2BookTarget
 } from "./TradingHyperliquidL2BookRuntime";
+import {
+  handleTickForTarget,
+  type TradingTickHandlingTarget
+} from "../pipelines/TickHandlingRuntime";
 
 export interface TradingHyperliquidRawBatchTarget {
   readonly activeIngestConnections: Map<string, string>;
@@ -51,7 +55,7 @@ export interface TradingHyperliquidRawRouteTarget {
 export interface TradingHyperliquidRawEngineTarget {
   readonly activeIngestConnections: Map<string, string>;
   ingestQueue: Promise<void>;
-  handleTick(tick: MarketTick, wakeUpTimeMs: number | null): Promise<TickIngestResult>;
+  handleTick?(tick: MarketTick, wakeUpTimeMs: number | null): Promise<TickIngestResult>;
 }
 
 export function handleTradingHyperliquidRaw(
@@ -146,11 +150,11 @@ export function handleTradingHyperliquidRawMessageForTarget(
       ),
     handleTrades: (routeRaw, routePayload, wakeUp) =>
       processHyperliquidTradeBatch(routeRaw, routePayload, wakeUp, {
-        processTick: (tick, tickWakeUp) => target.handleTick(tick, tickWakeUp)
+        processTick: (tick, tickWakeUp) => handleRawTickForTarget(target, tick, tickWakeUp)
       }),
     handleAssetContext: (routeRaw, routePayload, wakeUp) =>
       processHyperliquidAssetContext(routeRaw, routePayload, wakeUp, {
-        processTick: (tick, tickWakeUp) => target.handleTick(tick, tickWakeUp)
+        processTick: (tick, tickWakeUp) => handleRawTickForTarget(target, tick, tickWakeUp)
       }),
     handleLiquidationEvents: (routeRaw, routePayload) =>
       Promise.resolve(
@@ -161,4 +165,14 @@ export function handleTradingHyperliquidRawMessageForTarget(
         )
       )
   });
+}
+
+function handleRawTickForTarget(
+  target: TradingHyperliquidRawEngineTarget,
+  tick: MarketTick,
+  wakeUpTimeMs: number | null
+): Promise<TickIngestResult> {
+  return target.handleTick
+    ? target.handleTick(tick, wakeUpTimeMs)
+    : handleTickForTarget(tick, wakeUpTimeMs, {}, target as unknown as TradingTickHandlingTarget);
 }

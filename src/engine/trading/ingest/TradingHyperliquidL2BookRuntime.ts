@@ -22,6 +22,10 @@ import {
   cancelAllTradingQuotesForTarget,
   type TradingQuoteCancelAllTarget
 } from "../quotes/QuoteCancelRuntime";
+import {
+  handleTickForTarget,
+  type TradingTickHandlingTarget
+} from "../pipelines/TickHandlingRuntime";
 import type { TickIngestResult } from "../TradingEngineRouteTypes";
 import type { BookSyncState } from "../book/BookTypes";
 import { markBookSyncDesynced, stateAfterDesyncedBook } from "../book/BookRuntimeState";
@@ -124,7 +128,7 @@ export interface TradingHyperliquidL2BookTarget extends TradingBookApplicationTa
     status: LatencyMetrics["status"],
     hotPathStartedAt: number
   ): void;
-  handleTick(tick: MarketTick, wakeUpTimeMs: number | null): Promise<TickIngestResult>;
+  handleTick?(tick: MarketTick, wakeUpTimeMs: number | null): Promise<TickIngestResult>;
 }
 
 export function handleTradingEngineHyperliquidL2Book(
@@ -217,7 +221,10 @@ export function handleTradingEngineHyperliquidL2Book(
           metadata
         );
       },
-      handleTick: (tick, wakeUp) => target.handleTick(tick, wakeUp)
+      handleTick: (tick, wakeUp) =>
+        target.handleTick
+          ? target.handleTick(tick, wakeUp)
+          : handleTickForTarget(tick, wakeUp, {}, target as unknown as TradingTickHandlingTarget)
     }
   );
 }

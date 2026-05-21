@@ -36,7 +36,6 @@ import {
 } from "./routes/EngineFetchRuntime";
 import type { TradingTelemetryBus } from "./telemetry/TelemetryBus";
 import { type ReplayJournal } from "./replay/ReplayJournal";
-import type { TickIngestResult } from "./TradingEngineRouteTypes";
 import {
   createBootAbsorptionAnalyzer,
   createBootAnomalyDetector,
@@ -94,7 +93,6 @@ import type {
   LatencyMetrics,
   LiquidityWall,
   MacroBias,
-  MarketTick,
   TemporaryGovernanceOverride,
   TradeIntent
 } from "../../types";
@@ -102,11 +100,6 @@ import type { AbsorptionConfirmed, CascadeEvent } from "../../strategy/cascade/t
 
 import { DEFAULT_MAX_LATENCY_MS } from "../../TradingEngineConstants";
 import { defaultEngineState } from "./state/EngineStateDefaults";
-import {
-  handleTickForTarget,
-  type TradingTickHandlingTarget
-} from "./pipelines/TickHandlingRuntime";
-import type { TickHandlingOptions } from "./pipelines/TickPipelineTypes";
 
 export class TradingEngine {
   private readonly startedAt = Date.now();
@@ -321,19 +314,6 @@ export class TradingEngine {
       this as unknown as TradingStorageGuardTarget,
       reason,
       error
-    );
-  }
-
-  private async handleTick(
-    tick: MarketTick,
-    wakeUpTimeMs: number | null,
-    options: TickHandlingOptions = {}
-  ): Promise<TickIngestResult> {
-    return handleTickForTarget(
-      tick,
-      wakeUpTimeMs,
-      options,
-      this as unknown as TradingTickHandlingTarget
     );
   }
 
