@@ -1,7 +1,13 @@
 import { isOpenCascadePosition } from "./CascadeSelectionRuntime";
 import { roundMetric } from "../book/SortedBookSide";
 import { nullableMarkPriceForInstrument, type NullableMarkPriceContext } from "../book/BookViews";
-import type { AgentSignal, JsonRecord } from "../../../types";
+import type {
+  AgentSignal,
+  EngineState,
+  GlobalRiskConfig,
+  InternalOrderBook,
+  JsonRecord
+} from "../../../types";
 import type {
   AbsorptionConfirmed,
   CascadeEvent,
@@ -98,6 +104,33 @@ export function currentCascadeSignalSnapshot(
     }));
 }
 
+export interface TradingCascadeSnapshotTarget {
+  readonly cascadeEventsById: ReadonlyMap<string, CascadeEvent>;
+  readonly cascadeAbsorptionsById: ReadonlyMap<string, AbsorptionConfirmed>;
+  readonly cascadePositionManager: {
+    snapshot(): readonly CascadeOpenPosition[];
+  };
+  readonly cascadeHeatManager: {
+    currentHeat(positions: readonly CascadeOpenPosition[]): number;
+  };
+  readonly cachedConfig: Pick<GlobalRiskConfig, "ABSORPTION_WINDOW_MS" | "HEAT_CAP_PCT">;
+  readonly orderBook: Map<string, InternalOrderBook>;
+  readonly engineState: Pick<EngineState, "assetMatrix" | "microstructure">;
+}
+
+export function currentTradingCascadeActiveSnapshotForTarget(
+  target: TradingCascadeSnapshotTarget,
+  nowMs = Date.now()
+): JsonRecord[] {
+  return currentCascadeActiveSnapshot({
+    events: target.cascadeEventsById.values(),
+    absorptionsById: target.cascadeAbsorptionsById,
+    positions: target.cascadePositionManager.snapshot(),
+    maxAgeMs: Math.max(target.cachedConfig.ABSORPTION_WINDOW_MS * 2, 60_000),
+    nowMs
+  });
+}
+
 export interface CascadePositionSnapshotInput {
   readonly positions: readonly CascadeOpenPosition[];
   readonly nowMs: number;
@@ -118,6 +151,21 @@ export function currentTradingCascadePositionSnapshot(
     nowMs: input.nowMs,
     markPriceForInstrument: (instrumentCode) =>
       nullableMarkPriceForInstrument(input.markPriceContext, instrumentCode)
+  });
+}
+
+export function currentTradingCascadePositionSnapshotForTarget(
+  target: TradingCascadeSnapshotTarget,
+  nowMs = Date.now()
+): JsonRecord[] {
+  return currentTradingCascadePositionSnapshot({
+    positions: target.cascadePositionManager.snapshot(),
+    nowMs,
+    markPriceContext: {
+      orderBook: target.orderBook,
+      assetMatrix: target.engineState.assetMatrix,
+      microstructure: target.engineState.microstructure
+    }
   });
 }
 
@@ -173,4 +221,18 @@ export function currentCascadeHeatSnapshot(input: CascadeHeatSnapshotInput): Jso
     remainingRiskUsd: roundMetric(remainingRiskUsd, 2),
     updatedAt: input.updatedAt
   };
+}
+
+export function currentTradingCascadeHeatSnapshotForTarget(
+  target: TradingCascadeSnapshotTarget,
+  updatedAt = new Date().toISOString()
+): JsonRecord {
+  const positions = target.cascadePositionManager.snapshot();
+
+  return currentCascadeHeatSnapshot({
+    positions,
+    currentHeatPct: target.cascadeHeatManager.currentHeat(positions),
+    heatCapPct: target.cachedConfig.HEAT_CAP_PCT,
+    updatedAt
+  });
 }

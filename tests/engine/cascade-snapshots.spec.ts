@@ -3,7 +3,10 @@ import {
   currentCascadeActiveSnapshot,
   currentCascadeHeatSnapshot,
   currentCascadePositionSnapshot,
-  currentCascadeSignalSnapshot
+  currentCascadeSignalSnapshot,
+  currentTradingCascadeActiveSnapshotForTarget,
+  currentTradingCascadeHeatSnapshotForTarget,
+  currentTradingCascadePositionSnapshotForTarget
 } from "../../src/engine/trading/cascade/CascadeSnapshots";
 import type { AgentSignal } from "../../src/types";
 import type {
@@ -87,6 +90,62 @@ describe("CascadeSnapshots", () => {
       percentOfCap: 0.2,
       openPositionCount: 1,
       remainingRiskUsd: 10
+    });
+  });
+
+  it("builds cascade snapshots from a trading runtime target", () => {
+    const target = {
+      cascadeEventsById: new Map([
+        ["active", cascadeEvent({ cascadeId: "active", detectedAt: "2026-05-18T16:59:00.000Z" })]
+      ]),
+      cascadeAbsorptionsById: new Map([["active", absorption({ cascadeId: "active" })]]),
+      cascadePositionManager: {
+        snapshot: () => [position({ cascadeId: "active", remainingSize: 1, rDistance: 4 })]
+      },
+      cascadeHeatManager: {
+        currentHeat: () => 0.04
+      },
+      cachedConfig: {
+        ABSORPTION_WINDOW_MS: 120_000,
+        HEAT_CAP_PCT: 0.1
+      },
+      orderBook: new Map(),
+      engineState: {
+        assetMatrix: {},
+        microstructure: {
+          marketKey: null,
+          instrumentCode: null,
+          exchangeCode: null,
+          source_exchange: null,
+          sourceWeight: 0,
+          bestBid: null,
+          bestAsk: null,
+          midPrice: null,
+          spread: null,
+          spreadBps: null,
+          bidVolume: 0,
+          askVolume: 0,
+          weightedImbalance: null,
+          depthLevels: 0,
+          lastSequence: null,
+          timeToBookMs: null,
+          isSynced: false,
+          updatedAt: null
+        }
+      }
+    };
+
+    expect(currentTradingCascadeActiveSnapshotForTarget(target, NOW)).toHaveLength(1);
+    expect(currentTradingCascadePositionSnapshotForTarget(target, NOW)[0]).toMatchObject({
+      cascadeId: "active",
+      markPrice: null
+    });
+    expect(
+      currentTradingCascadeHeatSnapshotForTarget(target, "2026-05-18T17:00:00.000Z")
+    ).toMatchObject({
+      currentHeatPct: 0.04,
+      heatCapPct: 0.1,
+      percentOfCap: 0.4
     });
   });
 });

@@ -143,10 +143,11 @@ import {
   type TradingEngineJanitorMaintenanceTarget
 } from "./janitor/TradingJanitorRuntime";
 import {
-  currentCascadeActiveSnapshot as buildCurrentCascadeActiveSnapshot,
-  currentCascadeHeatSnapshot as buildCurrentCascadeHeatSnapshot,
   currentCascadeSignalSnapshot as buildCurrentCascadeSignalSnapshot,
-  currentTradingCascadePositionSnapshot as buildCurrentCascadePositionSnapshot
+  currentTradingCascadeActiveSnapshotForTarget,
+  currentTradingCascadeHeatSnapshotForTarget,
+  currentTradingCascadePositionSnapshotForTarget,
+  type TradingCascadeSnapshotTarget
 } from "./cascade/CascadeSnapshots";
 import {
   recordTradingEngineCascadeLiquidations,
@@ -917,13 +918,9 @@ export class TradingEngine {
   }
 
   private currentCascadeActiveSnapshot(): JsonRecord[] {
-    return buildCurrentCascadeActiveSnapshot({
-      events: this.cascadeEventsById.values(),
-      absorptionsById: this.cascadeAbsorptionsById,
-      positions: this.cascadePositionManager.snapshot(),
-      maxAgeMs: Math.max(this.cachedConfig.ABSORPTION_WINDOW_MS * 2, 60_000),
-      nowMs: Date.now()
-    });
+    return currentTradingCascadeActiveSnapshotForTarget(
+      this as unknown as TradingCascadeSnapshotTarget
+    );
   }
 
   private currentCascadeSignalSnapshot(limit: number): JsonRecord[] {
@@ -931,25 +928,15 @@ export class TradingEngine {
   }
 
   private currentCascadePositionSnapshot(): JsonRecord[] {
-    return buildCurrentCascadePositionSnapshot({
-      positions: this.cascadePositionManager.snapshot(),
-      nowMs: Date.now(),
-      markPriceContext: {
-        orderBook: this.orderBook,
-        assetMatrix: this.engineState.assetMatrix,
-        microstructure: this.engineState.microstructure
-      }
-    });
+    return currentTradingCascadePositionSnapshotForTarget(
+      this as unknown as TradingCascadeSnapshotTarget
+    );
   }
 
   private currentCascadeHeatSnapshot(): JsonRecord {
-    const positions = this.cascadePositionManager.snapshot();
-    return buildCurrentCascadeHeatSnapshot({
-      positions,
-      currentHeatPct: this.cascadeHeatManager.currentHeat(positions),
-      heatCapPct: this.cachedConfig.HEAT_CAP_PCT,
-      updatedAt: new Date().toISOString()
-    });
+    return currentTradingCascadeHeatSnapshotForTarget(
+      this as unknown as TradingCascadeSnapshotTarget
+    );
   }
 
   private async closeCascadePosition(
