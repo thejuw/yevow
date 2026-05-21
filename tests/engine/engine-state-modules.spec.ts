@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { defaultConfig } from "../../src/ConfigManager";
 import {
   createTradingEngineStreamContext,
   dashboardPulsePayload,
@@ -18,6 +19,11 @@ import {
   type TradingEngineDiagnosticsTarget
 } from "../../src/engine/trading/state/EngineDiagnostics";
 import { hydrateEngineBootCollections } from "../../src/engine/trading/state/EngineBootState";
+import {
+  hydrateTradingEngineBootForTarget,
+  type TradingEngineBootHydrationTarget
+} from "../../src/engine/trading/state/EngineBootRuntime";
+import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import {
   applyHotStorageSnapshotForTarget,
   applyHotStorageSnapshotSideEffects,
@@ -774,6 +780,181 @@ describe("storage write guard", () => {
     expect(collections.domWallHistory[0]?.instrumentCode).toBe("eth-usd");
   });
 
+  it("hydrates the trading engine boot target from storage and governance", async () => {
+    const events: string[] = [];
+    const pending: Promise<unknown>[] = [];
+    const storage = new FakeDurableObjectStorage();
+    const baseState = defaultEngineState("persisted-engine");
+    baseState.shadowQueue = { ...baseState.shadowQueue, totalGhostFills: 2 };
+    await storage.put("engine:state", baseState);
+
+    const target = {
+      state: {
+        id: { toString: () => "durable-engine" },
+        storage,
+        waitUntil(promise: Promise<unknown>) {
+          pending.push(promise);
+        }
+      },
+      env: {
+        RISK_VAULT: fakeKv(null),
+        CONFIG_STORE: fakeKv(null)
+      },
+      orderBook: new Map(),
+      bids: new Map(),
+      asks: new Map(),
+      bookSync: new Map(),
+      cachedConfig: { ...defaultConfig },
+      macroBias: { direction: "NEUTRAL" } as MacroBias,
+      activeTemporaryOverride: null,
+      maxLatencyMs: 0,
+      lastTickTimestamp: null,
+      latencyHistory: [],
+      processingLatencySamples: [],
+      domWallHistory: [],
+      engineState: defaultEngineState("booting"),
+      lastPerformanceStatus: "STABLE",
+      jitterSampleWindow: 25,
+      jitterComputeIntervalTicks: 10,
+      jitterThresholdMs: 7,
+      domWallHistoryLimit: 50,
+      ghostBook: {
+        hydrate() {
+          events.push("ghost:hydrate");
+        },
+        snapshot() {
+          events.push("ghost:snapshot");
+          return baseState.shadowQueue;
+        }
+      },
+      cascadePositionManager: {
+        hydrate() {
+          events.push("positions:hydrate");
+        }
+      },
+      profilerRegistry: {
+        hydrate() {
+          events.push("profilers:hydrate");
+        },
+        configure(config: typeof defaultConfig) {
+          events.push(`profilers:configure:${config.version}`);
+        },
+        snapshot() {
+          events.push("profilers:snapshot");
+          return {};
+        }
+      },
+      heatmapAgent: {
+        hydrate() {
+          events.push("heatmap:hydrate");
+        },
+        snapshot() {
+          events.push("heatmap:snapshot");
+          return baseState.liquidationHeatmap;
+        }
+      },
+      anomalyDetector: {
+        hydrate() {
+          events.push("anomaly:hydrate");
+        },
+        status: baseState.anomaly
+      },
+      rateLimiter: {
+        hydrate() {
+          events.push("rate:hydrate");
+        }
+      },
+      oracleAgent: {
+        hydrate() {
+          events.push("oracle:hydrate");
+        }
+      },
+      sentimentAgent: {
+        hydrate() {
+          events.push("sentiment:hydrate");
+        }
+      },
+      governor: {
+        readEffectiveConfig() {
+          events.push("governor:effective");
+          return Promise.resolve({
+            config: {
+              ...defaultConfig,
+              LATENCY_THRESHOLD_MS: 123,
+              version: "boot-config"
+            },
+            macroBias: { direction: "NEUTRAL" } as MacroBias,
+            temporaryOverride: null
+          });
+        }
+      },
+      configManager: {
+        fetchConfig() {
+          events.push("config:fetch");
+          return Promise.resolve(defaultConfig);
+        }
+      },
+      cascadeNewsCalendar: {
+        refresh(force: boolean) {
+          events.push(`news:${String(force)}`);
+          return Promise.resolve();
+        }
+      },
+      logger: {
+        info(eventType: string, _message: string, metadata?: Record<string, unknown>) {
+          events.push(`log:${eventType}:${String(metadata?.riskConfigVersion)}`);
+        }
+      },
+      rebindOrderBookReconstructor() {
+        events.push("book:rebind");
+      },
+      handleStorageWriteFailure(reason: string) {
+        events.push(`storage-failure:${reason}`);
+      },
+      ensureCascadePaperModeArmed() {
+        events.push("paper:arm");
+        return Promise.resolve();
+      },
+      safeStoragePut(key: string, _value: unknown, reason: string) {
+        events.push(`persist:${key}:${reason}`);
+        return Promise.resolve();
+      },
+      scheduleConfigRefresh() {
+        events.push("schedule");
+        return Promise.resolve();
+      }
+    } as unknown as TradingEngineBootHydrationTarget;
+
+    await hydrateTradingEngineBootForTarget(target);
+
+    expect(target.engineState.engineId).toBe("persisted-engine");
+    expect(target.cachedConfig.version).toBe("boot-config");
+    expect(target.maxLatencyMs).toBe(123);
+    expect(target.lastPerformanceStatus).toBe(target.engineState.executionProfile.status);
+    expect(pending).toHaveLength(0);
+    expect(events).toEqual([
+      "book:rebind",
+      "ghost:hydrate",
+      "positions:hydrate",
+      "profilers:hydrate",
+      "heatmap:hydrate",
+      "anomaly:hydrate",
+      "rate:hydrate",
+      "oracle:hydrate",
+      "sentiment:hydrate",
+      "config:fetch",
+      "governor:effective",
+      "news:true",
+      "profilers:configure:boot-config",
+      "heatmap:snapshot",
+      "profilers:snapshot",
+      "ghost:snapshot",
+      "persist:engine:state:SYSTEM_INIT",
+      "schedule",
+      "log:SYSTEM_INIT:boot-config"
+    ]);
+  });
+
   it("resolves hot snapshot cadence from bounded env input", () => {
     expect(resolveHotStorageSnapshotIntervalMs("2500")).toBe(2_500);
     expect(resolveHotStorageSnapshotIntervalMs("10")).toBe(1_000);
@@ -1248,6 +1429,23 @@ class FakeDurableObjectStorage {
     }
   }
 
+  async get<T>(key: string): Promise<T | undefined> {
+    return this.values.get(key) as T | undefined;
+  }
+
+  async list<T>(options?: { prefix?: string }): Promise<Map<string, T>> {
+    const records = new Map<string, T>();
+    const prefix = options?.prefix ?? "";
+
+    for (const [key, value] of this.values) {
+      if (!prefix || key.startsWith(prefix)) {
+        records.set(key, value as T);
+      }
+    }
+
+    return records;
+  }
+
   async delete(keys: string[]): Promise<void> {
     this.maybeFail();
     this.deleted.push(keys);
@@ -1271,4 +1469,10 @@ class FakeDurableObjectStorage {
     this.failNext = null;
     throw error;
   }
+}
+
+function fakeKv<T>(value: T): { get: () => Promise<T> } {
+  return {
+    get: () => Promise.resolve(value)
+  };
 }

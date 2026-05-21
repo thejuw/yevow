@@ -250,7 +250,6 @@ import {
   syncTradingStateMicrostructureForTarget,
   type TradingEngineDiagnosticsTarget
 } from "./state/EngineDiagnostics";
-import { readEngineBootStorageSnapshot } from "./state/EngineBootStorage";
 import {
   createBootAbsorptionAnalyzer,
   createBootAnomalyDetector,
@@ -260,7 +259,10 @@ import {
   createBootProfilerAgent,
   resolveEngineBootRuntimeSettings
 } from "./state/EngineBootConfig";
-import { buildHydratedEngineState, hydrateEngineBootCollections } from "./state/EngineBootState";
+import {
+  hydrateTradingEngineBootForTarget,
+  type TradingEngineBootHydrationTarget
+} from "./state/EngineBootRuntime";
 import {
   createTradingEngineBootServices,
   tradingEngineLoggerRuntimeContext
@@ -357,7 +359,6 @@ import type {
 } from "../../strategy/cascade/types";
 
 import {
-  ENGINE_STATE_KEY,
   ORDER_BOOK_PREFIX,
   PERFORMANCE_HISTORY_KEY,
   CASCADE_LAST_BACKTEST_REPORT_KEY,
@@ -365,7 +366,6 @@ import {
   CONFIG_KEY,
   DEFAULT_MAX_LATENCY_MS,
   DEFAULT_HARD_STALE_DROP_MS,
-  PERFORMANCE_HISTORY_LIMIT,
   ADMIN_STREAM_PULSE_INTERVAL_MS,
   STORAGE_WRITE_BACKOFF_MS,
   PROCESSING_LATENCY_SAMPLES_KEY,
@@ -441,7 +441,6 @@ import {
   defaultQuoteState,
   selectedMoltworkerInstruments,
   normalizeAssetMatrix,
-  filterTargetOrderBooks,
   defaultAssetMatrix,
   suspendAssetQuoteStates,
   quotePriceMovedTicks
@@ -466,8 +465,7 @@ import {
   defaultJanitorState,
   defaultSlippageAnalytics,
   defaultRiskLimits,
-  mergeRiskLimits,
-  resolveMaxLatencyMs
+  mergeRiskLimits
 } from "./state/EngineStateDefaults";
 import {
   applyAcceptedDecisionPipelineForTarget,
@@ -652,107 +650,9 @@ export class TradingEngine {
       resetOrderBook: (payload) => this.resetOrderBook(payload)
     });
 
-    this.initialized = this.state.blockConcurrencyWhile(async () => {
-      const {
-        persistedState,
-        persistedBooks,
-        persistedLatencyHistory,
-        persistedProcessingLatencySamples,
-        persistedDomWallHistory,
-        persistedProfilerState,
-        persistedProfilerStates,
-        persistedHeatmapState,
-        persistedAnomalyState,
-        persistedRateLimits,
-        persistedCascadePositions,
-        kvRiskLimits,
-        kvConfig
-      } = await readEngineBootStorageSnapshot({
-        storage: this.state.storage,
-        env: this.env,
-        onReadFailure: (reason, error) => this.handleStorageWriteFailure(reason, error)
-      });
-
-      const baseState = persistedState ?? defaultEngineState(this.state.id.toString());
-      const now = new Date().toISOString();
-
-      const bootCollections = hydrateEngineBootCollections({
-        persistedBooks,
-        persistedLatencyHistory,
-        persistedProcessingLatencySamples,
-        persistedDomWallHistory,
-        performanceHistoryLimit: PERFORMANCE_HISTORY_LIMIT,
-        jitterSampleWindow: this.jitterSampleWindow,
-        domWallHistoryLimit: this.domWallHistoryLimit,
-        filterTargetOrderBooks
-      });
-      const hydratedBooks = bootCollections.hydratedBooks;
-
-      this.orderBook = hydratedBooks.snapshots;
-      this.bids = hydratedBooks.bids;
-      this.asks = hydratedBooks.asks;
-      this.bookSync = hydratedBooks.sync;
-      this.rebindOrderBookReconstructor();
-      this.ghostBook.hydrate(baseState.shadowQueue);
-      this.cascadePositionManager.hydrate(persistedCascadePositions ?? []);
-      this.profilerRegistry.hydrate(persistedProfilerState, persistedProfilerStates);
-      this.heatmapAgent.hydrate(persistedHeatmapState ?? baseState.liquidationHeatmap);
-      this.anomalyDetector.hydrate(persistedAnomalyState);
-      this.rateLimiter.hydrate(persistedRateLimits);
-      this.oracleAgent.hydrate(baseState.oracle);
-      this.sentimentAgent.hydrate(baseState.sentiment);
-      this.lastTickTimestamp = baseState.microstructure?.updatedAt ?? baseState.updatedAt ?? null;
-      this.latencyHistory = bootCollections.latencyHistory;
-      this.processingLatencySamples = bootCollections.processingLatencySamples;
-      this.domWallHistory = bootCollections.domWallHistory;
-      this.maxLatencyMs = resolveMaxLatencyMs(kvConfig, baseState.maxLatencyMs);
-      const effectiveGovernance = await this.governor.readEffectiveConfig(
-        await this.configManager.fetchConfig()
-      );
-      await this.cascadeNewsCalendar.refresh(true);
-      this.cachedConfig = effectiveGovernance.config;
-      this.macroBias = effectiveGovernance.macroBias;
-      this.activeTemporaryOverride = effectiveGovernance.temporaryOverride;
-      if (this.cachedConfig.STRATEGY_MODE === "CASCADE_RECOVERY") {
-        this.state.waitUntil(this.ensureCascadePaperModeArmed(now));
-      }
-      this.profilerRegistry.configure(this.cachedConfig);
-      this.maxLatencyMs = this.cachedConfig.LATENCY_THRESHOLD_MS;
-      this.engineState = buildHydratedEngineState({
-        baseState,
-        env: this.env,
-        now,
-        kvConfig,
-        kvRiskLimits,
-        cachedConfig: this.cachedConfig,
-        macroBias: this.macroBias,
-        temporaryOverride: this.activeTemporaryOverride,
-        orderBook: this.orderBook,
-        bids: this.bids,
-        asks: this.asks,
-        liquidationHeatmap: this.heatmapAgent.snapshot(),
-        profilerStates: this.profilerRegistry.snapshot(),
-        shadowQueue: this.ghostBook.snapshot(now),
-        anomaly: this.anomalyDetector.status,
-        maxLatencyMs: this.maxLatencyMs,
-        jitterThresholdMs: this.jitterThresholdMs,
-        jitterSampleWindow: this.jitterSampleWindow,
-        jitterComputeIntervalTicks: this.jitterComputeIntervalTicks,
-        processingLatencySampleCount: this.processingLatencySamples.length
-      });
-      this.lastPerformanceStatus = this.engineState.executionProfile.status;
-
-      await this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "SYSTEM_INIT");
-      await this.scheduleConfigRefresh();
-
-      this.logger.info("SYSTEM_INIT", "Trading engine singleton initialized", {
-        engineId: this.engineState.engineId,
-        mode: this.engineState.mode,
-        riskConfigVersion: this.engineState.risk.configVersion,
-        nativeFeed: "HYPERLIQUID",
-        hasExchangeApiKey: Boolean(this.env.EXCHANGE_API_KEY)
-      });
-    });
+    this.initialized = this.state.blockConcurrencyWhile(() =>
+      hydrateTradingEngineBootForTarget(this as unknown as TradingEngineBootHydrationTarget)
+    );
   }
 
   private orderBookStores(): OrderBookStores {
