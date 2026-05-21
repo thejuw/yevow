@@ -7,6 +7,12 @@ import {
   currentTradingDomHeatmapForTarget,
   type TradingBookViewTarget
 } from "../book/TradingBookViewRuntime";
+import {
+  buildTradingEngineDiagnosticsForTarget,
+  buildTradingHealthReportForTarget,
+  syncTradingStateMicrostructureForTarget,
+  type TradingEngineDiagnosticsTarget
+} from "../state/EngineDiagnostics";
 import type { ReplayOptions, ReplayStatus } from "./ReplayAdminRoutes";
 import { handleBookAdminRoute } from "./BookAdminRoutes";
 import { handleCascadeAdminRoute } from "./CascadeAdminRoutes";
@@ -129,9 +135,6 @@ export interface EngineHttpRouteContextTarget {
     analyzeHeadline(headline: string, env: Env): Promise<EngineState["sentiment"]>;
   };
   refreshConfigIfDue(source: "ALARM" | "ADMIN_SIGNAL"): Promise<void>;
-  healthCheck(): HealthReport;
-  engineDiagnostics(): JsonRecord;
-  syncStateMicrostructureFromBook(): void;
   performanceMetricsResponse(): Response;
   resetLatencyBaseline(observedAt: string, reason: string): void;
   publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
@@ -190,10 +193,12 @@ export function createTradingEngineHttpRouteContext(
     getCascadeBacktester: () => target.cascadeBacktester,
     getCascadeNewsCalendar: () => target.cascadeNewsCalendar,
     refreshConfigIfDue: (source) => target.refreshConfigIfDue(source),
-    healthCheck: () => target.healthCheck(),
-    engineDiagnostics: () => target.engineDiagnostics(),
+    healthCheck: () =>
+      buildTradingHealthReportForTarget(target as unknown as TradingEngineDiagnosticsTarget),
+    engineDiagnostics: () =>
+      buildTradingEngineDiagnosticsForTarget(target as unknown as TradingEngineDiagnosticsTarget),
     syncStateMicrostructureFromBook: () => {
-      target.syncStateMicrostructureFromBook();
+      syncTradingStateMicrostructureForTarget(target as unknown as TradingEngineDiagnosticsTarget);
     },
     performanceMetricsResponse: () => target.performanceMetricsResponse(),
     resetLatencyBaseline: (observedAt, reason) => {

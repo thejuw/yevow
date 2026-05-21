@@ -231,12 +231,6 @@ import {
 } from "./replay/TradingReplayStateRuntime";
 import type { GrpcFatalDropPayload, TickIngestResult } from "./TradingEngineRouteTypes";
 import {
-  buildTradingEngineDiagnosticsForTarget,
-  buildTradingHealthReportForTarget,
-  syncTradingStateMicrostructureForTarget,
-  type TradingEngineDiagnosticsTarget
-} from "./state/EngineDiagnostics";
-import {
   createBootAbsorptionAnalyzer,
   createBootAnomalyDetector,
   createBootCascadeDetector,
@@ -310,7 +304,6 @@ import type {
   EngineState,
   Env,
   GlobalRiskConfig,
-  HealthReport,
   InternalOrderBook,
   InventoryState,
   JsonRecord,
@@ -645,20 +638,6 @@ export class TradingEngine {
 
   async fetch(request: Request): Promise<Response> {
     return handleTradingEngineFetchForTarget(request, this as unknown as TradingEngineFetchTarget);
-  }
-
-  healthCheck(): HealthReport {
-    return buildTradingHealthReportForTarget(this as unknown as TradingEngineDiagnosticsTarget);
-  }
-
-  private syncStateMicrostructureFromBook(): void {
-    syncTradingStateMicrostructureForTarget(this as unknown as TradingEngineDiagnosticsTarget);
-  }
-
-  private engineDiagnostics(): JsonRecord {
-    return buildTradingEngineDiagnosticsForTarget(
-      this as unknown as TradingEngineDiagnosticsTarget
-    );
   }
 
   private calculateAssetMatrix(
