@@ -9,8 +9,12 @@ import {
 import {
   applyTradingReplaySnapshotToTarget,
   captureTradingReplaySnapshotFromSource,
+  prepareTradingShadowReplayStateForTarget,
+  restoreTradingReplaySnapshotForTarget,
+  type TradingReplayRestoreTarget,
   type TradingReplaySnapshotSource,
-  type TradingReplaySnapshotTarget
+  type TradingReplaySnapshotTarget,
+  type TradingShadowReplayStateTarget
 } from "../../src/engine/trading/replay/TradingReplayStateRuntime";
 import {
   DOM_WALL_HISTORY_KEY,
@@ -199,6 +203,46 @@ describe("ReplaySnapshotRuntime", () => {
     ]);
   });
 
+  it("prepares shadow replay state through the trading runtime target adapter", () => {
+    const calls: string[] = [];
+    const target = shadowReplayStateTarget(calls);
+
+    prepareTradingShadowReplayStateForTarget(
+      {
+        initialShadowBankroll: 1_000,
+        startedAt: OBSERVED_AT,
+        replayId: "replay-target"
+      },
+      target
+    );
+
+    expect(target.orderBook.size).toBe(0);
+    expect(target.latencyHistory).toEqual([]);
+    expect(target.cachedConfig.TRADING_ENABLED).toBe(true);
+    expect(target.cachedConfig.version.endsWith(":shadow-replay:replay-target")).toBe(true);
+    expect(target.engineState.bankroll.equity).toBe(1_000);
+    expect(calls).toEqual(["profiler-reset", "anomaly-reset", "oracle-reset", "sentiment-reset"]);
+  });
+
+  it("restores replay snapshots through the trading runtime target adapter", async () => {
+    const calls: string[] = [];
+    const target = replayRestoreTarget(calls);
+
+    await restoreTradingReplaySnapshotForTarget(replaySnapshot(), target);
+
+    expect(calls).toEqual([
+      `list:${ORDER_BOOK_PREFIX}`,
+      "rebind",
+      "profiler:1:none",
+      "anomaly:anomaly-detector.v1",
+      "oracle",
+      "sentiment",
+      "rate-limits:0",
+      "delete:1:REPLAY_RESTORE_DELETE_BOOKS",
+      "write:REPLAY_RESTORE"
+    ]);
+  });
+
   it("captures replay snapshots from a mutable trading runtime source", () => {
     const source = replaySnapshotSource();
 
@@ -354,6 +398,91 @@ function replaySnapshotTarget(calls: string[]): TradingReplaySnapshotTarget {
     },
     rebindOrderBookReconstructor() {
       calls.push("rebind");
+    }
+  };
+}
+
+function shadowReplayStateTarget(calls: string[]): TradingShadowReplayStateTarget {
+  const engineState = defaultEngineState("shadow-replay-target");
+
+  return {
+    engineState,
+    orderBook: new Map([["hyperliquid:btc-usd", book()]]),
+    bids: new Map(),
+    asks: new Map(),
+    bookSync: new Map([["hyperliquid:btc-usd", { isSynced: true } as never]]),
+    latencyHistory: [latencyMetrics()],
+    processingLatencySamples: [1],
+    domWallHistory: [
+      {
+        wallId: "wall-1",
+        instrumentCode: "btc-usd",
+        exchangeCode: "HL",
+        side: "BID",
+        priceStart: 99,
+        priceEnd: 100,
+        centerPrice: 99.5,
+        volume: 3,
+        meanVolume: 1,
+        sigmaVolume: 0.5,
+        zScore: 4,
+        levelCount: 1,
+        status: "ACTIVE",
+        firstSeenAt: OBSERVED_AT,
+        lastSeenAt: OBSERVED_AT,
+        lastSequence: 42,
+        distanceFromMidBps: 5,
+        spoofingSuspected: false
+      }
+    ],
+    leadLagSamples: new Map([["btc-usd", [{ price: 100, observedAt: OBSERVED_AT }]]]),
+    cachedConfig: engineState.cachedConfig,
+    profilerRegistry: {
+      reset() {
+        calls.push("profiler-reset");
+      }
+    },
+    anomalyDetector: {
+      hydrate(state) {
+        calls.push(state === null ? "anomaly-reset" : "anomaly");
+      }
+    },
+    oracleAgent: {
+      hydrate(state) {
+        calls.push(state === null ? "oracle-reset" : "oracle");
+      }
+    },
+    sentimentAgent: {
+      hydrate(state) {
+        calls.push(state === null ? "sentiment-reset" : "sentiment");
+      }
+    }
+  };
+}
+
+function replayRestoreTarget(calls: string[]): TradingReplayRestoreTarget {
+  const target = replaySnapshotTarget(calls) as TradingReplayRestoreTarget;
+
+  return {
+    ...target,
+    state: {
+      storage: {
+        async list<T>(options: { prefix: string }): Promise<Map<string, T>> {
+          calls.push(`list:${options.prefix}`);
+          return new Map([["book:old", book() as T]]);
+        }
+      }
+    },
+    handleStorageWriteFailure(_reason, error) {
+      calls.push(`storage-error:${String(error)}`);
+    },
+    safeStorageDelete(keys, reason) {
+      calls.push(`delete:${keys.length}:${reason}`);
+      return Promise.resolve();
+    },
+    safeStoragePut(_entries, reason) {
+      calls.push(`write:${reason}`);
+      return Promise.resolve();
     }
   };
 }

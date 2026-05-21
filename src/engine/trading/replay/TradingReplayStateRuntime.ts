@@ -1,6 +1,7 @@
 import {
   DEFAULT_MAX_INVENTORY_UNITS,
-  DEFAULT_MAX_POSITION_PCT
+  DEFAULT_MAX_POSITION_PCT,
+  ORDER_BOOK_PREFIX
 } from "../../../TradingEngineConstants";
 import {
   applyShadowReplayPreparation,
@@ -19,6 +20,7 @@ import type {
   AgentSignal,
   EngineState,
   GlobalRiskConfig,
+  InternalOrderBook,
   LatencyMetrics,
   LiquidityWall
 } from "../../../types";
@@ -49,9 +51,9 @@ export interface TradingReplaySnapshotTarget {
       states: Map<string, EngineReplaySnapshot["profilerState"]>
     ): void;
   };
-  anomalyDetector: { hydrate(state: EngineReplaySnapshot["anomalyState"]): void };
-  oracleAgent: { hydrate(state: EngineReplaySnapshot["oracleState"]): void };
-  sentimentAgent: { hydrate(state: EngineReplaySnapshot["sentimentState"]): void };
+  anomalyDetector: { hydrate(state: EngineReplaySnapshot["anomalyState"] | null): void };
+  oracleAgent: { hydrate(state: EngineReplaySnapshot["oracleState"] | null): void };
+  sentimentAgent: { hydrate(state: EngineReplaySnapshot["sentimentState"] | null): void };
   rateLimiter: { hydrate(snapshot: Record<string, RateLimitBucketSnapshot>): void };
   rebindOrderBookReconstructor(): void;
 }
@@ -93,6 +95,36 @@ export interface TradingShadowReplayStateHandlers {
   readonly resetAgents: () => void;
 }
 
+export interface TradingShadowReplayStateTarget {
+  cachedConfig: GlobalRiskConfig;
+  engineState: EngineState;
+  orderBook: HydratedReplayOrderBooks["snapshots"];
+  bids: Map<string, SortedBookSide>;
+  asks: Map<string, SortedBookSide>;
+  bookSync: Map<string, BookSyncState>;
+  latencyHistory: LatencyMetrics[];
+  processingLatencySamples: number[];
+  domWallHistory: LiquidityWall[];
+  leadLagSamples: Map<string, { price: number; observedAt: string }[]>;
+  profilerRegistry: {
+    reset(): void;
+  };
+  anomalyDetector: { hydrate(state: EngineReplaySnapshot["anomalyState"] | null): void };
+  oracleAgent: { hydrate(state: EngineReplaySnapshot["oracleState"] | null): void };
+  sentimentAgent: { hydrate(state: EngineReplaySnapshot["sentimentState"] | null): void };
+}
+
+export interface TradingReplayRestoreTarget extends TradingReplaySnapshotTarget {
+  readonly state: {
+    readonly storage: {
+      list<T>(options: { prefix: string }): Promise<Map<string, T>>;
+    };
+  };
+  handleStorageWriteFailure(reason: string, error: unknown): void;
+  safeStorageDelete(keys: string[], reason: string): Promise<void>;
+  safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void>;
+}
+
 export function prepareTradingShadowReplayState(
   input: TradingShadowReplayStateInput,
   handlers: TradingShadowReplayStateHandlers
@@ -108,6 +140,43 @@ export function prepareTradingShadowReplayState(
       replayId: input.replayId
     },
     handlers
+  );
+}
+
+export function prepareTradingShadowReplayStateForTarget(
+  input: Omit<TradingShadowReplayStateInput, "currentConfig" | "liveState">,
+  target: TradingShadowReplayStateTarget
+): void {
+  prepareTradingShadowReplayState(
+    {
+      ...input,
+      currentConfig: target.cachedConfig,
+      liveState: target.engineState
+    },
+    {
+      clearMarketState: () => {
+        target.orderBook.clear();
+        target.bids.clear();
+        target.asks.clear();
+        target.bookSync.clear();
+      },
+      resetRuntimeSamples: () => {
+        target.latencyHistory = [];
+        target.processingLatencySamples = [];
+        target.domWallHistory = [];
+        target.leadLagSamples = new Map();
+      },
+      applyPreparedState: (preparedState) => {
+        target.cachedConfig = preparedState.cachedConfig;
+        target.engineState = preparedState.engineState;
+      },
+      resetAgents: () => {
+        target.profilerRegistry.reset();
+        target.anomalyDetector.hydrate(null);
+        target.oracleAgent.hydrate(null);
+        target.sentimentAgent.hydrate(null);
+      }
+    }
   );
 }
 
@@ -149,6 +218,29 @@ export function restoreTradingReplaySnapshot(
   handlers: ReplaySnapshotRestoreHandlers
 ): Promise<void> {
   return restoreReplaySnapshotSideEffects(snapshot, handlers);
+}
+
+export function restoreTradingReplaySnapshotForTarget(
+  snapshot: EngineReplaySnapshot,
+  target: TradingReplayRestoreTarget
+): Promise<void> {
+  return restoreTradingReplaySnapshot(snapshot, {
+    listPersistedBookKeys: async () =>
+      (
+        await target.state.storage.list<InternalOrderBook>({
+          prefix: ORDER_BOOK_PREFIX
+        })
+      ).keys(),
+    onListPersistedBookKeysFailure: (error) => {
+      target.handleStorageWriteFailure("REPLAY_RESTORE_LIST_BOOKS", error);
+    },
+    applyRuntimeSnapshot: (replaySnapshot, hydratedBooks) => {
+      applyTradingReplaySnapshotToTarget(target, replaySnapshot, hydratedBooks);
+    },
+    deletePersistedBookKeys: (keys) =>
+      target.safeStorageDelete([...keys], "REPLAY_RESTORE_DELETE_BOOKS"),
+    writeRestoreState: (writes) => target.safeStoragePut(writes, "REPLAY_RESTORE")
+  });
 }
 
 export function applyTradingReplaySnapshotToTarget(

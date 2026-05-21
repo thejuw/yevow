@@ -205,13 +205,13 @@ import { type ReplayOptions } from "./routes/ReplayAdminRoutes";
 import { type ReplayJournal } from "./replay/ReplayJournal";
 import { runTradingHistoricalReplay } from "./replay/TradingReplayRunRuntime";
 import {
-  applyTradingReplaySnapshotToTarget,
   captureTradingReplaySnapshotFromSource,
-  prepareTradingShadowReplayState,
-  restoreTradingReplaySnapshot,
+  prepareTradingShadowReplayStateForTarget,
+  restoreTradingReplaySnapshotForTarget,
   type EngineReplaySnapshot,
+  type TradingReplayRestoreTarget,
   type TradingReplaySnapshotSource,
-  type TradingReplaySnapshotTarget
+  type TradingShadowReplayStateTarget
 } from "./replay/TradingReplayStateRuntime";
 import type { GrpcFatalDropPayload, TickIngestResult } from "./TradingEngineRouteTypes";
 import {
@@ -2586,38 +2586,9 @@ export class TradingEngine {
     startedAt: string,
     replayId: string
   ): void {
-    prepareTradingShadowReplayState(
-      {
-        currentConfig: this.cachedConfig,
-        liveState: this.engineState,
-        initialShadowBankroll,
-        startedAt,
-        replayId
-      },
-      {
-        clearMarketState: () => {
-          this.orderBook.clear();
-          this.bids.clear();
-          this.asks.clear();
-          this.bookSync.clear();
-        },
-        resetRuntimeSamples: () => {
-          this.latencyHistory = [];
-          this.processingLatencySamples = [];
-          this.domWallHistory = [];
-          this.leadLagSamples = new Map();
-        },
-        applyPreparedState: (preparedState) => {
-          this.cachedConfig = preparedState.cachedConfig;
-          this.engineState = preparedState.engineState;
-        },
-        resetAgents: () => {
-          this.profilerRegistry.reset();
-          this.anomalyDetector.hydrate(null);
-          this.oracleAgent.hydrate(null);
-          this.sentimentAgent.hydrate(null);
-        }
-      }
+    prepareTradingShadowReplayStateForTarget(
+      { initialShadowBankroll, startedAt, replayId },
+      this as unknown as TradingShadowReplayStateTarget
     );
   }
 
@@ -2675,25 +2646,10 @@ export class TradingEngine {
   }
 
   private async restoreReplaySnapshot(snapshot: EngineReplaySnapshot): Promise<void> {
-    await restoreTradingReplaySnapshot(snapshot, {
-      listPersistedBookKeys: async () =>
-        (
-          await this.state.storage.list<InternalOrderBook>({
-            prefix: ORDER_BOOK_PREFIX
-          })
-        ).keys(),
-      onListPersistedBookKeysFailure: (error) =>
-        this.handleStorageWriteFailure("REPLAY_RESTORE_LIST_BOOKS", error),
-      applyRuntimeSnapshot: (replaySnapshot, hydratedBooks) =>
-        applyTradingReplaySnapshotToTarget(
-          this as unknown as TradingReplaySnapshotTarget,
-          replaySnapshot,
-          hydratedBooks
-        ),
-      deletePersistedBookKeys: (keys) =>
-        this.safeStorageDelete([...keys], "REPLAY_RESTORE_DELETE_BOOKS"),
-      writeRestoreState: (writes) => this.safeStoragePut(writes, "REPLAY_RESTORE")
-    });
+    await restoreTradingReplaySnapshotForTarget(
+      snapshot,
+      this as unknown as TradingReplayRestoreTarget
+    );
   }
 
   private updateLatencyAverage(totalLatencyMs: number): void {
