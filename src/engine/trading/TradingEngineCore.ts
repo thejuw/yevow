@@ -6,12 +6,11 @@ import type { Logger } from "../../Logger";
 import {
   ProfilerAgent,
   PROFILER_STATE_STORAGE_KEY,
-  PROFILER_STATE_STORAGE_PREFIX,
-  type ProfilerEvaluation
+  PROFILER_STATE_STORAGE_PREFIX
 } from "../../agents/ProfilerAgent";
 import { ProfilerRegistry } from "../../agents/ProfilerRegistry";
 import { AnomalyDetector, type AnomalyDetectionResult } from "../../agents/AnomalyDetector";
-import { CroupierAgent, type CroupierDecision } from "../../agents/CroupierAgent";
+import { CroupierAgent } from "../../agents/CroupierAgent";
 import { AdverseSelectionModel } from "../AdverseSelectionModel";
 import { priceKey, SortedBookSide } from "./book/SortedBookSide";
 import {
@@ -50,19 +49,6 @@ import {
   dispatchTradingExecutionIntentForTarget,
   type TradingExecutionDispatchTarget
 } from "./execution/TradingExecutionDispatchRuntime";
-import { type OracleTickResult } from "./agents/AgentEvaluationRuntime";
-import {
-  evaluateTradingCroupierForTarget,
-  type TradingCroupierEvaluationTarget
-} from "./agents/TradingCroupierEvaluationRuntime";
-import {
-  evaluateTradingOracleForTarget,
-  type TradingOracleEvaluationTarget
-} from "./agents/TradingOracleEvaluationRuntime";
-import {
-  evaluateTradingProfilerForTarget,
-  type TradingProfilerEvaluationTarget
-} from "./agents/TradingProfilerEvaluationRuntime";
 import {
   reservePaperExecutionBudgetForTarget,
   type TradingPaperExecutionBudgetTarget
@@ -155,7 +141,6 @@ import {
 } from "./state/EngineBootServices";
 import { maybeResumeTradingShadowMode } from "./state/TradingShadowModeAutoResumeRuntime";
 import { resolveTradingTickAvailability } from "./state/TradingAvailabilityRuntime";
-import { stateAfterAcceptedTick } from "./state/TickStateRuntime";
 import {
   recoverTradingEngineStateForTarget,
   type TradingAdminRecoveryTarget
@@ -171,10 +156,7 @@ import {
   type TradingStorageGuardTarget,
   type StorageWriteGuard
 } from "./state/StorageWriteGuard";
-import {
-  MultiScaleVolatilityModel,
-  type MultiScaleVolatilitySnapshot
-} from "../MultiScaleVolatility";
+import { MultiScaleVolatilityModel } from "../MultiScaleVolatility";
 import { QueuePositionModel } from "../QueuePositionModel";
 import { HeatmapAgent } from "../../agents/HeatmapAgent";
 import { JanitorAgent } from "../../agents/JanitorAgent";
@@ -203,14 +185,12 @@ import type {
   Env,
   GlobalRiskConfig,
   InternalOrderBook,
-  InventoryState,
   JsonRecord,
   LatencyMetrics,
   LiquidityWall,
   MacroBias,
   MarketTick,
   OrderBookResetRequest,
-  SentimentState,
   TemporaryGovernanceOverride,
   TradeIntent
 } from "../../types";
@@ -223,22 +203,6 @@ import {
   type AcceptedDecisionPipelineTarget
 } from "./pipelines/AcceptedTickLifecycleRuntime";
 import {
-  buildTickDecisionContextForTarget,
-  type TickDecisionContextTarget
-} from "./pipelines/TickDecisionContextRuntime";
-import {
-  commitAcceptedTickStateForTarget,
-  type AcceptedTickStateCommitTarget
-} from "./pipelines/AcceptedTickStateTransitionRuntime";
-import {
-  finalizeAcceptedTickForTarget,
-  type AcceptedTickFinalizationTarget
-} from "./pipelines/AcceptedTickFinalizationRuntime";
-import {
-  prepareAcceptedExecutionContextForTarget,
-  type AcceptedExecutionContextTarget
-} from "./pipelines/AcceptedExecutionContextRuntime";
-import {
   prepareTradingPostBookTickRuntimeForTarget,
   type TradingPostBookTickRuntimeTarget
 } from "./pipelines/PostBookTickRuntime";
@@ -248,12 +212,8 @@ import {
 } from "./pipelines/TickHandlingRuntime";
 import type {
   AcceptedDecisionPipelineInput,
-  AcceptedExecutionContext,
-  AcceptedTickSideEffectsInput,
-  AcceptedTickStateCommitInput,
   PostBookTickContext,
   TickBookResolution,
-  TickDecisionContext,
   TickHandlingOptions
 } from "./pipelines/TickPipelineTypes";
 
@@ -628,119 +588,6 @@ export class TradingEngine {
       },
       this as unknown as TradingPostBookTickRuntimeTarget
     );
-  }
-
-  private evaluateProfilerForTick(
-    tick: MarketTick,
-    book: InternalOrderBook,
-    domSnapshot: DomAnalysisSnapshot,
-    observedAt: string,
-    jumpDetected: boolean,
-    metrics: LatencyMetrics,
-    wakeUpTimeMs: number | null,
-    orderBookUpdateMs: number,
-    hotPathStartedAt: number
-  ): { profilerResult: ProfilerEvaluation; profilerLatencyMs: number } {
-    return evaluateTradingProfilerForTarget(
-      {
-        tick,
-        book,
-        domSnapshot,
-        observedAt,
-        jumpDetected,
-        metrics,
-        wakeUpTimeMs,
-        orderBookUpdateMs,
-        hotPathStartedAt
-      },
-      this as unknown as TradingProfilerEvaluationTarget
-    );
-  }
-
-  private evaluateOracleForTick(
-    tick: MarketTick,
-    book: InternalOrderBook,
-    observedAt: string
-  ): { oracleResult: OracleTickResult; oracleLatencyMs: number } {
-    return evaluateTradingOracleForTarget(
-      {
-        tick,
-        book,
-        observedAt
-      },
-      this as unknown as TradingOracleEvaluationTarget
-    );
-  }
-
-  private buildTickDecisionContext(
-    tick: MarketTick,
-    oracle: EngineState["oracle"],
-    profilerResult: ProfilerEvaluation,
-    observedAt: string
-  ): TickDecisionContext {
-    return buildTickDecisionContextForTarget(
-      tick,
-      oracle,
-      profilerResult,
-      observedAt,
-      this as unknown as TickDecisionContextTarget
-    );
-  }
-
-  private evaluateCroupierForTick(
-    book: InternalOrderBook,
-    oracle: EngineState["oracle"],
-    sentiment: SentimentState,
-    profilerResult: ProfilerEvaluation,
-    inventory: InventoryState,
-    leadLag: EngineState["leadLag"],
-    volatilitySnapshot: MultiScaleVolatilitySnapshot | null,
-    observedAt: string
-  ): { croupierDecision: CroupierDecision; croupierLatencyMs: number } {
-    return evaluateTradingCroupierForTarget(
-      {
-        book,
-        oracle,
-        sentiment,
-        profilerResult,
-        inventory,
-        leadLag,
-        volatilitySnapshot,
-        observedAt
-      },
-      this as unknown as TradingCroupierEvaluationTarget
-    );
-  }
-
-  private commitAcceptedTickState(input: AcceptedTickStateCommitInput): void {
-    commitAcceptedTickStateForTarget(
-      input,
-      this as unknown as AcceptedTickStateCommitTarget,
-      stateAfterAcceptedTick
-    );
-  }
-
-  private prepareAcceptedExecutionContext(
-    input: AcceptedDecisionPipelineInput,
-    profilerResult: ProfilerEvaluation,
-    oracleState: EngineState["oracle"],
-    croupierDecision: CroupierDecision,
-    decisionContext: TickDecisionContext
-  ): AcceptedExecutionContext {
-    return prepareAcceptedExecutionContextForTarget(
-      {
-        pipeline: input,
-        profilerResult,
-        oracleState,
-        croupierDecision,
-        decisionContext
-      },
-      this as unknown as AcceptedExecutionContextTarget
-    );
-  }
-
-  private async finalizeAcceptedTick(input: AcceptedTickSideEffectsInput): Promise<void> {
-    await finalizeAcceptedTickForTarget(input, this as unknown as AcceptedTickFinalizationTarget);
   }
 
   private async processAcceptedDecisionPipeline(

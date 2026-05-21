@@ -1,6 +1,35 @@
 import type { CroupierDecision } from "../../../agents/CroupierAgent";
 import type { ProfilerEvaluation } from "../../../agents/ProfilerAgent";
+import {
+  evaluateTradingCroupierForTarget,
+  type TradingCroupierEvaluationTarget
+} from "../agents/TradingCroupierEvaluationRuntime";
+import {
+  evaluateTradingOracleForTarget,
+  type TradingOracleEvaluationTarget
+} from "../agents/TradingOracleEvaluationRuntime";
+import {
+  evaluateTradingProfilerForTarget,
+  type TradingProfilerEvaluationTarget
+} from "../agents/TradingProfilerEvaluationRuntime";
 import type { OracleTickResult } from "../agents/AgentEvaluationRuntime";
+import {
+  commitAcceptedTickStateForTarget,
+  type AcceptedTickStateCommitTarget
+} from "./AcceptedTickStateTransitionRuntime";
+import {
+  prepareAcceptedExecutionContextForTarget,
+  type AcceptedExecutionContextTarget
+} from "./AcceptedExecutionContextRuntime";
+import {
+  finalizeAcceptedTickForTarget,
+  type AcceptedTickFinalizationTarget
+} from "./AcceptedTickFinalizationRuntime";
+import {
+  buildTickDecisionContextForTarget,
+  type TickDecisionContextTarget
+} from "./TickDecisionContextRuntime";
+import { stateAfterAcceptedTick } from "../state/TickStateRuntime";
 import type {
   AcceptedDecisionPipelineInput,
   AcceptedExecutionContext,
@@ -66,8 +95,8 @@ export interface AcceptedDecisionPipelineFlowHandlers {
   readonly finalizeAcceptedTick: (input: AcceptedTickSideEffectsInput) => Promise<void>;
 }
 
-export interface AcceptedDecisionPipelineTarget extends AcceptedDecisionPipelineFlowHandlers {
-  evaluateProfilerForTick(
+export interface AcceptedDecisionPipelineTarget {
+  evaluateProfilerForTick?(
     tick: AcceptedDecisionPipelineInput["tick"],
     book: AcceptedDecisionPipelineInput["book"],
     domSnapshot: AcceptedDecisionPipelineInput["domSnapshot"],
@@ -78,18 +107,18 @@ export interface AcceptedDecisionPipelineTarget extends AcceptedDecisionPipeline
     orderBookUpdateMs: AcceptedDecisionPipelineInput["orderBookUpdateMs"],
     hotPathStartedAt: AcceptedDecisionPipelineInput["hotPathStartedAt"]
   ): AcceptedProfilerRuntimeResult;
-  evaluateOracleForTick(
+  evaluateOracleForTick?(
     tick: AcceptedDecisionPipelineInput["tick"],
     book: AcceptedDecisionPipelineInput["book"],
     observedAt: string
   ): AcceptedOracleRuntimeResult;
-  buildTickDecisionContext(
+  buildTickDecisionContext?(
     tick: AcceptedDecisionPipelineInput["tick"],
     oracle: EngineOracleState,
     profilerResult: ProfilerEvaluation,
     observedAt: string
   ): TickDecisionContext;
-  evaluateCroupierForTick(
+  evaluateCroupierForTick?(
     book: AcceptedDecisionPipelineInput["book"],
     oracle: EngineOracleState,
     sentiment: TickDecisionContext["sentimentForDecision"],
@@ -99,13 +128,15 @@ export interface AcceptedDecisionPipelineTarget extends AcceptedDecisionPipeline
     volatilitySnapshot: AcceptedDecisionPipelineInput["volatilitySnapshot"],
     observedAt: string
   ): AcceptedCroupierRuntimeResult;
-  prepareAcceptedExecutionContext(
+  prepareAcceptedExecutionContext?(
     input: AcceptedDecisionPipelineInput,
     profilerResult: ProfilerEvaluation,
     oracleState: EngineOracleState,
     croupierDecision: CroupierDecision,
     decisionContext: TickDecisionContext
   ): AcceptedExecutionContext;
+  commitAcceptedTickState?(input: AcceptedTickStateCommitInput): void;
+  finalizeAcceptedTick?(input: AcceptedTickSideEffectsInput): Promise<void>;
 }
 
 export interface AcceptedTickLifecycleArtifacts {
@@ -182,38 +213,90 @@ export function applyAcceptedDecisionPipelineForTarget(
   return applyAcceptedDecisionPipelineFlow(
     input,
     {
-      evaluateProfiler: (pipeline) =>
-        target.evaluateProfilerForTick(
-          pipeline.tick,
-          pipeline.book,
-          pipeline.domSnapshot,
-          pipeline.metrics.brainTimestamp,
-          pipeline.volatilitySnapshot?.jumpDetected ?? false,
-          pipeline.metrics,
-          pipeline.wakeUpTimeMs,
-          pipeline.orderBookUpdateMs,
-          pipeline.hotPathStartedAt
-        ),
+      evaluateProfiler: (pipeline) => {
+        const jumpDetected = pipeline.volatilitySnapshot?.jumpDetected ?? false;
+        return target.evaluateProfilerForTick
+          ? target.evaluateProfilerForTick(
+              pipeline.tick,
+              pipeline.book,
+              pipeline.domSnapshot,
+              pipeline.metrics.brainTimestamp,
+              jumpDetected,
+              pipeline.metrics,
+              pipeline.wakeUpTimeMs,
+              pipeline.orderBookUpdateMs,
+              pipeline.hotPathStartedAt
+            )
+          : evaluateTradingProfilerForTarget(
+              {
+                tick: pipeline.tick,
+                book: pipeline.book,
+                domSnapshot: pipeline.domSnapshot,
+                observedAt: pipeline.metrics.brainTimestamp,
+                jumpDetected,
+                metrics: pipeline.metrics,
+                wakeUpTimeMs: pipeline.wakeUpTimeMs,
+                orderBookUpdateMs: pipeline.orderBookUpdateMs,
+                hotPathStartedAt: pipeline.hotPathStartedAt
+              },
+              target as unknown as TradingProfilerEvaluationTarget
+            );
+      },
       evaluateOracle: (pipeline) =>
-        target.evaluateOracleForTick(pipeline.tick, pipeline.book, pipeline.metrics.brainTimestamp),
+        target.evaluateOracleForTick
+          ? target.evaluateOracleForTick(
+              pipeline.tick,
+              pipeline.book,
+              pipeline.metrics.brainTimestamp
+            )
+          : evaluateTradingOracleForTarget(
+              {
+                tick: pipeline.tick,
+                book: pipeline.book,
+                observedAt: pipeline.metrics.brainTimestamp
+              },
+              target as unknown as TradingOracleEvaluationTarget
+            ),
       buildDecisionContext: (pipeline, oracle, profilerResult) =>
-        target.buildTickDecisionContext(
-          pipeline.tick,
-          oracle,
-          profilerResult,
-          pipeline.metrics.brainTimestamp
-        ),
+        target.buildTickDecisionContext
+          ? target.buildTickDecisionContext(
+              pipeline.tick,
+              oracle,
+              profilerResult,
+              pipeline.metrics.brainTimestamp
+            )
+          : buildTickDecisionContextForTarget(
+              pipeline.tick,
+              oracle,
+              profilerResult,
+              pipeline.metrics.brainTimestamp,
+              target as unknown as TickDecisionContextTarget
+            ),
       evaluateCroupier: (pipeline, oracle, profilerResult, decisionContext) =>
-        target.evaluateCroupierForTick(
-          pipeline.book,
-          oracle,
-          decisionContext.sentimentForDecision,
-          profilerResult,
-          decisionContext.inventory,
-          decisionContext.leadLag,
-          pipeline.volatilitySnapshot,
-          pipeline.metrics.brainTimestamp
-        ),
+        target.evaluateCroupierForTick
+          ? target.evaluateCroupierForTick(
+              pipeline.book,
+              oracle,
+              decisionContext.sentimentForDecision,
+              profilerResult,
+              decisionContext.inventory,
+              decisionContext.leadLag,
+              pipeline.volatilitySnapshot,
+              pipeline.metrics.brainTimestamp
+            )
+          : evaluateTradingCroupierForTarget(
+              {
+                book: pipeline.book,
+                oracle,
+                sentiment: decisionContext.sentimentForDecision,
+                profilerResult,
+                inventory: decisionContext.inventory,
+                leadLag: decisionContext.leadLag,
+                volatilitySnapshot: pipeline.volatilitySnapshot,
+                observedAt: pipeline.metrics.brainTimestamp
+              },
+              target as unknown as TradingCroupierEvaluationTarget
+            ),
       prepareExecutionContext: (
         pipeline,
         profilerResult,
@@ -221,19 +304,44 @@ export function applyAcceptedDecisionPipelineForTarget(
         croupierDecision,
         decisionContext
       ) =>
-        target.prepareAcceptedExecutionContext(
-          pipeline,
-          profilerResult,
-          oracle,
-          croupierDecision,
-          decisionContext
-        )
+        target.prepareAcceptedExecutionContext
+          ? target.prepareAcceptedExecutionContext(
+              pipeline,
+              profilerResult,
+              oracle,
+              croupierDecision,
+              decisionContext
+            )
+          : prepareAcceptedExecutionContextForTarget(
+              {
+                pipeline,
+                profilerResult,
+                oracleState: oracle,
+                croupierDecision,
+                decisionContext
+              },
+              target as unknown as AcceptedExecutionContextTarget
+            )
     },
     {
       commitAcceptedTickState: (commitInput) => {
-        target.commitAcceptedTickState(commitInput);
+        if (target.commitAcceptedTickState) {
+          target.commitAcceptedTickState(commitInput);
+          return;
+        }
+        commitAcceptedTickStateForTarget(
+          commitInput,
+          target as unknown as AcceptedTickStateCommitTarget,
+          stateAfterAcceptedTick
+        );
       },
-      finalizeAcceptedTick: (sideEffectsInput) => target.finalizeAcceptedTick(sideEffectsInput)
+      finalizeAcceptedTick: (sideEffectsInput) =>
+        target.finalizeAcceptedTick
+          ? target.finalizeAcceptedTick(sideEffectsInput)
+          : finalizeAcceptedTickForTarget(
+              sideEffectsInput,
+              target as unknown as AcceptedTickFinalizationTarget
+            ).then(() => undefined)
     }
   );
 }
