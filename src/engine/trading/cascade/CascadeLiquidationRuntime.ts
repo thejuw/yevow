@@ -10,11 +10,17 @@ import type {
   LiquidationHeatmapState
 } from "../../../types";
 import type { CascadeAssetProfile } from "../../../strategy/cascade/AssetProfiles";
-import type { CascadeEvent, LiquidationEvent } from "../../../strategy/cascade/types";
+import type {
+  AbsorptionAnalyzerConfig,
+  CascadeDetectorConfig,
+  CascadeEvent,
+  LiquidationEvent
+} from "../../../strategy/cascade/types";
 import type { TickIngestResult } from "../TradingEngineRouteTypes";
 import { isCascadeInstrumentEnabledForConfig } from "./CascadeSelectionRuntime";
 import { buildCascadeDetectedArtifacts } from "./CascadeDetectedArtifactsRuntime";
 import { resolveCascadeAtr1h } from "./CascadeConfigRuntime";
+import { persistCascadeLiquidationEventsSafely } from "./CascadeLiquidationJournalRuntime";
 export {
   buildCascadeDetectedArtifacts,
   cascadeDetectedAlertMetadata,
@@ -150,6 +156,43 @@ export interface TradingLiquidationIngestHandlers extends LiquidationIngestSideE
   readonly applyState: (state: EngineState) => void;
 }
 
+export interface TradingLiquidationIngestTarget {
+  engineState: EngineState;
+  readonly env: Pick<
+    Env,
+    "HL_ASSET" | "TRADING_DB" | "CASCADE_ATR_FALLBACK_USD" | "CASCADE_ATR_FALLBACK_PCT"
+  >;
+  readonly state: {
+    waitUntil(work: Promise<unknown>): void;
+  };
+  readonly heatmapAgent: {
+    recordLiquidationEvent(
+      raw: Record<string, unknown>,
+      context: {
+        readonly instrumentCode: string;
+        readonly sourceExchange: string;
+        readonly midPrice: number | null;
+        readonly observedAt: string;
+      }
+    ): LiquidationHeatmapState;
+  };
+  readonly cascadeLiquidationStream: {
+    ingest(
+      raw: Record<string, unknown>,
+      context: {
+        readonly instrumentCode: string;
+        readonly sourceExchange: string;
+        readonly observedAt: string;
+        readonly fallbackPrice: number | null;
+      }
+    ): LiquidationEvent[];
+  };
+  recordCascadeLiquidations(events: LiquidationEvent[], observedAt: string): CascadeEvent[];
+  safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void>;
+  handleStorageWriteFailure(reason: string, error: unknown): void;
+  publish(type: string, payload: JsonRecord): void;
+}
+
 export interface TradingCascadeLiquidationDetectionInput {
   readonly events: readonly LiquidationEvent[];
   readonly observedAt: string;
@@ -172,6 +215,38 @@ export interface TradingCascadeLiquidationDetectionHandlers {
   readonly logDetected: (metadata: JsonRecord) => void;
   readonly publishDetected: (payload: JsonRecord) => void;
   readonly alertDetected: (cascade: CascadeEvent, metadata: JsonRecord) => void;
+}
+
+export interface TradingCascadeLiquidationDetectionTarget {
+  readonly cachedConfig: Pick<GlobalRiskConfig, "CASCADE_INSTRUMENTS">;
+  readonly engineState: Pick<EngineState, "microstructure">;
+  readonly env: Pick<Env, "CASCADE_ATR_FALLBACK_USD" | "CASCADE_ATR_FALLBACK_PCT">;
+  readonly absorptionAnalyzer: {
+    configure(config: AbsorptionAnalyzerConfig): void;
+    trackCascade(cascade: CascadeEvent): void;
+  };
+  readonly cascadeDetector: {
+    configure(config: CascadeDetectorConfig): void;
+    observe(
+      event: LiquidationEvent,
+      context: { readonly observedAt: string; readonly atr1h: number | null }
+    ): CascadeEvent | null;
+  };
+  readonly cascadeEventsById: Pick<Map<string, CascadeEvent>, "set">;
+  readonly logger: {
+    warn(eventType: string, message: string, metadata?: JsonRecord): void;
+  };
+  currentAbsorptionAnalyzerConfig(): AbsorptionAnalyzerConfig;
+  currentCascadeDetectorConfig(instrumentCode: string): CascadeDetectorConfig;
+  cascadeAssetProfile(instrumentCode: string): CascadeAssetProfile;
+  publish(type: string, payload: JsonRecord): void;
+  emitCascadeOperationalAlert(
+    eventType: "CASCADE_DETECTED",
+    title: string,
+    message: string,
+    metadata: JsonRecord,
+    dedupeKey: string
+  ): void;
 }
 
 export interface CascadeLiquidationDetectionHandlers {
@@ -348,6 +423,57 @@ export function processTradingLiquidationIngestRuntime(
   return liquidationResult.ingestResult;
 }
 
+export function handleTradingEngineLiquidationEvents(
+  raw: Record<string, unknown>,
+  payload: TradingLiquidationIngestInput["payload"],
+  target: TradingLiquidationIngestTarget
+): TickIngestResult {
+  return processTradingLiquidationIngestRuntime(
+    {
+      raw,
+      payload,
+      currentState: target.engineState,
+      defaultAsset: target.env.HL_ASSET
+    },
+    {
+      recordHeatmap: (eventRaw, context) =>
+        target.heatmapAgent.recordLiquidationEvent(eventRaw, {
+          instrumentCode: context.instrumentCode,
+          sourceExchange: context.sourceExchange,
+          midPrice: context.midPrice,
+          observedAt: context.observedAt
+        }),
+      ingestCascadeLiquidations: (eventRaw, context) =>
+        target.cascadeLiquidationStream.ingest(eventRaw, {
+          instrumentCode: context.instrumentCode,
+          sourceExchange: context.sourceExchange,
+          observedAt: context.observedAt,
+          fallbackPrice: context.midPrice
+        }),
+      recordCascadeLiquidations: (events, observedAt) =>
+        target.recordCascadeLiquidations(events, observedAt),
+      scheduleCascadeLiquidationJournal: (events) => {
+        target.state.waitUntil(
+          persistCascadeLiquidationEventsSafely(target.env.TRADING_DB, events, {
+            handleFailure: (reason, error) => {
+              target.handleStorageWriteFailure(reason, error);
+            }
+          })
+        );
+      },
+      scheduleStorageWrites: (storageWrites) => {
+        target.state.waitUntil(target.safeStoragePut(storageWrites, "LIQUIDATION_EVENT"));
+      },
+      publish: (type, publishPayload) => {
+        target.publish(type, publishPayload);
+      },
+      applyState: (state) => {
+        target.engineState = state;
+      }
+    }
+  );
+}
+
 export function recordTradingCascadeLiquidationDetections(
   input: TradingCascadeLiquidationDetectionInput,
   handlers: TradingCascadeLiquidationDetectionHandlers
@@ -375,6 +501,57 @@ export function recordTradingCascadeLiquidationDetections(
     publishDetected: handlers.publishDetected,
     alertDetected: handlers.alertDetected
   });
+}
+
+export function recordTradingEngineCascadeLiquidations(
+  events: LiquidationEvent[],
+  observedAt: string,
+  target: TradingCascadeLiquidationDetectionTarget
+): CascadeEvent[] {
+  return recordTradingCascadeLiquidationDetections(
+    {
+      events,
+      observedAt,
+      config: target.cachedConfig,
+      midPrice: target.engineState.microstructure.midPrice,
+      env: target.env
+    },
+    {
+      configureAbsorptionAnalyzer: () => {
+        target.absorptionAnalyzer.configure(target.currentAbsorptionAnalyzerConfig());
+      },
+      configureDetector: (instrumentCode) => {
+        target.cascadeDetector.configure(target.currentCascadeDetectorConfig(instrumentCode));
+      },
+      observeCascade: (event, detectedAt, atr1h) =>
+        target.cascadeDetector.observe(event, {
+          observedAt: detectedAt,
+          atr1h
+        }),
+      rememberCascade: (cascade) => {
+        target.cascadeEventsById.set(cascade.cascadeId, cascade);
+      },
+      trackCascadeAbsorption: (cascade) => {
+        target.absorptionAnalyzer.trackCascade(cascade);
+      },
+      assetProfile: (instrumentCode) => target.cascadeAssetProfile(instrumentCode),
+      logDetected: (metadata) => {
+        target.logger.warn("CASCADE_DETECTED", "Liquidation cascade detected", metadata);
+      },
+      publishDetected: (payload) => {
+        target.publish("CASCADE_DETECTED", payload);
+      },
+      alertDetected: (cascade, metadata) => {
+        target.emitCascadeOperationalAlert(
+          "CASCADE_DETECTED",
+          "Cascade detected",
+          `${cascade.instrumentCode} ${cascade.direction} liquidation cascade detected.`,
+          metadata,
+          cascade.cascadeId
+        );
+      }
+    }
+  );
 }
 
 export function recordCascadeLiquidationDetections(

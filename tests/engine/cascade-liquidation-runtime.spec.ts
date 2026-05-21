@@ -12,15 +12,21 @@ import {
   liquidationEventTelemetry,
   persistCascadeLiquidationEvents,
   persistCascadeLiquidationEventsSafely,
+  handleTradingEngineLiquidationEvents,
   processLiquidationIngestRuntime,
   processTradingLiquidationIngestRuntime,
   recordCascadeLiquidationDetections,
+  recordTradingEngineCascadeLiquidations,
   recordTradingCascadeLiquidationDetections,
   resolveLiquidationEventContext,
-  stateAfterLiquidationHeatmap
+  stateAfterLiquidationHeatmap,
+  type TradingCascadeLiquidationDetectionTarget,
+  type TradingLiquidationIngestTarget
 } from "../../src/engine/trading/cascade/CascadeLiquidationRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
+import { defaultAbsorptionAnalyzerConfig } from "../../src/strategy/cascade/AbsorptionAnalyzer";
 import type { CascadeAssetProfile } from "../../src/strategy/cascade/AssetProfiles";
+import { defaultCascadeDetectorConfig } from "../../src/strategy/cascade/CascadeDetector";
 import type { CascadeEvent, LiquidationEvent } from "../../src/strategy/cascade/types";
 
 const OBSERVED_AT = "2026-05-18T18:00:00.000Z";
@@ -354,6 +360,100 @@ describe("CascadeLiquidationRuntime", () => {
     });
   });
 
+  it("routes liquidation events through the trading engine target adapter", async () => {
+    const currentState = defaultEngineState("liquidation-target-ingest");
+    currentState.microstructure = {
+      ...currentState.microstructure,
+      instrumentCode: "btc-usd",
+      midPrice: 100
+    };
+    const event = liquidationEvent();
+    const cascade = cascadeEvent();
+    const heatmap = {
+      ...defaultLiquidationHeatmapState("btc-usd", "hyperliquid"),
+      updatedAt: OBSERVED_AT,
+      recentEvents: [
+        {
+          eventId: "heat-1",
+          instrumentCode: "btc-usd",
+          side: "LONG" as const,
+          forcedFlowSide: "SELL" as const,
+          price: 96,
+          estimatedNotionalUsd: 12_000_000,
+          baseSize: 125,
+          observedAt: OBSERVED_AT
+        }
+      ]
+    };
+    const db = mockCascadeDb();
+    const pending: Promise<unknown>[] = [];
+    const storageWrites: Record<string, unknown>[] = [];
+    const published: string[] = [];
+    const target: TradingLiquidationIngestTarget = {
+      engineState: currentState,
+      env: {
+        HL_ASSET: "BTC",
+        TRADING_DB: db as unknown as D1Database,
+        CASCADE_ATR_FALLBACK_USD: undefined,
+        CASCADE_ATR_FALLBACK_PCT: undefined
+      },
+      state: {
+        waitUntil(work) {
+          pending.push(work);
+        }
+      },
+      heatmapAgent: {
+        recordLiquidationEvent(raw, context) {
+          expect(raw).toEqual({ channel: "userEvents" });
+          expect(context.midPrice).toBe(100);
+          return heatmap;
+        }
+      },
+      cascadeLiquidationStream: {
+        ingest(raw, context) {
+          expect(raw).toEqual({ channel: "userEvents" });
+          expect(context.fallbackPrice).toBe(100);
+          return [event];
+        }
+      },
+      recordCascadeLiquidations(events, observedAt) {
+        expect(events).toEqual([event]);
+        expect(observedAt).toBe(OBSERVED_AT);
+        return [cascade];
+      },
+      async safeStoragePut(entries) {
+        storageWrites.push(entries);
+      },
+      handleStorageWriteFailure(reason, error) {
+        published.push(`${reason}:${String(error)}`);
+      },
+      publish(type) {
+        published.push(type);
+      }
+    };
+
+    const result = handleTradingEngineLiquidationEvents(
+      { channel: "userEvents" },
+      {
+        receivedAt: OBSERVED_AT,
+        instrumentCode: "BTC-USD",
+        source_exchange: "hyperliquid"
+      },
+      target
+    );
+
+    await Promise.all(pending);
+
+    expect(result).toMatchObject({ accepted: true, status: "FRESH", processedCount: 1 });
+    expect(target.engineState.liquidationHeatmap).toBe(heatmap);
+    expect(storageWrites[0]).toMatchObject({
+      "engine:state": { engineId: "liquidation-target-ingest" },
+      "agent:heatmap:liquidations": heatmap
+    });
+    expect(db.batches).toHaveLength(1);
+    expect(published).toEqual(["LIQUIDATION_EVENT"]);
+  });
+
   it("builds cascade detected log, telemetry, and alert payloads", () => {
     const cascade = cascadeEvent();
     const profile: CascadeAssetProfile = {
@@ -539,6 +639,84 @@ describe("CascadeLiquidationRuntime", () => {
       "track:cascade-1",
       "log:cascade-1",
       "publish:cascade-1",
+      "alert:cascade-1"
+    ]);
+  });
+
+  it("records cascade detections through the trading engine target adapter", () => {
+    const event = liquidationEvent();
+    const cascade = cascadeEvent();
+    const state = defaultEngineState("liquidation-detection-target");
+    state.microstructure = { ...state.microstructure, midPrice: 100 };
+    const cascadesById = new Map<string, CascadeEvent>();
+    const calls: string[] = [];
+    const target: TradingCascadeLiquidationDetectionTarget = {
+      cachedConfig: { CASCADE_INSTRUMENTS: "BTC" },
+      engineState: state,
+      env: {
+        CASCADE_ATR_FALLBACK_USD: "7.5",
+        CASCADE_ATR_FALLBACK_PCT: undefined
+      },
+      absorptionAnalyzer: {
+        configure() {
+          calls.push("configure-absorption");
+        },
+        trackCascade(observedCascade) {
+          calls.push(`track:${observedCascade.cascadeId}`);
+        }
+      },
+      cascadeDetector: {
+        configure() {
+          calls.push("configure-detector");
+        },
+        observe(observedEvent, context) {
+          calls.push(`observe:${observedEvent.eventId}:${String(context.atr1h)}`);
+          return cascade;
+        }
+      },
+      cascadeEventsById: cascadesById,
+      logger: {
+        warn(eventType, _message, metadata) {
+          calls.push(`log:${eventType}:${String(metadata?.cascadeId)}`);
+        }
+      },
+      currentAbsorptionAnalyzerConfig() {
+        return defaultAbsorptionAnalyzerConfig;
+      },
+      currentCascadeDetectorConfig() {
+        return defaultCascadeDetectorConfig;
+      },
+      cascadeAssetProfile() {
+        return {
+          asset: "BTC",
+          notionalThresholdUsd: 50_000_000,
+          zScoreThreshold: 3,
+          minPriceMoveAtr: 1.5,
+          maxPositionNotionalPct: 0.25,
+          assetLiquidityCapUsd: 25_000,
+          maxSlippageBps: 8,
+          rationale: "test profile"
+        };
+      },
+      publish(type, payload) {
+        calls.push(`publish:${type}:${String(payload.cascadeId)}`);
+      },
+      emitCascadeOperationalAlert(_eventType, _title, _message, _metadata, dedupeKey) {
+        calls.push(`alert:${dedupeKey}`);
+      }
+    };
+
+    const detected = recordTradingEngineCascadeLiquidations([event], OBSERVED_AT, target);
+
+    expect(detected).toEqual([cascade]);
+    expect(cascadesById.get("cascade-1")).toBe(cascade);
+    expect(calls).toEqual([
+      "configure-absorption",
+      "configure-detector",
+      "observe:liq-1:7.5",
+      "track:cascade-1",
+      "log:CASCADE_DETECTED:cascade-1",
+      "publish:CASCADE_DETECTED:cascade-1",
       "alert:cascade-1"
     ]);
   });

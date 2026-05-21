@@ -111,9 +111,10 @@ import {
   currentTradingCascadePositionSnapshot as buildCurrentCascadePositionSnapshot
 } from "./cascade/CascadeSnapshots";
 import {
-  persistCascadeLiquidationEventsSafely,
-  processTradingLiquidationIngestRuntime,
-  recordTradingCascadeLiquidationDetections
+  handleTradingEngineLiquidationEvents,
+  recordTradingEngineCascadeLiquidations,
+  type TradingCascadeLiquidationDetectionTarget,
+  type TradingLiquidationIngestTarget
 } from "./cascade/CascadeLiquidationRuntime";
 import {
   buildCascadeEntryTradeIntent,
@@ -995,43 +996,10 @@ export class TradingEngine {
     raw: Record<string, unknown>,
     payload: HyperliquidRawIngestPayload
   ): Promise<TickIngestResult> {
-    return processTradingLiquidationIngestRuntime(
-      {
-        raw,
-        payload,
-        currentState: this.engineState,
-        defaultAsset: this.env.HL_ASSET
-      },
-      {
-        recordHeatmap: (eventRaw, context) =>
-          this.heatmapAgent.recordLiquidationEvent(eventRaw, {
-            instrumentCode: context.instrumentCode,
-            sourceExchange: context.sourceExchange,
-            midPrice: context.midPrice,
-            observedAt: context.observedAt
-          }),
-        ingestCascadeLiquidations: (eventRaw, context) =>
-          this.cascadeLiquidationStream.ingest(eventRaw, {
-            instrumentCode: context.instrumentCode,
-            sourceExchange: context.sourceExchange,
-            observedAt: context.observedAt,
-            fallbackPrice: context.midPrice
-          }),
-        recordCascadeLiquidations: (events, observedAt) =>
-          this.recordCascadeLiquidations(events, observedAt),
-        scheduleCascadeLiquidationJournal: (events) =>
-          this.state.waitUntil(
-            persistCascadeLiquidationEventsSafely(this.env.TRADING_DB, events, {
-              handleFailure: (reason, error) => this.handleStorageWriteFailure(reason, error)
-            })
-          ),
-        scheduleStorageWrites: (storageWrites) =>
-          this.state.waitUntil(this.safeStoragePut(storageWrites, "LIQUIDATION_EVENT")),
-        publish: (type, publishPayload) => this.publish(type, publishPayload),
-        applyState: (state) => {
-          this.engineState = state;
-        }
-      }
+    return handleTradingEngineLiquidationEvents(
+      raw,
+      payload,
+      this as unknown as TradingLiquidationIngestTarget
     );
   }
 
@@ -1039,39 +1007,10 @@ export class TradingEngine {
     events: LiquidationEvent[],
     observedAt: string
   ): CascadeEvent[] {
-    return recordTradingCascadeLiquidationDetections(
-      {
-        events,
-        observedAt,
-        config: this.cachedConfig,
-        midPrice: this.engineState.microstructure.midPrice,
-        env: this.env
-      },
-      {
-        configureAbsorptionAnalyzer: () =>
-          this.absorptionAnalyzer.configure(this.currentAbsorptionAnalyzerConfig()),
-        configureDetector: (instrumentCode) =>
-          this.cascadeDetector.configure(this.currentCascadeDetectorConfig(instrumentCode)),
-        observeCascade: (event, detectedAt, atr1h) =>
-          this.cascadeDetector.observe(event, {
-            observedAt: detectedAt,
-            atr1h
-          }),
-        rememberCascade: (cascade) => this.cascadeEventsById.set(cascade.cascadeId, cascade),
-        trackCascadeAbsorption: (cascade) => this.absorptionAnalyzer.trackCascade(cascade),
-        assetProfile: (instrumentCode) => this.cascadeAssetProfile(instrumentCode),
-        logDetected: (metadata) =>
-          this.logger.warn("CASCADE_DETECTED", "Liquidation cascade detected", metadata),
-        publishDetected: (payload) => this.publish("CASCADE_DETECTED", payload),
-        alertDetected: (cascade, metadata) =>
-          this.emitCascadeOperationalAlert(
-            "CASCADE_DETECTED",
-            "Cascade detected",
-            `${cascade.instrumentCode} ${cascade.direction} liquidation cascade detected.`,
-            metadata,
-            cascade.cascadeId
-          )
-      }
+    return recordTradingEngineCascadeLiquidations(
+      events,
+      observedAt,
+      this as unknown as TradingCascadeLiquidationDetectionTarget
     );
   }
 
