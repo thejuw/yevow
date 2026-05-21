@@ -8,6 +8,7 @@ import {
   cancelAllTradingQuotesForTarget,
   type TradingQuoteCancelAllTarget
 } from "./QuoteCancelRuntime";
+import { publishTradingTelemetryForTarget } from "../telemetry/TelemetryBus";
 
 export interface CroupierQuoteActionInput {
   readonly instrumentCode: string;
@@ -61,7 +62,7 @@ export interface TradingCroupierQuoteActionTarget {
   readonly state: {
     waitUntil(work: Promise<void>): void;
   };
-  publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
+  publish?(type: string, payload: Record<string, unknown>, correlationId?: string): void;
   cancelAllQuotes?(instrumentCode: string, reason: string): Promise<void>;
   dispatchQuote?(quote: QuoteSignal): Promise<void>;
 }
@@ -139,7 +140,7 @@ export function dispatchTradingCroupierQuoteAction(
 ): void {
   dispatchCroupierQuoteActionSideEffects(instrumentCode, croupierQuoteAction, {
     publish: (type, payload, correlationId) => {
-      target.publish(type, payload, correlationId);
+      publishTradingTelemetryForTarget(target, type, payload, correlationId);
     },
     schedule: (work) => {
       target.state.waitUntil(work);

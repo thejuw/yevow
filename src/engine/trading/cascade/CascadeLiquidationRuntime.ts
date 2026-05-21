@@ -35,6 +35,7 @@ import {
   putTradingStorageForTargetOrHandler,
   recordTradingStorageWriteFailureForTargetOrHandler
 } from "../state/StorageWriteGuard";
+import { publishTradingTelemetryForTarget } from "../telemetry/TelemetryBus";
 export {
   buildCascadeDetectedArtifacts,
   cascadeDetectedAlertMetadata,
@@ -227,7 +228,7 @@ export interface TradingLiquidationIngestTarget {
   };
   safeStoragePut?(entries: Record<string, unknown>, reason: string): Promise<void>;
   handleStorageWriteFailure?(reason: string, error: unknown): void;
-  publish(type: string, payload: JsonRecord): void;
+  publish?(type: string, payload: JsonRecord): void;
   emitCascadeOperationalAlert?(
     eventType: "CASCADE_DETECTED",
     title: string,
@@ -280,7 +281,7 @@ export interface TradingCascadeLiquidationDetectionTarget {
   readonly logger: {
     warn(eventType: string, message: string, metadata?: JsonRecord): void;
   };
-  publish(type: string, payload: JsonRecord): void;
+  publish?(type: string, payload: JsonRecord): void;
   emitCascadeOperationalAlert?(
     eventType: "CASCADE_DETECTED",
     title: string,
@@ -508,7 +509,7 @@ export function handleTradingEngineLiquidationEvents(
         );
       },
       publish: (type, publishPayload) => {
-        target.publish(type, publishPayload);
+        publishTradingTelemetryForTarget(target, type, publishPayload);
       },
       applyState: (state) => {
         target.engineState = state;
@@ -593,7 +594,7 @@ export function recordTradingEngineCascadeLiquidations(
         target.logger.warn("CASCADE_DETECTED", "Liquidation cascade detected", metadata);
       },
       publishDetected: (payload) => {
-        target.publish("CASCADE_DETECTED", payload);
+        publishTradingTelemetryForTarget(target, "CASCADE_DETECTED", payload);
       },
       alertDetected: (cascade, metadata) => {
         if (target.emitCascadeOperationalAlert) {

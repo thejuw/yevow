@@ -21,6 +21,7 @@ import {
   SIGNAL_BUFFER_LIMIT
 } from "../../../TradingEngineConstants";
 import { assertMarketTick, decodeWebSocketMessage, parseJson } from "../helpers/RuntimeParsing";
+import { publishTradingTelemetryForTarget } from "../telemetry/TelemetryBus";
 
 export interface EngineStreamContext {
   adminSockets: Set<WebSocket>;
@@ -43,9 +44,12 @@ export interface EngineStreamContextTarget {
   readonly macroBias: MacroBias;
   readonly activeTemporaryOverride: TemporaryGovernanceOverride | null;
   readonly state: DurableObjectState;
-  readonly telemetryBus: { nextSequence(): number };
+  readonly telemetryBus: {
+    nextSequence(): number;
+    publish(type: string, payload: Record<string, unknown>, correlationId?: string): unknown;
+  };
   enqueueTick?(tick: MarketTick): Promise<TickIngestResult>;
-  publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
+  publish?(type: string, payload: Record<string, unknown>, correlationId?: string): void;
 }
 
 export function createTradingEngineStreamContext(
@@ -68,7 +72,7 @@ export function createTradingEngineStreamContext(
       target.state.waitUntil(promise);
     },
     publish: (type, payload, correlationId) => {
-      target.publish(type, payload, correlationId);
+      publishTradingTelemetryForTarget(target, type, payload, correlationId);
     },
     nextBusSequence: () => target.telemetryBus.nextSequence()
   };

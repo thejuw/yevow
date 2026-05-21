@@ -18,6 +18,7 @@ import {
   type ExecutionReportSideEffectHandlers
 } from "./ExecutionReportRuntime";
 import { putTradingStorageForTargetOrHandler } from "../state/StorageWriteGuard";
+import { publishTradingTelemetryForTarget } from "../telemetry/TelemetryBus";
 
 export interface TradingExecutionReportInput {
   readonly state: EngineState;
@@ -59,7 +60,7 @@ export interface TradingExecutionReportTarget {
     openPositions: EngineState["openPositions"]
   ): InventoryState;
   safeStoragePut?(key: string, value: unknown, reason: string): Promise<void>;
-  publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
+  publish?(type: string, payload: Record<string, unknown>, correlationId?: string): void;
 }
 
 export function markPriceForTradingExecutionReport(
@@ -143,7 +144,8 @@ export function applyTradingExecutionReportForTarget(
         target.logger.recordExecution(tradeExecution);
       },
       publishTradeExecution: (tradeExecution) => {
-        target.publish(
+        publishTradingTelemetryForTarget(
+          target,
           "TRADE_EXECUTION_UPDATE",
           tradeExecution as unknown as Record<string, unknown>,
           tradeExecution.tradeId

@@ -16,6 +16,7 @@ import { observeTradingExecutionProfile } from "../performance/TradingExecutionP
 import { logTradingPerformanceSpike } from "../performance/TradingPerformanceSpikeRuntime";
 import { maybePublishTradingAgentSnapshot } from "./TradingAgentSnapshotRuntime";
 import { publishTradingTickTelemetry } from "./TradingTickTelemetryRuntime";
+import { publishTradingTelemetryForTarget } from "./TelemetryBus";
 
 export interface TradingHotPathTelemetryTarget {
   engineState: EngineState;
@@ -39,7 +40,7 @@ export interface TradingHotPathTelemetryTarget {
   readonly notifier: {
     notify(notification: NotifierEvent): void;
   };
-  publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
+  publish?(type: string, payload: Record<string, unknown>, correlationId?: string): void;
 }
 
 export function observeTradingExecutionProfileForTarget(
@@ -72,7 +73,8 @@ export function observeTradingExecutionProfileForTarget(
         target.logger.logPerformanceSnapshot(snapshot);
       },
       publishTransition: (transition) => {
-        target.publish(
+        publishTradingTelemetryForTarget(
+          target,
           transition.telemetryType,
           transition.telemetryPayload,
           transition.correlationId
@@ -112,7 +114,7 @@ export function publishTradingTickTelemetryForTarget(
     },
     {
       publish: (type, payload, correlationId) => {
-        target.publish(type, payload, correlationId);
+        publishTradingTelemetryForTarget(target, type, payload, correlationId);
       }
     }
   );
@@ -130,7 +132,7 @@ export function maybeRecordTradingAgentSnapshotForTarget(
     },
     {
       publish: (type, payload, correlationId) => {
-        target.publish(type, payload, correlationId);
+        publishTradingTelemetryForTarget(target, type, payload, correlationId);
       }
     }
   );

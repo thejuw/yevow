@@ -19,24 +19,24 @@ import {
 import {
   dispatchTradingCroupierQuoteAction,
   buildCroupierQuoteAction,
-  type CroupierQuoteAction,
-  type TradingCroupierQuoteActionTarget
+  type CroupierQuoteAction
 } from "../quotes/QuoteActionRuntime";
 import {
   maybeRecordTradingAgentSnapshotForTarget,
   publishTradingTickTelemetryForTarget,
   type TradingHotPathTelemetryTarget
 } from "../telemetry/TradingHotPathTelemetryRuntime";
+import type { TradingTelemetryPublisherTarget } from "../telemetry/TelemetryBus";
 import {
   handleTradingProfilerSignal,
-  publishTradingAmVpinTelemetry,
-  type TradingProfilerSignalTarget
+  publishTradingAmVpinTelemetry
 } from "../telemetry/TradingProfilerTelemetryRuntime";
 import {
   recordTradingAcceptedTickJournal,
   scheduleTradingAcceptedTickSnapshot
 } from "../state/TradingTickPersistenceRuntime";
 import { applyHotStorageSnapshotForTargetOrHandler } from "../state/StorageWriteGuard";
+import { publishTradingTelemetryForTarget } from "../telemetry/TelemetryBus";
 import type { AcceptedTickSideEffectsInput } from "./TickPipelineTypes";
 
 export interface AcceptedTickFinalizationInput {
@@ -225,11 +225,7 @@ export async function finalizeAcceptedTickForTarget(
         );
       },
       handleCroupierQuoteAction: (instrumentCode, action) => {
-        dispatchTradingCroupierQuoteAction(
-          instrumentCode,
-          action,
-          target as unknown as TradingCroupierQuoteActionTarget
-        );
+        dispatchTradingCroupierQuoteAction(instrumentCode, action, target);
       },
       dispatchExecutionPlans: (executionPlans, shadowReplay) => {
         dispatchTradingExecutionPlans(
@@ -262,7 +258,7 @@ export async function finalizeAcceptedTickForTarget(
           isProfilerQuoteHalt,
           shadowReplay,
           hasQuote,
-          target as unknown as TradingProfilerSignalTarget
+          target
         ),
       publishTickTelemetry: (tick, metrics, status, hotPathStartedAt) => {
         publishTradingTickTelemetryForTarget(
@@ -276,7 +272,8 @@ export async function finalizeAcceptedTickForTarget(
       publishAmVpinTelemetry: (profilerState, instrumentCode, observedAt) => {
         publishTradingAmVpinTelemetry(profilerState, instrumentCode, observedAt, {
           publish: (type, payload, correlationId) => {
-            (target as unknown as TradingHotPathTelemetryTarget).publish(
+            publishTradingTelemetryForTarget(
+              target as unknown as TradingTelemetryPublisherTarget,
               type,
               payload,
               correlationId

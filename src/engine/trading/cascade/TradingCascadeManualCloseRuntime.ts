@@ -13,6 +13,7 @@ import {
   type TradingExecutionDispatchTarget
 } from "../execution/TradingExecutionDispatchRuntime";
 import { putTradingStorageForTargetOrHandler } from "../state/StorageWriteGuard";
+import { publishTradingTelemetryForTarget } from "../telemetry/TelemetryBus";
 
 export interface TradingCascadeManualCloseInput {
   readonly positions: readonly CascadeOpenPosition[];
@@ -54,7 +55,7 @@ export interface TradingCascadeManualCloseTarget {
     warn(eventType: string, message: string, telemetry?: JsonRecord): void;
   };
   dispatchExecution?(intent: TradeIntent): Promise<void>;
-  publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
+  publish?(type: string, payload: Record<string, unknown>, correlationId?: string): void;
   safeStoragePut?(key: string, value: unknown, reason: string): Promise<void>;
 }
 
@@ -118,7 +119,12 @@ export function closeTradingEngineCascadePosition(
         );
       },
       publishManualClose: (payload, correlationId) => {
-        target.publish("CASCADE_POSITION_MANUAL_CLOSE", payload, correlationId);
+        publishTradingTelemetryForTarget(
+          target,
+          "CASCADE_POSITION_MANUAL_CLOSE",
+          payload,
+          correlationId
+        );
       },
       persistPositions: () => {
         target.state.waitUntil(

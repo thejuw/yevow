@@ -16,6 +16,7 @@ import {
   type TradingQuoteCancelAllTarget
 } from "../quotes/QuoteCancelRuntime";
 import { applyTradingQuoteSuppression } from "../quotes/TradingQuoteSuppressionRuntime";
+import { publishTradingTelemetryForTarget } from "../telemetry/TelemetryBus";
 import type {
   AcceptedDecisionPipelineInput,
   AcceptedExecutionContext,
@@ -83,7 +84,7 @@ export interface AcceptedExecutionContextTarget {
   readonly logger: {
     warn(eventType: string, message: string, metadata: JsonRecord): void;
   };
-  publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
+  publish?(type: string, payload: Record<string, unknown>, correlationId?: string): void;
   cancelAllQuotes?(instrumentCode: string, reason: string): Promise<void>;
 }
 
@@ -217,7 +218,7 @@ export function prepareAcceptedExecutionContextForTarget(
           },
           {
             publishSuspend: (payload) => {
-              target.publish("SUSPEND_QUOTES", payload);
+              publishTradingTelemetryForTarget(target, "SUSPEND_QUOTES", payload);
             },
             cancelQuotes: (reason) => {
               target.state.waitUntil(

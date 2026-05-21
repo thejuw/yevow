@@ -19,6 +19,7 @@ import {
   type TradingHotPathTelemetryTarget
 } from "../telemetry/TradingHotPathTelemetryRuntime";
 import { applyHotStorageSnapshotForTargetOrHandler } from "../state/StorageWriteGuard";
+import { publishTradingTelemetryForTarget } from "../telemetry/TelemetryBus";
 
 export interface NativeHyperliquidLatencyPullInput {
   readonly currentState: EngineState;
@@ -90,7 +91,7 @@ export interface TradingNativeHyperliquidLatencyPullTarget {
     reason: "NATIVE_HL_LATENCY_PULL"
   ): Promise<unknown>;
   logPerformance?(metrics: LatencyMetrics): void;
-  publish(type: "STALE_DATA_KILL_SWITCH", payload: Record<string, unknown>): void;
+  publish?(type: "STALE_DATA_KILL_SWITCH", payload: Record<string, unknown>): void;
 }
 
 export interface LatencySnapshotStorageInput {
@@ -253,7 +254,7 @@ export function applyTradingNativeHyperliquidLatencyPullForTarget(
         logTradingPerformanceForTarget(metrics, target as unknown as TradingHotPathTelemetryTarget);
       },
       publish: (type, payload) => {
-        target.publish(type, payload);
+        publishTradingTelemetryForTarget(target, type, payload);
       }
     }
   );

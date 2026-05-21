@@ -36,6 +36,7 @@ import {
   resolveShadowQueueNoEdgeLogInterval,
   resolveShadowQueueSizingConfig
 } from "./ShadowQueueRuntime";
+import { publishTradingTelemetryForTarget } from "../telemetry/TelemetryBus";
 
 export interface TradingShadowQueueInput {
   readonly tick: MarketTick;
@@ -82,7 +83,7 @@ export interface TradingShadowQueueTarget {
   readonly state: {
     waitUntil(work: Promise<unknown>): void;
   };
-  publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
+  publish?(type: string, payload: Record<string, unknown>, correlationId?: string): void;
   cancelAllQuotes?(instrumentCode: string, reason: "SHADOW_QUEUE_RED_LIGHT"): Promise<unknown>;
   dispatchExecution?(intent: TradeIntent): Promise<unknown>;
 }
@@ -237,7 +238,7 @@ export function processTradingShadowQueueTickForTarget(
         target.logger.warn(eventType, message, metadata);
       },
       publish: (type, payload, correlationId) => {
-        target.publish(type, payload, correlationId);
+        publishTradingTelemetryForTarget(target, type, payload, correlationId);
       },
       schedule: (work) => {
         target.state.waitUntil(work);

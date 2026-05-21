@@ -23,6 +23,7 @@ import {
   defaultRiskMetrics
 } from "./EngineStateDefaults";
 import { putTradingStorageForTargetOrHandler } from "./StorageWriteGuard";
+import { publishTradingTelemetryForTarget } from "../telemetry/TelemetryBus";
 import {
   deleteRetiredProfilerStorageForTarget,
   type TradingRetiredProfilerStorageTarget
@@ -170,7 +171,7 @@ export interface TradingAdminRecoveryTarget {
   resetOrderBook?(payload: Partial<OrderBookResetRequest>): Promise<void>;
   resetLatencyBaseline?(observedAt: string, reason: string): void;
   safeStoragePut?(entries: Record<string, unknown>, reason: string): Promise<void>;
-  publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
+  publish?(type: string, payload: Record<string, unknown>, correlationId?: string): void;
 }
 
 export interface AdminRecoveryCompletionSideEffectHandlers {
@@ -489,7 +490,7 @@ export async function recoverTradingEngineStateForTarget(
         });
       },
       publishRecovery: (publishPayload) => {
-        target.publish("ADMIN_CONTROLLED_RECOVERY", publishPayload);
+        publishTradingTelemetryForTarget(target, "ADMIN_CONTROLLED_RECOVERY", publishPayload);
       }
     }
   );

@@ -23,6 +23,13 @@ export interface BusMessage {
 }
 export type { TelemetryLogEntry } from "./TelemetryAggregateRuntime";
 
+export interface TradingTelemetryPublisherTarget {
+  readonly telemetryBus?: {
+    publish(type: string, payload: Record<string, unknown>, correlationId?: string): unknown;
+  };
+  publish?(type: string, payload: Record<string, unknown>, correlationId?: string): void;
+}
+
 export interface TradingTelemetryBusOptions {
   env: Env;
   adminSockets: Set<WebSocket>;
@@ -232,4 +239,22 @@ export class TradingTelemetryBus {
       this.scheduleTelemetryFlush();
     }
   }
+}
+
+export function publishTradingTelemetryForTarget(
+  target: TradingTelemetryPublisherTarget,
+  type: string,
+  payload: Record<string, unknown>,
+  correlationId?: string
+): void {
+  if (target.publish) {
+    target.publish(type, payload, correlationId);
+    return;
+  }
+
+  if (!target.telemetryBus) {
+    throw new Error("Telemetry publish requires telemetryBus binding");
+  }
+
+  target.telemetryBus.publish(type, payload, correlationId);
 }

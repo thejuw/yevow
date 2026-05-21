@@ -16,6 +16,7 @@ import {
   buildTradingDomAnalysisForTarget,
   type TradingBookViewTarget
 } from "../book/TradingBookViewRuntime";
+import { publishTradingTelemetryForTarget } from "../telemetry/TelemetryBus";
 import { cancelLaggingHypeQuotesForTrading } from "../leadlag/TradingCrossAssetCancelRuntime";
 import {
   processTradingShadowQueueTickForTarget,
@@ -84,7 +85,7 @@ export interface TradingPostBookTickRuntimeTarget {
   readonly state: {
     waitUntil(work: Promise<unknown>): void;
   };
-  publish(type: "SUSPEND_QUOTES", payload: JsonRecord): void;
+  publish?(type: "SUSPEND_QUOTES", payload: JsonRecord): void;
   cancelAllQuotes?(instrumentCode: "hype-usd", reason: "BTC_LEAD_MOVE"): Promise<unknown>;
   processShadowQueueTick?(
     tick: MarketTick,
@@ -206,7 +207,7 @@ export function prepareTradingPostBookTickRuntimeForTarget(
         target.logger.warn(eventType, message, metadata);
       },
       publishSuspend: (payload) => {
-        target.publish("SUSPEND_QUOTES", payload);
+        publishTradingTelemetryForTarget(target, "SUSPEND_QUOTES", payload);
       },
       schedule: (work) => {
         target.state.waitUntil(work);

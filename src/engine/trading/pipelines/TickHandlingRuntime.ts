@@ -14,6 +14,7 @@ import {
   handleTradingEngineAnomalyEmergencyPause,
   type TradingAnomalyEmergencyTarget
 } from "../anomaly/TradingAnomalyEmergencyRuntime";
+import { publishTradingTelemetryForTarget } from "../telemetry/TelemetryBus";
 import {
   resolveTradingTickBookForTarget,
   type TradingTickBookTarget
@@ -455,7 +456,7 @@ type ShadowModeResumeTarget = TradingTickHandlingTarget & {
   readonly logger: {
     warn(eventType: string, message: string, metadata: JsonRecord): void;
   };
-  publish(type: "RESUME_QUOTES", payload: JsonRecord): void;
+  publish?(type: "RESUME_QUOTES", payload: JsonRecord): void;
 };
 
 type AvailabilityTarget = TradingTickHandlingTarget & {
@@ -498,7 +499,7 @@ function maybeAutoResumeShadowModeForTarget(
         );
       },
       publishResume: (payload) => {
-        runtimeTarget.publish("RESUME_QUOTES", payload);
+        publishTradingTelemetryForTarget(runtimeTarget, "RESUME_QUOTES", payload);
       }
     }
   );

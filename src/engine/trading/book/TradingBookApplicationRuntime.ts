@@ -20,6 +20,7 @@ import type { AppliedBookUpdate, BookDeltaWithTicker } from "./BookTypes";
 import type { OrderBookReconstructor } from "./OrderBookReconstructor";
 import type { SortedBookSide } from "./SortedBookSide";
 import { putTradingStorageForTargetOrHandler } from "../state/StorageWriteGuard";
+import { publishTradingTelemetryForTarget } from "../telemetry/TelemetryBus";
 import {
   buildTradingDomAnalysisForTarget,
   type TradingBookViewTarget
@@ -72,7 +73,7 @@ export interface TradingBookApplicationTarget {
     info(eventType: string, message: string, metadata: JsonRecord): void;
   };
   safeStoragePut?(writes: Record<string, unknown>, reason: string): Promise<void>;
-  publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
+  publish?(type: string, payload: Record<string, unknown>, correlationId?: string): void;
 }
 
 export async function applyTradingBookSnapshot(
@@ -148,7 +149,7 @@ export async function applyTradingBookSnapshotForTarget(
         );
       },
       publishSnapshotApplied: (payload) => {
-        target.publish("ORDER_BOOK_SNAPSHOT_APPLIED", payload);
+        publishTradingTelemetryForTarget(target, "ORDER_BOOK_SNAPSHOT_APPLIED", payload);
       }
     }
   );

@@ -11,6 +11,7 @@ import {
   type TradingQuoteCancelAllTarget
 } from "../quotes/QuoteCancelRuntime";
 import { applyHotStorageSnapshotForTargetOrHandler } from "../state/StorageWriteGuard";
+import { publishTradingTelemetryForTarget } from "../telemetry/TelemetryBus";
 
 export interface ResolvedGrpcFatalDrop {
   readonly observedAt: string;
@@ -83,7 +84,7 @@ export interface GrpcFatalDropTarget {
     writes: Record<string, unknown>,
     reason: "GRPC_FATAL_DROP"
   ): Promise<unknown>;
-  publish(type: string, payload: JsonRecord): void;
+  publish?(type: string, payload: JsonRecord): void;
   cancelAllQuotes?(instrumentCode: "ALL", reason: "GRPC_FATAL_DROP"): Promise<unknown>;
 }
 
@@ -251,7 +252,7 @@ export function handleGrpcFatalDropForTarget(
       target.logger.error(eventType, message, metadata);
     },
     publish: (type, publishPayload) => {
-      target.publish(type, publishPayload);
+      publishTradingTelemetryForTarget(target, type, publishPayload);
     },
     cancelAllQuotes: (instrumentCode, reason) =>
       target.cancelAllQuotes

@@ -14,6 +14,7 @@ import {
   cancelAllTradingQuotesForTarget,
   type TradingQuoteCancelAllTarget
 } from "../quotes/QuoteCancelRuntime";
+import { publishTradingTelemetryForTarget } from "./TelemetryBus";
 
 export interface TradingProfilerTelemetryHandlers {
   readonly publish: (
@@ -28,7 +29,7 @@ export interface TradingProfilerSignalTarget {
   readonly state: {
     waitUntil(work: Promise<void>): void;
   };
-  publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
+  publish?(type: string, payload: Record<string, unknown>, correlationId?: string): void;
   acceptAgentSignal?(signal: AgentSignal, latencyMs: number): Promise<void>;
   cancelAllQuotes?(instrumentCode: string, reason: "PROFILER_ALERT"): Promise<void>;
 }
@@ -78,7 +79,7 @@ export async function handleTradingProfilerSignal(
       publishAlert: (signal, profilerState) => {
         publishTradingProfilerAlert(signal, profilerState, {
           publish: (type, payload, correlationId) => {
-            target.publish(type, payload, correlationId);
+            publishTradingTelemetryForTarget(target, type, payload, correlationId);
           }
         });
       },

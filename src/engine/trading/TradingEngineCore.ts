@@ -208,7 +208,8 @@ export class TradingEngine {
           value,
           reason
         ),
-      publish: (type, payload, correlationId) => this.publish(type, payload, correlationId),
+      publish: (type, payload, correlationId) =>
+        this.telemetryBus.publish(type, payload, correlationId),
       onStorageReadFailure: (reason, error) =>
         recordTradingStorageWriteFailureForTarget(
           this as unknown as TradingStorageGuardTarget,
@@ -247,7 +248,7 @@ export class TradingEngine {
       env,
       stores: buildTradingOrderBookStoresForTarget(this as unknown as TradingOrderBookStoresTarget),
       logger: this.logger,
-      publish: (type, payload) => this.publish(type, payload),
+      publish: (type, payload) => this.telemetryBus.publish(type, payload),
       resetOrderBook: (payload) =>
         resetTradingOrderBookForTarget(
           payload,
@@ -266,9 +267,5 @@ export class TradingEngine {
 
   async fetch(request: Request): Promise<Response> {
     return handleTradingEngineFetchForTarget(request, this as unknown as TradingEngineFetchTarget);
-  }
-
-  private publish(type: string, payload: Record<string, unknown>, correlationId?: string): void {
-    this.telemetryBus.publish(type, payload, correlationId);
   }
 }

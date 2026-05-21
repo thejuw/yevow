@@ -14,6 +14,7 @@ import {
   type TradingConfigRefreshCadenceTarget,
   type TradingEngineConfigControlTarget
 } from "../config/TradingConfigControlRuntime";
+import { publishTradingTelemetryForTarget } from "../telemetry/TelemetryBus";
 
 export interface TradingAlarmRuntimeTarget {
   readonly initialized: Promise<void>;
@@ -22,7 +23,7 @@ export interface TradingAlarmRuntimeTarget {
   drainExecutionQueue?(): Promise<void>;
   runJanitor?(source: "ALARM"): Promise<void>;
   scheduleConfigRefresh?(): Promise<void>;
-  publish(type: "RESUME_QUOTES", payload: Record<string, unknown>): void;
+  publish?(type: "RESUME_QUOTES", payload: Record<string, unknown>): void;
 }
 
 export async function runTradingAlarmForTarget(target: TradingAlarmRuntimeTarget): Promise<void> {
@@ -54,7 +55,7 @@ export async function runTradingAlarmForTarget(target: TradingAlarmRuntimeTarget
         target.engineState = state;
       },
       publishResume: (payload) => {
-        target.publish("RESUME_QUOTES", payload);
+        publishTradingTelemetryForTarget(target, "RESUME_QUOTES", payload);
       }
     }
   );

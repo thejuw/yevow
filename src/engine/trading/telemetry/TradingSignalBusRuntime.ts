@@ -19,6 +19,7 @@ import {
   type TradingQuoteCancelAllTarget
 } from "../quotes/QuoteCancelRuntime";
 import { putTradingStorageForTargetOrHandler } from "../state/StorageWriteGuard";
+import { publishTradingTelemetryForTarget } from "./TelemetryBus";
 
 export interface TradingSignalBusTarget {
   signals: AgentSignal[];
@@ -36,7 +37,7 @@ export interface TradingSignalBusTarget {
   };
   safeStoragePut?(entries: Record<string, unknown>, reason: string): Promise<void>;
   safeStoragePut?(key: string, value: unknown, reason: string): Promise<void>;
-  publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
+  publish?(type: string, payload: Record<string, unknown>, correlationId?: string): void;
   cancelAllQuotes?(instrumentCode: string, reason: "HAWKES_FLOW_CLUSTER"): Promise<void>;
 }
 
@@ -64,7 +65,7 @@ export function acceptTradingAgentSignalForTarget(
         target.logger.agentDecision(agentSignal, signalLatencyMs);
       },
       publish: (telemetryType, payload, correlationId) => {
-        target.publish(telemetryType, payload, correlationId);
+        publishTradingTelemetryForTarget(target, telemetryType, payload, correlationId);
       },
       schedule: (work) => {
         target.state.waitUntil(work);
@@ -99,7 +100,7 @@ export function emitTradingCascadeOperationalAlertForTarget(
 
   emitCascadeOperationalAlertSideEffects(event, {
     publish: (telemetryType, payload, correlationId) => {
-      target.publish(telemetryType, payload, correlationId);
+      publishTradingTelemetryForTarget(target, telemetryType, payload, correlationId);
     },
     notify: (notification) => {
       target.notifier.notify(notification);
@@ -126,7 +127,7 @@ export function recordTradingCascadeUiSignalForTarget(
       persistStorageSignal: (key, signalToPersist, reason) =>
         putTradingStorageForTargetOrHandler(target, key, signalToPersist, reason),
       publish: (telemetryType, payload, correlationId) => {
-        target.publish(telemetryType, payload, correlationId);
+        publishTradingTelemetryForTarget(target, telemetryType, payload, correlationId);
       }
     }
   );

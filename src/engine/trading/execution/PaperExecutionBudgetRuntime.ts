@@ -2,6 +2,7 @@ import { DEFAULT_PAPER_MAX_GHOST_FILLS_PER_MINUTE } from "../../../TradingEngine
 import { isShadowMode } from "../../../utils/CitadelProtocol";
 import { readPositiveInteger } from "../helpers/RuntimeParsing";
 import type { Env, JsonRecord, TradeIntent } from "../../../types";
+import { publishTradingTelemetryForTarget } from "../telemetry/TelemetryBus";
 
 export interface PaperExecutionBudgetState {
   readonly windowStartedAtMs: number;
@@ -52,7 +53,7 @@ export interface TradingPaperExecutionBudgetTarget {
   readonly logger: {
     warn(eventType: string, message: string, telemetry?: JsonRecord): void;
   };
-  publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
+  publish?(type: string, payload: Record<string, unknown>, correlationId?: string): void;
 }
 
 const DEFAULT_WINDOW_MS = 60_000;
@@ -209,7 +210,7 @@ export function reservePaperExecutionBudgetForTarget(
         );
       },
       publishThrottle: (payload) => {
-        target.publish("SHADOW_PAPER_CADENCE_THROTTLED", payload);
+        publishTradingTelemetryForTarget(target, "SHADOW_PAPER_CADENCE_THROTTLED", payload);
       }
     }
   );

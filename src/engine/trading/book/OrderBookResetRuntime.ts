@@ -22,6 +22,7 @@ import {
   putTradingStorageForTargetOrHandler,
   recordTradingStorageWriteFailureForTargetOrHandler
 } from "../state/StorageWriteGuard";
+import { publishTradingTelemetryForTarget } from "../telemetry/TelemetryBus";
 
 export interface ResolvedOrderBookReset {
   readonly now: string;
@@ -132,7 +133,7 @@ export interface TradingOrderBookResetTarget {
   readonly logger: {
     warn(eventType: string, message: string, telemetry?: JsonRecord): void;
   };
-  publish(type: string, payload: Record<string, unknown>): void;
+  publish?(type: string, payload: Record<string, unknown>): void;
 }
 
 export function resolveOrderBookReset(
@@ -414,7 +415,7 @@ export async function resetTradingOrderBookForTarget(
         );
       },
       publishReset: (telemetry) => {
-        target.publish("ORDER_BOOK_RESET", telemetry);
+        publishTradingTelemetryForTarget(target, "ORDER_BOOK_RESET", telemetry);
       }
     }
   );

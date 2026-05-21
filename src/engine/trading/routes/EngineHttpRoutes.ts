@@ -114,6 +114,7 @@ import {
   SIGNAL_BUFFER_LIMIT
 } from "../../../TradingEngineConstants";
 import { putTradingStorageForTargetOrHandler } from "../state/StorageWriteGuard";
+import { publishTradingTelemetryForTarget } from "../telemetry/TelemetryBus";
 import type { TickIngestResult, GrpcFatalDropPayload } from "../TradingEngineRouteTypes";
 
 export interface EngineHttpRouteContext {
@@ -254,7 +255,7 @@ export function createTradingEngineHttpRouteContext(
       resetTradingLatencyBaselineForTarget(observedAt, reason, target);
     },
     publish: (type, payload, correlationId) => {
-      target.publish(type, payload, correlationId);
+      publishTradingTelemetryForTarget(target, type, payload, correlationId);
     },
     safeStoragePutEntries: (entries, reason) =>
       putTradingStorageForTargetOrHandler(target, entries, reason),

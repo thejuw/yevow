@@ -27,6 +27,7 @@ import {
   type TradingQuoteCancelAllTarget
 } from "../quotes/QuoteCancelRuntime";
 import { applyHotStorageSnapshotForTargetOrHandler } from "../state/StorageWriteGuard";
+import { publishTradingTelemetryForTarget } from "../telemetry/TelemetryBus";
 
 export interface TradingStaleLatencyTarget {
   engineState: EngineState;
@@ -46,7 +47,7 @@ export interface TradingStaleLatencyTarget {
   latencyStorageWrites?(extra?: Record<string, unknown>): Record<string, unknown>;
   persistHotStorageSnapshot?(writes: Record<string, unknown>, reason: string): Promise<void>;
   logPerformance?(latencyMetrics: LatencyMetrics): void;
-  publish(type: "STALE_DATA_KILL_SWITCH", payload: JsonRecord): void;
+  publish?(type: "STALE_DATA_KILL_SWITCH", payload: JsonRecord): void;
   cancelAllQuotes?(instrumentCode: string, reason: string): Promise<void>;
   observeExecutionProfile?(metrics: LatencyMetrics, trace: ExecutionTraceInput): void;
   publishTickTelemetry?(
@@ -96,7 +97,7 @@ export function handleTradingHardStaleTickDrop(
         logTradingStalePerformance(target, staleMetrics);
       },
       publishPull: (payload) => {
-        target.publish("STALE_DATA_KILL_SWITCH", payload);
+        publishTradingTelemetryForTarget(target, "STALE_DATA_KILL_SWITCH", payload);
       },
       schedule: (work) => {
         target.state.waitUntil(work);
@@ -147,7 +148,7 @@ export function handleTradingSoftStaleTick(
         logTradingStalePerformance(target, staleMetrics);
       },
       publishKillSwitch: (payload) => {
-        target.publish("STALE_DATA_KILL_SWITCH", payload);
+        publishTradingTelemetryForTarget(target, "STALE_DATA_KILL_SWITCH", payload);
       },
       notify: (notification) => {
         target.notifier.notify(notification);
