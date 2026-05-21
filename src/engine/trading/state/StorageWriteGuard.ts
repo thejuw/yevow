@@ -36,6 +36,11 @@ export interface TradingHotStorageSnapshotTarget {
   safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void>;
 }
 
+export interface TradingStorageGuardTarget {
+  readonly storageGuard: StorageWriteGuard;
+  readonly state: Pick<DurableObjectState, "waitUntil">;
+}
+
 export type HotStorageSnapshotDecision =
   | {
       readonly shouldPersist: true;
@@ -120,6 +125,56 @@ export async function applyHotStorageSnapshotForTarget(
         target.safeStoragePut(snapshotEntries, snapshotReason)
     }
   );
+}
+
+export async function putTradingStorageForTarget(
+  target: TradingStorageGuardTarget,
+  keyOrEntries: string | Record<string, unknown>,
+  valueOrReason: unknown,
+  maybeReason?: string
+): Promise<void> {
+  if (typeof keyOrEntries === "string") {
+    await target.storageGuard.put(keyOrEntries, valueOrReason, maybeReason ?? "STORAGE_WRITE");
+    return;
+  }
+
+  await target.storageGuard.put(
+    keyOrEntries,
+    typeof valueOrReason === "string" ? valueOrReason : "STORAGE_WRITE"
+  );
+}
+
+export function waitUntilTradingStoragePutForTarget(
+  target: TradingStorageGuardTarget,
+  key: string,
+  value: unknown,
+  reason: string
+): void {
+  target.state.waitUntil(putTradingStorageForTarget(target, key, value, reason));
+}
+
+export async function deleteTradingStorageForTarget(
+  target: TradingStorageGuardTarget,
+  keys: string[],
+  reason: string
+): Promise<void> {
+  await target.storageGuard.delete(keys, reason);
+}
+
+export async function setTradingStorageAlarmForTarget(
+  target: TradingStorageGuardTarget,
+  timestamp: number,
+  reason: string
+): Promise<void> {
+  await target.storageGuard.setAlarm(timestamp, reason);
+}
+
+export function recordTradingStorageWriteFailureForTarget(
+  target: TradingStorageGuardTarget,
+  reason: string,
+  error: unknown
+): void {
+  target.storageGuard.recordFailure(reason, error);
 }
 
 export class StorageWriteGuard {

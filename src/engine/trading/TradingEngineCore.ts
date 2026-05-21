@@ -274,7 +274,13 @@ import {
 } from "./state/RecoveryRuntime";
 import {
   applyHotStorageSnapshotForTarget,
+  deleteTradingStorageForTarget,
+  putTradingStorageForTarget,
+  recordTradingStorageWriteFailureForTarget,
+  setTradingStorageAlarmForTarget,
+  waitUntilTradingStoragePutForTarget,
   type TradingHotStorageSnapshotTarget,
+  type TradingStorageGuardTarget,
   type StorageWriteGuard
 } from "./state/StorageWriteGuard";
 import { type LogPruneReport } from "../LogRetention";
@@ -822,26 +828,33 @@ export class TradingEngine {
     valueOrReason: unknown,
     maybeReason?: string
   ): Promise<void> {
-    if (typeof keyOrEntries === "string") {
-      await this.storageGuard.put(keyOrEntries, valueOrReason, maybeReason ?? "STORAGE_WRITE");
-    } else {
-      await this.storageGuard.put(
-        keyOrEntries,
-        typeof valueOrReason === "string" ? valueOrReason : "STORAGE_WRITE"
-      );
-    }
+    await putTradingStorageForTarget(
+      this as unknown as TradingStorageGuardTarget,
+      keyOrEntries,
+      valueOrReason,
+      maybeReason
+    );
   }
 
   private waitUntilStoragePut(key: string, value: unknown, reason: string): void {
-    this.state.waitUntil(this.safeStoragePut(key, value, reason));
+    waitUntilTradingStoragePutForTarget(
+      this as unknown as TradingStorageGuardTarget,
+      key,
+      value,
+      reason
+    );
   }
 
   private async safeStorageDelete(keys: string[], reason: string): Promise<void> {
-    await this.storageGuard.delete(keys, reason);
+    await deleteTradingStorageForTarget(this as unknown as TradingStorageGuardTarget, keys, reason);
   }
 
   private async safeSetAlarm(timestamp: number, reason: string): Promise<void> {
-    await this.storageGuard.setAlarm(timestamp, reason);
+    await setTradingStorageAlarmForTarget(
+      this as unknown as TradingStorageGuardTarget,
+      timestamp,
+      reason
+    );
   }
 
   private async persistHotStorageSnapshot(
@@ -856,7 +869,11 @@ export class TradingEngine {
   }
 
   private handleStorageWriteFailure(reason: string, error: unknown): void {
-    this.storageGuard.recordFailure(reason, error);
+    recordTradingStorageWriteFailureForTarget(
+      this as unknown as TradingStorageGuardTarget,
+      reason,
+      error
+    );
   }
 
   private streamContext() {

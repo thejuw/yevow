@@ -21,7 +21,11 @@ import { hydrateEngineBootCollections } from "../../src/engine/trading/state/Eng
 import {
   applyHotStorageSnapshotForTarget,
   applyHotStorageSnapshotSideEffects,
+  deleteTradingStorageForTarget,
   evaluateHotStorageSnapshotDecision,
+  putTradingStorageForTarget,
+  setTradingStorageAlarmForTarget,
+  waitUntilTradingStoragePutForTarget,
   resolveHotStorageSnapshotIntervalMs,
   resolveHotStorageSnapshotTickInterval,
   StorageWriteGuard
@@ -580,6 +584,35 @@ describe("storage write guard", () => {
     await guard.delete(["ready"], "delete");
 
     expect(storage.deleted).toEqual([["ready"]]);
+  });
+
+  it("routes storage operations through the trading storage target adapter", async () => {
+    const pending: Promise<unknown>[] = [];
+    const storage = new FakeDurableObjectStorage();
+    const target = {
+      storageGuard: new StorageWriteGuard(storage as unknown as DurableObjectStorage, 10_000),
+      state: {
+        waitUntil(promise: Promise<unknown>) {
+          pending.push(promise);
+        }
+      }
+    };
+
+    await putTradingStorageForTarget(target, "one", 1, "single");
+    await putTradingStorageForTarget(target, { two: 2 }, "batch");
+    waitUntilTradingStoragePutForTarget(target, "three", 3, "deferred");
+    await pending.at(-1);
+    await deleteTradingStorageForTarget(target, ["one"], "delete");
+    await setTradingStorageAlarmForTarget(target, 42, "alarm");
+
+    expect(storage.values).toEqual(
+      new Map<string, unknown>([
+        ["two", 2],
+        ["three", 3]
+      ])
+    );
+    expect(storage.deleted).toEqual([["one"]]);
+    expect(storage.alarms).toEqual([42]);
   });
 
   it("decides hot snapshot persistence by time or processed tick interval", () => {
