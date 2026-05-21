@@ -8,7 +8,8 @@ import {
   orderBookResetDeleteKeys,
   orderBookResetRuntimeArtifacts,
   orderBookResetTelemetry,
-  resolveOrderBookReset
+  resolveOrderBookReset,
+  resetTradingOrderBook
 } from "../../src/engine/trading/book/OrderBookResetRuntime";
 import { SortedBookSide } from "../../src/engine/trading/book/SortedBookSide";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
@@ -287,6 +288,70 @@ describe("OrderBookResetRuntime", () => {
       "connections:conn-1:hyperliquid:book",
       "persist:engine:state",
       "delete:book:hyperliquid:btc-usd",
+      "log:STREAM_RECOVERED",
+      "publish:STREAM_RECOVERED"
+    ]);
+  });
+
+  it("resets trading order books with default storage keys and connection repair", async () => {
+    const stores = storeSet();
+    const connections = new Map<string, string>();
+    const calls: string[] = [];
+
+    const artifacts = await resetTradingOrderBook(
+      {
+        payload: {
+          source: "INGEST_WORKER",
+          reason: "STREAM_RECOVERED",
+          streamId: "book",
+          connectionId: "conn-2"
+        },
+        currentState: defaultEngineState("trading-order-book-reset"),
+        stores,
+        orderBook: stores.orderBook,
+        activeIngestConnections: connections
+      },
+      {
+        async listPersistedBooks(prefix) {
+          calls.push(`list:${prefix}`);
+          return new Map<string, InternalOrderBook>([
+            ["book:hyperliquid:btc-usd", {} as InternalOrderBook],
+            ["book:hyperliquid:eth-usd", {} as InternalOrderBook]
+          ]);
+        },
+        handleListFailure(error) {
+          calls.push(`list-error:${String(error)}`);
+        },
+        resetLatencyBaseline(_observedAt, reason) {
+          calls.push(`latency:${reason}`);
+        },
+        applyState(state) {
+          calls.push(`state:${state.engineId}:${state.internalOrderBookDepth}`);
+        },
+        async persistWrites(writes) {
+          calls.push(`persist:${Object.keys(writes).join(",")}`);
+        },
+        async deleteStorageKeys(keys) {
+          calls.push(`delete:${keys.join(",")}`);
+        },
+        logReset(telemetry) {
+          calls.push(`log:${telemetry.reason as string}`);
+        },
+        publishReset(telemetry) {
+          calls.push(`publish:${telemetry.reason as string}`);
+        }
+      }
+    );
+
+    expect(artifacts.deleteKeys).toEqual(["book:hyperliquid:btc-usd", "book:hyperliquid:eth-usd"]);
+    expect(stores.orderBook.size).toBe(0);
+    expect(connections.get("hyperliquid:book")).toBe("conn-2");
+    expect(calls).toEqual([
+      "list:book:",
+      "state:trading-order-book-reset:0",
+      "latency:ORDER_BOOK_RESET:STREAM_RECOVERED",
+      "persist:engine:state",
+      "delete:book:hyperliquid:btc-usd,book:hyperliquid:eth-usd",
       "log:STREAM_RECOVERED",
       "publish:STREAM_RECOVERED"
     ]);

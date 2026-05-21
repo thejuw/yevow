@@ -1,3 +1,4 @@
+import { ENGINE_STATE_KEY, ORDER_BOOK_PREFIX } from "../../../TradingEngineConstants";
 import { normalizeSourceExchange } from "../helpers/NativeMarketIdentityRuntime";
 import { buildMarketKey } from "./BookRuntimeHelpers";
 import type {
@@ -7,6 +8,8 @@ import type {
   OrderBookResetRequest,
   PriceDiscoveryMetrics
 } from "../../../types";
+import { calculateOrderBookPriceDiscovery } from "./BookViews";
+import { countBookLevels } from "./BookReconstruction";
 import type { BookSyncState } from "./BookTypes";
 import type { SortedBookSide } from "./SortedBookSide";
 import { stateAfterOrderBookReset } from "./BookRuntimeState";
@@ -82,6 +85,25 @@ export interface OrderBookResetFlowHandlers extends OrderBookResetSideEffectHand
     observedAt: string
   ) => PriceDiscoveryMetrics;
   readonly applyState: (state: EngineState) => void;
+}
+
+export interface TradingOrderBookResetInput {
+  readonly payload: Partial<OrderBookResetRequest>;
+  readonly currentState: EngineState;
+  readonly stores: OrderBookResetStores;
+  readonly orderBook: Map<string, InternalOrderBook>;
+  readonly activeIngestConnections: Map<string, string>;
+}
+
+export interface TradingOrderBookResetHandlers {
+  readonly listPersistedBooks: (prefix: string) => Promise<Map<string, InternalOrderBook>>;
+  readonly handleListFailure: (error: unknown) => void;
+  readonly resetLatencyBaseline: (observedAt: string, reason: string) => void;
+  readonly applyState: (state: EngineState) => void;
+  readonly persistWrites: (writes: Record<string, unknown>) => Promise<void>;
+  readonly deleteStorageKeys: (keys: readonly string[]) => Promise<void>;
+  readonly logReset: (telemetry: JsonRecord) => void;
+  readonly publishReset: (telemetry: JsonRecord) => void;
 }
 
 export function resolveOrderBookReset(
@@ -282,4 +304,40 @@ export async function applyOrderBookResetFlow(
   await applyOrderBookResetSideEffects(reset, artifacts, handlers);
 
   return artifacts;
+}
+
+export async function resetTradingOrderBook(
+  input: TradingOrderBookResetInput,
+  handlers: TradingOrderBookResetHandlers
+): Promise<OrderBookResetRuntimeArtifacts> {
+  return applyOrderBookResetFlow(
+    {
+      payload: input.payload,
+      currentState: input.currentState,
+      orderBookPrefix: ORDER_BOOK_PREFIX,
+      engineStateKey: ENGINE_STATE_KEY,
+      stores: input.stores,
+      orderBookSize: input.stores.orderBook.size,
+      internalOrderBookDepth: countBookLevels(input.stores.bids, input.stores.asks)
+    },
+    {
+      listPersistedBooks: handlers.listPersistedBooks,
+      handleListFailure: handlers.handleListFailure,
+      calculatePriceDiscovery: (instrumentCode, observedAt) =>
+        calculateOrderBookPriceDiscovery(input.orderBook, instrumentCode, observedAt),
+      applyState: handlers.applyState,
+      resetLatencyBaseline: handlers.resetLatencyBaseline,
+      applyConnectionIds: (connectionId, connectionKeys) => {
+        applyOrderBookResetConnectionIds(
+          input.activeIngestConnections,
+          connectionId,
+          connectionKeys
+        );
+      },
+      persistWrites: handlers.persistWrites,
+      deleteStorageKeys: handlers.deleteStorageKeys,
+      logReset: handlers.logReset,
+      publishReset: handlers.publishReset
+    }
+  );
 }

@@ -36,10 +36,7 @@ import {
   applyTradingBookDelta,
   applyTradingBookSnapshot
 } from "./book/TradingBookApplicationRuntime";
-import {
-  applyOrderBookResetConnectionIds,
-  applyOrderBookResetFlow
-} from "./book/OrderBookResetRuntime";
+import { resetTradingOrderBook } from "./book/OrderBookResetRuntime";
 import { resolveTradingTickBook } from "./book/TradingTickBookRuntime";
 import { buildDomAnalysisSnapshot, currentDomHeatmapSnapshot } from "./book/DomAnalyzer";
 import { processTradingShadowQueueTick } from "./shadow/TradingShadowQueueRuntime";
@@ -1650,32 +1647,22 @@ export class TradingEngine {
   }
 
   private async resetOrderBook(payload: Partial<OrderBookResetRequest>): Promise<void> {
-    await applyOrderBookResetFlow(
+    await resetTradingOrderBook(
       {
         payload,
         currentState: this.engineState,
-        orderBookPrefix: ORDER_BOOK_PREFIX,
-        engineStateKey: ENGINE_STATE_KEY,
         stores: this.orderBookStores(),
-        orderBookSize: this.orderBook.size,
-        internalOrderBookDepth: countBookLevels(this.bids, this.asks)
+        orderBook: this.orderBook,
+        activeIngestConnections: this.activeIngestConnections
       },
       {
         listPersistedBooks: (prefix) => this.state.storage.list<InternalOrderBook>({ prefix }),
         handleListFailure: (error) =>
           this.handleStorageWriteFailure("ORDER_BOOK_RESET_LIST", error),
-        calculatePriceDiscovery: (instrumentCode, observedAt) =>
-          calculateOrderBookPriceDiscovery(this.orderBook, instrumentCode, observedAt),
         applyState: (state) => {
           this.engineState = state;
         },
         resetLatencyBaseline: (observedAt, reason) => this.resetLatencyBaseline(observedAt, reason),
-        applyConnectionIds: (connectionId, connectionKeys) =>
-          applyOrderBookResetConnectionIds(
-            this.activeIngestConnections,
-            connectionId,
-            connectionKeys
-          ),
         persistWrites: (writes) => this.safeStoragePut(writes, "ORDER_BOOK_RESET"),
         deleteStorageKeys: (keys) => this.safeStorageDelete([...keys], "ORDER_BOOK_RESET_DELETE"),
         logReset: (telemetry) =>
