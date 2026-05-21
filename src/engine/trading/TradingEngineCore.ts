@@ -138,10 +138,6 @@ import {
   type TradingEngineJanitorMaintenanceTarget
 } from "./janitor/TradingJanitorRuntime";
 import {
-  recordTradingEngineCascadeLiquidations,
-  type TradingCascadeLiquidationDetectionTarget
-} from "./cascade/CascadeLiquidationRuntime";
-import {
   buildCascadeEntryTradeIntentForTarget,
   buildCascadeExitTradeIntentForTarget,
   type TradingCascadeTradeIntentTarget
@@ -158,12 +154,6 @@ import {
   type TradingConfigRefreshCadenceTarget,
   type TradingEngineConfigControlTarget
 } from "./config/TradingConfigControlRuntime";
-import {
-  absorptionAnalyzerConfigForTarget,
-  cascadeAssetProfileForTarget,
-  cascadeDetectorConfigForTarget,
-  type TradingCascadeRuntimeConfigTarget
-} from "./cascade/CascadeConfigRuntime";
 import {
   ensureCascadePaperModeArmedForTarget,
   type CascadePaperModeArmingTarget
@@ -274,7 +264,6 @@ import type { Notifier } from "../../utils/Notifier";
 import { isShadowMode } from "../../utils/CitadelProtocol";
 import type { GhostBook, GhostBookConfig } from "../../utils/GhostBook";
 import { AbsorptionAnalyzer } from "../../strategy/cascade/AbsorptionAnalyzer";
-import type { CascadeAssetProfile } from "../../strategy/cascade/AssetProfiles";
 import type { Backtester } from "../../strategy/cascade/Backtester";
 import { CascadeCandleAggregator } from "../../strategy/cascade/CandleAggregator";
 import { CascadeDetector } from "../../strategy/cascade/CascadeDetector";
@@ -319,13 +308,10 @@ import type {
   TradeIntent
 } from "../../types";
 import type {
-  AbsorptionAnalyzerConfig,
   AbsorptionConfirmed,
-  CascadeDetectorConfig,
   CascadeEvent,
   CascadePositionIntent,
-  CascadeRecoverySignal,
-  LiquidationEvent
+  CascadeRecoverySignal
 } from "../../strategy/cascade/types";
 
 import {
@@ -721,35 +707,6 @@ export class TradingEngine {
       wakeUpTimeMs,
       this as unknown as TradingHyperliquidRawEngineTarget
     );
-  }
-
-  private recordCascadeLiquidations(
-    events: LiquidationEvent[],
-    observedAt: string
-  ): CascadeEvent[] {
-    return recordTradingEngineCascadeLiquidations(
-      events,
-      observedAt,
-      this as unknown as TradingCascadeLiquidationDetectionTarget
-    );
-  }
-
-  private currentCascadeDetectorConfig(instrumentCode: string): CascadeDetectorConfig {
-    return cascadeDetectorConfigForTarget(
-      this as unknown as TradingCascadeRuntimeConfigTarget,
-      instrumentCode
-    );
-  }
-
-  private cascadeAssetProfile(instrumentCode: string): CascadeAssetProfile {
-    return cascadeAssetProfileForTarget(
-      this as unknown as TradingCascadeRuntimeConfigTarget,
-      instrumentCode
-    );
-  }
-
-  private currentAbsorptionAnalyzerConfig(): AbsorptionAnalyzerConfig {
-    return absorptionAnalyzerConfigForTarget(this as unknown as TradingCascadeRuntimeConfigTarget);
   }
 
   private observeCascadeAbsorption(tick: MarketTick): void {

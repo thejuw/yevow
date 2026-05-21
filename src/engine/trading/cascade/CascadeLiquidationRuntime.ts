@@ -19,7 +19,13 @@ import type {
 import type { TickIngestResult } from "../TradingEngineRouteTypes";
 import { isCascadeInstrumentEnabledForConfig } from "./CascadeSelectionRuntime";
 import { buildCascadeDetectedArtifacts } from "./CascadeDetectedArtifactsRuntime";
-import { resolveCascadeAtr1h } from "./CascadeConfigRuntime";
+import {
+  absorptionAnalyzerConfigForTarget,
+  cascadeAssetProfileForTarget,
+  cascadeDetectorConfigForTarget,
+  resolveCascadeAtr1h,
+  type TradingCascadeRuntimeConfigTarget
+} from "./CascadeConfigRuntime";
 import { persistCascadeLiquidationEventsSafely } from "./CascadeLiquidationJournalRuntime";
 export {
   buildCascadeDetectedArtifacts,
@@ -158,9 +164,18 @@ export interface TradingLiquidationIngestHandlers extends LiquidationIngestSideE
 
 export interface TradingLiquidationIngestTarget {
   engineState: EngineState;
+  readonly cachedConfig: GlobalRiskConfig;
   readonly env: Pick<
     Env,
-    "HL_ASSET" | "TRADING_DB" | "CASCADE_ATR_FALLBACK_USD" | "CASCADE_ATR_FALLBACK_PCT"
+    | "HL_ASSET"
+    | "TRADING_DB"
+    | "CASCADE_ATR_FALLBACK_USD"
+    | "CASCADE_ATR_FALLBACK_PCT"
+    | "CASCADE_MIN_BASELINE_WINDOWS"
+    | "CASCADE_MIN_SEPARATION_MS"
+    | "CASCADE_MAX_EVENTS_PER_INSTRUMENT"
+    | "ABSORPTION_OI_STABILITY_BPS"
+    | "ABSORPTION_MAX_ACTIVE_CASCADES"
   >;
   readonly state: {
     waitUntil(work: Promise<unknown>): void;
@@ -187,10 +202,31 @@ export interface TradingLiquidationIngestTarget {
       }
     ): LiquidationEvent[];
   };
-  recordCascadeLiquidations(events: LiquidationEvent[], observedAt: string): CascadeEvent[];
+  readonly absorptionAnalyzer: {
+    configure(config: AbsorptionAnalyzerConfig): void;
+    trackCascade(cascade: CascadeEvent): void;
+  };
+  readonly cascadeDetector: {
+    configure(config: CascadeDetectorConfig): void;
+    observe(
+      event: LiquidationEvent,
+      context: { readonly observedAt: string; readonly atr1h: number | null }
+    ): CascadeEvent | null;
+  };
+  readonly cascadeEventsById: Pick<Map<string, CascadeEvent>, "set">;
+  readonly logger: {
+    warn(eventType: string, message: string, metadata?: JsonRecord): void;
+  };
   safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void>;
   handleStorageWriteFailure(reason: string, error: unknown): void;
   publish(type: string, payload: JsonRecord): void;
+  emitCascadeOperationalAlert(
+    eventType: "CASCADE_DETECTED",
+    title: string,
+    message: string,
+    metadata: JsonRecord,
+    dedupeKey: string
+  ): void;
 }
 
 export interface TradingCascadeLiquidationDetectionInput {
@@ -236,9 +272,6 @@ export interface TradingCascadeLiquidationDetectionTarget {
   readonly logger: {
     warn(eventType: string, message: string, metadata?: JsonRecord): void;
   };
-  currentAbsorptionAnalyzerConfig(): AbsorptionAnalyzerConfig;
-  currentCascadeDetectorConfig(instrumentCode: string): CascadeDetectorConfig;
-  cascadeAssetProfile(instrumentCode: string): CascadeAssetProfile;
   publish(type: string, payload: JsonRecord): void;
   emitCascadeOperationalAlert(
     eventType: "CASCADE_DETECTED",
@@ -451,7 +484,7 @@ export function handleTradingEngineLiquidationEvents(
           fallbackPrice: context.midPrice
         }),
       recordCascadeLiquidations: (events, observedAt) =>
-        target.recordCascadeLiquidations(events, observedAt),
+        recordTradingEngineCascadeLiquidations(events, observedAt, target),
       scheduleCascadeLiquidationJournal: (events) => {
         target.state.waitUntil(
           persistCascadeLiquidationEventsSafely(target.env.TRADING_DB, events, {
@@ -518,10 +551,17 @@ export function recordTradingEngineCascadeLiquidations(
     },
     {
       configureAbsorptionAnalyzer: () => {
-        target.absorptionAnalyzer.configure(target.currentAbsorptionAnalyzerConfig());
+        target.absorptionAnalyzer.configure(
+          absorptionAnalyzerConfigForTarget(target as unknown as TradingCascadeRuntimeConfigTarget)
+        );
       },
       configureDetector: (instrumentCode) => {
-        target.cascadeDetector.configure(target.currentCascadeDetectorConfig(instrumentCode));
+        target.cascadeDetector.configure(
+          cascadeDetectorConfigForTarget(
+            target as unknown as TradingCascadeRuntimeConfigTarget,
+            instrumentCode
+          )
+        );
       },
       observeCascade: (event, detectedAt, atr1h) =>
         target.cascadeDetector.observe(event, {
@@ -534,7 +574,11 @@ export function recordTradingEngineCascadeLiquidations(
       trackCascadeAbsorption: (cascade) => {
         target.absorptionAnalyzer.trackCascade(cascade);
       },
-      assetProfile: (instrumentCode) => target.cascadeAssetProfile(instrumentCode),
+      assetProfile: (instrumentCode) =>
+        cascadeAssetProfileForTarget(
+          target as unknown as TradingCascadeRuntimeConfigTarget,
+          instrumentCode
+        ),
       logDetected: (metadata) => {
         target.logger.warn("CASCADE_DETECTED", "Liquidation cascade detected", metadata);
       },

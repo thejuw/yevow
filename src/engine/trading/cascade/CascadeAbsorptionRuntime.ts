@@ -6,6 +6,10 @@ import type {
 } from "../../../strategy/cascade/types";
 import { normalizeNativeInstrumentCode } from "../helpers/NativeMarketIdentityRuntime";
 import { isTradeTick } from "../state/TickClassification";
+import {
+  absorptionAnalyzerConfigForTarget,
+  type TradingCascadeRuntimeConfigTarget
+} from "./CascadeConfigRuntime";
 import { isCascadeInstrumentEnabledForConfig } from "./CascadeSelectionRuntime";
 
 export interface CascadeAbsorptionObservationInput {
@@ -53,7 +57,6 @@ export interface TradingCascadeAbsorptionTarget {
   readonly logger: {
     info(event: string, message: string, metadata: JsonRecord): void;
   };
-  currentAbsorptionAnalyzerConfig(): AbsorptionAnalyzerConfig;
   publish(telemetryType: "ABSORPTION_CONFIRMED", payload: JsonRecord): void;
   emitCascadeOperationalAlert(
     eventType: "CASCADE_ABSORPTION_CONFIRMED",
@@ -215,7 +218,12 @@ export function observeTradingEngineCascadeAbsorption(
         target.cascadeCvdByInstrument.set(instrumentCode, cumulativeVolumeDelta);
       },
       configureAnalyzer: () => {
-        target.absorptionAnalyzer.configure(target.currentAbsorptionAnalyzerConfig());
+        target.absorptionAnalyzer.configure(
+          absorptionAnalyzerConfigForTarget({
+            cachedConfig: target.cachedConfig,
+            env: (target as unknown as { env?: TradingCascadeRuntimeConfigTarget["env"] }).env ?? {}
+          } as TradingCascadeRuntimeConfigTarget)
+        );
       },
       observeAbsorption: (observation) => target.absorptionAnalyzer.observe(observation),
       recordAbsorption: (confirmedAbsorption) => {

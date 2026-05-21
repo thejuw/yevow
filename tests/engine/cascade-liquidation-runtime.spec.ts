@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { defaultConfig } from "../../src/ConfigManager";
 import { defaultLiquidationHeatmapState } from "../../src/agents/HeatmapAgent";
 import {
   buildCascadeDetectedArtifacts,
@@ -389,13 +390,23 @@ describe("CascadeLiquidationRuntime", () => {
     const pending: Promise<unknown>[] = [];
     const storageWrites: Record<string, unknown>[] = [];
     const published: string[] = [];
+    const cascadesById = new Map<string, CascadeEvent>();
     const target: TradingLiquidationIngestTarget = {
       engineState: currentState,
+      cachedConfig: {
+        ...defaultConfig,
+        CASCADE_INSTRUMENTS: "BTC"
+      },
       env: {
         HL_ASSET: "BTC",
         TRADING_DB: db as unknown as D1Database,
         CASCADE_ATR_FALLBACK_USD: undefined,
-        CASCADE_ATR_FALLBACK_PCT: undefined
+        CASCADE_ATR_FALLBACK_PCT: undefined,
+        CASCADE_MIN_BASELINE_WINDOWS: undefined,
+        CASCADE_MIN_SEPARATION_MS: undefined,
+        CASCADE_MAX_EVENTS_PER_INSTRUMENT: undefined,
+        ABSORPTION_OI_STABILITY_BPS: undefined,
+        ABSORPTION_MAX_ACTIVE_CASCADES: undefined
       },
       state: {
         waitUntil(work) {
@@ -416,10 +427,33 @@ describe("CascadeLiquidationRuntime", () => {
           return [event];
         }
       },
-      recordCascadeLiquidations(events, observedAt) {
-        expect(events).toEqual([event]);
-        expect(observedAt).toBe(OBSERVED_AT);
-        return [cascade];
+      absorptionAnalyzer: {
+        configure() {
+          published.push("configure-absorption");
+        },
+        trackCascade(observedCascade) {
+          expect(observedCascade).toBe(cascade);
+          published.push(`track:${observedCascade.cascadeId}`);
+        }
+      },
+      cascadeDetector: {
+        configure() {
+          published.push("configure-detector");
+        },
+        observe(observedEvent, context) {
+          expect(observedEvent).toBe(event);
+          expect(context.observedAt).toBe(OBSERVED_AT);
+          return cascade;
+        }
+      },
+      cascadeEventsById: cascadesById,
+      logger: {
+        warn(eventType) {
+          published.push(`log:${eventType}`);
+        }
+      },
+      emitCascadeOperationalAlert(eventType) {
+        published.push(`alert:${eventType}`);
       },
       async safeStoragePut(entries) {
         storageWrites.push(entries);
@@ -446,12 +480,21 @@ describe("CascadeLiquidationRuntime", () => {
 
     expect(result).toMatchObject({ accepted: true, status: "FRESH", processedCount: 1 });
     expect(target.engineState.liquidationHeatmap).toBe(heatmap);
+    expect(cascadesById.get("cascade-1")).toBe(cascade);
     expect(storageWrites[0]).toMatchObject({
       "engine:state": { engineId: "liquidation-target-ingest" },
       "agent:heatmap:liquidations": heatmap
     });
     expect(db.batches).toHaveLength(1);
-    expect(published).toEqual(["LIQUIDATION_EVENT"]);
+    expect(published).toEqual([
+      "configure-absorption",
+      "configure-detector",
+      "track:cascade-1",
+      "log:CASCADE_DETECTED",
+      "CASCADE_DETECTED",
+      "alert:CASCADE_DETECTED",
+      "LIQUIDATION_EVENT"
+    ]);
   });
 
   it("builds cascade detected log, telemetry, and alert payloads", () => {
