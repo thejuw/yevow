@@ -60,11 +60,8 @@ import {
   buildInventoryHedgeIntent
 } from "./inventory/InventoryRuntime";
 import { calculateTradingInventoryState } from "./inventory/TradingInventoryStateRuntime";
-import {
-  applyPortfolioRiskFlow,
-  resolveMaxPositionPct,
-  resolveVarConfidenceZ
-} from "./risk/PortfolioRiskRuntime";
+import { resolveMaxPositionPct } from "./risk/PortfolioRiskRuntime";
+import { updateTradingPortfolioRisk } from "./risk/TradingPortfolioRiskRuntime";
 import { calculateEnsembleState as calculateRuntimeEnsembleState } from "./ensemble/EnsembleRuntime";
 import { stateAfterFundingTick } from "./funding/FundingRuntime";
 import {
@@ -422,7 +419,6 @@ import {
   DEFAULT_SHADOW_VLO_QUEUE_DEPTH_MULTIPLIER,
   DEFAULT_SHADOW_VLO_BASE_SPREAD_BPS,
   DEFAULT_SHADOW_VLO_LATENCY_BUDGET_MS,
-  DEFAULT_VAR_CONFIDENCE_Z,
   TARGET_ASSET_MATRIX,
   TARGET_INSTRUMENTS,
   DEFAULT_JANITOR_INTERVAL_MS,
@@ -3018,21 +3014,12 @@ export class TradingEngine {
     oracle: EngineState["oracle"],
     observedAt: string
   ): EngineState["riskMetrics"] {
-    return applyPortfolioRiskFlow(
+    return updateTradingPortfolioRisk(
       {
         cachedConfig: this.cachedConfig,
-        mode: this.engineState.mode,
-        equity: this.engineState.bankroll.equity,
-        priorHighWaterMark: this.engineState.riskMetrics.highWaterMark,
-        positions: this.engineState.openPositions,
-        oracleVolatility: oracle.volatility,
-        varConfidenceZ: resolveVarConfidenceZ(
-          this.cachedConfig,
-          this.env.VAR_CONFIDENCE_Z,
-          DEFAULT_VAR_CONFIDENCE_Z
-        ),
-        maxDrawdownPct: this.cachedConfig.MAX_DRAWDOWN_PCT,
-        tradingEnabled: this.cachedConfig.TRADING_ENABLED,
+        engineState: this.engineState,
+        oracle,
+        env: this.env,
         observedAt
       },
       {
