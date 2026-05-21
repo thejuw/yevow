@@ -27,6 +27,10 @@ import {
   type TradingCascadeRuntimeConfigTarget
 } from "./CascadeConfigRuntime";
 import { persistCascadeLiquidationEventsSafely } from "./CascadeLiquidationJournalRuntime";
+import {
+  emitTradingCascadeOperationalAlertForTarget,
+  type TradingSignalBusTarget
+} from "../telemetry/TradingSignalBusRuntime";
 export {
   buildCascadeDetectedArtifacts,
   cascadeDetectedAlertMetadata,
@@ -220,7 +224,7 @@ export interface TradingLiquidationIngestTarget {
   safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void>;
   handleStorageWriteFailure(reason: string, error: unknown): void;
   publish(type: string, payload: JsonRecord): void;
-  emitCascadeOperationalAlert(
+  emitCascadeOperationalAlert?(
     eventType: "CASCADE_DETECTED",
     title: string,
     message: string,
@@ -273,7 +277,7 @@ export interface TradingCascadeLiquidationDetectionTarget {
     warn(eventType: string, message: string, metadata?: JsonRecord): void;
   };
   publish(type: string, payload: JsonRecord): void;
-  emitCascadeOperationalAlert(
+  emitCascadeOperationalAlert?(
     eventType: "CASCADE_DETECTED",
     title: string,
     message: string,
@@ -586,12 +590,24 @@ export function recordTradingEngineCascadeLiquidations(
         target.publish("CASCADE_DETECTED", payload);
       },
       alertDetected: (cascade, metadata) => {
-        target.emitCascadeOperationalAlert(
+        if (target.emitCascadeOperationalAlert) {
+          target.emitCascadeOperationalAlert(
+            "CASCADE_DETECTED",
+            "Cascade detected",
+            `${cascade.instrumentCode} ${cascade.direction} liquidation cascade detected.`,
+            metadata,
+            cascade.cascadeId
+          );
+          return;
+        }
+
+        emitTradingCascadeOperationalAlertForTarget(
           "CASCADE_DETECTED",
           "Cascade detected",
           `${cascade.instrumentCode} ${cascade.direction} liquidation cascade detected.`,
           metadata,
-          cascade.cascadeId
+          cascade.cascadeId,
+          target as unknown as TradingSignalBusTarget
         );
       }
     }

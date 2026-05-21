@@ -11,6 +11,10 @@ import {
   type TradingCascadeRuntimeConfigTarget
 } from "./CascadeConfigRuntime";
 import { isCascadeInstrumentEnabledForConfig } from "./CascadeSelectionRuntime";
+import {
+  emitTradingCascadeOperationalAlertForTarget,
+  type TradingSignalBusTarget
+} from "../telemetry/TradingSignalBusRuntime";
 
 export interface CascadeAbsorptionObservationInput {
   readonly tick: Pick<MarketTick, "side" | "price" | "size" | "receivedAt" | "openInterest">;
@@ -58,7 +62,7 @@ export interface TradingCascadeAbsorptionTarget {
     info(event: string, message: string, metadata: JsonRecord): void;
   };
   publish(telemetryType: "ABSORPTION_CONFIRMED", payload: JsonRecord): void;
-  emitCascadeOperationalAlert(
+  emitCascadeOperationalAlert?(
     eventType: "CASCADE_ABSORPTION_CONFIRMED",
     title: string,
     message: string,
@@ -236,7 +240,19 @@ export function observeTradingEngineCascadeAbsorption(
         target.publish(telemetryType, payload);
       },
       emitOperationalAlert: (eventType, title, message, metadata, dedupeKey) => {
-        target.emitCascadeOperationalAlert(eventType, title, message, metadata, dedupeKey);
+        if (target.emitCascadeOperationalAlert) {
+          target.emitCascadeOperationalAlert(eventType, title, message, metadata, dedupeKey);
+          return;
+        }
+
+        emitTradingCascadeOperationalAlertForTarget(
+          eventType,
+          title,
+          message,
+          metadata,
+          dedupeKey,
+          target as unknown as TradingSignalBusTarget
+        );
       }
     }
   );

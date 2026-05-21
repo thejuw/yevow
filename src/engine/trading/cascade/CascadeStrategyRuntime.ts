@@ -2,6 +2,11 @@ import {
   cascadeCloseOperationalAlert,
   type CascadeCloseOperationalAlert
 } from "../telemetry/CascadeSignalTelemetryRuntime";
+import {
+  emitTradingCascadeOperationalAlertForTarget,
+  recordTradingCascadeUiSignalForTarget,
+  type TradingSignalBusTarget
+} from "../telemetry/TradingSignalBusRuntime";
 import { CascadeRecoverySignalEngine } from "../../../strategy/cascade/CascadeRecoverySignal";
 import { calculateAtr } from "../../../strategy/cascade/indicators/ATR";
 import { cumulativeVolumeDelta } from "../../../strategy/cascade/indicators/CumulativeVolumeDelta";
@@ -96,7 +101,7 @@ export interface TradingCascadePositionUpdateTarget {
     waitUntil(work: Promise<void>): void;
   };
   dispatchExecution(intent: TradeIntent): Promise<void>;
-  emitCascadeOperationalAlert(
+  emitCascadeOperationalAlert?(
     eventType: CascadeAlertEventType,
     title: string,
     message: string,
@@ -196,10 +201,10 @@ export interface TradingAcceptedCascadeSignalTarget {
     traceDecision(decision: AgentDecisionTrace): void;
     warn(eventType: string, message: string, telemetry?: JsonRecord): void;
   };
-  recordCascadeUiSignal(signal: AgentSignal, outcome: "TAKEN" | "SKIPPED" | "CLOSED"): void;
+  recordCascadeUiSignal?(signal: AgentSignal, outcome: "TAKEN" | "SKIPPED" | "CLOSED"): void;
   dispatchExecution(intent: TradeIntent): Promise<void>;
   safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
-  emitCascadeOperationalAlert(
+  emitCascadeOperationalAlert?(
     eventType: CascadeAlertEventType,
     title: string,
     message: string,
@@ -242,10 +247,10 @@ export interface TradingCascadeStrategyTarget {
   readonly cascadeAbsorptionsById: ReadonlyMap<string, AbsorptionConfirmed>;
   readonly cascadeEventsById: ReadonlyMap<string, CascadeEvent>;
   readonly env: Pick<Env, "CASCADE_ATR_FALLBACK_USD" | "CASCADE_ATR_FALLBACK_PCT">;
-  recordCascadeUiSignal(signal: AgentSignal, outcome: "TAKEN" | "SKIPPED" | "CLOSED"): void;
+  recordCascadeUiSignal?(signal: AgentSignal, outcome: "TAKEN" | "SKIPPED" | "CLOSED"): void;
   dispatchExecution(intent: TradeIntent): Promise<void>;
   safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
-  emitCascadeOperationalAlert(
+  emitCascadeOperationalAlert?(
     eventType: CascadeAlertEventType,
     title: string,
     message: string,
@@ -314,7 +319,8 @@ export function dispatchTradingCascadePositionUpdates(
       );
     },
     emitOperationalAlert: (alert) => {
-      target.emitCascadeOperationalAlert(
+      emitCascadeOperationalAlertForTarget(
+        target,
         alert.eventType,
         alert.title,
         alert.message,
@@ -418,7 +424,7 @@ export function recordTradingRejectedCascadeSignal(
         target.logger.info(event, message, metadata);
       },
       recordUiSignal: (signal, outcome) => {
-        target.recordCascadeUiSignal(signal, outcome);
+        recordCascadeUiSignalForTarget(target, signal, outcome);
       }
     }
   );
@@ -559,14 +565,21 @@ export function processTradingAcceptedCascadeSignal(
     },
     {
       emitOperationalAlert: (eventType, title, message, metadata, dedupeKey) => {
-        target.emitCascadeOperationalAlert(eventType, title, message, metadata, dedupeKey);
+        emitCascadeOperationalAlertForTarget(
+          target,
+          eventType,
+          title,
+          message,
+          metadata,
+          dedupeKey
+        );
       },
       registerPosition: (acceptedSignal, sizeDecision, acceptedAt) =>
         target.cascadePositionManager.registerFromSignal(acceptedSignal, sizeDecision, acceptedAt),
       buildEntryIntent: (acceptedSignal, size, acceptedAt) =>
         buildCascadeEntryTradeIntentForTarget(target, acceptedSignal, size, acceptedAt),
       recordUiSignal: (agentSignal, outcome) => {
-        target.recordCascadeUiSignal(agentSignal, outcome);
+        recordCascadeUiSignalForTarget(target, agentSignal, outcome);
       },
       traceDecision: (decision) => {
         target.logger.traceDecision(decision);
@@ -588,4 +601,47 @@ export function processTradingAcceptedCascadeSignal(
   );
 
   return Promise.resolve(result);
+}
+
+function emitCascadeOperationalAlertForTarget(
+  target:
+    | TradingCascadePositionUpdateTarget
+    | TradingAcceptedCascadeSignalTarget
+    | TradingCascadeStrategyTarget,
+  eventType: CascadeAlertEventType,
+  title: string,
+  message: string,
+  metadata: JsonRecord,
+  dedupeKey: string
+): void {
+  if (target.emitCascadeOperationalAlert) {
+    target.emitCascadeOperationalAlert(eventType, title, message, metadata, dedupeKey);
+    return;
+  }
+
+  emitTradingCascadeOperationalAlertForTarget(
+    eventType,
+    title,
+    message,
+    metadata,
+    dedupeKey,
+    target as unknown as TradingSignalBusTarget
+  );
+}
+
+function recordCascadeUiSignalForTarget(
+  target: TradingAcceptedCascadeSignalTarget | TradingCascadeStrategyTarget,
+  signal: AgentSignal,
+  outcome: "TAKEN" | "SKIPPED" | "CLOSED"
+): void {
+  if (target.recordCascadeUiSignal) {
+    target.recordCascadeUiSignal(signal, outcome);
+    return;
+  }
+
+  recordTradingCascadeUiSignalForTarget(
+    signal,
+    outcome,
+    target as unknown as TradingSignalBusTarget
+  );
 }

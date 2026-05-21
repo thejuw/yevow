@@ -9,7 +9,7 @@ import {
   PROFILER_STATE_STORAGE_PREFIX
 } from "../../agents/ProfilerAgent";
 import { ProfilerRegistry } from "../../agents/ProfilerRegistry";
-import { AnomalyDetector, type AnomalyDetectionResult } from "../../agents/AnomalyDetector";
+import { AnomalyDetector } from "../../agents/AnomalyDetector";
 import { CroupierAgent } from "../../agents/CroupierAgent";
 import { AdverseSelectionModel } from "../AdverseSelectionModel";
 import { priceKey, SortedBookSide } from "./book/SortedBookSide";
@@ -54,11 +54,6 @@ import {
   type TradingEngineFetchTarget
 } from "./routes/EngineFetchRuntime";
 import type { TradingTelemetryBus } from "./telemetry/TelemetryBus";
-import {
-  emitTradingCascadeOperationalAlertForTarget,
-  recordTradingCascadeUiSignalForTarget,
-  type TradingSignalBusTarget
-} from "./telemetry/TradingSignalBusRuntime";
 import {
   logTradingPerformanceForTarget,
   observeTradingExecutionProfileForTarget,
@@ -116,10 +111,8 @@ import { CascadeDetector } from "../../strategy/cascade/CascadeDetector";
 import { HyperliquidLiquidationStream } from "../../strategy/cascade/LiquidationStream";
 import { HeatManager } from "../../strategy/cascade/HeatManager";
 import type { NewsCalendar } from "../../strategy/cascade/NewsCalendar";
-import type { CascadeAlertEventType } from "../../strategy/cascade/OperationalSafeguards";
 import { PositionManager } from "../../strategy/cascade/PositionManager";
 import type {
-  DomAnalysisSnapshot,
   EngineStabilityStatus,
   AgentName,
   AgentSignal,
@@ -480,33 +473,5 @@ export class TradingEngine {
 
   private publish(type: string, payload: Record<string, unknown>, correlationId?: string): void {
     this.telemetryBus.publish(type, payload, correlationId);
-  }
-
-  private emitCascadeOperationalAlert(
-    eventType: CascadeAlertEventType,
-    title: string,
-    message: string,
-    metadata: JsonRecord,
-    dedupeKey: string
-  ): void {
-    emitTradingCascadeOperationalAlertForTarget(
-      eventType,
-      title,
-      message,
-      metadata,
-      dedupeKey,
-      this as unknown as TradingSignalBusTarget
-    );
-  }
-
-  private recordCascadeUiSignal(
-    signal: AgentSignal,
-    outcome: "TAKEN" | "SKIPPED" | "CLOSED"
-  ): void {
-    recordTradingCascadeUiSignalForTarget(
-      signal,
-      outcome,
-      this as unknown as TradingSignalBusTarget
-    );
   }
 }
