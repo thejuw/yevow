@@ -57,11 +57,9 @@ import {
 } from "./leadlag/LeadLagRuntime";
 import {
   applyInventoryHedgeSideEffects,
-  buildInventoryHedgeIntent,
-  calculateInventoryState as calculateInventoryRuntimeState,
-  referencePriceForBaseAsset as resolveBaseAssetReferencePrice,
-  resolveInventoryStateConfig
+  buildInventoryHedgeIntent
 } from "./inventory/InventoryRuntime";
+import { calculateTradingInventoryState } from "./inventory/TradingInventoryStateRuntime";
 import {
   applyPortfolioRiskFlow,
   resolveMaxPositionPct,
@@ -505,7 +503,6 @@ import {
 } from "./state/MarketStateDefaults";
 import {
   defaultEngineState,
-  parseDeltaNormalizationWeights,
   defaultAnomalyStatus,
   normalizeExecutionProfile,
   defaultInventoryState,
@@ -3007,41 +3004,13 @@ export class TradingEngine {
     observedAt: string,
     positions: Record<string, Position> = this.engineState.openPositions
   ): EngineState["inventory"] {
-    const inventoryConfig = resolveInventoryStateConfig({
-      config: this.cachedConfig,
-      maxInventoryUnitsValue: this.env.MAX_INVENTORY_UNITS,
-      maxInventoryDeltaValue: this.env.MAX_INVENTORY_DELTA,
-      riskAversionFactorValue: this.env.RISK_AVERSION_FACTOR
-    });
-    const baseAsset = "BTC";
-
-    return calculateInventoryRuntimeState({
-      positions,
+    return calculateTradingInventoryState({
       observedAt,
-      maxInventoryUnits: inventoryConfig.maxInventoryUnits,
-      maxInventoryDelta: inventoryConfig.maxInventoryDelta,
-      riskAversionFactor: inventoryConfig.riskAversionFactor,
-      baseAsset,
-      baseReferencePrice: this.referencePriceForBaseAsset(baseAsset),
-      configuredWeights: parseDeltaNormalizationWeights(this.env.DELTA_NORMALIZATION_WEIGHTS),
-      markPrice: (instrumentCode, fallback) =>
-        currentMarkPriceForInstrument(
-          {
-            orderBook: this.orderBook,
-            microstructure: this.engineState.microstructure
-          },
-          instrumentCode,
-          fallback
-        )
-    });
-  }
-
-  private referencePriceForBaseAsset(baseAsset: string): number {
-    return resolveBaseAssetReferencePrice({
-      baseAsset,
-      orderBooks: this.orderBook.values(),
-      positions: this.engineState.openPositions,
-      microstructureMidPrice: this.engineState.microstructure.midPrice
+      positions,
+      config: this.cachedConfig,
+      env: this.env,
+      orderBook: this.orderBook,
+      microstructure: this.engineState.microstructure
     });
   }
 
