@@ -30,6 +30,10 @@ import {
   resetTradingLatencyBaselineForTarget,
   type TradingLatencyStateTarget
 } from "../performance/TradingLatencyStateRuntime";
+import {
+  resetTradingOrderBookForTarget,
+  type TradingOrderBookResetTarget
+} from "../book/OrderBookResetRuntime";
 import { adminRecoveryPlan, applyAdminRecoveryPlanSideEffects } from "./RecoveryPlanRuntime";
 import type {
   AdminRecoveryPlan,
@@ -162,7 +166,7 @@ export interface TradingAdminRecoveryTarget {
   readonly logger: {
     warn(eventType: string, message: string, metadata: JsonRecord): void;
   };
-  resetOrderBook(payload: Partial<OrderBookResetRequest>): Promise<void>;
+  resetOrderBook?(payload: Partial<OrderBookResetRequest>): Promise<void>;
   resetLatencyBaseline?(observedAt: string, reason: string): void;
   safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void>;
   publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
@@ -441,7 +445,13 @@ export async function recoverTradingEngineStateForTarget(
       processingLatencySamples: target.processingLatencySamples
     },
     {
-      resetOrderBook: (resetPayload) => target.resetOrderBook(resetPayload),
+      resetOrderBook: (resetPayload) =>
+        target.resetOrderBook
+          ? target.resetOrderBook(resetPayload)
+          : resetTradingOrderBookForTarget(
+              resetPayload,
+              target as unknown as TradingOrderBookResetTarget
+            ).then(() => undefined),
       resetLatencyBaseline: (observedAt, reason) => {
         if (target.resetLatencyBaseline) {
           target.resetLatencyBaseline(observedAt, reason);

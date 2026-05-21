@@ -31,10 +31,6 @@ import {
 } from "./book/OrderBookReconstructorFactory";
 import type { BookSyncState } from "./book/BookTypes";
 import {
-  enqueueTradingIngestJob,
-  type TradingIngestQueueTarget
-} from "./ingest/IngestQueueRuntime";
-import {
   handleTradingEngineFetchForTarget,
   type TradingEngineFetchTarget
 } from "./routes/EngineFetchRuntime";
@@ -58,10 +54,6 @@ import {
   createTradingEngineBootServices,
   tradingEngineLoggerRuntimeContext
 } from "./state/EngineBootServices";
-import {
-  recoverTradingEngineStateForTarget,
-  type TradingAdminRecoveryTarget
-} from "./state/RecoveryRuntime";
 import {
   applyHotStorageSnapshotForTarget,
   deleteTradingStorageForTarget,
@@ -99,12 +91,10 @@ import type {
   Env,
   GlobalRiskConfig,
   InternalOrderBook,
-  JsonRecord,
   LatencyMetrics,
   LiquidityWall,
   MacroBias,
   MarketTick,
-  OrderBookResetRequest,
   TemporaryGovernanceOverride,
   TradeIntent
 } from "../../types";
@@ -259,7 +249,11 @@ export class TradingEngine {
       stores: buildTradingOrderBookStoresForTarget(this as unknown as TradingOrderBookStoresTarget),
       logger: this.logger,
       publish: (type, payload) => this.publish(type, payload),
-      resetOrderBook: (payload) => this.resetOrderBook(payload)
+      resetOrderBook: (payload) =>
+        resetTradingOrderBookForTarget(
+          payload,
+          this as unknown as TradingOrderBookResetTarget
+        ).then(() => undefined)
     });
 
     this.initialized = this.state.blockConcurrencyWhile(() =>
@@ -327,37 +321,6 @@ export class TradingEngine {
       this as unknown as TradingStorageGuardTarget,
       reason,
       error
-    );
-  }
-
-  private enqueueTick(
-    tick: MarketTick,
-    wakeUpTimeMs: number | null = this.latestWakeUpTimeMs,
-    options: TickHandlingOptions = {}
-  ): Promise<TickIngestResult> {
-    return enqueueTradingIngestJob(this as unknown as TradingIngestQueueTarget, () =>
-      this.handleTick(tick, wakeUpTimeMs, options)
-    );
-  }
-
-  private async resetOrderBook(payload: Partial<OrderBookResetRequest>): Promise<void> {
-    await resetTradingOrderBookForTarget(payload, this as unknown as TradingOrderBookResetTarget);
-  }
-
-  private async recoverEngineState(payload: {
-    reason?: string;
-    resetInstruments?: string[] | string;
-    instrumentCode?: string;
-    source_exchange?: string;
-    clearCitadel?: boolean;
-    clearQuoteState?: boolean;
-    clearLatency?: boolean;
-    resetPaperPortfolio?: boolean;
-    clearShadowQueue?: boolean;
-  }): Promise<JsonRecord> {
-    return recoverTradingEngineStateForTarget(
-      payload,
-      this as unknown as TradingAdminRecoveryTarget
     );
   }
 

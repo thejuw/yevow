@@ -10,6 +10,14 @@ import type {
 import type { TickIngestResult } from "../TradingEngineRouteTypes";
 import type { ReplayOptions, ReplayStatus } from "../routes/ReplayAdminRoutes";
 import {
+  enqueueTradingIngestJob,
+  type TradingIngestQueueTarget
+} from "../ingest/IngestQueueRuntime";
+import {
+  handleTickForTarget,
+  type TradingTickHandlingTarget
+} from "../pipelines/TickHandlingRuntime";
+import {
   loadReplayShadowTradesFromJournal,
   loadScenarioReplayTicksFromJournal
 } from "./ReplayDataRuntime";
@@ -73,7 +81,7 @@ export interface TradingHistoricalReplayEngineTarget {
     startedAt: string,
     replayId: string
   ): void;
-  enqueueTick(
+  enqueueTick?(
     tick: MarketTick,
     colo: string | null,
     options: { readonly shadowReplay: boolean }
@@ -206,7 +214,7 @@ export function runTradingHistoricalReplayForTarget(
     prepareShadowReplayState: (initialShadowBankroll, replayStartedAt, replayId) => {
       target.prepareShadowReplayState(initialShadowBankroll, replayStartedAt, replayId);
     },
-    enqueueShadowReplayTick: (tick) => target.enqueueTick(tick, null, { shadowReplay: true }),
+    enqueueShadowReplayTick: (tick) => enqueueReplayTickForTarget(target, tick),
     lastTradeIntent: () => target.engineState.lastTradeIntent,
     oracleRegime: () => target.engineState.oracle.regime,
     currentSentiment: () => target.engineState.sentiment,
@@ -237,7 +245,7 @@ export function runTradingHistoricalReplayForStatefulTarget(
         target as unknown as TradingShadowReplayStateTarget
       );
     },
-    enqueueShadowReplayTick: (tick) => target.enqueueTick(tick, null, { shadowReplay: true }),
+    enqueueShadowReplayTick: (tick) => enqueueReplayTickForTarget(target, tick),
     lastTradeIntent: () => target.engineState.lastTradeIntent,
     oracleRegime: () => target.engineState.oracle.regime,
     currentSentiment: () => target.engineState.sentiment,
@@ -250,4 +258,20 @@ export function runTradingHistoricalReplayForStatefulTarget(
       target.logger.warn("REPLAY_COMPLETED", "Historical shadow replay completed", metadata);
     }
   });
+}
+
+function enqueueReplayTickForTarget(
+  target: TradingHistoricalReplayEngineTarget | TradingHistoricalReplayStatefulTarget,
+  tick: MarketTick
+): Promise<TickIngestResult> {
+  return target.enqueueTick
+    ? target.enqueueTick(tick, null, { shadowReplay: true })
+    : enqueueTradingIngestJob(target as unknown as TradingIngestQueueTarget, () =>
+        handleTickForTarget(
+          tick,
+          null,
+          { shadowReplay: true },
+          target as unknown as TradingTickHandlingTarget
+        )
+      );
 }

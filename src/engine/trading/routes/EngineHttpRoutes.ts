@@ -36,6 +36,10 @@ import {
   enqueueTradingIngestJob,
   type TradingIngestQueueTarget
 } from "../ingest/IngestQueueRuntime";
+import {
+  handleTickForTarget,
+  type TradingTickHandlingTarget
+} from "../pipelines/TickHandlingRuntime";
 import { buildTradingPerformanceMetricsResponseForTarget } from "../telemetry/TradingHotPathTelemetryRuntime";
 import { resetTradingLatencyBaselineForTarget } from "../performance/TradingLatencyStateRuntime";
 import {
@@ -57,6 +61,10 @@ import {
   syncTradingStateMicrostructureForTarget,
   type TradingEngineDiagnosticsTarget
 } from "../state/EngineDiagnostics";
+import {
+  recoverTradingEngineStateForTarget,
+  type TradingAdminRecoveryTarget
+} from "../state/RecoveryRuntime";
 import {
   currentCascadeSignalSnapshot as buildCurrentCascadeSignalSnapshot,
   currentTradingCascadeActiveSnapshotForTarget,
@@ -195,10 +203,10 @@ export interface EngineHttpRouteContextTarget extends TradingBookApplicationTarg
   publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
   safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void>;
   safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
-  recoverEngineState(
+  recoverEngineState?(
     payload: Parameters<EngineHttpRouteContext["recoverEngineState"]>[0]
   ): Promise<unknown>;
-  enqueueTick(tick: MarketTick, wakeUpTimeMs: number | null): Promise<TickIngestResult>;
+  enqueueTick?(tick: MarketTick, wakeUpTimeMs: number | null): Promise<TickIngestResult>;
   acceptAgentSignal?(signal: AgentSignal, latencyMs: number): Promise<void>;
   applyConfigUpdate?(update: AdminConfigUpdate): Promise<void>;
 }
@@ -249,7 +257,13 @@ export function createTradingEngineHttpRouteContext(
     },
     safeStoragePutEntries: (entries, reason) => target.safeStoragePut(entries, reason),
     safeStoragePutKey: (key, value, reason) => target.safeStoragePut(key, value, reason),
-    recoverEngineState: (payload) => target.recoverEngineState(payload),
+    recoverEngineState: (payload) =>
+      target.recoverEngineState
+        ? target.recoverEngineState(payload)
+        : recoverTradingEngineStateForTarget(
+            payload,
+            target as unknown as TradingAdminRecoveryTarget
+          ),
     pruneOperationalLogs: () =>
       pruneTradingOperationalLogs({
         db: target.env.TRADING_DB,
@@ -322,7 +336,12 @@ export function createTradingEngineHttpRouteContext(
         target as unknown as TradingExecutionReportTarget
       );
     },
-    enqueueTick: (tick, wakeUp) => target.enqueueTick(tick, wakeUp),
+    enqueueTick: (tick, wakeUp) =>
+      target.enqueueTick
+        ? target.enqueueTick(tick, wakeUp)
+        : enqueueTradingIngestJob(target as unknown as TradingIngestQueueTarget, () =>
+            handleTickForTarget(tick, wakeUp, {}, target as unknown as TradingTickHandlingTarget)
+          ),
     handleHyperliquidRaw: (payload, wakeUp) =>
       handleTradingHyperliquidRawForTarget(
         payload as HyperliquidRawIngestPayload,

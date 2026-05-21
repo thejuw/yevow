@@ -8,6 +8,14 @@ import type {
 } from "../../../types";
 import type { TickIngestResult } from "../TradingEngineRouteTypes";
 import {
+  enqueueTradingIngestJob,
+  type TradingIngestQueueTarget
+} from "../ingest/IngestQueueRuntime";
+import {
+  handleTickForTarget,
+  type TradingTickHandlingTarget
+} from "../pipelines/TickHandlingRuntime";
+import {
   ADMIN_STREAM_PULSE_INTERVAL_MS,
   PERFORMANCE_HISTORY_LIMIT,
   SIGNAL_BUFFER_LIMIT
@@ -36,7 +44,7 @@ export interface EngineStreamContextTarget {
   readonly activeTemporaryOverride: TemporaryGovernanceOverride | null;
   readonly state: DurableObjectState;
   readonly telemetryBus: { nextSequence(): number };
-  enqueueTick(tick: MarketTick): Promise<TickIngestResult>;
+  enqueueTick?(tick: MarketTick): Promise<TickIngestResult>;
   publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
 }
 
@@ -50,7 +58,12 @@ export function createTradingEngineStreamContext(
     getLatencyHistory: () => target.latencyHistory,
     getMacroBias: () => target.macroBias,
     getTemporaryOverride: () => target.activeTemporaryOverride,
-    enqueueTick: (tick) => target.enqueueTick(tick),
+    enqueueTick: (tick) =>
+      target.enqueueTick
+        ? target.enqueueTick(tick)
+        : enqueueTradingIngestJob(target as unknown as TradingIngestQueueTarget, () =>
+            handleTickForTarget(tick, null, {}, target as unknown as TradingTickHandlingTarget)
+          ),
     waitUntil: (promise) => {
       target.state.waitUntil(promise);
     },
