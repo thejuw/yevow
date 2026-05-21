@@ -51,10 +51,8 @@ import { buildDomAnalysisSnapshot, currentDomHeatmapSnapshot } from "./book/DomA
 import { processTradingShadowQueueTick } from "./shadow/TradingShadowQueueRuntime";
 import { applyAnomalyEmergencyPauseFlow } from "./anomaly/AnomalyRuntime";
 import { emitTradingAnomalyEmergencyPause } from "./anomaly/TradingAnomalyEmergencyRuntime";
-import {
-  applyCrossAssetHypeQuoteCancelFlow,
-  updateLeadLagMetrics as updateLeadLagRuntimeMetrics
-} from "./leadlag/LeadLagRuntime";
+import { updateLeadLagMetrics as updateLeadLagRuntimeMetrics } from "./leadlag/LeadLagRuntime";
+import { cancelLaggingHypeQuotesForTrading } from "./leadlag/TradingCrossAssetCancelRuntime";
 import {
   applyInventoryHedgeSideEffects,
   buildInventoryHedgeIntent
@@ -64,12 +62,11 @@ import { resolveMaxPositionPct } from "./risk/PortfolioRiskRuntime";
 import { updateTradingPortfolioRisk } from "./risk/TradingPortfolioRiskRuntime";
 import { calculateTradingEnsembleState } from "./ensemble/TradingEnsembleRuntime";
 import { stateAfterFundingTick } from "./funding/FundingRuntime";
+import { resolveQuoteHibernateMs } from "./quotes/QuoteLifecycleRuntime";
 import {
-  nextQuoteStateForInstrument as nextRuntimeQuoteStateForInstrument,
-  resolveQuoteHibernateMs,
-  strategyQuoteDisabledReason as runtimeStrategyQuoteDisabledReason
-} from "./quotes/QuoteLifecycleRuntime";
-import { applyResumeExpiredQuoteStatesSideEffects } from "./quotes/QuoteResumeRuntime";
+  nextTradingQuoteStateForInstrument,
+  resumeTradingQuotesIfExpired
+} from "./quotes/TradingQuoteStateRuntime";
 import { applyTradingQuoteSuppression } from "./quotes/TradingQuoteSuppressionRuntime";
 import { dispatchTradingQuote } from "./quotes/TradingQuoteDispatchRuntime";
 import {
@@ -479,11 +476,9 @@ import { resolveGhostBookConfig } from "./shadow/GhostBookConfigRuntime";
 import {
   defaultQuoteState,
   selectedMoltworkerInstruments,
-  isInstrumentSelectedByMoltworker,
   normalizeAssetMatrix,
   filterTargetOrderBooks,
   defaultAssetMatrix,
-  quoteStateForInstrumentState,
   suspendAssetQuoteStates,
   quotePriceMovedTicks
 } from "./state/AssetStateRuntime";
@@ -2547,13 +2542,30 @@ export class TradingEngine {
           volatilitySnapshot,
           currentObservedAt,
           tickOptions
-        ) =>
-          this.maybeCancelLaggingHypeQuotes(
-            currentTick,
-            volatilitySnapshot,
-            currentObservedAt,
-            tickOptions
-          ),
+        ) => {
+          cancelLaggingHypeQuotesForTrading(
+            {
+              tick: currentTick,
+              volatility: volatilitySnapshot,
+              observedAt: currentObservedAt,
+              options: tickOptions,
+              config: this.cachedConfig,
+              env: this.env,
+              lastHypeCancelAtMs: this.crossAssetCancelLogAt.get("hype-usd") ?? 0,
+              fallbackNowMs: Date.now()
+            },
+            {
+              markCooldown: (instrumentCode, nowMs) =>
+                this.crossAssetCancelLogAt.set(instrumentCode, nowMs),
+              warn: (eventType, message, metadata) =>
+                this.logger.warn(eventType, message, metadata),
+              publishSuspend: (payload) => this.publish("SUSPEND_QUOTES", payload),
+              schedule: (work) => this.state.waitUntil(work),
+              cancelAllQuotes: (instrumentCode, reason) =>
+                this.cancelAllQuotes(instrumentCode, reason)
+            }
+          );
+        },
         processShadowQueueTick: (currentTick, currentBook, currentObservedAt, tickOptions) =>
           this.processShadowQueueTick(currentTick, currentBook, currentObservedAt, tickOptions),
         getLiquidityWalls: (instrumentCode, currentObservedAt, currentTick) =>
@@ -3086,26 +3098,22 @@ export class TradingEngine {
     pullAllQuotes: boolean,
     observedAt: string
   ): EngineState["quoteState"] {
-    return nextRuntimeQuoteStateForInstrument({
-      previous: quoteStateForInstrumentState(
-        this.engineState.assetQuoteStates,
-        instrumentCode,
-        this.engineState.quoteState
-      ),
+    return nextTradingQuoteStateForInstrument({
+      instrumentCode,
       quote,
-      tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-      strategyDisabledReason: runtimeStrategyQuoteDisabledReason(this.cachedConfig),
-      instrumentSelected: isInstrumentSelectedByMoltworker(instrumentCode, this.macroBias),
       pullAllQuotes,
-      quoteHibernateMs: resolveQuoteHibernateMs(this.cachedConfig, this.env.QUOTE_HIBERNATE_MS),
-      observedAt
+      observedAt,
+      engineState: this.engineState,
+      config: this.cachedConfig,
+      macroBias: this.macroBias,
+      env: this.env
     });
   }
 
   private maybeResumeQuotes(observedAt: string): void {
-    applyResumeExpiredQuoteStatesSideEffects(
+    resumeTradingQuotesIfExpired(
       {
-        currentState: this.engineState,
+        engineState: this.engineState,
         observedAt
       },
       {
@@ -3113,35 +3121,6 @@ export class TradingEngine {
           this.engineState = state;
         },
         publishResume: (payload) => this.publish("RESUME_QUOTES", payload)
-      }
-    );
-  }
-
-  private maybeCancelLaggingHypeQuotes(
-    tick: MarketTick,
-    volatility: MultiScaleVolatilitySnapshot | null,
-    observedAt: string,
-    options: TickHandlingOptions
-  ): void {
-    applyCrossAssetHypeQuoteCancelFlow(
-      {
-        shadowReplay: options.shadowReplay,
-        tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-        tickInstrumentCode: tick.instrumentCode,
-        volatility,
-        observedAt,
-        leadThresholdBpsValue: this.env.CROSS_ASSET_CANCEL_LEAD_BPS,
-        cooldownMsValue: this.env.CROSS_ASSET_CANCEL_COOLDOWN_MS,
-        lastCancelAtMs: this.crossAssetCancelLogAt.get("hype-usd") ?? 0,
-        fallbackNowMs: Date.now()
-      },
-      {
-        markCooldown: (instrumentCode, nowMs) =>
-          this.crossAssetCancelLogAt.set(instrumentCode, nowMs),
-        warn: (eventType, message, metadata) => this.logger.warn(eventType, message, metadata),
-        publishSuspend: (payload) => this.publish("SUSPEND_QUOTES", payload),
-        schedule: (work) => this.state.waitUntil(work),
-        cancelAllQuotes: (instrumentCode, reason) => this.cancelAllQuotes(instrumentCode, reason)
       }
     );
   }
