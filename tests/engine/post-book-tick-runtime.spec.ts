@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { defaultConfig } from "../../src/ConfigManager";
+import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import {
   preparePostBookTickRuntime,
   prepareTradingPostBookTickRuntimeForTarget,
@@ -159,13 +160,16 @@ describe("PostBookTickRuntime", () => {
       jumpZScore: 0
     } as unknown as MultiScaleVolatilitySnapshot;
     const shadowQueueState = { lastDecision: { decisionId: "decision-2" } } as ShadowQueueState;
-    const domSnapshot = { instrumentCode: "eth-usd", walls: [] } as unknown as DomAnalysisSnapshot;
     const cooldowns = new Map<string, number>();
+    const book = orderBook({
+      instrumentCode: "eth-usd",
+      marketKey: "hyperliquid:eth-usd"
+    });
 
     const context = await prepareTradingPostBookTickRuntimeForTarget(
       {
         tick: marketTick({ instrumentCode: "eth-usd" }),
-        book: orderBook(),
+        book,
         observedAt: OBSERVED_AT,
         options: { shadowReplay: true }
       },
@@ -178,8 +182,22 @@ describe("PostBookTickRuntime", () => {
         env: {
           CROSS_ASSET_CANCEL_LEAD_BPS: "5",
           CROSS_ASSET_CANCEL_COOLDOWN_MS: "1000"
-        },
+        } as never,
         crossAssetCancelLogAt: cooldowns,
+        engineState: defaultEngineState("post-book-target"),
+        orderBook: new Map([[book.marketKey, book]]),
+        bids: new Map(),
+        asks: new Map(),
+        domWallHistory: [],
+        domWallHistoryLimit: 50,
+        domScanRangePct: 0.02,
+        domSpoofProximityBps: 5,
+        domPriceBinSize: 1,
+        orderBookReconstructor: {
+          getBookSync() {
+            return { isSynced: true };
+          }
+        },
         multiScaleVolatility: {
           update(instrumentCode, midPrice, observedAt) {
             events.push(`volatility:${instrumentCode}:${midPrice}:${observedAt}`);
@@ -209,25 +227,20 @@ describe("PostBookTickRuntime", () => {
             `shadow:${currentTick.instrumentCode}:${currentBook.midPrice}:${observedAt}:${options.shadowReplay}`
           );
           return shadowQueueState;
-        },
-        getLiquidityWalls(instrumentCode, observedAt, currentTick) {
-          events.push(
-            `dom:${instrumentCode ?? ""}:${currentTick?.instrumentCode ?? ""}:${observedAt}`
-          );
-          return domSnapshot;
         }
       }
     );
 
-    expect(context).toEqual({
-      volatilitySnapshot: volatility,
-      shadowQueueState,
-      domSnapshot
+    expect(context.volatilitySnapshot).toBe(volatility);
+    expect(context.shadowQueueState).toBe(shadowQueueState);
+    expect(context.domSnapshot).toMatchObject({
+      instrumentCode: "eth-usd",
+      midPrice: 100,
+      walls: []
     });
     expect(events).toEqual([
       `volatility:eth-usd:100:${OBSERVED_AT}`,
-      `shadow:eth-usd:100:${OBSERVED_AT}:true`,
-      `dom:eth-usd:eth-usd:${OBSERVED_AT}`
+      `shadow:eth-usd:100:${OBSERVED_AT}:true`
     ]);
   });
 });
@@ -256,7 +269,7 @@ function marketTick(overrides: Partial<MarketTick> = {}): MarketTick {
   };
 }
 
-function orderBook(): InternalOrderBook {
+function orderBook(overrides: Partial<InternalOrderBook> = {}): InternalOrderBook {
   return {
     marketKey: "hyperliquid:btc-usd",
     instrumentCode: "btc-usd",
@@ -269,7 +282,8 @@ function orderBook(): InternalOrderBook {
     weightedImbalance: 0,
     bids: [],
     asks: [],
-    updatedAt: OBSERVED_AT
+    updatedAt: OBSERVED_AT,
+    ...overrides
   } as unknown as InternalOrderBook;
 }
 

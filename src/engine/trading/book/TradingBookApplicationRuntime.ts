@@ -19,6 +19,10 @@ import { applyBookDeltaFlow, applyBookSnapshotFlow } from "./BookRuntimeState";
 import type { AppliedBookUpdate, BookDeltaWithTicker } from "./BookTypes";
 import type { OrderBookReconstructor } from "./OrderBookReconstructor";
 import type { SortedBookSide } from "./SortedBookSide";
+import {
+  buildTradingDomAnalysisForTarget,
+  type TradingBookViewTarget
+} from "./TradingBookViewRuntime";
 
 export interface TradingBookSnapshotOptions {
   readonly telemetry?: boolean;
@@ -66,7 +70,6 @@ export interface TradingBookApplicationTarget {
   readonly logger: {
     info(eventType: string, message: string, metadata: JsonRecord): void;
   };
-  getLiquidityWalls(instrumentCode: string, observedAt: string): DomAnalysisSnapshot;
   safeStoragePut(writes: Record<string, unknown>, reason: string): Promise<void>;
   publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
 }
@@ -124,7 +127,13 @@ export async function applyTradingBookSnapshotForTarget(
     },
     {
       getDomSnapshot: (instrumentCode, snapshotUpdatedAt) =>
-        target.getLiquidityWalls(instrumentCode, snapshotUpdatedAt),
+        buildTradingDomAnalysisForTarget(
+          target as unknown as TradingBookViewTarget,
+          instrumentCode,
+          snapshotUpdatedAt,
+          undefined,
+          true
+        ),
       applyState: (state) => {
         target.engineState = state;
       },

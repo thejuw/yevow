@@ -591,14 +591,15 @@ describe("BookRuntimeState", () => {
       orderBook: new Map([[firstBook.marketKey, firstBook]]),
       bids: new Map(),
       asks: new Map(),
+      env: {},
+      domWallHistoryLimit: 50,
+      domScanRangePct: 0.02,
+      domSpoofProximityBps: 5,
+      domPriceBinSize: 1,
       logger: {
         info(eventType: string, _message: string, metadata: Record<string, unknown>) {
           events.push(`log:${eventType}:${String(metadata.sequence)}`);
         }
-      },
-      getLiquidityWalls(instrumentCode: string) {
-        events.push(`dom:${instrumentCode}`);
-        return dom(instrumentCode);
       },
       safeStoragePut(writes: Record<string, unknown>, reason: string) {
         events.push(`persist:${reason}:${Object.keys(writes).length}`);
@@ -632,7 +633,6 @@ describe("BookRuntimeState", () => {
     });
     expect(events).toEqual([
       "snapshot:hype-usd:true",
-      "dom:hype-usd",
       "persist:ORDER_BOOK_SNAPSHOT_APPLIED:3",
       "log:ORDER_BOOK_SNAPSHOT_APPLIED:42",
       "publish:ORDER_BOOK_SNAPSHOT_APPLIED:42",

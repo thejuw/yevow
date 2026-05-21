@@ -12,6 +12,10 @@ import {
   evaluateTradingCascadeStrategy,
   type TradingCascadeStrategyTarget
 } from "../cascade/CascadeStrategyRuntime";
+import {
+  buildTradingDomAnalysisForTarget,
+  type TradingBookViewTarget
+} from "../book/TradingBookViewRuntime";
 import { cancelLaggingHypeQuotesForTrading } from "../leadlag/TradingCrossAssetCancelRuntime";
 import type { PostBookTickContext, TickHandlingOptions } from "./TickPipelineTypes";
 
@@ -80,11 +84,6 @@ export interface TradingPostBookTickRuntimeTarget {
     observedAt: string,
     options: TickHandlingOptions
   ): ShadowQueueState;
-  getLiquidityWalls(
-    instrumentCode?: string,
-    observedAt?: string,
-    tick?: MarketTick
-  ): DomAnalysisSnapshot;
 }
 
 export interface TradingPostBookTickRuntimeHandlers extends Omit<
@@ -208,7 +207,13 @@ export function prepareTradingPostBookTickRuntimeForTarget(
       processShadowQueueTick: (tick, book, observedAt, options) =>
         target.processShadowQueueTick(tick, book, observedAt, options),
       getLiquidityWalls: (instrumentCode, observedAt, tick) =>
-        target.getLiquidityWalls(instrumentCode, observedAt, tick)
+        buildTradingDomAnalysisForTarget(
+          target as unknown as TradingBookViewTarget,
+          instrumentCode,
+          observedAt,
+          tick,
+          true
+        )
     }
   );
 }

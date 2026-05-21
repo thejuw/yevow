@@ -39,7 +39,6 @@ import {
   type TradingTickBookTarget
 } from "./book/TradingTickBookRuntime";
 import {
-  buildTradingDomAnalysisForTarget,
   currentTradingBookSnapshotForTarget,
   currentTradingDomHeatmapForTarget,
   type TradingBookViewTarget
@@ -965,33 +964,10 @@ export class TradingEngine {
     );
   }
 
-  getLiquidityWalls(
-    instrumentCode?: string,
-    observedAt: string = new Date().toISOString(),
-    tick?: MarketTick
-  ): DomAnalysisSnapshot {
-    return this.buildDomAnalysis(instrumentCode, observedAt, tick, true);
-  }
-
   private currentDomHeatmap(instrumentCode: string | undefined): DomAnalysisSnapshot {
     return currentTradingDomHeatmapForTarget(
       this as unknown as TradingBookViewTarget,
       instrumentCode
-    );
-  }
-
-  private buildDomAnalysis(
-    instrumentCode: string | undefined,
-    observedAt: string,
-    tick: MarketTick | undefined,
-    persistHistory: boolean
-  ): DomAnalysisSnapshot {
-    return buildTradingDomAnalysisForTarget(
-      this as unknown as TradingBookViewTarget,
-      instrumentCode,
-      observedAt,
-      tick,
-      persistHistory
     );
   }
 
