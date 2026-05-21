@@ -243,7 +243,7 @@ import {
   emitAmVpinTelemetry,
   emitProfilerAlertTelemetry
 } from "./telemetry/ProfilerTelemetryRuntime";
-import { emitTickTelemetry } from "./telemetry/TickTelemetryRuntime";
+import { publishTradingTickTelemetry } from "./telemetry/TradingTickTelemetryRuntime";
 import { type ReplayOptions, type ReplayScenario } from "./routes/ReplayAdminRoutes";
 import {
   loadReplayShadowTradesFromJournal,
@@ -4096,13 +4096,12 @@ export class TradingEngine {
     status: LatencyMetrics["status"],
     hotPathStartedAt: number
   ): void {
-    const cpuTimeMs = roundLatency(Math.max(0, highResolutionNow() - hotPathStartedAt));
-    emitTickTelemetry(
+    publishTradingTickTelemetry(
       {
         tick,
         metrics,
         status,
-        cpuTimeMs,
+        hotPathStartedAt,
         engineState: this.engineState,
         macroBias: this.macroBias,
         temporaryOverride: this.activeTemporaryOverride,
