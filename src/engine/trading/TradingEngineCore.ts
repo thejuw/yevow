@@ -37,9 +37,7 @@ import {
   applyBookSnapshotFlow,
   applyInformationalBookNotReadyFlow,
   applyRejectedBookDeltaFlow,
-  bookDesyncStorageExtra,
-  markBookSyncDesynced,
-  stateAfterDesyncedBook
+  bookDesyncStorageExtra
 } from "./book/BookRuntimeState";
 import {
   applyOrderBookResetConnectionIds,
@@ -158,14 +156,7 @@ import {
   createTradingOrderBookReconstructor
 } from "./book/OrderBookReconstructorFactory";
 import type { AppliedBookUpdate, BookDeltaWithTicker, BookSyncState } from "./book/BookTypes";
-import {
-  applyAcceptedHyperliquidL2BookSideEffects,
-  applyHyperliquidL2BookDesyncSideEffects,
-  applyStaleHyperliquidL2BookSideEffects,
-  dispatchHyperliquidL2BookDecision,
-  evaluateHyperliquidL2BookRuntime,
-  type HyperliquidL2BookHotPathDecision
-} from "./ingest/HyperliquidL2BookIngest";
+import { handleTradingHyperliquidL2Book } from "./ingest/TradingHyperliquidL2BookRuntime";
 import {
   applyHyperliquidIngestConnectionSideEffects,
   dispatchHyperliquidRawMessageRoute,
@@ -1087,23 +1078,30 @@ export class TradingEngine {
     });
   }
 
-  private async handleStaleHyperliquidL2Book(
-    l2Decision: Extract<HyperliquidL2BookHotPathDecision, { kind: "STALE" }>,
+  private async handleHyperliquidL2Book(
+    raw: Record<string, unknown>,
     payload: HyperliquidRawIngestPayload,
-    wakeUpTimeMs: number | null,
-    hotPathStartedAt: number
+    wakeUpTimeMs: number | null
   ): Promise<TickIngestResult> {
-    return applyStaleHyperliquidL2BookSideEffects(
+    return handleTradingHyperliquidL2Book(
       {
-        decision: l2Decision,
+        raw,
         payload,
         wakeUpTimeMs,
-        hotPathStartedAt,
+        hotPathStartedAt: highResolutionNow(),
+        env: this.env,
+        maxLatencyMs: this.maxLatencyMs,
+        engineState: this.engineState,
         tradingEnabled: this.cachedConfig.TRADING_ENABLED
       },
       {
-        applySnapshot: (snapshot) =>
-          this.applySnapshot(snapshot, { telemetry: false, persist: false }),
+        readEngineState: () => this.engineState,
+        applyEngineState: (state) => {
+          this.engineState = state;
+        },
+        resolveBookSync: (marketKey) => this.bookSync.get(marketKey),
+        applyBook: (marketKey, book) => this.orderBook.set(marketKey, book),
+        applySnapshot: (snapshot, options) => this.applySnapshot(snapshot, options),
         handleCrossedBookSnapshot: (book, sequence, totalLatencyMs, observedAt) =>
           this.orderBookReconstructor.handleCrossedBookSnapshot(
             book,
@@ -1111,98 +1109,22 @@ export class TradingEngine {
             totalLatencyMs,
             observedAt
           ),
-        markLatencyDesyncedBook: (marketKey, book, observedAt) => {
-          const syncState = this.bookSync.get(marketKey);
-          markBookSyncDesynced({
-            syncState,
-            reason: "NATIVE_HL_LATENCY",
-            observedAt
-          });
-          const staleBook = stateAfterDesyncedBook({
-            currentState: this.engineState,
-            book,
-            reason: "NATIVE_HL_LATENCY"
-          });
-          this.orderBook.set(marketKey, staleBook.book);
-          this.engineState = staleBook.state;
-        },
         quoteStateStalePull: (instrumentCode, sequence, metrics, observedAt) =>
           this.quoteStateStalePull(instrumentCode, sequence, metrics, observedAt),
         observeExecutionProfile: (metrics, trace) => this.observeExecutionProfile(metrics, trace),
         schedule: (work) => this.state.waitUntil(work),
         cancelAllQuotes: (instrumentCode, reason) => this.cancelAllQuotes(instrumentCode, reason),
         publishTickTelemetry: (tick, metrics, status, telemetryStartedAt) =>
-          this.publishTickTelemetry(tick, metrics, status, telemetryStartedAt)
-      }
-    );
-  }
-
-  private async handleAcceptedHyperliquidL2Book(
-    l2Decision: Extract<HyperliquidL2BookHotPathDecision, { kind: "ACCEPTED" }>,
-    payload: HyperliquidRawIngestPayload,
-    wakeUpTimeMs: number | null
-  ): Promise<TickIngestResult> {
-    return applyAcceptedHyperliquidL2BookSideEffects(
-      {
-        decision: l2Decision,
-        payload,
-        wakeUpTimeMs
-      },
-      {
-        applySnapshot: (snapshot) => this.applySnapshot(snapshot, { persist: false }),
-        handleCrossedBookSnapshot: (book, sequence, totalLatencyMs, observedAt) =>
-          this.orderBookReconstructor.handleCrossedBookSnapshot(
-            book,
-            sequence,
-            totalLatencyMs,
-            observedAt
+          this.publishTickTelemetry(tick, metrics, status, telemetryStartedAt),
+        warnDesync: (metadata) =>
+          this.logger.warn(
+            "ORDER_BOOK_DESYNC",
+            "Hyperliquid native book sequence gap detected",
+            metadata
           ),
         handleTick: (tick, wakeUp) => this.handleTick(tick, wakeUp)
       }
     );
-  }
-
-  private async handleHyperliquidL2Book(
-    raw: Record<string, unknown>,
-    payload: HyperliquidRawIngestPayload,
-    wakeUpTimeMs: number | null
-  ): Promise<TickIngestResult> {
-    const hotPathStartedAt = highResolutionNow();
-    const l2Decision = evaluateHyperliquidL2BookRuntime({
-      raw,
-      payload,
-      resolveExistingSync: (marketKey) => this.bookSync.get(marketKey),
-      dwellirMaxLatencyMs: this.env.DWELLIR_MAX_LATENCY_MS,
-      hlStaleAfterMs: this.env.HL_STALE_AFTER_MS,
-      hlBookTimestampMaxDriftMs: this.env.HL_BOOK_TIMESTAMP_MAX_DRIFT_MS,
-      hlSequenceGapMs: this.env.HL_SEQUENCE_GAP_MS,
-      currentMaxLatencyMs: this.maxLatencyMs,
-      averageLatencyMs: this.engineState.averageLatency,
-      sampleCount: this.engineState.latencySampleCount,
-      location: this.engineState.location
-    });
-    return dispatchHyperliquidL2BookDecision(l2Decision, {
-      handleDuplicateOrOutOfOrder: (decision) => decision.result,
-      handleDesync: (decision) =>
-        applyHyperliquidL2BookDesyncSideEffects(decision, {
-          markBookDesynced: (marketKey, reason, observedAt) =>
-            markBookSyncDesynced({
-              syncState: this.bookSync.get(marketKey),
-              reason,
-              observedAt
-            }),
-          warnDesync: (metadata) =>
-            this.logger.warn(
-              "ORDER_BOOK_DESYNC",
-              "Hyperliquid native book sequence gap detected",
-              metadata
-            )
-        }),
-      handleStale: (decision) =>
-        this.handleStaleHyperliquidL2Book(decision, payload, wakeUpTimeMs, hotPathStartedAt),
-      handleAccepted: (decision) =>
-        this.handleAcceptedHyperliquidL2Book(decision, payload, wakeUpTimeMs)
-    });
   }
 
   private async handleHyperliquidTrades(
