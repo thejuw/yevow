@@ -71,7 +71,10 @@ import {
   dispatchTradingCroupierQuoteAction,
   type TradingCroupierQuoteActionTarget
 } from "./quotes/QuoteActionRuntime";
-import { cancelAllTradingQuotes } from "./quotes/QuoteCancelRuntime";
+import {
+  cancelAllTradingQuotesForTarget,
+  type TradingQuoteCancelAllTarget
+} from "./quotes/QuoteCancelRuntime";
 import { type ApprovedExecutionPlan } from "./execution/ExecutionPlanRuntime";
 import { prepareTradingExecutionPlan } from "./execution/TradingExecutionPlanPreparationRuntime";
 import {
@@ -2403,29 +2406,10 @@ export class TradingEngine {
   }
 
   private async cancelAllQuotes(instrumentCode: string, reason: string): Promise<void> {
-    const now = Date.now();
-    await cancelAllTradingQuotes(
-      {
-        instrumentCode,
-        reason,
-        executioner: this.env.EXECUTIONER,
-        logger: this.logger,
-        nowMs: now,
-        lastDispatchAtMs: this.cancelAllLogAt.get(`${instrumentCode}:${reason}`)
-      },
-      {
-        markDispatch: (dispatchKey, dispatchedAtMs) =>
-          this.cancelAllLogAt.set(dispatchKey, dispatchedAtMs),
-        reserveCancelCapacity: () => this.rateLimiter.reserve("default", "CANCEL"),
-        persistRateLimitState: () =>
-          this.state.waitUntil(
-            this.safeStoragePut(
-              RATE_LIMIT_STATE_KEY,
-              this.rateLimiter.exportState(),
-              "EXECUTION_RATE_LIMIT_DRAIN"
-            )
-          )
-      }
+    await cancelAllTradingQuotesForTarget(
+      instrumentCode,
+      reason,
+      this as unknown as TradingQuoteCancelAllTarget
     );
   }
 

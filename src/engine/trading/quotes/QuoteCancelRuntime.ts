@@ -1,5 +1,5 @@
-import { HOT_PATH_LOG_THROTTLE_MS } from "../../../TradingEngineConstants";
-import type { JsonRecord } from "../../../types";
+import { HOT_PATH_LOG_THROTTLE_MS, RATE_LIMIT_STATE_KEY } from "../../../TradingEngineConstants";
+import type { Env, JsonRecord } from "../../../types";
 import { wait } from "../helpers/RuntimeMath";
 
 export interface QuoteCancelDispatchPayload {
@@ -73,6 +73,20 @@ export interface TradingQuoteCancelAllHandlers {
   readonly reserveCancelCapacity: () => QuoteCancelReservation;
   readonly persistRateLimitState: () => void;
   readonly wait?: (ms: number) => Promise<void>;
+}
+
+export interface TradingQuoteCancelAllTarget {
+  readonly env: Pick<Env, "EXECUTIONER">;
+  readonly logger: QuoteCancelLogger;
+  cancelAllLogAt: Map<string, number>;
+  readonly rateLimiter: {
+    reserve(exchangeKey: string, priority: "CANCEL"): QuoteCancelReservation;
+    exportState(): unknown;
+  };
+  readonly state: {
+    waitUntil(work: Promise<void>): void;
+  };
+  safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
 }
 
 export function evaluateQuoteCancelDispatch(
@@ -183,6 +197,40 @@ export async function cancelAllTradingQuotes(
           logger: input.logger,
           payload
         });
+      }
+    }
+  );
+}
+
+export function cancelAllTradingQuotesForTarget(
+  instrumentCode: string,
+  reason: string,
+  target: TradingQuoteCancelAllTarget
+): Promise<QuoteCancelDispatchDecision> {
+  const now = Date.now();
+
+  return cancelAllTradingQuotes(
+    {
+      instrumentCode,
+      reason,
+      executioner: target.env.EXECUTIONER,
+      logger: target.logger,
+      nowMs: now,
+      lastDispatchAtMs: target.cancelAllLogAt.get(`${instrumentCode}:${reason}`)
+    },
+    {
+      markDispatch: (dispatchKey, dispatchedAtMs) => {
+        target.cancelAllLogAt.set(dispatchKey, dispatchedAtMs);
+      },
+      reserveCancelCapacity: () => target.rateLimiter.reserve("default", "CANCEL"),
+      persistRateLimitState: () => {
+        target.state.waitUntil(
+          target.safeStoragePut(
+            RATE_LIMIT_STATE_KEY,
+            target.rateLimiter.exportState(),
+            "EXECUTION_RATE_LIMIT_DRAIN"
+          )
+        );
       }
     }
   );

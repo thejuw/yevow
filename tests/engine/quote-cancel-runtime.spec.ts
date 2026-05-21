@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   applyQuoteCancelAllSideEffects,
+  cancelAllTradingQuotesForTarget,
   cancelAllTradingQuotes,
   dispatchQuoteCancelAll,
   evaluateQuoteCancelDispatch,
   type QuoteCancelAllSideEffectHandlers,
-  type QuoteCancelLogger
+  type QuoteCancelLogger,
+  type TradingQuoteCancelAllTarget
 } from "../../src/engine/trading/quotes/QuoteCancelRuntime";
 
 describe("QuoteCancelRuntime", () => {
@@ -168,6 +170,58 @@ describe("QuoteCancelRuntime", () => {
       instrumentCode: "hype-usd",
       reason: "BTC_LEAD_MOVE"
     });
+    expect(warnings[0]).toMatchObject({ eventType: "QUOTE_CANCEL_ALL_DISPATCHED" });
+  });
+
+  it("wraps trading cancel-all through the trading target adapter", async () => {
+    const requests: Request[] = [];
+    const scheduled: Promise<void>[] = [];
+    const events: string[] = [];
+    const { logger, warnings } = loggerSpy();
+    const target: TradingQuoteCancelAllTarget = {
+      env: {
+        EXECUTIONER: {
+          fetch(request) {
+            requests.push(request);
+            return Promise.resolve(Response.json({ ok: true }));
+          }
+        }
+      },
+      logger,
+      cancelAllLogAt: new Map(),
+      rateLimiter: {
+        reserve(exchangeKey, priority) {
+          events.push(`reserve:${exchangeKey}:${priority}`);
+          return { allowed: true, waitMs: 0 };
+        },
+        exportState() {
+          events.push("export-rate-limit");
+          return { default: { available: 1 } };
+        }
+      },
+      state: {
+        waitUntil(work) {
+          events.push("schedule");
+          scheduled.push(work);
+        }
+      },
+      async safeStoragePut(key, _value, reason) {
+        events.push(`persist:${key}:${reason}`);
+      }
+    };
+
+    const decision = await cancelAllTradingQuotesForTarget("btc-usd", "TARGET_TEST", target);
+    await Promise.all(scheduled);
+
+    expect(decision).toMatchObject({ shouldDispatch: true, dispatchKey: "btc-usd:TARGET_TEST" });
+    expect(target.cancelAllLogAt.has("btc-usd:TARGET_TEST")).toBe(true);
+    expect(events).toEqual([
+      "reserve:default:CANCEL",
+      "export-rate-limit",
+      "persist:execution:rate-limits:EXECUTION_RATE_LIMIT_DRAIN",
+      "schedule"
+    ]);
+    expect(requests).toHaveLength(1);
     expect(warnings[0]).toMatchObject({ eventType: "QUOTE_CANCEL_ALL_DISPATCHED" });
   });
 
