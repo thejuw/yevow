@@ -58,11 +58,8 @@ import {
   resolveShadowQueueNoEdgeLogInterval,
   resolveShadowQueueSizingConfig
 } from "./shadow/ShadowQueueRuntime";
-import {
-  applyAnomalyEmergencyPauseFlow,
-  emitAnomalyEmergencyPauseSideEffects,
-  type AnomalyEmergencyPauseTelemetry
-} from "./anomaly/AnomalyRuntime";
+import { applyAnomalyEmergencyPauseFlow } from "./anomaly/AnomalyRuntime";
+import { emitTradingAnomalyEmergencyPause } from "./anomaly/TradingAnomalyEmergencyRuntime";
 import {
   applyCrossAssetHypeQuoteCancelFlow,
   updateLeadLagMetrics as updateLeadLagRuntimeMetrics
@@ -2262,7 +2259,13 @@ export class TradingEngine {
           this.engineState = state;
         },
         persistStorageWrites: (writes) => this.safeStoragePut(writes, "ANOMALY_EMERGENCY_PAUSE"),
-        emitEmergencyPause: (event) => this.triggerEmergencyPause(event),
+        emitEmergencyPause: (event) =>
+          emitTradingAnomalyEmergencyPause(event, {
+            writeCriticalLog: (source, message, metadata) =>
+              this.logger.writeLog("CRITICAL", source, message, metadata),
+            publish: (type, payload, correlationId) => this.publish(type, payload, correlationId),
+            notify: (notification) => this.notifier.notify(notification)
+          }),
         publishTickTelemetry: (telemetryTick, telemetryMetrics, status, telemetryStartedAt) =>
           this.publishTickTelemetry(telemetryTick, telemetryMetrics, status, telemetryStartedAt)
       }
@@ -4137,15 +4140,6 @@ export class TradingEngine {
         logPerformance: (metrics) => this.logger.logPerformance(metrics)
       }
     );
-  }
-
-  private triggerEmergencyPause(event: AnomalyEmergencyPauseTelemetry): void {
-    emitAnomalyEmergencyPauseSideEffects(event, {
-      writeCriticalLog: (source, message, metadata) =>
-        this.logger.writeLog("CRITICAL", source, message, metadata),
-      publish: (type, payload, correlationId) => this.publish(type, payload, correlationId),
-      notify: (notification) => this.notifier.notify(notification)
-    });
   }
 
   private publishProfilerAlert(signal: AgentSignal, profilerState: ProfilerState): void {
