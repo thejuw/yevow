@@ -105,8 +105,11 @@ import {
 import { logTradingPerformanceSpike } from "./performance/TradingPerformanceSpikeRuntime";
 import { nextLatencyAverage } from "./performance/LatencyTickRuntime";
 import { prepareTradingTickLatency } from "./performance/TradingTickLatencyRuntime";
-import { applyCancelJanitorOrderSideEffects, cancelJanitorOrder } from "./janitor/JanitorRuntime";
-import { runTradingJanitorMaintenance } from "./janitor/TradingJanitorRuntime";
+import {
+  cancelTradingJanitorOrder,
+  pruneTradingOperationalLogs,
+  runTradingJanitorMaintenance
+} from "./janitor/TradingJanitorRuntime";
 import {
   currentCascadeActiveSnapshot as buildCurrentCascadeActiveSnapshot,
   currentCascadeHeatSnapshot as buildCurrentCascadeHeatSnapshot,
@@ -237,13 +240,7 @@ import {
   resolveHotStorageSnapshotTickInterval,
   type StorageWriteGuard
 } from "./state/StorageWriteGuard";
-import {
-  emptyLogPruneReport,
-  logRetentionPolicyToJson,
-  pruneOperationalLogsFromD1,
-  resolveLogRetentionPolicy,
-  type LogPruneReport
-} from "../LogRetention";
+import { type LogPruneReport } from "../LogRetention";
 import {
   MultiScaleVolatilityModel,
   type MultiScaleVolatilitySnapshot
@@ -3271,10 +3268,10 @@ export class TradingEngine {
     reason: string,
     instrumentCode?: string
   ): Promise<void> {
-    const executioner = this.env.EXECUTIONER;
-    await applyCancelJanitorOrderSideEffects(
+    await cancelTradingJanitorOrder(
       {
-        hasExecutioner: Boolean(executioner),
+        executioner: this.env.EXECUTIONER,
+        logger: this.logger,
         orderId,
         reason,
         instrumentCode
@@ -3286,37 +3283,17 @@ export class TradingEngine {
             RATE_LIMIT_STATE_KEY,
             this.rateLimiter.exportState(),
             "JANITOR_CANCEL_RATE_LIMIT"
-          ),
-        wait,
-        cancelOrder: (cancelOrderId, cancelReason, cancelInstrumentCode) => {
-          if (!executioner) {
-            return Promise.resolve();
-          }
-          return cancelJanitorOrder({
-            executioner,
-            logger: this.logger,
-            orderId: cancelOrderId,
-            reason: cancelReason,
-            instrumentCode: cancelInstrumentCode
-          });
-        }
+          )
       }
     );
   }
 
   private async pruneOperationalLogs(): Promise<LogPruneReport> {
-    const policy = resolveLogRetentionPolicy(this.env);
-    const emptyReport = emptyLogPruneReport(policy);
-
-    try {
-      return await pruneOperationalLogsFromD1(this.env.TRADING_DB, policy);
-    } catch (error) {
-      this.logger.error("JANITOR_LOG_PRUNE_FAILED", "Failed to prune stale operational logs", {
-        policy: logRetentionPolicyToJson(policy),
-        error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
-      });
-      return emptyReport;
-    }
+    return pruneTradingOperationalLogs({
+      db: this.env.TRADING_DB,
+      env: this.env,
+      logger: this.logger
+    });
   }
 
   private prepareShadowReplayState(

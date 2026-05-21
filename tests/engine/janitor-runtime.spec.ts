@@ -17,6 +17,10 @@ import {
   runJanitorMaintenance,
   stateAfterJanitorRun
 } from "../../src/engine/trading/janitor/JanitorRuntime";
+import {
+  cancelTradingJanitorOrder,
+  pruneTradingOperationalLogs
+} from "../../src/engine/trading/janitor/TradingJanitorRuntime";
 import type { LogPruneReport } from "../../src/engine/LogRetention";
 import type { EngineState, ExchangeOpenOrder, JanitorState, ManagedOrder } from "../../src/types";
 
@@ -326,6 +330,65 @@ describe("JanitorRuntime", () => {
       "wait:125",
       "cancel:orphan-1:JANITOR_ORPHAN_EXCHANGE_ORDER:hype-usd"
     ]);
+  });
+
+  it("wraps trading janitor cancel dispatch with executioner transport", async () => {
+    const sideEffects = cancelJanitorOrderSideEffectSpy({
+      reservation: { allowed: false, waitMs: 125 }
+    });
+    const transportEvents: string[] = [];
+    const { logger } = loggerSpy();
+
+    await cancelTradingJanitorOrder(
+      {
+        executioner: {
+          fetch(request) {
+            transportEvents.push(`${request.method}:${new URL(request.url).pathname}`);
+            return Promise.resolve(new Response(null, { status: 200 }));
+          }
+        },
+        logger,
+        orderId: "orphan-1",
+        reason: "JANITOR_ORPHAN_EXCHANGE_ORDER",
+        instrumentCode: "hype-usd"
+      },
+      {
+        reserveCancelCapacity: sideEffects.handlers.reserveCancelCapacity,
+        persistRateLimitState: sideEffects.handlers.persistRateLimitState,
+        wait: sideEffects.handlers.wait
+      }
+    );
+
+    expect(sideEffects.events).toEqual(["reserve:CANCEL", "persist", "wait:125"]);
+    expect(transportEvents).toEqual(["POST:/cancel"]);
+  });
+
+  it("returns an empty prune report when trading operational log pruning fails", async () => {
+    const { logger, errors } = loggerSpy();
+    const report = await pruneTradingOperationalLogs({
+      db: {
+        prepare() {
+          return {
+            bind() {
+              return {
+                run() {
+                  return Promise.reject(new Error("d1 unavailable"));
+                }
+              };
+            }
+          };
+        }
+      },
+      env: {},
+      logger
+    });
+
+    expect(report.totalRows).toBe(0);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({
+      eventType: "JANITOR_LOG_PRUNE_FAILED",
+      message: "Failed to prune stale operational logs"
+    });
   });
 
   it("records post-only dust close skips with position context", () => {
