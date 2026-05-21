@@ -146,11 +146,8 @@ import {
   latencyBaselineResetArtifacts
 } from "./performance/LatencyBaselineRuntime";
 import { applyPerformanceSpikeLogSideEffect } from "./performance/PerformanceSpikeRuntime";
-import {
-  hydrateLatencyMetricsFromState,
-  nextLatencyAverage,
-  prepareTickLatencyFlow
-} from "./performance/LatencyTickRuntime";
+import { nextLatencyAverage } from "./performance/LatencyTickRuntime";
+import { prepareTradingTickLatency } from "./performance/TradingTickLatencyRuntime";
 import { applyCancelJanitorOrderSideEffects, cancelJanitorOrder } from "./janitor/JanitorRuntime";
 import { runTradingJanitorMaintenance } from "./janitor/TradingJanitorRuntime";
 import {
@@ -2536,25 +2533,19 @@ export class TradingEngine {
     hardStaleDropMs: number;
     isHardStale: boolean;
   } {
-    return prepareTickLatencyFlow(
+    return prepareTradingTickLatency(
       {
         tick,
-        brainTimestamp: new Date().toISOString(),
-        maxLatencyMs: this.maxLatencyMs,
-        averageLatencyMs: this.engineState.averageLatency,
-        sampleCount: this.engineState.latencySampleCount,
-        location: this.engineState.location,
         shadowReplay,
+        maxLatencyMs: this.maxLatencyMs,
+        engineState: this.engineState,
+        latencyHistory: this.latencyHistory,
         dwellirMaxLatencyMs: this.env.DWELLIR_MAX_LATENCY_MS,
-        hlStaleAfterMs: this.env.HL_STALE_AFTER_MS,
-        currentMaxLatencyMs: this.maxLatencyMs,
-        history: this.latencyHistory,
-        historyLimit: PERFORMANCE_HISTORY_LIMIT
+        hlStaleAfterMs: this.env.HL_STALE_AFTER_MS
       },
       {
         resetLatencyBaseline: (observedAt, reason) => this.resetLatencyBaseline(observedAt, reason),
         updateLatencyAverage: (totalLatencyMs) => this.updateLatencyAverage(totalLatencyMs),
-        hydrateMetrics: (metrics) => hydrateLatencyMetricsFromState(metrics, this.engineState),
         applyLocationLatency: (totalLatencyMs, observedAt) =>
           this.applyLocationLatency(totalLatencyMs, observedAt),
         setLatencyHistory: (history) => {
