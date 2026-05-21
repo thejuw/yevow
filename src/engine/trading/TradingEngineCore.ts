@@ -143,7 +143,10 @@ import {
   createTradingOrderBookReconstructor
 } from "./book/OrderBookReconstructorFactory";
 import type { AppliedBookUpdate, BookDeltaWithTicker, BookSyncState } from "./book/BookTypes";
-import { handleTradingHyperliquidL2Book } from "./ingest/TradingHyperliquidL2BookRuntime";
+import {
+  handleTradingEngineHyperliquidL2Book,
+  type TradingHyperliquidL2BookTarget
+} from "./ingest/TradingHyperliquidL2BookRuntime";
 import {
   applyHyperliquidIngestConnectionSideEffects,
   dispatchHyperliquidRawMessageRoute,
@@ -976,47 +979,11 @@ export class TradingEngine {
     payload: HyperliquidRawIngestPayload,
     wakeUpTimeMs: number | null
   ): Promise<TickIngestResult> {
-    return handleTradingHyperliquidL2Book(
-      {
-        raw,
-        payload,
-        wakeUpTimeMs,
-        hotPathStartedAt: highResolutionNow(),
-        env: this.env,
-        maxLatencyMs: this.maxLatencyMs,
-        engineState: this.engineState,
-        tradingEnabled: this.cachedConfig.TRADING_ENABLED
-      },
-      {
-        readEngineState: () => this.engineState,
-        applyEngineState: (state) => {
-          this.engineState = state;
-        },
-        resolveBookSync: (marketKey) => this.bookSync.get(marketKey),
-        applyBook: (marketKey, book) => this.orderBook.set(marketKey, book),
-        applySnapshot: (snapshot, options) => this.applySnapshot(snapshot, options),
-        handleCrossedBookSnapshot: (book, sequence, totalLatencyMs, observedAt) =>
-          this.orderBookReconstructor.handleCrossedBookSnapshot(
-            book,
-            sequence,
-            totalLatencyMs,
-            observedAt
-          ),
-        quoteStateStalePull: (instrumentCode, sequence, metrics, observedAt) =>
-          this.quoteStateStalePull(instrumentCode, sequence, metrics, observedAt),
-        observeExecutionProfile: (metrics, trace) => this.observeExecutionProfile(metrics, trace),
-        schedule: (work) => this.state.waitUntil(work),
-        cancelAllQuotes: (instrumentCode, reason) => this.cancelAllQuotes(instrumentCode, reason),
-        publishTickTelemetry: (tick, metrics, status, telemetryStartedAt) =>
-          this.publishTickTelemetry(tick, metrics, status, telemetryStartedAt),
-        warnDesync: (metadata) =>
-          this.logger.warn(
-            "ORDER_BOOK_DESYNC",
-            "Hyperliquid native book sequence gap detected",
-            metadata
-          ),
-        handleTick: (tick, wakeUp) => this.handleTick(tick, wakeUp)
-      }
+    return handleTradingEngineHyperliquidL2Book(
+      raw,
+      payload,
+      wakeUpTimeMs,
+      this as unknown as TradingHyperliquidL2BookTarget
     );
   }
 

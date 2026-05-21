@@ -27,6 +27,10 @@ import {
   registerHyperliquidIngestConnection,
   routeHyperliquidRawMessage
 } from "../../src/engine/trading/ingest/HyperliquidRawRouting";
+import {
+  handleTradingEngineHyperliquidL2Book,
+  type TradingHyperliquidL2BookTarget
+} from "../../src/engine/trading/ingest/TradingHyperliquidL2BookRuntime";
 import type { InternalOrderBook, MarketTick } from "../../src/types";
 import type { BookSyncState } from "../../src/engine/trading/book/BookTypes";
 import type { TickIngestResult } from "../../src/engine/trading/TradingEngineRouteTypes";
@@ -554,6 +558,86 @@ describe("hyperliquid raw ingest helpers", () => {
       processedCount: 1
     });
     expect(events).toEqual(["snapshot", "tick:btc-usd:100:3"]);
+  });
+
+  it("routes native L2 snapshots through the trading engine adapter", async () => {
+    const nowMs = Date.now();
+    const state = defaultEngineState("l2-adapter");
+    state.averageLatency = 4;
+    state.latencySampleCount = 10;
+    const events: string[] = [];
+    const pending: Promise<unknown>[] = [];
+    const target: TradingHyperliquidL2BookTarget = {
+      env: {
+        DWELLIR_MAX_LATENCY_MS: "1000",
+        HL_STALE_AFTER_MS: "1000",
+        HL_BOOK_TIMESTAMP_MAX_DRIFT_MS: "5000",
+        HL_SEQUENCE_GAP_MS: "1000"
+      },
+      maxLatencyMs: 1000,
+      engineState: state,
+      cachedConfig: { TRADING_ENABLED: true },
+      bookSync: new Map([["hyperliquid:btc-usd", bookSync(10)]]),
+      orderBook: new Map(),
+      orderBookReconstructor: {
+        handleCrossedBookSnapshot: async () => {
+          events.push("crossed");
+        }
+      },
+      state: {
+        waitUntil(work) {
+          pending.push(work);
+        }
+      },
+      logger: {
+        warn(eventType) {
+          events.push(`warn:${eventType}`);
+        }
+      },
+      applySnapshot: async (snapshot) => {
+        events.push(`snapshot:${snapshot.sequence ?? "NONE"}`);
+        return internalBook({ lastSequence: snapshot.sequence, sequence: snapshot.sequence });
+      },
+      quoteStateStalePull: (instrumentCode) => {
+        events.push(`stale-pull:${instrumentCode}`);
+      },
+      observeExecutionProfile: () => {
+        events.push("profile");
+      },
+      cancelAllQuotes: async (instrumentCode, reason) => {
+        events.push(`cancel:${instrumentCode}:${reason}`);
+      },
+      publishTickTelemetry: (tick) => {
+        events.push(`telemetry:${tick.instrumentCode}`);
+      },
+      handleTick: async (tick, wakeUpTimeMs) => {
+        events.push(`tick:${tick.instrumentCode}:${tick.sequence}:${wakeUpTimeMs ?? "NONE"}`);
+        return freshResult();
+      }
+    };
+
+    const result = await handleTradingEngineHyperliquidL2Book(
+      {
+        data: {
+          coin: "BTC",
+          time: nowMs,
+          sequence: 20,
+          levels: [[{ px: "99", sz: "1" }], [{ px: "101", sz: "1" }]]
+        }
+      },
+      {
+        source_exchange: "hyperliquid",
+        exchangeCode: "HL",
+        instrumentCode: "btc-usd",
+        receivedAt: new Date(nowMs).toISOString()
+      },
+      9,
+      target
+    );
+
+    expect(result).toMatchObject({ accepted: true, status: "FRESH", processedCount: 1 });
+    expect(events).toEqual(["snapshot:20", "tick:btc-usd:20:9"]);
+    expect(pending).toEqual([]);
   });
 
   it("rejects accepted native L2 snapshots that are crossed", async () => {
