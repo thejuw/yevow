@@ -108,6 +108,128 @@ export interface EngineHttpRouteContext {
   applyConfigUpdate(update: AdminConfigUpdate): Promise<void>;
 }
 
+export interface EngineHttpRouteContextTarget {
+  readonly env: Env;
+  readonly state: DurableObjectState;
+  readonly logger: Logger;
+  engineState: EngineState;
+  readonly orderBook: Map<string, InternalOrderBook>;
+  readonly latencyHistory: LatencyMetrics[];
+  readonly processingLatencySamples: number[];
+  readonly cachedConfig: EngineState["cachedConfig"];
+  readonly cascadeBacktester: Backtester;
+  readonly cascadeNewsCalendar: NewsCalendar;
+  readonly replayJournal: { currentStatus(): Promise<ReplayStatus> };
+  readonly sentimentAgent: {
+    analyzeHeadline(headline: string, env: Env): Promise<EngineState["sentiment"]>;
+  };
+  refreshConfigIfDue(source: "ALARM" | "ADMIN_SIGNAL"): Promise<void>;
+  healthCheck(): HealthReport;
+  engineDiagnostics(): JsonRecord;
+  syncStateMicrostructureFromBook(): void;
+  performanceMetricsResponse(): Response;
+  resetLatencyBaseline(observedAt: string, reason: string): void;
+  publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
+  safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void>;
+  safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
+  recoverEngineState(
+    payload: Parameters<EngineHttpRouteContext["recoverEngineState"]>[0]
+  ): Promise<unknown>;
+  pruneOperationalLogs(): Promise<LogPruneReport>;
+  currentBookSnapshot(instrumentCode: string | undefined, depth: number): BookSnapshotResponse;
+  currentDomHeatmap(instrumentCode: string | undefined): DomAnalysisSnapshot;
+  applySnapshot(snapshot: OrderBookSnapshot): Promise<unknown>;
+  applyDelta(delta: OrderBookDelta, observedAt: string): Promise<AppliedBookUpdate>;
+  enqueueOrderBookReset(payload: Partial<OrderBookResetRequest>): Promise<unknown>;
+  registerIngestConnection(payload: Partial<OrderBookResetRequest>): unknown;
+  runHistoricalReplay(
+    limit: number,
+    shadowBankroll: number,
+    speedMultiplier: number,
+    dateFrom: string | null,
+    dateTo: string | null,
+    replayOptions: ReplayOptions
+  ): Promise<ReplayResult>;
+  currentCascadeActiveSnapshot(): unknown;
+  currentCascadeSignalSnapshot(limit: number): unknown;
+  currentCascadePositionSnapshot(): unknown;
+  closeCascadePosition(
+    positionId: string,
+    actor: string,
+    reason: string
+  ): Promise<{ ok: boolean; [key: string]: unknown }>;
+  currentCascadeHeatSnapshot(): unknown;
+  applyExecutionReport(report: ExecutionReport): Promise<void>;
+  enqueueTick(tick: MarketTick, wakeUpTimeMs: number | null): Promise<TickIngestResult>;
+  handleHyperliquidRaw(payload: unknown, wakeUpTimeMs: number | null): Promise<TickIngestResult>;
+  handleGrpcFatalDrop(payload: GrpcFatalDropPayload): Promise<{ status: string }>;
+  acceptAgentSignal(signal: AgentSignal, latencyMs: number): Promise<void>;
+  applyConfigUpdate(update: AdminConfigUpdate): Promise<void>;
+}
+
+export function createTradingEngineHttpRouteContext(
+  target: EngineHttpRouteContextTarget,
+  wakeUpTimeMs: number | null
+): EngineHttpRouteContext {
+  return {
+    env: target.env,
+    state: target.state,
+    logger: target.logger,
+    wakeUpTimeMs,
+    getEngineState: () => target.engineState,
+    setEngineState: (state) => {
+      target.engineState = state;
+    },
+    getOrderBook: () => target.orderBook,
+    getLatencyHistory: () => target.latencyHistory,
+    getProcessingLatencySamples: () => target.processingLatencySamples,
+    getCachedConfig: () => target.cachedConfig,
+    getCascadeBacktester: () => target.cascadeBacktester,
+    getCascadeNewsCalendar: () => target.cascadeNewsCalendar,
+    refreshConfigIfDue: (source) => target.refreshConfigIfDue(source),
+    healthCheck: () => target.healthCheck(),
+    engineDiagnostics: () => target.engineDiagnostics(),
+    syncStateMicrostructureFromBook: () => {
+      target.syncStateMicrostructureFromBook();
+    },
+    performanceMetricsResponse: () => target.performanceMetricsResponse(),
+    resetLatencyBaseline: (observedAt, reason) => {
+      target.resetLatencyBaseline(observedAt, reason);
+    },
+    publish: (type, payload, correlationId) => {
+      target.publish(type, payload, correlationId);
+    },
+    safeStoragePutEntries: (entries, reason) => target.safeStoragePut(entries, reason),
+    safeStoragePutKey: (key, value, reason) => target.safeStoragePut(key, value, reason),
+    recoverEngineState: (payload) => target.recoverEngineState(payload),
+    pruneOperationalLogs: () => target.pruneOperationalLogs(),
+    currentBookSnapshot: (instrumentCode, depth) =>
+      target.currentBookSnapshot(instrumentCode, depth),
+    currentDomHeatmap: (instrumentCode) => target.currentDomHeatmap(instrumentCode),
+    applySnapshot: (snapshot) => target.applySnapshot(snapshot),
+    applyDelta: (delta, observedAt) => target.applyDelta(delta, observedAt),
+    enqueueOrderBookReset: (payload) => target.enqueueOrderBookReset(payload),
+    registerIngestConnection: (payload) => target.registerIngestConnection(payload),
+    runHistoricalReplay: (limit, shadowBankroll, speedMultiplier, dateFrom, dateTo, options) =>
+      target.runHistoricalReplay(limit, shadowBankroll, speedMultiplier, dateFrom, dateTo, options),
+    currentReplayStatus: () => target.replayJournal.currentStatus(),
+    currentCascadeActiveSnapshot: () => target.currentCascadeActiveSnapshot(),
+    currentCascadeSignalSnapshot: (limit) => target.currentCascadeSignalSnapshot(limit),
+    currentCascadePositionSnapshot: () => target.currentCascadePositionSnapshot(),
+    closeCascadePosition: (positionId, actor, reason) =>
+      target.closeCascadePosition(positionId, actor, reason),
+    currentCascadeHeatSnapshot: () => target.currentCascadeHeatSnapshot(),
+    analyzeSentimentHeadline: (headline) =>
+      target.sentimentAgent.analyzeHeadline(headline, target.env),
+    applyExecutionReport: (report) => target.applyExecutionReport(report),
+    enqueueTick: (tick, wakeUp) => target.enqueueTick(tick, wakeUp),
+    handleHyperliquidRaw: (payload, wakeUp) => target.handleHyperliquidRaw(payload, wakeUp),
+    handleGrpcFatalDrop: (payload) => target.handleGrpcFatalDrop(payload),
+    acceptAgentSignal: (signal, latencyMs) => target.acceptAgentSignal(signal, latencyMs),
+    applyConfigUpdate: (update) => target.applyConfigUpdate(update)
+  };
+}
+
 export async function handleTradingEngineHttpRoute(
   request: Request,
   url: URL,

@@ -150,8 +150,10 @@ import {
 } from "./ingest/HyperliquidRawRouting";
 import { applyGrpcFatalDropSideEffects, grpcFatalDropArtifacts } from "./ingest/GrpcDropRuntime";
 import {
+  createTradingEngineHttpRouteContext,
   handleTradingEngineHttpRoute,
-  type EngineHttpRouteContext
+  type EngineHttpRouteContext,
+  type EngineHttpRouteContextTarget
 } from "./routes/EngineHttpRoutes";
 import { handleTradingEngineFetchRuntime } from "./routes/EngineFetchRuntime";
 import {
@@ -758,58 +760,10 @@ export class TradingEngine {
   }
 
   private engineHttpRouteContext(wakeUpTimeMs: number | null): EngineHttpRouteContext {
-    return {
-      env: this.env,
-      state: this.state,
-      logger: this.logger,
-      wakeUpTimeMs,
-      getEngineState: () => this.engineState,
-      setEngineState: (state) => {
-        this.engineState = state;
-      },
-      getOrderBook: () => this.orderBook,
-      getLatencyHistory: () => this.latencyHistory,
-      getProcessingLatencySamples: () => this.processingLatencySamples,
-      getCachedConfig: () => this.cachedConfig,
-      getCascadeBacktester: () => this.cascadeBacktester,
-      getCascadeNewsCalendar: () => this.cascadeNewsCalendar,
-      refreshConfigIfDue: (source) => this.refreshConfigIfDue(source),
-      healthCheck: () => this.healthCheck(),
-      engineDiagnostics: () => this.engineDiagnostics(),
-      syncStateMicrostructureFromBook: () => this.syncStateMicrostructureFromBook(),
-      performanceMetricsResponse: () => this.performanceMetricsResponse(),
-      resetLatencyBaseline: (observedAt, reason) => this.resetLatencyBaseline(observedAt, reason),
-      publish: (type, payload, correlationId) => this.publish(type, payload, correlationId),
-      safeStoragePutEntries: (entries, reason) => this.safeStoragePut(entries, reason),
-      safeStoragePutKey: (key, value, reason) => this.safeStoragePut(key, value, reason),
-      recoverEngineState: (payload) => this.recoverEngineState(payload),
-      pruneOperationalLogs: () => this.pruneOperationalLogs(),
-      currentBookSnapshot: (instrumentCode, depth) =>
-        this.currentBookSnapshot(instrumentCode, depth),
-      currentDomHeatmap: (instrumentCode) => this.currentDomHeatmap(instrumentCode),
-      applySnapshot: (snapshot) => this.applySnapshot(snapshot),
-      applyDelta: (delta, observedAt) => this.applyDelta(delta, observedAt),
-      enqueueOrderBookReset: (payload) => this.enqueueOrderBookReset(payload),
-      registerIngestConnection: (payload) => this.registerIngestConnection(payload),
-      runHistoricalReplay: (limit, shadowBankroll, speedMultiplier, dateFrom, dateTo, options) =>
-        this.runHistoricalReplay(limit, shadowBankroll, speedMultiplier, dateFrom, dateTo, options),
-      currentReplayStatus: () => this.replayJournal.currentStatus(),
-      currentCascadeActiveSnapshot: () => this.currentCascadeActiveSnapshot(),
-      currentCascadeSignalSnapshot: (limit) => this.currentCascadeSignalSnapshot(limit),
-      currentCascadePositionSnapshot: () => this.currentCascadePositionSnapshot(),
-      closeCascadePosition: (positionId, actor, reason) =>
-        this.closeCascadePosition(positionId, actor, reason),
-      currentCascadeHeatSnapshot: () => this.currentCascadeHeatSnapshot(),
-      analyzeSentimentHeadline: (headline) =>
-        this.sentimentAgent.analyzeHeadline(headline, this.env),
-      applyExecutionReport: (report) => this.applyExecutionReport(report),
-      enqueueTick: (tick, wakeUp) => this.enqueueTick(tick, wakeUp),
-      handleHyperliquidRaw: (payload, wakeUp) =>
-        this.handleHyperliquidRaw(payload as HyperliquidRawIngestPayload, wakeUp),
-      handleGrpcFatalDrop: (payload) => this.handleGrpcFatalDrop(payload),
-      acceptAgentSignal: (signal, latencyMs) => this.acceptAgentSignal(signal, latencyMs),
-      applyConfigUpdate: (update) => this.applyConfigUpdate(update)
-    };
+    return createTradingEngineHttpRouteContext(
+      this as unknown as EngineHttpRouteContextTarget,
+      wakeUpTimeMs
+    );
   }
 
   healthCheck(): HealthReport {

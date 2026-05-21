@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { defaultConfig } from "../../src/ConfigManager";
 import {
+  createTradingEngineHttpRouteContext,
   handleTradingEngineHttpRoute,
-  type EngineHttpRouteContext
+  type EngineHttpRouteContext,
+  type EngineHttpRouteContextTarget
 } from "../../src/engine/trading/routes/EngineHttpRoutes";
 import type { Backtester } from "../../src/strategy/cascade/Backtester";
 import type { NewsCalendar } from "../../src/strategy/cascade/NewsCalendar";
@@ -253,6 +255,77 @@ function createContext(configOverrides: Partial<GlobalRiskConfig> = {}): EngineH
 }
 
 describe("engine HTTP route matrix", () => {
+  it("builds route context from engine runtime bindings", async () => {
+    const state = baseState();
+    const calls: string[] = [];
+    const target = {
+      env: { CONFIG_STORE: { put: async () => undefined } } as unknown as Env,
+      state: { waitUntil: () => undefined } as unknown as DurableObjectState,
+      logger: { warn: () => undefined, info: () => undefined, error: () => undefined } as never,
+      engineState: state,
+      orderBook: new Map([["book", { midPrice: 100 }]]),
+      latencyHistory: [{ totalLatencyMs: 7 }],
+      processingLatencySamples: [1, 2],
+      cachedConfig: state.cachedConfig,
+      cascadeBacktester: { run: async () => ({}) } as unknown as Backtester,
+      cascadeNewsCalendar: {
+        addAdHocBlackout: async () => ({ ok: true })
+      } as unknown as NewsCalendar,
+      replayJournal: {
+        currentStatus: async () => ({ status: "IDLE" })
+      },
+      sentimentAgent: {
+        analyzeHeadline: async (headline: string) => {
+          calls.push(`sentiment:${headline}`);
+          return state.sentiment;
+        }
+      },
+      refreshConfigIfDue: async (source: string) => calls.push(`refresh:${source}`),
+      healthCheck: () => ({ ok: true, uptimeMs: 1 }) as never,
+      engineDiagnostics: () => ({ ok: true }),
+      syncStateMicrostructureFromBook: () => calls.push("sync"),
+      performanceMetricsResponse: () => new Response("metric 1"),
+      resetLatencyBaseline: () => calls.push("latency"),
+      publish: (type: string) => calls.push(`publish:${type}`),
+      safeStoragePut: async () => calls.push("storage"),
+      recoverEngineState: async () => ({ ok: true }),
+      pruneOperationalLogs: async () => ({ totalRows: 0 }) as never,
+      currentBookSnapshot: () => ({ instrumentCode: "btc-usd" }) as never,
+      currentDomHeatmap: () => ({ instrumentCode: "btc-usd" }) as never,
+      applySnapshot: async () => ({ ok: true }),
+      applyDelta: async () => ({ accepted: true }) as never,
+      enqueueOrderBookReset: async () => ({ ok: true }),
+      registerIngestConnection: () => ({ ok: true }),
+      runHistoricalReplay: async () => ({ ok: true }) as never,
+      currentCascadeActiveSnapshot: () => [],
+      currentCascadeSignalSnapshot: () => [],
+      currentCascadePositionSnapshot: () => [],
+      closeCascadePosition: async () => ({ ok: true }),
+      currentCascadeHeatSnapshot: () => ({}),
+      applyExecutionReport: async () => calls.push("execution"),
+      enqueueTick: async () => ({ accepted: true, status: "FRESH" }) as never,
+      handleHyperliquidRaw: async () => ({ accepted: true, status: "FRESH" }) as never,
+      handleGrpcFatalDrop: async () => ({ status: "CRITICAL" }),
+      acceptAgentSignal: async () => calls.push("signal"),
+      applyConfigUpdate: async () => calls.push("config")
+    } as unknown as EngineHttpRouteContextTarget;
+
+    const context = createTradingEngineHttpRouteContext(target, 12);
+    const nextState = { ...state, engineId: "next-state" };
+
+    context.setEngineState(nextState);
+    await context.refreshConfigIfDue("ALARM");
+    await context.analyzeSentimentHeadline("risk headline");
+    context.publish("PING", {});
+
+    expect(context.wakeUpTimeMs).toBe(12);
+    expect(context.getEngineState().engineId).toBe("next-state");
+    expect(context.getOrderBook().get("book")).toEqual({ midPrice: 100 });
+    expect(context.getLatencyHistory()[0]?.totalLatencyMs).toBe(7);
+    expect(await context.currentReplayStatus()).toEqual({ status: "IDLE" });
+    expect(calls).toEqual(["refresh:ALARM", "sentiment:risk headline", "publish:PING"]);
+  });
+
   it("handles health, state, metrics, and diagnostics routes", async () => {
     const context = createContext();
 
