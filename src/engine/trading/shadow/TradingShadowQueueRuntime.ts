@@ -59,6 +59,26 @@ export interface TradingShadowQueueHandlers {
   readonly traceDecision: (trace: AgentDecisionTrace) => void;
 }
 
+export interface TradingShadowQueueTarget {
+  readonly ghostBook: GhostBook;
+  readonly env: Env;
+  readonly engineState: EngineState;
+  readonly cachedConfig: GlobalRiskConfig;
+  readonly shadowQueueNoEdgeLogAt: Map<string, number>;
+  readonly logger: {
+    recordExecution(trade: TradeExecution): void;
+    info(eventType: string, message: string, metadata: JsonRecord): void;
+    warn(eventType: string, message: string, metadata: JsonRecord): void;
+    traceDecision(trace: AgentDecisionTrace): void;
+  };
+  readonly state: {
+    waitUntil(work: Promise<unknown>): void;
+  };
+  publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
+  cancelAllQuotes(instrumentCode: string, reason: "SHADOW_QUEUE_RED_LIGHT"): Promise<unknown>;
+  dispatchExecution(intent: TradeIntent): Promise<unknown>;
+}
+
 export function recordTradingShadowQueueGhostFill(
   input: Omit<TradingShadowQueueInput, "options" | "ghostBook" | "noEdgeLogAt"> & {
     readonly fill: ShadowQueueFill;
@@ -174,6 +194,50 @@ export function processTradingShadowQueueTick(
       },
       injectBbo: (book, observedAt) => {
         input.ghostBook.injectBbo(book, observedAt);
+      }
+    }
+  );
+}
+
+export function processTradingShadowQueueTickForTarget(
+  tick: MarketTick,
+  book: InternalOrderBook,
+  observedAt: string,
+  options: TickHandlingOptions,
+  target: TradingShadowQueueTarget
+): ShadowQueueState {
+  return processTradingShadowQueueTick(
+    {
+      tick,
+      book,
+      observedAt,
+      options,
+      ghostBook: target.ghostBook,
+      env: target.env,
+      engineState: target.engineState,
+      cachedConfig: target.cachedConfig,
+      noEdgeLogAt: target.shadowQueueNoEdgeLogAt
+    },
+    {
+      recordExecution: (trade) => {
+        target.logger.recordExecution(trade);
+      },
+      logInfo: (eventType, message, metadata) => {
+        target.logger.info(eventType, message, metadata);
+      },
+      warn: (eventType, message, metadata) => {
+        target.logger.warn(eventType, message, metadata);
+      },
+      publish: (type, payload, correlationId) => {
+        target.publish(type, payload, correlationId);
+      },
+      schedule: (work) => {
+        target.state.waitUntil(work);
+      },
+      cancelAllQuotes: (instrumentCode, reason) => target.cancelAllQuotes(instrumentCode, reason),
+      dispatchExecution: (intent) => target.dispatchExecution(intent),
+      traceDecision: (trace) => {
+        target.logger.traceDecision(trace);
       }
     }
   );

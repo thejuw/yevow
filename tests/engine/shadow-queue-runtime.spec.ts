@@ -30,6 +30,11 @@ import {
   type ShadowQueueNoEdgeSideEffectHandlers,
   type ShadowQueueTickRuntimeHandlers
 } from "../../src/engine/trading/shadow/ShadowQueueRuntime";
+import {
+  processTradingShadowQueueTickForTarget,
+  type TradingShadowQueueTarget
+} from "../../src/engine/trading/shadow/TradingShadowQueueRuntime";
+import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import { defaultConfig } from "../../src/ConfigManager";
 import type {
   GlobalRiskConfig,
@@ -73,6 +78,83 @@ describe("ShadowQueueRuntime", () => {
       "inject:btc-usd",
       "snapshot:2026-05-18T09:00:00.000Z",
       "snapshot:2026-05-18T09:00:00.000Z"
+    ]);
+  });
+
+  it("processes shadow queue ticks through a trading target adapter", () => {
+    const events: string[] = [];
+    const queueState = shadowQueueState({ ghostFills: 1 });
+    const target = {
+      ghostBook: {
+        snapshot(observedAt: string) {
+          events.push(`snapshot:${observedAt}`);
+          return queueState;
+        },
+        observeTrade(tick: MarketTick) {
+          events.push(`observe:${tick.sequence}`);
+          return {
+            fills: [shadowFill()],
+            decisions: [],
+            state: queueState
+          };
+        },
+        recordDecision(nextDecision: ShadowQueueDecision) {
+          events.push(`record:${nextDecision.decisionId}`);
+        },
+        injectBbo(currentBook: InternalOrderBook) {
+          events.push(`inject:${currentBook.instrumentCode}`);
+        }
+      },
+      env: {},
+      engineState: defaultEngineState("shadow-queue-target"),
+      cachedConfig: defaultConfig,
+      shadowQueueNoEdgeLogAt: new Map(),
+      logger: {
+        recordExecution() {
+          events.push("record-execution");
+        },
+        info(eventType: string) {
+          events.push(`info:${eventType}`);
+        },
+        warn(eventType: string) {
+          events.push(`warn:${eventType}`);
+        },
+        traceDecision() {
+          events.push("trace");
+        }
+      },
+      state: {
+        waitUntil() {
+          events.push("wait");
+        }
+      },
+      publish(type: string, _payload: Record<string, unknown>, correlationId?: string) {
+        events.push(`publish:${type}:${correlationId ?? ""}`);
+      },
+      cancelAllQuotes() {
+        events.push("cancel");
+        return Promise.resolve();
+      },
+      dispatchExecution() {
+        events.push("dispatch");
+        return Promise.resolve();
+      }
+    } as unknown as TradingShadowQueueTarget;
+
+    const state = processTradingShadowQueueTickForTarget(
+      marketTick(),
+      book(),
+      OBSERVED_AT,
+      {},
+      target
+    );
+
+    expect(state.ghostFills).toBe(1);
+    expect(events).toEqual([
+      "observe:12",
+      "publish:SHADOW_QUEUE_GHOST_FILL:fill-1",
+      "inject:btc-usd",
+      `snapshot:${OBSERVED_AT}`
     ]);
   });
 

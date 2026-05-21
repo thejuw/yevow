@@ -42,7 +42,10 @@ import {
   currentDomHeatmapSnapshot,
   type DomAnalyzerContextTarget
 } from "./book/DomAnalyzer";
-import { processTradingShadowQueueTick } from "./shadow/TradingShadowQueueRuntime";
+import {
+  processTradingShadowQueueTickForTarget,
+  type TradingShadowQueueTarget
+} from "./shadow/TradingShadowQueueRuntime";
 import {
   handleTradingEngineAnomalyEmergencyPause,
   type TradingAnomalyEmergencyTarget
@@ -1833,28 +1836,12 @@ export class TradingEngine {
     observedAt: string,
     options: TickHandlingOptions
   ): ShadowQueueState {
-    return processTradingShadowQueueTick(
-      {
-        tick,
-        book,
-        observedAt,
-        options,
-        ghostBook: this.ghostBook,
-        env: this.env,
-        engineState: this.engineState,
-        cachedConfig: this.cachedConfig,
-        noEdgeLogAt: this.shadowQueueNoEdgeLogAt
-      },
-      {
-        recordExecution: (trade) => this.logger.recordExecution(trade),
-        logInfo: (eventType, message, metadata) => this.logger.info(eventType, message, metadata),
-        warn: (eventType, message, metadata) => this.logger.warn(eventType, message, metadata),
-        publish: (type, payload, correlationId) => this.publish(type, payload, correlationId),
-        schedule: (work) => this.state.waitUntil(work),
-        cancelAllQuotes: (instrumentCode, reason) => this.cancelAllQuotes(instrumentCode, reason),
-        dispatchExecution: (intent) => this.dispatchExecution(intent),
-        traceDecision: (trace) => this.logger.traceDecision(trace)
-      }
+    return processTradingShadowQueueTickForTarget(
+      tick,
+      book,
+      observedAt,
+      options,
+      this as unknown as TradingShadowQueueTarget
     );
   }
 
