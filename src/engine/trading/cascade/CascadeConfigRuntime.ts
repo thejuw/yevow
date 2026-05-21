@@ -3,7 +3,7 @@ import {
   resolveCascadeAssetProfile,
   type CascadeAssetProfile
 } from "../../../strategy/cascade/AssetProfiles";
-import type { GlobalRiskConfig } from "../../../types";
+import type { Env, GlobalRiskConfig } from "../../../types";
 import type {
   AbsorptionAnalyzerConfig,
   CascadeDetectorConfig,
@@ -46,6 +46,18 @@ export interface CascadeDetectorRuntimeEnvInput {
   readonly maxEventsPerInstrumentValue?: string;
 }
 
+export interface TradingCascadeRuntimeConfigTarget {
+  readonly cachedConfig: GlobalRiskConfig;
+  readonly env: Pick<
+    Env,
+    | "CASCADE_MIN_BASELINE_WINDOWS"
+    | "CASCADE_MIN_SEPARATION_MS"
+    | "CASCADE_MAX_EVENTS_PER_INSTRUMENT"
+    | "ABSORPTION_OI_STABILITY_BPS"
+    | "ABSORPTION_MAX_ACTIVE_CASCADES"
+  >;
+}
+
 export function cascadeDetectorConfig(
   input: CascadeDetectorRuntimeConfigInput
 ): CascadeDetectorConfig {
@@ -82,6 +94,26 @@ export function cascadeDetectorConfigFromRuntime(
       100_000
     )
   });
+}
+
+export function cascadeDetectorConfigForTarget(
+  target: TradingCascadeRuntimeConfigTarget,
+  instrumentCode: string
+): CascadeDetectorConfig {
+  return cascadeDetectorConfigFromRuntime({
+    config: target.cachedConfig,
+    instrumentCode,
+    minBaselineWindowsValue: target.env.CASCADE_MIN_BASELINE_WINDOWS,
+    minCascadeSeparationMsValue: target.env.CASCADE_MIN_SEPARATION_MS,
+    maxEventsPerInstrumentValue: target.env.CASCADE_MAX_EVENTS_PER_INSTRUMENT
+  });
+}
+
+export function cascadeAssetProfileForTarget(
+  target: TradingCascadeRuntimeConfigTarget,
+  instrumentCode: string
+): CascadeAssetProfile {
+  return cascadeAssetProfileFromConfig(instrumentCode, target.cachedConfig);
 }
 
 export interface AbsorptionAnalyzerRuntimeConfigInput {
@@ -122,6 +154,16 @@ export function absorptionAnalyzerConfigFromRuntime(
     config: input.config,
     oiStabilityBps: readPositiveNumber(input.oiStabilityBpsValue, 5),
     maxActiveCascades: readPositiveInteger(input.maxActiveCascadesValue, 24, 1, 100)
+  });
+}
+
+export function absorptionAnalyzerConfigForTarget(
+  target: TradingCascadeRuntimeConfigTarget
+): AbsorptionAnalyzerConfig {
+  return absorptionAnalyzerConfigFromRuntime({
+    config: target.cachedConfig,
+    oiStabilityBpsValue: target.env.ABSORPTION_OI_STABILITY_BPS,
+    maxActiveCascadesValue: target.env.ABSORPTION_MAX_ACTIVE_CASCADES
   });
 }
 

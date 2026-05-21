@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 import { defaultConfig } from "../../src/ConfigManager";
 import {
   absorptionAnalyzerConfig,
+  absorptionAnalyzerConfigForTarget,
   absorptionAnalyzerConfigFromRuntime,
+  cascadeAssetProfileForTarget,
   cascadeAssetProfileFromConfig,
   cascadeDetectorConfig,
+  cascadeDetectorConfigForTarget,
   cascadeDetectorConfigFromRuntime,
   cascadeRecoverySignalConfig,
   resolveCascadeAtr1h
@@ -102,6 +105,32 @@ describe("CascadeConfigRuntime", () => {
       absorptionWindowMs: defaultConfig.ABSORPTION_WINDOW_MS,
       oiStabilityBps: 9,
       maxActiveCascades: 12
+    });
+  });
+
+  it("builds cascade configs from a trading runtime target", () => {
+    const target = {
+      cachedConfig: defaultConfig,
+      env: {
+        CASCADE_MIN_BASELINE_WINDOWS: "22",
+        CASCADE_MIN_SEPARATION_MS: "120000",
+        CASCADE_MAX_EVENTS_PER_INSTRUMENT: "750",
+        ABSORPTION_OI_STABILITY_BPS: "8",
+        ABSORPTION_MAX_ACTIVE_CASCADES: "16"
+      }
+    };
+
+    expect(cascadeDetectorConfigForTarget(target, "btc-usd")).toMatchObject({
+      minBaselineWindows: 22,
+      minCascadeSeparationMs: 120_000,
+      maxEventsPerInstrument: 750
+    });
+    expect(absorptionAnalyzerConfigForTarget(target)).toMatchObject({
+      oiStabilityBps: 8,
+      maxActiveCascades: 16
+    });
+    expect(cascadeAssetProfileForTarget(target, "btc-usd")).toMatchObject({
+      asset: "BTC"
     });
   });
 

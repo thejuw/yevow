@@ -167,9 +167,10 @@ import {
   type TradingEngineConfigControlTarget
 } from "./config/TradingConfigControlRuntime";
 import {
-  absorptionAnalyzerConfigFromRuntime,
-  cascadeAssetProfileFromConfig,
-  cascadeDetectorConfigFromRuntime
+  absorptionAnalyzerConfigForTarget,
+  cascadeAssetProfileForTarget,
+  cascadeDetectorConfigForTarget,
+  type TradingCascadeRuntimeConfigTarget
 } from "./cascade/CascadeConfigRuntime";
 import {
   ensureCascadePaperModeArmedForTarget,
@@ -951,25 +952,21 @@ export class TradingEngine {
   }
 
   private currentCascadeDetectorConfig(instrumentCode: string): CascadeDetectorConfig {
-    return cascadeDetectorConfigFromRuntime({
-      config: this.cachedConfig,
-      instrumentCode,
-      minBaselineWindowsValue: this.env.CASCADE_MIN_BASELINE_WINDOWS,
-      minCascadeSeparationMsValue: this.env.CASCADE_MIN_SEPARATION_MS,
-      maxEventsPerInstrumentValue: this.env.CASCADE_MAX_EVENTS_PER_INSTRUMENT
-    });
+    return cascadeDetectorConfigForTarget(
+      this as unknown as TradingCascadeRuntimeConfigTarget,
+      instrumentCode
+    );
   }
 
   private cascadeAssetProfile(instrumentCode: string): CascadeAssetProfile {
-    return cascadeAssetProfileFromConfig(instrumentCode, this.cachedConfig);
+    return cascadeAssetProfileForTarget(
+      this as unknown as TradingCascadeRuntimeConfigTarget,
+      instrumentCode
+    );
   }
 
   private currentAbsorptionAnalyzerConfig(): AbsorptionAnalyzerConfig {
-    return absorptionAnalyzerConfigFromRuntime({
-      config: this.cachedConfig,
-      oiStabilityBpsValue: this.env.ABSORPTION_OI_STABILITY_BPS,
-      maxActiveCascadesValue: this.env.ABSORPTION_MAX_ACTIVE_CASCADES
-    });
+    return absorptionAnalyzerConfigForTarget(this as unknown as TradingCascadeRuntimeConfigTarget);
   }
 
   private observeCascadeAbsorption(tick: MarketTick): void {
