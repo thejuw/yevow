@@ -18,15 +18,12 @@ import {
   applySnapshotBookSyncState,
   getOrCreateBookSyncState
 } from "./BookSyncRuntime";
-import {
-  applyTopOfBookCrossCheckSync,
-  evaluateTopOfBookCrossCheck
-} from "./TopOfBookCrossCheckRuntime";
 import { SortedBookSide } from "./SortedBookSide";
 import {
   applyCrossedBookSideEffects,
   applyOrderBookSequenceGapSideEffects
 } from "./OrderBookDesyncRuntime";
+import { applyOrderBookCrossCheckSideEffects } from "./OrderBookCrossCheckRuntime";
 import {
   resolveDeltaBookMarketContext,
   resolveSnapshotBookMarketContext
@@ -409,29 +406,16 @@ export class OrderBookReconstructor {
       book.source,
       book.sourceWeight
     );
-    const result = evaluateTopOfBookCrossCheck({
-      syncState,
-      delta,
-      book,
-      checkedAtMs: Date.now(),
-      intervalMs: this.config.topOfBookCrossCheckIntervalMs,
-      desyncedAt: new Date().toISOString()
-    });
-
-    applyTopOfBookCrossCheckSync(syncState, result);
-
-    if (result.status === "SKIP") {
-      return;
-    }
-
-    if (result.status === "MATCH") {
-      this.config.publish("ORDER_BOOK_CROSS_CHECK", result.payload);
-      return;
-    }
-
-    this.config.error("ORDER_BOOK_CROSS_CHECK_FAILED", "Top-of-book mismatch detected", {
-      ...result.payload
-    });
-    this.config.publish("ORDER_BOOK_CROSS_CHECK_FAILED", result.payload);
+    applyOrderBookCrossCheckSideEffects(
+      {
+        syncState,
+        delta,
+        book,
+        checkedAtMs: Date.now(),
+        intervalMs: this.config.topOfBookCrossCheckIntervalMs,
+        desyncedAt: new Date().toISOString()
+      },
+      this.config
+    );
   }
 }
