@@ -117,7 +117,7 @@ import {
 import { observeTradingCascadeAbsorption } from "./cascade/CascadeAbsorptionRuntime";
 import {
   applyTradingConfigUpdate,
-  refreshTradingConfig
+  refreshTradingEngineConfig
 } from "./config/TradingConfigControlRuntime";
 import {
   absorptionAnalyzerConfigFromRuntime,
@@ -3489,19 +3489,17 @@ export class TradingEngine {
     source: "ALARM" | "ADMIN_SIGNAL",
     configSnapshot?: GlobalRiskConfig
   ): Promise<void> {
-    const now = new Date().toISOString();
-
-    await refreshTradingConfig(
+    await refreshTradingEngineConfig(
       {
         source,
         cachedConfig: this.cachedConfig,
         configSnapshot,
         currentState: this.engineState,
-        observedAt: now,
-        requestId: crypto.randomUUID(),
         env: this.env
       },
       {
+        nowIso: () => new Date().toISOString(),
+        createRequestId: () => crypto.randomUUID(),
         fetchConfig: () => this.configManager.fetchConfig(),
         readEffectiveConfig: (config) => this.governor.readEffectiveConfig(config),
         snapshotProfilers: () => this.profilerRegistry.snapshot(),

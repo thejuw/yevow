@@ -28,6 +28,11 @@ export interface TradingConfigRefreshInput {
   >;
 }
 
+export type TradingEngineConfigRefreshInput = Omit<
+  TradingConfigRefreshInput,
+  "observedAt" | "requestId"
+>;
+
 export interface TradingConfigRefreshHandlers {
   readonly fetchConfig: () => Promise<GlobalRiskConfig>;
   readonly readEffectiveConfig: (config: GlobalRiskConfig) => Promise<EffectiveGovernanceConfig>;
@@ -50,6 +55,11 @@ export interface TradingConfigRefreshHandlers {
   readonly applyState: (state: EngineState) => void;
   readonly persistRefreshState: () => Promise<void>;
   readonly warnRefresh: (metadata: JsonRecord) => void;
+}
+
+export interface TradingEngineConfigRefreshHandlers extends TradingConfigRefreshHandlers {
+  readonly nowIso: () => string;
+  readonly createRequestId: () => string;
 }
 
 export interface TradingConfigUpdateInput {
@@ -101,6 +111,20 @@ export async function refreshTradingConfig(
           warnRefresh: handlers.warnRefresh
         })
     }
+  );
+}
+
+export function refreshTradingEngineConfig(
+  input: TradingEngineConfigRefreshInput,
+  handlers: TradingEngineConfigRefreshHandlers
+): Promise<void> {
+  return refreshTradingConfig(
+    {
+      ...input,
+      observedAt: handlers.nowIso(),
+      requestId: handlers.createRequestId()
+    },
+    handlers
   );
 }
 

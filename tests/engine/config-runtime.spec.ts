@@ -19,6 +19,10 @@ import {
   type AdminConfigUpdateFlowHandlers,
   type RuntimeConfigUpdateSideEffectHandlers
 } from "../../src/engine/trading/config/ConfigRuntime";
+import {
+  refreshTradingEngineConfig,
+  type TradingEngineConfigRefreshHandlers
+} from "../../src/engine/trading/config/TradingConfigControlRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { AdminConfigUpdate } from "../../src/types";
 
@@ -449,6 +453,54 @@ describe("ConfigRuntime", () => {
     ]);
   });
 
+  it("wraps engine config refresh with generated request context", async () => {
+    const currentState = defaultEngineState("trading-config-refresh-flow");
+    currentState.location = {
+      ...currentState.location,
+      placement: "remote-nrt"
+    };
+    const flow = tradingEngineConfigRefreshSpy();
+
+    await refreshTradingEngineConfig(
+      {
+        source: "ADMIN_SIGNAL",
+        cachedConfig: {
+          ...defaultConfig,
+          version: "config-v1"
+        },
+        configSnapshot: {
+          ...defaultConfig,
+          TRADING_ENABLED: true,
+          LATENCY_THRESHOLD_MS: 123,
+          GOLDEN_COLOS: "NRT,HND",
+          version: "config-v2"
+        },
+        currentState,
+        env: {
+          PLACEMENT_TARGET_COLO: "NRT",
+          GOLDEN_COLOS: "NRT,HND",
+          HIGH_LATENCY_COLO_RISK_MULTIPLIER: "0.25"
+        }
+      },
+      flow.handlers
+    );
+
+    expect(flow.events).toEqual([
+      "now",
+      "request-id",
+      "effective:config-v2",
+      "snapshot-profilers",
+      "matrix:2026-05-18T16:00:00.000Z",
+      "cache:config-v2-effective",
+      "profilers:config-v2-effective",
+      "latency:123",
+      "kill-switch-log-clear",
+      "state:config-v2-effective:NRT",
+      "persist",
+      "warn:config-v2-effective"
+    ]);
+  });
+
   it("applies runtime config update side effects in persistence order", async () => {
     const state = defaultEngineState("runtime-config-side-effects");
     state.mode = "PAPER";
@@ -641,6 +693,72 @@ function configRefreshFlowSpy(): {
       applyRefreshSideEffects(input) {
         events.push(`apply:${input.nextConfig.version}:${input.previousVersion}`);
         return Promise.resolve();
+      }
+    }
+  };
+}
+
+function tradingEngineConfigRefreshSpy(): {
+  events: string[];
+  handlers: TradingEngineConfigRefreshHandlers;
+} {
+  const events: string[] = [];
+
+  return {
+    events,
+    handlers: {
+      nowIso() {
+        events.push("now");
+        return "2026-05-18T16:00:00.000Z";
+      },
+      createRequestId() {
+        events.push("request-id");
+        return "trading-config-refresh-request";
+      },
+      fetchConfig() {
+        events.push("fetch");
+        return Promise.resolve(defaultConfig);
+      },
+      readEffectiveConfig(config) {
+        events.push(`effective:${config.version}`);
+        return Promise.resolve({
+          config: {
+            ...config,
+            version: `${config.version}-effective`
+          },
+          macroBias: neutralMacroBias(),
+          temporaryOverride: null
+        });
+      },
+      snapshotProfilers() {
+        events.push("snapshot-profilers");
+        return defaultEngineState("trading-config-refresh-profilers").profilerStates;
+      },
+      calculateAssetMatrix(observedAt) {
+        events.push(`matrix:${observedAt}`);
+        return defaultEngineState("trading-config-refresh-matrix").assetMatrix;
+      },
+      applyConfigCache(config) {
+        events.push(`cache:${config.version}`);
+      },
+      configureProfilers(config) {
+        events.push(`profilers:${config.version}`);
+      },
+      setMaxLatencyMs(maxLatencyMs) {
+        events.push(`latency:${maxLatencyMs}`);
+      },
+      clearKillSwitchLog() {
+        events.push("kill-switch-log-clear");
+      },
+      applyState(state) {
+        events.push(`state:${state.cachedConfig.version}:${state.location.colo}`);
+      },
+      persistRefreshState() {
+        events.push("persist");
+        return Promise.resolve();
+      },
+      warnRefresh(metadata) {
+        events.push(`warn:${String(metadata.configVersion)}`);
       }
     }
   };
