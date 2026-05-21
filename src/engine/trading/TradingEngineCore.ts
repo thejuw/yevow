@@ -53,8 +53,14 @@ import {
   handleTradingEngineAnomalyEmergencyPause,
   type TradingAnomalyEmergencyTarget
 } from "./anomaly/TradingAnomalyEmergencyRuntime";
-import { updateLeadLagMetrics as updateLeadLagRuntimeMetrics } from "./leadlag/LeadLagRuntime";
-import { calculateTradingInventoryState } from "./inventory/TradingInventoryStateRuntime";
+import {
+  updateTradingLeadLagMetricsForTarget,
+  type TradingLeadLagMetricsTarget
+} from "./leadlag/LeadLagRuntime";
+import {
+  calculateTradingInventoryStateForTarget,
+  type TradingInventoryStateTarget
+} from "./inventory/TradingInventoryStateRuntime";
 import { resolveMaxPositionPct } from "./risk/PortfolioRiskRuntime";
 import { updateTradingPortfolioRisk } from "./risk/TradingPortfolioRiskRuntime";
 import { stateAfterFundingTick } from "./funding/FundingRuntime";
@@ -1661,32 +1667,22 @@ export class TradingEngine {
     book: InternalOrderBook,
     observedAt: string
   ): EngineState["leadLag"] {
-    return updateLeadLagRuntimeMetrics({
-      samples: this.leadLagSamples,
-      currentLeadLag: this.engineState.leadLag,
-      instrumentCode: tick.instrumentCode,
-      midPrice: book.midPrice,
+    return updateTradingLeadLagMetricsForTarget(
+      tick,
+      book,
       observedAt,
-      averageLatencyMs: this.engineState.averageLatency,
-      microstructureSpread: this.engineState.microstructure.spread,
-      microstructureMidPrice: this.engineState.microstructure.midPrice,
-      executionCostBufferBps: this.engineState.slippage.executionCostBufferBps,
-      sampleLimit: 100
-    });
+      this as unknown as TradingLeadLagMetricsTarget
+    );
   }
 
   private calculateInventoryState(
     observedAt: string,
     positions: Record<string, Position> = this.engineState.openPositions
   ): EngineState["inventory"] {
-    return calculateTradingInventoryState({
-      observedAt,
-      positions,
-      config: this.cachedConfig,
-      env: this.env,
-      orderBook: this.orderBook,
-      microstructure: this.engineState.microstructure
-    });
+    return calculateTradingInventoryStateForTarget(
+      { observedAt, positions },
+      this as unknown as TradingInventoryStateTarget
+    );
   }
 
   private updatePortfolioRisk(

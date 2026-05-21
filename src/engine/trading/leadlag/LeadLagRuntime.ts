@@ -1,4 +1,4 @@
-import type { EngineState, JsonRecord } from "../../../types";
+import type { EngineState, InternalOrderBook, JsonRecord, MarketTick } from "../../../types";
 import { pearson, returns } from "../helpers/RuntimeMath";
 import type { MultiScaleVolatilitySnapshot } from "../../MultiScaleVolatility";
 import { roundMetric } from "../book/SortedBookSide";
@@ -24,6 +24,14 @@ export interface LeadLagUpdateInput {
   readonly microstructureMidPrice: number | null;
   readonly executionCostBufferBps: number;
   readonly sampleLimit: number;
+}
+
+export interface TradingLeadLagMetricsTarget {
+  readonly leadLagSamples: Map<string, LeadLagSample[]>;
+  readonly engineState: Pick<
+    EngineState,
+    "leadLag" | "averageLatency" | "microstructure" | "slippage"
+  >;
 }
 
 export interface CrossAssetHypeCancelInput {
@@ -143,6 +151,26 @@ export function updateLeadLagMetrics(input: LeadLagUpdateInput): EngineState["le
     sampleCount: best.sampleCount,
     updatedAt: input.observedAt
   };
+}
+
+export function updateTradingLeadLagMetricsForTarget(
+  tick: MarketTick,
+  book: InternalOrderBook,
+  observedAt: string,
+  target: TradingLeadLagMetricsTarget
+): EngineState["leadLag"] {
+  return updateLeadLagMetrics({
+    samples: target.leadLagSamples,
+    currentLeadLag: target.engineState.leadLag,
+    instrumentCode: tick.instrumentCode,
+    midPrice: book.midPrice,
+    observedAt,
+    averageLatencyMs: target.engineState.averageLatency,
+    microstructureSpread: target.engineState.microstructure.spread,
+    microstructureMidPrice: target.engineState.microstructure.midPrice,
+    executionCostBufferBps: target.engineState.slippage.executionCostBufferBps,
+    sampleLimit: 100
+  });
 }
 
 export function resolveCrossAssetHypeQuoteCancelConfig(

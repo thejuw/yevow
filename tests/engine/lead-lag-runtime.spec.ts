@@ -8,11 +8,12 @@ import {
   evaluateCrossAssetHypeQuoteCancel,
   resolveCrossAssetHypeQuoteCancelConfig,
   updateLeadLagMetrics,
+  updateTradingLeadLagMetricsForTarget,
   type CrossAssetHypeCancelSideEffectHandlers,
   type LeadLagSample
 } from "../../src/engine/trading/leadlag/LeadLagRuntime";
 import type { MultiScaleVolatilitySnapshot } from "../../src/engine/MultiScaleVolatility";
-import type { EngineState } from "../../src/types";
+import type { EngineState, InternalOrderBook, MarketTick } from "../../src/types";
 
 const OBSERVED_AT = "2026-05-18T10:00:00.000Z";
 
@@ -94,6 +95,34 @@ describe("LeadLagRuntime", () => {
     expect(next.executable).toBe(true);
     expect(next.lagMs).toBeGreaterThanOrEqual(4);
     expect([next.leadInstrument, next.lagInstrument].sort()).toEqual(["btc-usd", "hype-usd"]);
+  });
+
+  it("updates lead-lag metrics through the trading target adapter", () => {
+    const leadLagSamples = new Map<string, LeadLagSample[]>();
+    const target = {
+      leadLagSamples,
+      engineState: {
+        leadLag: leadLag(),
+        averageLatency: 5,
+        microstructure: {
+          spread: 0,
+          midPrice: 100
+        } as EngineState["microstructure"],
+        slippage: {
+          executionCostBufferBps: 0
+        } as EngineState["slippage"]
+      }
+    };
+
+    const next = updateTradingLeadLagMetricsForTarget(
+      marketTick(),
+      orderBook(),
+      OBSERVED_AT,
+      target
+    );
+
+    expect(next).toMatchObject({ sampleCount: 1, updatedAt: OBSERVED_AT });
+    expect(leadLagSamples.get("btc-usd")).toEqual([{ price: 100, observedAt: OBSERVED_AT }]);
   });
 
   it("evaluates BTC lead-move quote cancellation for HYPE with threshold and cooldown guards", () => {
@@ -346,4 +375,46 @@ function volatility(
     observedAt: OBSERVED_AT,
     ...overrides
   };
+}
+
+function marketTick(overrides: Partial<MarketTick> = {}): MarketTick {
+  return {
+    schemaVersion: "universal-tick.v1",
+    source: "HYPERLIQUID",
+    source_exchange: "hyperliquid",
+    transport: "grpc",
+    exchangeCode: "hyperliquid",
+    instrumentCode: "btc-usd",
+    baseAsset: "BTC",
+    quoteAsset: "USD",
+    price: 100,
+    size: 1,
+    side: "buy",
+    sequence: 1,
+    exchangeTimestamp: OBSERVED_AT,
+    synchronizedExchangeTimestamp: OBSERVED_AT,
+    clockOffsetMs: 0,
+    receivedAt: OBSERVED_AT,
+    sourceWeight: 1,
+    raw: {},
+    ...overrides
+  };
+}
+
+function orderBook(overrides: Partial<InternalOrderBook> = {}): InternalOrderBook {
+  return {
+    marketKey: "hyperliquid:btc-usd",
+    instrumentCode: "btc-usd",
+    source_exchange: "hyperliquid",
+    exchangeCode: "hyperliquid",
+    bestBid: 99,
+    bestAsk: 101,
+    midPrice: 100,
+    spread: 2,
+    weightedImbalance: 0,
+    bids: [],
+    asks: [],
+    updatedAt: OBSERVED_AT,
+    ...overrides
+  } as unknown as InternalOrderBook;
 }

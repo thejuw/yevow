@@ -13,7 +13,8 @@ import {
   dispatchTradingEngineInventoryHedgeIfNeeded,
   type TradingInventoryHedgeTarget
 } from "../../src/engine/trading/inventory/TradingInventoryHedgeRuntime";
-import type { InternalOrderBook, Position } from "../../src/types";
+import { calculateTradingInventoryStateForTarget } from "../../src/engine/trading/inventory/TradingInventoryStateRuntime";
+import type { EngineState, InternalOrderBook, Position } from "../../src/types";
 
 const OBSERVED_AT = "2026-05-18T11:00:00.000Z";
 
@@ -161,6 +162,45 @@ describe("InventoryRuntime", () => {
         microstructureMidPrice: null
       })
     ).toBe(1);
+  });
+
+  it("calculates inventory state through the trading target adapter", () => {
+    const target = {
+      cachedConfig: {
+        ...defaultConfig,
+        MAX_INVENTORY_UNITS: 2,
+        MAX_INVENTORY_DELTA: 2,
+        RISK_AVERSION_FACTOR: 0.1
+      },
+      env: {
+        MAX_INVENTORY_UNITS: "9",
+        MAX_INVENTORY_DELTA: "9",
+        RISK_AVERSION_FACTOR: "0.9",
+        DELTA_NORMALIZATION_WEIGHTS: undefined
+      },
+      orderBook: new Map<string, InternalOrderBook>([
+        ["hyperliquid:btc-usd", book({ midPrice: 100_000 })]
+      ]),
+      engineState: {
+        openPositions: {
+          "btc-usd": position("btc-usd", "LONG", 0.2, 100_000)
+        },
+        microstructure: {
+          midPrice: 100_000
+        } as EngineState["microstructure"]
+      }
+    };
+
+    const state = calculateTradingInventoryStateForTarget({ observedAt: OBSERVED_AT }, target);
+
+    expect(state).toMatchObject({
+      netDelta: 0.2,
+      current_inventory_delta: 0.2,
+      maxInventoryUnits: 2,
+      maxInventoryDelta: 2,
+      inventoryPenalty: 0.020000000000000004,
+      updatedAt: OBSERVED_AT
+    });
   });
 
   it("builds reduce-only IOC inventory hedge intents after trigger and cooldown checks", () => {
