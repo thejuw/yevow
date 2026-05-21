@@ -27,6 +27,10 @@ import {
   applyCrossedBookSideEffects,
   applyOrderBookSequenceGapSideEffects
 } from "./OrderBookDesyncRuntime";
+import {
+  resolveDeltaBookMarketContext,
+  resolveSnapshotBookMarketContext
+} from "./OrderBookMarketContextRuntime";
 
 export interface AppliedBookSnapshot {
   book: InternalOrderBook;
@@ -75,16 +79,8 @@ export class OrderBookReconstructor {
   }
 
   applySnapshot(snapshot: OrderBookSnapshot, updatedAt: string): AppliedBookSnapshot {
-    const instrumentCode = snapshot.instrumentCode.toLowerCase();
-    const exchangeCode = snapshot.exchangeCode.toLowerCase();
-    const sourceExchange = this.config.normalizeSourceExchange(
-      snapshot.source_exchange ?? snapshot.exchangeCode
-    );
-    const marketKey = this.config.normalizeMarketKey(
-      snapshot.marketKey ?? this.config.buildMarketKey(sourceExchange, instrumentCode)
-    );
-    const sourceWeight = this.config.normalizeSourceWeight(snapshot.sourceWeight);
-    const tickSize = this.config.resolveTickSize(instrumentCode, snapshot.tickSize);
+    const { instrumentCode, exchangeCode, sourceExchange, marketKey, sourceWeight, tickSize } =
+      resolveSnapshotBookMarketContext(snapshot, this.config);
     const bidBook = new SortedBookSide("bid");
     const askBook = new SortedBookSide("ask");
 
@@ -148,16 +144,8 @@ export class OrderBookReconstructor {
   }
 
   async applyDelta(delta: BookDeltaWithTicker, updatedAt: string): Promise<AppliedBookUpdate> {
-    const instrumentCode = delta.instrumentCode.toLowerCase();
-    const exchangeCode = delta.exchangeCode.toLowerCase();
-    const sourceExchange = this.config.normalizeSourceExchange(
-      delta.source_exchange ?? delta.exchangeCode
-    );
-    const marketKey = this.config.normalizeMarketKey(
-      delta.marketKey ?? this.config.buildMarketKey(sourceExchange, instrumentCode)
-    );
-    const sourceWeight = this.config.normalizeSourceWeight(delta.sourceWeight);
-    const tickSize = this.config.resolveTickSize(instrumentCode, delta.tickSize);
+    const { instrumentCode, exchangeCode, sourceExchange, marketKey, sourceWeight, tickSize } =
+      resolveDeltaBookMarketContext(delta, this.config);
     const syncState = this.getBookSync(
       marketKey,
       instrumentCode,
@@ -355,22 +343,16 @@ export class OrderBookReconstructor {
     timeToBookMs: number | null,
     observedAt: string
   ): Promise<void> {
-    const instrumentCode = delta.instrumentCode.toLowerCase();
-    const exchangeCode = delta.exchangeCode.toLowerCase();
-    const sourceExchange = this.config.normalizeSourceExchange(
-      delta.source_exchange ?? delta.exchangeCode
-    );
-    const marketKey = this.config.normalizeMarketKey(
-      delta.marketKey ?? this.config.buildMarketKey(sourceExchange, instrumentCode)
-    );
+    const { instrumentCode, exchangeCode, sourceExchange, marketKey, sourceWeight, tickSize } =
+      resolveDeltaBookMarketContext(delta, this.config);
     const syncState = this.getBookSync(
       marketKey,
       instrumentCode,
       exchangeCode,
       sourceExchange,
-      this.config.resolveTickSize(instrumentCode, delta.tickSize),
+      tickSize,
       delta.source,
-      this.config.normalizeSourceWeight(delta.sourceWeight)
+      sourceWeight
     );
 
     await applyOrderBookSequenceGapSideEffects(
