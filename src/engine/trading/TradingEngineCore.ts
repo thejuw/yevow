@@ -29,7 +29,6 @@ import { countBookLevels, microstructureFromBook } from "./book/BookReconstructi
 import {
   calculateOrderBookPriceDiscovery,
   currentMarkPriceForInstrument,
-  currentBookForMarketTick,
   currentOrderBookSnapshot,
   findBestAssetBook as findBestOrderBookForAsset,
   nullableMarkPriceForInstrument
@@ -47,7 +46,7 @@ import {
   applyOrderBookResetConnectionIds,
   applyOrderBookResetFlow
 } from "./book/OrderBookResetRuntime";
-import { resolveTickBookFlow } from "./book/TickBookResolutionRuntime";
+import { resolveTradingTickBook } from "./book/TradingTickBookRuntime";
 import { buildDomAnalysisSnapshot, currentDomHeatmapSnapshot } from "./book/DomAnalyzer";
 import {
   applyShadowQueueDecisionFlow,
@@ -2520,16 +2519,15 @@ export class TradingEngine {
     wakeUpTimeMs: number | null,
     hotPathStartedAt: number
   ): Promise<TickBookResolution> {
-    return resolveTickBookFlow(
+    return resolveTradingTickBook(
       {
+        orderBook: this.orderBook,
         tick,
         metrics,
         wakeUpTimeMs,
         hotPathStartedAt
       },
       {
-        currentBookForMarketTick: (marketTick) =>
-          currentBookForMarketTick(this.orderBook, marketTick),
         applyDelta: (delta, observedAt) => this.applyDelta(delta, observedAt),
         handleInformationalBookNotReady: (
           telemetryTick,
