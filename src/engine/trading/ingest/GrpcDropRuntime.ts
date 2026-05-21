@@ -2,8 +2,9 @@ import { nativeIso, nativeNumber, nativeString } from "../helpers/NativeValueRun
 import { aggregateQuoteState, suspendAssetQuoteStates } from "../state/AssetStateRuntime";
 import { touchAgentHealth } from "../state/AgentStateDefaults";
 import type { CitadelDropDecision } from "../../../utils/CitadelProtocol";
-import { evaluateGrpcDrop } from "../../../utils/CitadelProtocol";
-import type { EngineState, JsonRecord } from "../../../types";
+import { evaluateGrpcDrop, isShadowMode } from "../../../utils/CitadelProtocol";
+import { ENGINE_STATE_KEY } from "../../../TradingEngineConstants";
+import type { EngineState, Env, JsonRecord } from "../../../types";
 import type { GrpcFatalDropPayload } from "../TradingEngineRouteTypes";
 
 export interface ResolvedGrpcFatalDrop {
@@ -62,6 +63,23 @@ export interface GrpcFatalDropSideEffectHandlers {
   readonly logError: (eventType: string, message: string, metadata: JsonRecord) => void;
   readonly publish: (type: string, payload: JsonRecord) => void;
   readonly cancelAllQuotes: (instrumentCode: "ALL", reason: "GRPC_FATAL_DROP") => Promise<unknown>;
+}
+
+export interface GrpcFatalDropTarget {
+  engineState: EngineState;
+  readonly env: Pick<Env, "SHADOW_MODE">;
+  readonly state: {
+    waitUntil(work: Promise<unknown>): void;
+  };
+  readonly logger: {
+    error(eventType: string, message: string, metadata?: JsonRecord): void;
+  };
+  persistHotStorageSnapshot(
+    writes: Record<string, unknown>,
+    reason: "GRPC_FATAL_DROP"
+  ): Promise<unknown>;
+  publish(type: string, payload: JsonRecord): void;
+  cancelAllQuotes(instrumentCode: "ALL", reason: "GRPC_FATAL_DROP"): Promise<unknown>;
 }
 
 export function resolveGrpcFatalDropPayload(
@@ -202,4 +220,35 @@ export function applyGrpcFatalDropSideEffects(
   if (artifacts.events.shouldCancelAllQuotes) {
     handlers.schedule(handlers.cancelAllQuotes("ALL", "GRPC_FATAL_DROP"));
   }
+}
+
+export function handleGrpcFatalDropForTarget(
+  payload: GrpcFatalDropPayload,
+  target: GrpcFatalDropTarget
+): { status: "GRPC_FATAL_DROP" } {
+  const artifacts = grpcFatalDropArtifacts({
+    payload,
+    currentState: target.engineState,
+    shadowMode: isShadowMode(target.env),
+    engineStateKey: ENGINE_STATE_KEY
+  });
+
+  applyGrpcFatalDropSideEffects(artifacts, {
+    applyState: (state) => {
+      target.engineState = state;
+    },
+    persistStorage: (writes, reason) => target.persistHotStorageSnapshot(writes, reason),
+    schedule: (work) => {
+      target.state.waitUntil(work);
+    },
+    logError: (eventType, message, metadata) => {
+      target.logger.error(eventType, message, metadata);
+    },
+    publish: (type, publishPayload) => {
+      target.publish(type, publishPayload);
+    },
+    cancelAllQuotes: (instrumentCode, reason) => target.cancelAllQuotes(instrumentCode, reason)
+  });
+
+  return artifacts.response;
 }

@@ -188,7 +188,7 @@ import {
   handleTradingHyperliquidRawForTarget,
   type TradingHyperliquidRawEngineTarget
 } from "./ingest/TradingHyperliquidRawRuntime";
-import { applyGrpcFatalDropSideEffects, grpcFatalDropArtifacts } from "./ingest/GrpcDropRuntime";
+import { handleGrpcFatalDropForTarget, type GrpcFatalDropTarget } from "./ingest/GrpcDropRuntime";
 import {
   createTradingEngineHttpRouteContext,
   handleTradingEngineHttpRoute,
@@ -1056,24 +1056,7 @@ export class TradingEngine {
   private async handleGrpcFatalDrop(
     payload: GrpcFatalDropPayload
   ): Promise<{ status: "GRPC_FATAL_DROP" }> {
-    const artifacts = grpcFatalDropArtifacts({
-      payload,
-      currentState: this.engineState,
-      shadowMode: isShadowMode(this.env),
-      engineStateKey: ENGINE_STATE_KEY
-    });
-    applyGrpcFatalDropSideEffects(artifacts, {
-      applyState: (state) => {
-        this.engineState = state;
-      },
-      persistStorage: (writes, reason) => this.persistHotStorageSnapshot(writes, reason),
-      schedule: (work) => this.state.waitUntil(work),
-      logError: (eventType, message, metadata) => this.logger.error(eventType, message, metadata),
-      publish: (type, publishPayload) => this.publish(type, publishPayload),
-      cancelAllQuotes: (instrumentCode, reason) => this.cancelAllQuotes(instrumentCode, reason)
-    });
-
-    return artifacts.response;
+    return handleGrpcFatalDropForTarget(payload, this as unknown as GrpcFatalDropTarget);
   }
 
   private quoteStateStalePull(

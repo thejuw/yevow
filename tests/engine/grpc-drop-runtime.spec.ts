@@ -3,8 +3,10 @@ import {
   applyGrpcFatalDropSideEffects,
   buildGrpcFatalDropEventArtifacts,
   grpcFatalDropArtifacts,
+  handleGrpcFatalDropForTarget,
   resolveGrpcFatalDropPayload,
   stateAfterGrpcFatalDrop,
+  type GrpcFatalDropTarget,
   type GrpcFatalDropSideEffectHandlers
 } from "../../src/engine/trading/ingest/GrpcDropRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
@@ -219,6 +221,63 @@ describe("GrpcDropRuntime", () => {
     ]);
 
     await Promise.all(sideEffects.scheduled);
+  });
+
+  it("handles fatal drops through the trading target adapter", async () => {
+    const events: string[] = [];
+    const scheduled: Promise<unknown>[] = [];
+    const target: GrpcFatalDropTarget = {
+      engineState: defaultEngineState("grpc-target"),
+      env: {
+        SHADOW_MODE: "true"
+      },
+      state: {
+        waitUntil(work) {
+          events.push("schedule");
+          scheduled.push(work);
+        }
+      },
+      logger: {
+        error(eventType, _message, metadata) {
+          events.push(`error:${eventType}:${String(metadata?.reason ?? "none")}`);
+        }
+      },
+      persistHotStorageSnapshot(writes, reason) {
+        events.push(`persist:${reason}:${Object.keys(writes).length}`);
+        return Promise.resolve();
+      },
+      publish(type, payload) {
+        events.push(`publish:${type}:${String(payload.action ?? "none")}`);
+      },
+      cancelAllQuotes(instrumentCode, reason) {
+        events.push(`cancel:${instrumentCode}:${reason}`);
+        return Promise.resolve();
+      }
+    };
+
+    const response = handleGrpcFatalDropForTarget(
+      {
+        streamId: "dwellir-stream",
+        observedAt: "2026-05-18T12:00:00.000Z",
+        disconnectedForMs: 250,
+        thresholdMs: 200,
+        reason: "DWELLIR_GRPC_WATCHDOG_TIMEOUT"
+      },
+      target
+    );
+
+    expect(response).toEqual({ status: "GRPC_FATAL_DROP" });
+    expect(target.engineState.citadel.status).toBe("CRITICAL");
+    expect(events).toEqual([
+      "persist:GRPC_FATAL_DROP:1",
+      "schedule",
+      "error:GRPC_FATAL_DROP:DWELLIR_GRPC_WATCHDOG_TIMEOUT",
+      "publish:GRPC_FATAL_DROP:CANCEL_ALL_QUOTES",
+      "cancel:ALL:GRPC_FATAL_DROP",
+      "schedule"
+    ]);
+
+    await Promise.all(scheduled);
   });
 });
 
