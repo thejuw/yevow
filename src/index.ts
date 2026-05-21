@@ -16,13 +16,14 @@ import { StrategyVault } from "./StrategyVault";
 import { TradingEngine } from "./TradingEngine";
 import { Notifier, type AlertPriority } from "./utils/Notifier";
 import { SignatureEngine } from "./utils/SignatureEngine";
-import { getTradingEngineStub, tradingEngineObjectName } from "./utils/TradingEngineStub";
+import { getTradingEngineStub } from "./utils/TradingEngineStub";
 import {
   evaluateRateLimit,
   ipRateLimitKey,
   subjectRateLimitKey
 } from "./gateway/middleware/RateLimitMiddleware";
 import { adminUiResponse } from "./gateway/AdminUi";
+import { gatewayCatalogResponse } from "./gateway/RouteCatalog";
 import {
   encryptSecret,
   normalizeAlertPriority,
@@ -265,69 +266,6 @@ interface DateRangeFilter {
 
 type GatewayHono = { Bindings: Env };
 
-const ROUTE_CATALOG = [
-  "GET /health",
-  "GET /state (TELEMETRY:READ token)",
-  "GET /performance (TELEMETRY:READ token)",
-  "GET /metrics/performance (TELEMETRY:READ token)",
-  "GET /slippage (TELEMETRY:READ token)",
-  "GET /book/snapshot (TELEMETRY:READ token)",
-  "GET /dom/heatmap (TELEMETRY:READ token)",
-  "GET /liquidations/heatmap (TELEMETRY:READ token)",
-  "GET /stream (TELEMETRY:READ token, WebSocket)",
-  "POST /tick",
-  "POST /hyperliquid/raw",
-  "POST /liquidation",
-  "POST /market/tick",
-  "GET /market/ws",
-  "POST /agent/signal",
-  "GET /moltworker/health",
-  "POST /login",
-  "GET /admin",
-  "GET /admin/ui",
-  "GET|POST|PUT|PATCH /admin/config",
-  "GET /admin/health",
-  "GET /admin/state",
-  "GET /admin/settings",
-  "GET /admin/diagnostics",
-  "GET /admin/live-readiness",
-  "POST /admin/live-readiness/approve",
-  "POST /admin/auth/revoke",
-  "POST /admin/auth/revoke-all-for-subject",
-  "GET /admin/auth/revoked",
-  "POST /admin/moltworker/heartbeat",
-  "POST /admin/settings/notifications",
-  "GET|POST /admin/topology/calibrate",
-  "GET /admin/performance",
-  "GET /admin/metrics/performance",
-  "POST /admin/maintenance/prune-logs",
-  "POST /admin/maintenance/recover",
-  "GET /admin/slippage",
-  "GET /admin/history",
-  "GET /admin/trace",
-  "GET /admin/attribution",
-  "GET /admin/alerts",
-  "POST /admin/alerts/test",
-  "POST /admin/replay",
-  "GET /admin/replay/status",
-  "GET|POST /admin/vault",
-  "POST /admin/vault/test",
-  "POST /admin/news/sentiment",
-  "POST /admin/news/blackout",
-  "GET /admin/cascade/active",
-  "GET /admin/cascade/signals",
-  "GET /admin/cascade/positions",
-  "POST /admin/cascade/positions/:id/close",
-  "POST /admin/cascade/blackout",
-  "GET /admin/cascade/heat",
-  "POST /admin/backtest/cascade",
-  "GET /admin/book/snapshot",
-  "GET /admin/dom/heatmap",
-  "GET /admin/liquidations/heatmap",
-  "GET /admin/stream",
-  "GET /admin/logs"
-] as const;
-
 const gatewayRouter = new Hono<GatewayHono>();
 
 gatewayRouter.options("*", () => corsPreflight());
@@ -465,16 +403,6 @@ async function routeAdmin(c: Context<GatewayHono>): Promise<Response> {
     runtime.configManager,
     runtime.topology
   );
-}
-
-function gatewayCatalogResponse(env: Env, topology: EdgeTopology): Response {
-  return json({
-    ok: true,
-    service: "sovereign-sigma-core",
-    singleton: tradingEngineObjectName(env),
-    topology,
-    routes: ROUTE_CATALOG
-  });
 }
 
 async function handleLogin(
