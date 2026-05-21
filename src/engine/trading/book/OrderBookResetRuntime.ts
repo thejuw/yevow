@@ -17,6 +17,10 @@ import {
   resetTradingLatencyBaselineForTarget,
   type TradingLatencyStateTarget
 } from "../performance/TradingLatencyStateRuntime";
+import {
+  deleteTradingStorageKeysForTarget,
+  recordTradingStorageWriteFailureForTargetOrHandler
+} from "../state/StorageWriteGuard";
 
 export interface ResolvedOrderBookReset {
   readonly now: string;
@@ -120,10 +124,10 @@ export interface TradingOrderBookResetTarget {
       list<T = unknown>(options: { prefix: string }): Promise<Map<string, T>>;
     };
   };
-  handleStorageWriteFailure(reason: string, error: unknown): void;
+  handleStorageWriteFailure?(reason: string, error: unknown): void;
   resetLatencyBaseline?(observedAt: string, reason: string): void;
   safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void>;
-  safeStorageDelete(keys: string[], reason: string): Promise<void>;
+  safeStorageDelete?(keys: string[], reason: string): Promise<void>;
   readonly logger: {
     warn(eventType: string, message: string, telemetry?: JsonRecord): void;
   };
@@ -381,7 +385,7 @@ export async function resetTradingOrderBookForTarget(
     {
       listPersistedBooks: (prefix) => target.state.storage.list<InternalOrderBook>({ prefix }),
       handleListFailure: (error) => {
-        target.handleStorageWriteFailure("ORDER_BOOK_RESET_LIST", error);
+        recordTradingStorageWriteFailureForTargetOrHandler(target, "ORDER_BOOK_RESET_LIST", error);
       },
       applyState: (state) => {
         target.engineState = state;
@@ -398,7 +402,8 @@ export async function resetTradingOrderBookForTarget(
         );
       },
       persistWrites: (writes) => target.safeStoragePut(writes, "ORDER_BOOK_RESET"),
-      deleteStorageKeys: (keys) => target.safeStorageDelete([...keys], "ORDER_BOOK_RESET_DELETE"),
+      deleteStorageKeys: (keys) =>
+        deleteTradingStorageKeysForTarget(target, [...keys], "ORDER_BOOK_RESET_DELETE"),
       logReset: (telemetry) => {
         target.logger.warn(
           "ORDER_BOOK_RESET",

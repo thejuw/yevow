@@ -28,6 +28,7 @@ import type {
   JanitorCancelReservation,
   JanitorExecutionerFetcher
 } from "./JanitorRuntime";
+import { scheduleTradingStoragePutForTarget } from "../state/StorageWriteGuard";
 
 export interface TradingJanitorLogger {
   warn(eventType: string, message: string, telemetry?: JsonRecord): void;
@@ -122,7 +123,7 @@ export interface TradingJanitorCancelTarget {
     reserve(bucket: string, priority: RateLimitPriority): JanitorCancelReservation;
     exportState(): unknown;
   };
-  waitUntilStoragePut(key: string, value: unknown, reason: string): void;
+  waitUntilStoragePut?(key: string, value: unknown, reason: string): void;
 }
 
 export interface TradingOperationalLogPruneInput {
@@ -270,7 +271,8 @@ export async function cancelTradingJanitorOrderForTarget(
     {
       reserveCancelCapacity: (priority) => target.rateLimiter.reserve("default", priority),
       persistRateLimitState: () => {
-        target.waitUntilStoragePut(
+        scheduleTradingStoragePutForTarget(
+          target,
           RATE_LIMIT_STATE_KEY,
           target.rateLimiter.exportState(),
           "JANITOR_CANCEL_RATE_LIMIT"

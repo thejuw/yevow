@@ -19,6 +19,7 @@ import {
   applyRuntimeConfigUpdateSideEffects,
   type EffectiveGovernanceConfig
 } from "./ConfigRuntime";
+import { setTradingStorageAlarmForTargetOrScheduler } from "../state/StorageWriteGuard";
 
 export interface TradingConfigRefreshInput {
   readonly source: "ALARM" | "ADMIN_SIGNAL";
@@ -121,13 +122,13 @@ export interface TradingEngineConfigControlTarget {
     warn(eventType: string, message: string, telemetry?: JsonRecord): void;
   };
   safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
-  safeSetAlarm(timestamp: number, reason: string): Promise<void>;
+  safeSetAlarm?(timestamp: number, reason: string): Promise<void>;
 }
 
 export interface TradingConfigRefreshCadenceTarget {
   lastConfigRefreshAttemptAt: number;
   refreshConfig?(source: "ALARM" | "ADMIN_SIGNAL"): Promise<void>;
-  safeSetAlarm(timestamp: number, reason: string): Promise<void>;
+  safeSetAlarm?(timestamp: number, reason: string): Promise<void>;
 }
 
 export async function refreshTradingConfig(
@@ -292,7 +293,11 @@ export async function scheduleTradingConfigRefreshForTarget(
   target: Pick<TradingConfigRefreshCadenceTarget, "safeSetAlarm">,
   nowMs = Date.now()
 ): Promise<void> {
-  await target.safeSetAlarm(nowMs + CONFIG_ALARM_INTERVAL_MS, "CONFIG_REFRESH_ALARM");
+  await setTradingStorageAlarmForTargetOrScheduler(
+    target,
+    nowMs + CONFIG_ALARM_INTERVAL_MS,
+    "CONFIG_REFRESH_ALARM"
+  );
 }
 
 export function applyTradingEngineConfigUpdateForTarget(

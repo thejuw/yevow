@@ -23,6 +23,7 @@ import type {
   TradeIntentDispatchReservation
 } from "./TradeIntentDispatchRuntime";
 import { wait } from "../helpers/RuntimeMath";
+import { scheduleTradingStoragePutForTarget } from "../state/StorageWriteGuard";
 
 export interface TradingExecutionDispatchLogger {
   info(eventType: string, message: string, telemetry?: JsonRecord): void;
@@ -64,7 +65,7 @@ export interface TradingExecutionDispatchTarget {
     exportState(): unknown;
   };
   reservePaperExecutionBudget?(intent: TradeIntent): boolean;
-  waitUntilStoragePut(key: string, value: unknown, reason: string): void;
+  waitUntilStoragePut?(key: string, value: unknown, reason: string): void;
   enqueueExecutionIntent?(
     intent: TradeIntent,
     priority: RateLimitPriority,
@@ -140,7 +141,8 @@ export function dispatchTradingExecutionIntentForTarget(
       reserveExecutionCapacity: (exchangeKey, priority) =>
         target.rateLimiter.reserve(exchangeKey, priority),
       persistRateLimitState: () => {
-        target.waitUntilStoragePut(
+        scheduleTradingStoragePutForTarget(
+          target,
           RATE_LIMIT_STATE_KEY,
           target.rateLimiter.exportState(),
           "EXECUTION_RATE_LIMIT"

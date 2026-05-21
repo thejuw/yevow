@@ -1,6 +1,7 @@
 import { CASCADE_PAPER_ARMED_AT_KEY } from "../../../TradingEngineConstants";
 import { isShadowMode } from "../../../utils/CitadelProtocol";
 import type { Env, GlobalRiskConfig, JsonRecord } from "../../../types";
+import { recordTradingStorageWriteFailureForTargetOrHandler } from "../state/StorageWriteGuard";
 
 export interface CascadePaperModeArmingInput {
   readonly observedAt: string;
@@ -21,7 +22,7 @@ export interface CascadePaperModeArmingTarget {
   readonly logger: {
     warn(eventType: string, message: string, metadata?: JsonRecord): void;
   };
-  handleStorageWriteFailure(reason: string, error: unknown): void;
+  handleStorageWriteFailure?(reason: string, error: unknown): void;
 }
 
 export async function ensureCascadePaperModeArmedRuntime(
@@ -69,7 +70,11 @@ export function ensureCascadePaperModeArmedForTarget(
         );
       },
       handleError: (error) => {
-        target.handleStorageWriteFailure("CASCADE_PAPER_MODE_ARMING", error);
+        recordTradingStorageWriteFailureForTargetOrHandler(
+          target,
+          "CASCADE_PAPER_MODE_ARMING",
+          error
+        );
       }
     }
   );

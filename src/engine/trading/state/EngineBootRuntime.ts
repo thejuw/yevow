@@ -37,6 +37,7 @@ import { filterTargetOrderBooks } from "./AssetSelectionRuntime";
 import { defaultEngineState, resolveMaxLatencyMs } from "./EngineStateDefaults";
 import { buildHydratedEngineState, hydrateEngineBootCollections } from "./EngineBootState";
 import { readEngineBootStorageSnapshot } from "./EngineBootStorage";
+import { recordTradingStorageWriteFailureForTargetOrHandler } from "./StorageWriteGuard";
 
 export interface TradingEngineBootHydrationTarget {
   readonly state: DurableObjectState;
@@ -77,7 +78,7 @@ export interface TradingEngineBootHydrationTarget {
   readonly configManager: Pick<ConfigManager, "fetchConfig">;
   readonly cascadeNewsCalendar: Pick<NewsCalendar, "refresh">;
   readonly logger: Pick<Logger, "info">;
-  handleStorageWriteFailure(reason: string, error: unknown): void;
+  handleStorageWriteFailure?(reason: string, error: unknown): void;
   ensureCascadePaperModeArmed?(observedAt: string): Promise<void>;
   safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
   scheduleConfigRefresh?(): Promise<void>;
@@ -90,7 +91,7 @@ export async function hydrateTradingEngineBootForTarget(
     storage: target.state.storage,
     env: target.env,
     onReadFailure: (reason, error) => {
-      target.handleStorageWriteFailure(reason, error);
+      recordTradingStorageWriteFailureForTargetOrHandler(target, reason, error);
     }
   });
   const baseState = snapshot.persistedState ?? defaultEngineState(target.state.id.toString());

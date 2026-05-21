@@ -31,6 +31,10 @@ import {
   rebindTradingOrderBookReconstructorForTarget,
   type TradingOrderBookRebindTarget
 } from "../book/OrderBookReconstructorFactory";
+import {
+  deleteTradingStorageKeysForTarget,
+  recordTradingStorageWriteFailureForTargetOrHandler
+} from "../state/StorageWriteGuard";
 
 export type { EngineReplaySnapshot } from "./ReplaySnapshotRuntime";
 
@@ -123,8 +127,8 @@ export interface TradingReplayRestoreTarget extends TradingReplaySnapshotTarget 
       list<T>(options: { prefix: string }): Promise<Map<string, T>>;
     };
   };
-  handleStorageWriteFailure(reason: string, error: unknown): void;
-  safeStorageDelete(keys: string[], reason: string): Promise<void>;
+  handleStorageWriteFailure?(reason: string, error: unknown): void;
+  safeStorageDelete?(keys: string[], reason: string): Promise<void>;
   safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void>;
 }
 
@@ -235,13 +239,17 @@ export function restoreTradingReplaySnapshotForTarget(
         })
       ).keys(),
     onListPersistedBookKeysFailure: (error) => {
-      target.handleStorageWriteFailure("REPLAY_RESTORE_LIST_BOOKS", error);
+      recordTradingStorageWriteFailureForTargetOrHandler(
+        target,
+        "REPLAY_RESTORE_LIST_BOOKS",
+        error
+      );
     },
     applyRuntimeSnapshot: (replaySnapshot, hydratedBooks) => {
       applyTradingReplaySnapshotToTarget(target, replaySnapshot, hydratedBooks);
     },
     deletePersistedBookKeys: (keys) =>
-      target.safeStorageDelete([...keys], "REPLAY_RESTORE_DELETE_BOOKS"),
+      deleteTradingStorageKeysForTarget(target, [...keys], "REPLAY_RESTORE_DELETE_BOOKS"),
     writeRestoreState: (writes) => target.safeStoragePut(writes, "REPLAY_RESTORE")
   });
 }

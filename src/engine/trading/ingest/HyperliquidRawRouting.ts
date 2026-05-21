@@ -7,6 +7,7 @@ import { isNativeRecord, nativeObject, nativeString } from "../helpers/NativeVal
 import type { TickIngestResult } from "../TradingEngineRouteTypes";
 import type { EngineState, MarketTick } from "../../../types";
 import { ENGINE_STATE_KEY } from "../../../TradingEngineConstants";
+import { scheduleTradingStoragePutForTarget } from "../state/StorageWriteGuard";
 
 export interface HyperliquidRawIngestPayload {
   streamId?: string;
@@ -66,7 +67,7 @@ export interface HyperliquidIngestConnectionSideEffectHandlers {
 export interface HyperliquidIngestConnectionTarget {
   readonly activeIngestConnections: Map<string, string>;
   engineState: EngineState;
-  waitUntilStoragePut(key: string, value: unknown, reason: string): void;
+  waitUntilStoragePut?(key: string, value: unknown, reason: string): void;
 }
 
 export type HyperliquidRawMessageRoute =
@@ -382,7 +383,7 @@ export function registerHyperliquidIngestConnectionForTarget(
         target.engineState = state;
       },
       persistState: (key, state, reason) => {
-        target.waitUntilStoragePut(key, state, reason);
+        scheduleTradingStoragePutForTarget(target, key, state, reason);
       }
     }
   );

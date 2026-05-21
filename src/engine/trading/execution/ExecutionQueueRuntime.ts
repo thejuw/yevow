@@ -8,6 +8,10 @@ import {
   dispatchTradingExecutionIntentForTarget,
   type TradingExecutionDispatchTarget
 } from "./TradingExecutionDispatchRuntime";
+import {
+  recordTradingStorageWriteFailureForTargetOrHandler,
+  setTradingStorageAlarmForTargetOrScheduler
+} from "../state/StorageWriteGuard";
 
 export type ExecutionQueuePriority = "CANCEL" | "NEW";
 
@@ -134,9 +138,9 @@ export interface TradingExecutionQueueTarget {
   readonly logger: {
     warn(eventType: string, message: string, telemetry?: JsonRecord): void;
   };
-  handleStorageWriteFailure(reason: string, error: unknown): void;
+  handleStorageWriteFailure?(reason: string, error: unknown): void;
   safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
-  safeSetAlarm(timestampMs: number, reason: string): Promise<void>;
+  safeSetAlarm?(timestampMs: number, reason: string): Promise<void>;
   dispatchExecution?(intent: TradeIntent): Promise<void>;
 }
 
@@ -360,10 +364,11 @@ export function enqueueTradingExecutionIntentForTarget(
     {
       readStoredQueue: () => target.state.storage.get<QueuedExecutionIntent[]>(EXECUTION_QUEUE_KEY),
       handleStorageFailure: (reason, error) => {
-        target.handleStorageWriteFailure(reason, error);
+        recordTradingStorageWriteFailureForTargetOrHandler(target, reason, error);
       },
       persistQueue: (key, queue, reason) => target.safeStoragePut(key, queue, reason),
-      setAlarm: (timestampMs, reason) => target.safeSetAlarm(timestampMs, reason),
+      setAlarm: (timestampMs, reason) =>
+        setTradingStorageAlarmForTargetOrScheduler(target, timestampMs, reason),
       markDeferralLogged: (loggedAtMs) => {
         target.rateLimitDeferralLogAt = loggedAtMs;
       },
@@ -388,7 +393,7 @@ export function drainTradingExecutionQueueForTarget(
     {
       readStoredQueue: () => target.state.storage.get<QueuedExecutionIntent[]>(EXECUTION_QUEUE_KEY),
       handleStorageFailure: (reason, error) => {
-        target.handleStorageWriteFailure(reason, error);
+        recordTradingStorageWriteFailureForTargetOrHandler(target, reason, error);
       },
       persistQueue: (key, queue, reason) => target.safeStoragePut(key, queue, reason),
       dispatchExecution: (intent) =>
@@ -399,7 +404,8 @@ export function drainTradingExecutionQueueForTarget(
               0,
               target as unknown as TradingExecutionDispatchTarget
             ),
-      setAlarm: (timestampMs, reason) => target.safeSetAlarm(timestampMs, reason)
+      setAlarm: (timestampMs, reason) =>
+        setTradingStorageAlarmForTargetOrScheduler(target, timestampMs, reason)
     }
   );
 }

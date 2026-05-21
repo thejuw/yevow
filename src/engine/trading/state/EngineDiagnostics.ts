@@ -8,6 +8,7 @@ import {
   calculateTradingAssetMatrixForTarget,
   type TradingAssetMatrixTarget
 } from "./TradingAssetMatrixRuntime";
+import { scheduleTradingStoragePutForTarget } from "./StorageWriteGuard";
 import type {
   AssetRuntimeState,
   EngineState,
@@ -65,7 +66,7 @@ export interface TradingEngineDiagnosticsTarget extends TradingAssetMatrixTarget
     snapshot(): Record<string, ProfilerState>;
   };
   readonly startedAt: number;
-  waitUntilStoragePut(key: string, value: unknown, reason: string): void;
+  waitUntilStoragePut?(key: string, value: unknown, reason: string): void;
 }
 
 export interface HealthReportInput {
@@ -202,7 +203,12 @@ export function buildTradingHealthReportForTarget(
 ): HealthReport {
   syncTradingStateMicrostructureForTarget(target);
   target.engineState = stateAfterHealthHeartbeat(target.engineState, observedAt);
-  target.waitUntilStoragePut(ENGINE_STATE_KEY, target.engineState, "HEALTH_HEARTBEAT");
+  scheduleTradingStoragePutForTarget(
+    target,
+    ENGINE_STATE_KEY,
+    target.engineState,
+    "HEALTH_HEARTBEAT"
+  );
 
   return buildHealthReport({
     engineState: target.engineState,

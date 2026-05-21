@@ -41,6 +41,27 @@ export interface TradingStorageGuardTarget {
   readonly state: Pick<DurableObjectState, "waitUntil">;
 }
 
+export interface TradingStoragePutSchedulerTarget {
+  readonly storageGuard?: StorageWriteGuard;
+  readonly state?: Pick<DurableObjectState, "waitUntil">;
+  waitUntilStoragePut?(key: string, value: unknown, reason: string): void;
+}
+
+export interface TradingStorageDeleteSchedulerTarget {
+  readonly storageGuard?: StorageWriteGuard;
+  safeStorageDelete?(keys: string[], reason: string): Promise<void>;
+}
+
+export interface TradingStorageAlarmSchedulerTarget {
+  readonly storageGuard?: StorageWriteGuard;
+  safeSetAlarm?(timestamp: number, reason: string): Promise<void>;
+}
+
+export interface TradingStorageFailureHandlerTarget {
+  readonly storageGuard?: StorageWriteGuard;
+  handleStorageWriteFailure?(reason: string, error: unknown): void;
+}
+
 export type HotStorageSnapshotDecision =
   | {
       readonly shouldPersist: true;
@@ -153,12 +174,47 @@ export function waitUntilTradingStoragePutForTarget(
   target.state.waitUntil(putTradingStorageForTarget(target, key, value, reason));
 }
 
+export function scheduleTradingStoragePutForTarget(
+  target: TradingStoragePutSchedulerTarget,
+  key: string,
+  value: unknown,
+  reason: string
+): void {
+  if (target.waitUntilStoragePut) {
+    target.waitUntilStoragePut(key, value, reason);
+    return;
+  }
+
+  if (!target.storageGuard || !target.state) {
+    throw new Error("Trading storage scheduler requires storageGuard and state bindings");
+  }
+
+  waitUntilTradingStoragePutForTarget(target as TradingStorageGuardTarget, key, value, reason);
+}
+
 export async function deleteTradingStorageForTarget(
   target: TradingStorageGuardTarget,
   keys: string[],
   reason: string
 ): Promise<void> {
   await target.storageGuard.delete(keys, reason);
+}
+
+export async function deleteTradingStorageKeysForTarget(
+  target: TradingStorageDeleteSchedulerTarget,
+  keys: string[],
+  reason: string
+): Promise<void> {
+  if (target.safeStorageDelete) {
+    await target.safeStorageDelete(keys, reason);
+    return;
+  }
+
+  if (!target.storageGuard) {
+    throw new Error("Trading storage delete requires storageGuard binding");
+  }
+
+  await deleteTradingStorageForTarget(target as TradingStorageGuardTarget, keys, reason);
 }
 
 export async function setTradingStorageAlarmForTarget(
@@ -169,12 +225,46 @@ export async function setTradingStorageAlarmForTarget(
   await target.storageGuard.setAlarm(timestamp, reason);
 }
 
+export async function setTradingStorageAlarmForTargetOrScheduler(
+  target: TradingStorageAlarmSchedulerTarget,
+  timestamp: number,
+  reason: string
+): Promise<void> {
+  if (target.safeSetAlarm) {
+    await target.safeSetAlarm(timestamp, reason);
+    return;
+  }
+
+  if (!target.storageGuard) {
+    throw new Error("Trading storage alarm scheduler requires storageGuard binding");
+  }
+
+  await setTradingStorageAlarmForTarget(target as TradingStorageGuardTarget, timestamp, reason);
+}
+
 export function recordTradingStorageWriteFailureForTarget(
   target: TradingStorageGuardTarget,
   reason: string,
   error: unknown
 ): void {
   target.storageGuard.recordFailure(reason, error);
+}
+
+export function recordTradingStorageWriteFailureForTargetOrHandler(
+  target: TradingStorageFailureHandlerTarget,
+  reason: string,
+  error: unknown
+): void {
+  if (target.handleStorageWriteFailure) {
+    target.handleStorageWriteFailure(reason, error);
+    return;
+  }
+
+  if (!target.storageGuard) {
+    throw new Error("Trading storage failure handler requires storageGuard binding");
+  }
+
+  recordTradingStorageWriteFailureForTarget(target as TradingStorageGuardTarget, reason, error);
 }
 
 export class StorageWriteGuard {

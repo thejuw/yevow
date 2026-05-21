@@ -55,11 +55,8 @@ import {
 } from "./state/EngineBootServices";
 import {
   applyHotStorageSnapshotForTarget,
-  deleteTradingStorageForTarget,
   putTradingStorageForTarget,
   recordTradingStorageWriteFailureForTarget,
-  setTradingStorageAlarmForTarget,
-  waitUntilTradingStoragePutForTarget,
   type TradingHotStorageSnapshotTarget,
   type TradingStorageGuardTarget,
   type StorageWriteGuard
@@ -208,7 +205,12 @@ export class TradingEngine {
       readStorage: (key) => state.storage.get(key),
       writeStorage: (key, value, reason) => this.safeStoragePut(key, value, reason),
       publish: (type, payload, correlationId) => this.publish(type, payload, correlationId),
-      onStorageReadFailure: (reason, error) => this.handleStorageWriteFailure(reason, error)
+      onStorageReadFailure: (reason, error) =>
+        recordTradingStorageWriteFailureForTarget(
+          this as unknown as TradingStorageGuardTarget,
+          reason,
+          error
+        )
     });
     this.configManager = bootServices.configManager;
     this.governor = bootServices.governor;
@@ -277,27 +279,6 @@ export class TradingEngine {
     );
   }
 
-  private waitUntilStoragePut(key: string, value: unknown, reason: string): void {
-    waitUntilTradingStoragePutForTarget(
-      this as unknown as TradingStorageGuardTarget,
-      key,
-      value,
-      reason
-    );
-  }
-
-  private async safeStorageDelete(keys: string[], reason: string): Promise<void> {
-    await deleteTradingStorageForTarget(this as unknown as TradingStorageGuardTarget, keys, reason);
-  }
-
-  private async safeSetAlarm(timestamp: number, reason: string): Promise<void> {
-    await setTradingStorageAlarmForTarget(
-      this as unknown as TradingStorageGuardTarget,
-      timestamp,
-      reason
-    );
-  }
-
   private async persistHotStorageSnapshot(
     entries: Record<string, unknown>,
     reason: string
@@ -306,14 +287,6 @@ export class TradingEngine {
       entries,
       reason,
       this as unknown as TradingHotStorageSnapshotTarget
-    );
-  }
-
-  private handleStorageWriteFailure(reason: string, error: unknown): void {
-    recordTradingStorageWriteFailureForTarget(
-      this as unknown as TradingStorageGuardTarget,
-      reason,
-      error
     );
   }
 

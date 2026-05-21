@@ -31,6 +31,7 @@ import {
   emitTradingCascadeOperationalAlertForTarget,
   type TradingSignalBusTarget
 } from "../telemetry/TradingSignalBusRuntime";
+import { recordTradingStorageWriteFailureForTargetOrHandler } from "../state/StorageWriteGuard";
 export {
   buildCascadeDetectedArtifacts,
   cascadeDetectedAlertMetadata,
@@ -222,7 +223,7 @@ export interface TradingLiquidationIngestTarget {
     warn(eventType: string, message: string, metadata?: JsonRecord): void;
   };
   safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void>;
-  handleStorageWriteFailure(reason: string, error: unknown): void;
+  handleStorageWriteFailure?(reason: string, error: unknown): void;
   publish(type: string, payload: JsonRecord): void;
   emitCascadeOperationalAlert?(
     eventType: "CASCADE_DETECTED",
@@ -493,7 +494,7 @@ export function handleTradingEngineLiquidationEvents(
         target.state.waitUntil(
           persistCascadeLiquidationEventsSafely(target.env.TRADING_DB, events, {
             handleFailure: (reason, error) => {
-              target.handleStorageWriteFailure(reason, error);
+              recordTradingStorageWriteFailureForTargetOrHandler(target, reason, error);
             }
           })
         );

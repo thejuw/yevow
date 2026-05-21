@@ -6,6 +6,7 @@ import {
   stateAfterTopologyObservation
 } from "./PlacementResolver";
 import { applyTopologyWarmUpRuntime } from "./TopologyWarmUpRuntime";
+import { scheduleTradingStoragePutForTarget } from "../state/StorageWriteGuard";
 
 export interface TradingTopologyTarget {
   engineState: EngineState;
@@ -33,7 +34,7 @@ export interface TradingTopologyTarget {
     warn(eventType: string, message: string, telemetry?: JsonRecord): void;
     error(eventType: string, message: string, telemetry?: JsonRecord): void;
   };
-  waitUntilStoragePut(key: string, value: unknown, reason: string): void;
+  waitUntilStoragePut?(key: string, value: unknown, reason: string): void;
 }
 
 export function observeTradingTopologyForTarget(
@@ -58,7 +59,12 @@ export function observeTradingTopologyForTarget(
         target.engineState = state;
       },
       persistState: () => {
-        target.waitUntilStoragePut(ENGINE_STATE_KEY, target.engineState, "COLO_TOPOLOGY_CHANGED");
+        scheduleTradingStoragePutForTarget(
+          target,
+          ENGINE_STATE_KEY,
+          target.engineState,
+          "COLO_TOPOLOGY_CHANGED"
+        );
       },
       warn: (event) => {
         target.logger.warn(event.eventType, event.message, event.metadata);
