@@ -42,7 +42,6 @@ import { buildDomAnalysisSnapshot, currentDomHeatmapSnapshot } from "./book/DomA
 import { processTradingShadowQueueTick } from "./shadow/TradingShadowQueueRuntime";
 import { handleTradingAnomalyEmergencyPause } from "./anomaly/TradingAnomalyEmergencyRuntime";
 import { updateLeadLagMetrics as updateLeadLagRuntimeMetrics } from "./leadlag/LeadLagRuntime";
-import { cancelLaggingHypeQuotesForTrading } from "./leadlag/TradingCrossAssetCancelRuntime";
 import { dispatchTradingInventoryHedgeIfNeeded } from "./inventory/TradingInventoryHedgeRuntime";
 import { calculateTradingInventoryState } from "./inventory/TradingInventoryStateRuntime";
 import { resolveMaxPositionPct } from "./risk/PortfolioRiskRuntime";
@@ -456,7 +455,7 @@ import { buildTickDecisionContextFlow } from "./pipelines/TickDecisionContextRun
 import { buildAcceptedTickStateTransition } from "./pipelines/AcceptedTickStateTransitionRuntime";
 import { finalizeAcceptedTickFlow } from "./pipelines/AcceptedTickFinalizationRuntime";
 import { prepareAcceptedExecutionContextFlow } from "./pipelines/AcceptedExecutionContextRuntime";
-import { preparePostBookTickRuntime } from "./pipelines/PostBookTickRuntime";
+import { prepareTradingPostBookTickRuntime } from "./pipelines/PostBookTickRuntime";
 import { handleTickRuntime } from "./pipelines/TickHandlingRuntime";
 import type {
   AcceptedDecisionPipelineInput,
@@ -2365,47 +2364,28 @@ export class TradingEngine {
     observedAt: string,
     options: TickHandlingOptions
   ): Promise<PostBookTickContext> {
-    return preparePostBookTickRuntime(
+    return prepareTradingPostBookTickRuntime(
       {
         tick,
         book,
         observedAt,
-        options
+        options,
+        config: this.cachedConfig,
+        env: this.env,
+        lastHypeCancelAtMs: this.crossAssetCancelLogAt.get("hype-usd") ?? 0,
+        fallbackNowMs: Date.now()
       },
       {
         evaluateCascadeStrategy: (currentTick, currentObservedAt) =>
           this.evaluateCascadeStrategy(currentTick, currentObservedAt),
         updateVolatility: (instrumentCode, midPrice, currentObservedAt) =>
           this.multiScaleVolatility.update(instrumentCode, midPrice, currentObservedAt),
-        maybeCancelLaggingHypeQuotes: (
-          currentTick,
-          volatilitySnapshot,
-          currentObservedAt,
-          tickOptions
-        ) => {
-          cancelLaggingHypeQuotesForTrading(
-            {
-              tick: currentTick,
-              volatility: volatilitySnapshot,
-              observedAt: currentObservedAt,
-              options: tickOptions,
-              config: this.cachedConfig,
-              env: this.env,
-              lastHypeCancelAtMs: this.crossAssetCancelLogAt.get("hype-usd") ?? 0,
-              fallbackNowMs: Date.now()
-            },
-            {
-              markCooldown: (instrumentCode, nowMs) =>
-                this.crossAssetCancelLogAt.set(instrumentCode, nowMs),
-              warn: (eventType, message, metadata) =>
-                this.logger.warn(eventType, message, metadata),
-              publishSuspend: (payload) => this.publish("SUSPEND_QUOTES", payload),
-              schedule: (work) => this.state.waitUntil(work),
-              cancelAllQuotes: (instrumentCode, reason) =>
-                this.cancelAllQuotes(instrumentCode, reason)
-            }
-          );
-        },
+        markHypeCancelCooldown: (instrumentCode, nowMs) =>
+          this.crossAssetCancelLogAt.set(instrumentCode, nowMs),
+        warn: (eventType, message, metadata) => this.logger.warn(eventType, message, metadata),
+        publishSuspend: (payload) => this.publish("SUSPEND_QUOTES", payload),
+        schedule: (work) => this.state.waitUntil(work),
+        cancelAllQuotes: (instrumentCode, reason) => this.cancelAllQuotes(instrumentCode, reason),
         processShadowQueueTick: (currentTick, currentBook, currentObservedAt, tickOptions) =>
           this.processShadowQueueTick(currentTick, currentBook, currentObservedAt, tickOptions),
         getLiquidityWalls: (instrumentCode, currentObservedAt, currentTick) =>

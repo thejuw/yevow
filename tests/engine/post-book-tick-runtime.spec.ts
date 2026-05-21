@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { preparePostBookTickRuntime } from "../../src/engine/trading/pipelines/PostBookTickRuntime";
+import {
+  preparePostBookTickRuntime,
+  prepareTradingPostBookTickRuntime
+} from "../../src/engine/trading/pipelines/PostBookTickRuntime";
 import type { MultiScaleVolatilitySnapshot } from "../../src/engine/MultiScaleVolatility";
 import type {
   DomAnalysisSnapshot,
@@ -64,6 +67,85 @@ describe("PostBookTickRuntime", () => {
       `lead-lag:btc-usd:true:${OBSERVED_AT}:true`,
       `shadow:btc-usd:100:${OBSERVED_AT}:true`,
       `dom:btc-usd:42:${OBSERVED_AT}`
+    ]);
+  });
+
+  it("runs trading post-book context with BTC-to-HYPE quote cancellation", async () => {
+    const events: string[] = [];
+    const volatility = {
+      ...volatilitySnapshot(),
+      ret: 0.001,
+      jumpZScore: 0
+    } as unknown as MultiScaleVolatilitySnapshot;
+    const shadowQueueState = { lastDecision: { decisionId: "decision-1" } } as ShadowQueueState;
+    const domSnapshot = { instrumentCode: "btc-usd", walls: [] } as unknown as DomAnalysisSnapshot;
+
+    const context = await prepareTradingPostBookTickRuntime(
+      {
+        tick: marketTick(),
+        book: orderBook(),
+        observedAt: OBSERVED_AT,
+        options: { shadowReplay: false },
+        config: { TRADING_ENABLED: true },
+        env: {
+          CROSS_ASSET_CANCEL_LEAD_BPS: "5",
+          CROSS_ASSET_CANCEL_COOLDOWN_MS: "1000"
+        },
+        lastHypeCancelAtMs: 0,
+        fallbackNowMs: Date.parse(OBSERVED_AT)
+      },
+      {
+        evaluateCascadeStrategy(currentTick) {
+          events.push(`cascade:${currentTick.instrumentCode}`);
+          return Promise.resolve();
+        },
+        updateVolatility() {
+          events.push("volatility");
+          return volatility;
+        },
+        markHypeCancelCooldown(instrumentCode) {
+          events.push(`cooldown:${instrumentCode}`);
+        },
+        warn(eventType) {
+          events.push(`warn:${eventType}`);
+        },
+        publishSuspend(payload) {
+          events.push(`publish:${payload.instrumentCode as string}`);
+        },
+        schedule(work) {
+          events.push("schedule");
+          void work;
+        },
+        cancelAllQuotes(instrumentCode, reason) {
+          events.push(`cancel:${instrumentCode}:${reason}`);
+          return Promise.resolve();
+        },
+        processShadowQueueTick() {
+          events.push("shadow");
+          return shadowQueueState;
+        },
+        getLiquidityWalls() {
+          events.push("dom");
+          return domSnapshot;
+        }
+      }
+    );
+
+    expect(context).toEqual({
+      volatilitySnapshot: volatility,
+      shadowQueueState,
+      domSnapshot
+    });
+    expect(events).toEqual([
+      "cascade:btc-usd",
+      "volatility",
+      "cooldown:hype-usd",
+      "warn:CROSS_ASSET_HYPE_CANCEL",
+      "publish:hype-usd",
+      "cancel:hype-usd:BTC_LEAD_MOVE",
+      "schedule",
+      "shadow",
+      "dom"
     ]);
   });
 });

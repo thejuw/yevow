@@ -1,10 +1,14 @@
 import type { MultiScaleVolatilitySnapshot } from "../../MultiScaleVolatility";
 import type {
   DomAnalysisSnapshot,
+  Env,
+  GlobalRiskConfig,
   InternalOrderBook,
+  JsonRecord,
   MarketTick,
   ShadowQueueState
 } from "../../../types";
+import { cancelLaggingHypeQuotesForTrading } from "../leadlag/TradingCrossAssetCancelRuntime";
 import type { PostBookTickContext, TickHandlingOptions } from "./TickPipelineTypes";
 
 export interface PostBookTickRuntimeInput {
@@ -38,6 +42,27 @@ export interface PostBookTickRuntimeHandlers {
     observedAt: string,
     tick: MarketTick
   ) => DomAnalysisSnapshot;
+}
+
+export interface TradingPostBookTickRuntimeInput extends PostBookTickRuntimeInput {
+  readonly config: Pick<GlobalRiskConfig, "TRADING_ENABLED">;
+  readonly env: Pick<Env, "CROSS_ASSET_CANCEL_LEAD_BPS" | "CROSS_ASSET_CANCEL_COOLDOWN_MS">;
+  readonly lastHypeCancelAtMs: number;
+  readonly fallbackNowMs: number;
+}
+
+export interface TradingPostBookTickRuntimeHandlers extends Omit<
+  PostBookTickRuntimeHandlers,
+  "maybeCancelLaggingHypeQuotes"
+> {
+  readonly markHypeCancelCooldown: (instrumentCode: "hype-usd", nowMs: number) => void;
+  readonly warn: (eventType: string, message: string, metadata: JsonRecord) => void;
+  readonly publishSuspend: (payload: JsonRecord) => void;
+  readonly schedule: (work: Promise<unknown>) => void;
+  readonly cancelAllQuotes: (
+    instrumentCode: "hype-usd",
+    reason: "BTC_LEAD_MOVE"
+  ) => Promise<unknown>;
 }
 
 export async function preparePostBookTickRuntime(
@@ -75,4 +100,37 @@ export async function preparePostBookTickRuntime(
     shadowQueueState,
     domSnapshot
   };
+}
+
+export async function prepareTradingPostBookTickRuntime(
+  input: TradingPostBookTickRuntimeInput,
+  handlers: TradingPostBookTickRuntimeHandlers
+): Promise<PostBookTickContext> {
+  return preparePostBookTickRuntime(input, {
+    evaluateCascadeStrategy: handlers.evaluateCascadeStrategy,
+    updateVolatility: handlers.updateVolatility,
+    maybeCancelLaggingHypeQuotes: (tick, volatility, observedAt, options) => {
+      cancelLaggingHypeQuotesForTrading(
+        {
+          tick,
+          volatility,
+          observedAt,
+          options,
+          config: input.config,
+          env: input.env,
+          lastHypeCancelAtMs: input.lastHypeCancelAtMs,
+          fallbackNowMs: input.fallbackNowMs
+        },
+        {
+          markCooldown: handlers.markHypeCancelCooldown,
+          warn: handlers.warn,
+          publishSuspend: handlers.publishSuspend,
+          schedule: handlers.schedule,
+          cancelAllQuotes: handlers.cancelAllQuotes
+        }
+      );
+    },
+    processShadowQueueTick: handlers.processShadowQueueTick,
+    getLiquidityWalls: handlers.getLiquidityWalls
+  });
 }
