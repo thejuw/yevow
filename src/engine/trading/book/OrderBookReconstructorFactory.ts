@@ -20,6 +20,17 @@ export interface OrderBookStoreMaps {
   readonly sync: Map<string, BookSyncState>;
 }
 
+export interface TradingOrderBookStoresTarget {
+  readonly orderBook: Map<string, InternalOrderBook>;
+  readonly bids: Map<string, SortedBookSide>;
+  readonly asks: Map<string, SortedBookSide>;
+  readonly bookSync: Map<string, BookSyncState>;
+}
+
+export interface TradingOrderBookRebindTarget extends TradingOrderBookStoresTarget {
+  readonly orderBookReconstructor: Pick<OrderBookReconstructor, "replaceStores">;
+}
+
 export interface TradingOrderBookReconstructorLogger {
   warn(eventType: string, message: string, metadata: JsonRecord): void;
   error(eventType: string, message: string, metadata: JsonRecord): void;
@@ -40,6 +51,23 @@ export function buildOrderBookStores(input: OrderBookStoreMaps): OrderBookStores
     asks: input.asks,
     sync: input.sync
   };
+}
+
+export function buildTradingOrderBookStoresForTarget(
+  target: TradingOrderBookStoresTarget
+): OrderBookStores {
+  return buildOrderBookStores({
+    orderBook: target.orderBook,
+    bids: target.bids,
+    asks: target.asks,
+    sync: target.bookSync
+  });
+}
+
+export function rebindTradingOrderBookReconstructorForTarget(
+  target: TradingOrderBookRebindTarget
+): void {
+  target.orderBookReconstructor.replaceStores(buildTradingOrderBookStoresForTarget(target));
 }
 
 export function createTradingOrderBookReconstructor(

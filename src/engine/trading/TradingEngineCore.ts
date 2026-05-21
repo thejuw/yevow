@@ -181,10 +181,11 @@ import {
   ensureCascadePaperModeArmedForTarget,
   type CascadePaperModeArmingTarget
 } from "./cascade/CascadePaperModeRuntime";
-import { OrderBookReconstructor, type OrderBookStores } from "./book/OrderBookReconstructor";
+import { OrderBookReconstructor } from "./book/OrderBookReconstructor";
 import {
-  buildOrderBookStores,
-  createTradingOrderBookReconstructor
+  buildTradingOrderBookStoresForTarget,
+  createTradingOrderBookReconstructor,
+  type TradingOrderBookStoresTarget
 } from "./book/OrderBookReconstructorFactory";
 import type { AppliedBookUpdate, BookDeltaWithTicker, BookSyncState } from "./book/BookTypes";
 import {
@@ -644,7 +645,7 @@ export class TradingEngine {
     this.rateLimiter.configure("default", 10, 10);
     this.orderBookReconstructor = createTradingOrderBookReconstructor({
       env,
-      stores: this.orderBookStores(),
+      stores: buildTradingOrderBookStoresForTarget(this as unknown as TradingOrderBookStoresTarget),
       logger: this.logger,
       publish: (type, payload) => this.publish(type, payload),
       resetOrderBook: (payload) => this.resetOrderBook(payload)
@@ -653,19 +654,6 @@ export class TradingEngine {
     this.initialized = this.state.blockConcurrencyWhile(() =>
       hydrateTradingEngineBootForTarget(this as unknown as TradingEngineBootHydrationTarget)
     );
-  }
-
-  private orderBookStores(): OrderBookStores {
-    return buildOrderBookStores({
-      orderBook: this.orderBook,
-      bids: this.bids,
-      asks: this.asks,
-      sync: this.bookSync
-    });
-  }
-
-  private rebindOrderBookReconstructor(): void {
-    this.orderBookReconstructor.replaceStores(this.orderBookStores());
   }
 
   async alarm(): Promise<void> {

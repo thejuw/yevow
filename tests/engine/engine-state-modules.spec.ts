@@ -905,8 +905,10 @@ describe("storage write guard", () => {
           events.push(`log:${eventType}:${String(metadata?.riskConfigVersion)}`);
         }
       },
-      rebindOrderBookReconstructor() {
-        events.push("book:rebind");
+      orderBookReconstructor: {
+        replaceStores() {
+          events.push("book:rebind");
+        }
       },
       handleStorageWriteFailure(reason: string) {
         events.push(`storage-failure:${reason}`);

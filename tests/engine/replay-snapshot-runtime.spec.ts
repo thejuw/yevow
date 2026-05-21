@@ -396,8 +396,10 @@ function replaySnapshotTarget(calls: string[]): TradingReplaySnapshotTarget {
         calls.push(`rate-limits:${Object.keys(snapshot).length}`);
       }
     },
-    rebindOrderBookReconstructor() {
-      calls.push("rebind");
+    orderBookReconstructor: {
+      replaceStores() {
+        calls.push("rebind");
+      }
     }
   };
 }

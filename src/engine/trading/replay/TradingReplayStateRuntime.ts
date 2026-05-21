@@ -27,6 +27,10 @@ import type {
 import type { RateLimitBucketSnapshot } from "../../../utils/RateLimiter";
 import type { BookSyncState } from "../book/BookTypes";
 import type { SortedBookSide } from "../book/SortedBookSide";
+import {
+  rebindTradingOrderBookReconstructorForTarget,
+  type TradingOrderBookRebindTarget
+} from "../book/OrderBookReconstructorFactory";
 
 export type { EngineReplaySnapshot } from "./ReplaySnapshotRuntime";
 
@@ -55,7 +59,6 @@ export interface TradingReplaySnapshotTarget {
   oracleAgent: { hydrate(state: EngineReplaySnapshot["oracleState"] | null): void };
   sentimentAgent: { hydrate(state: EngineReplaySnapshot["sentimentState"] | null): void };
   rateLimiter: { hydrate(snapshot: Record<string, RateLimitBucketSnapshot>): void };
-  rebindOrderBookReconstructor(): void;
 }
 
 export interface TradingReplaySnapshotSource {
@@ -253,7 +256,7 @@ export function applyTradingReplaySnapshotToTarget(
   target.bids = hydratedBooks.bids;
   target.asks = hydratedBooks.asks;
   target.bookSync = hydratedBooks.sync;
-  target.rebindOrderBookReconstructor();
+  rebindTradingOrderBookReconstructorForTarget(target as unknown as TradingOrderBookRebindTarget);
   target.latencyHistory = replaySnapshot.latencyHistory;
   target.processingLatencySamples = replaySnapshot.processingLatencySamples;
   target.domWallHistory = replaySnapshot.domWallHistory;

@@ -24,6 +24,10 @@ import type {
 } from "../../../types";
 import type { BookSyncState } from "../book/BookTypes";
 import type { SortedBookSide } from "../book/SortedBookSide";
+import {
+  rebindTradingOrderBookReconstructorForTarget,
+  type TradingOrderBookRebindTarget
+} from "../book/OrderBookReconstructorFactory";
 import { filterTargetOrderBooks } from "./AssetSelectionRuntime";
 import { defaultEngineState, resolveMaxLatencyMs } from "./EngineStateDefaults";
 import { buildHydratedEngineState, hydrateEngineBootCollections } from "./EngineBootState";
@@ -68,7 +72,6 @@ export interface TradingEngineBootHydrationTarget {
   readonly configManager: Pick<ConfigManager, "fetchConfig">;
   readonly cascadeNewsCalendar: Pick<NewsCalendar, "refresh">;
   readonly logger: Pick<Logger, "info">;
-  rebindOrderBookReconstructor(): void;
   handleStorageWriteFailure(reason: string, error: unknown): void;
   ensureCascadePaperModeArmed(observedAt: string): Promise<void>;
   safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
@@ -103,7 +106,7 @@ export async function hydrateTradingEngineBootForTarget(
   target.bids = hydratedBooks.bids;
   target.asks = hydratedBooks.asks;
   target.bookSync = hydratedBooks.sync;
-  target.rebindOrderBookReconstructor();
+  rebindTradingOrderBookReconstructorForTarget(target as unknown as TradingOrderBookRebindTarget);
   target.ghostBook.hydrate(baseState.shadowQueue);
   target.cascadePositionManager.hydrate(snapshot.persistedCascadePositions ?? []);
   target.profilerRegistry.hydrate(
