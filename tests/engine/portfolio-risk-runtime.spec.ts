@@ -9,7 +9,12 @@ import {
   resolveVarConfidenceZ,
   type DrawdownKillSwitchSideEffectHandlers
 } from "../../src/engine/trading/risk/PortfolioRiskRuntime";
-import type { Position } from "../../src/types";
+import {
+  updateTradingPortfolioRiskForTarget,
+  type TradingPortfolioRiskTarget
+} from "../../src/engine/trading/risk/TradingPortfolioRiskRuntime";
+import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
+import type { EngineState, Position } from "../../src/types";
 
 const OBSERVED_AT = "2026-05-18T12:00:00.000Z";
 
@@ -215,6 +220,79 @@ describe("PortfolioRiskRuntime", () => {
     );
 
     expect(disabledSideEffects.events).toEqual([]);
+  });
+
+  it("updates portfolio risk through the trading target adapter", async () => {
+    const scheduled: Promise<unknown>[] = [];
+    const events: string[] = [];
+    const engineState = defaultEngineState("risk-target");
+    engineState.mode = "LIVE";
+    engineState.bankroll = {
+      ...engineState.bankroll,
+      equity: 700
+    };
+    engineState.riskMetrics = {
+      ...engineState.riskMetrics,
+      highWaterMark: 1_000
+    };
+    const target: TradingPortfolioRiskTarget = {
+      cachedConfig: {
+        ...defaultConfig,
+        TRADING_ENABLED: true,
+        MAX_DRAWDOWN_PCT: 0.2,
+        version: "risk-target-v1"
+      },
+      engineState,
+      env: {
+        VAR_CONFIDENCE_Z: "2.33"
+      },
+      configManager: {
+        writeConfig(config) {
+          events.push(`write:${config.TRADING_ENABLED}:${config.version}`);
+          return Promise.resolve();
+        }
+      },
+      state: {
+        waitUntil(work) {
+          events.push("schedule");
+          scheduled.push(work);
+        }
+      },
+      notifier: {
+        notify(notification) {
+          events.push(`notify:${notification.dedupeKey}`);
+        }
+      },
+      cancelAllQuotes(instrumentCode, reason) {
+        events.push(`cancel:${instrumentCode}:${reason}`);
+        return Promise.resolve();
+      }
+    };
+    const oracle: EngineState["oracle"] = {
+      ...engineState.oracle,
+      volatility: 0.02
+    };
+
+    const metrics = updateTradingPortfolioRiskForTarget(
+      { oracle, observedAt: OBSERVED_AT },
+      target
+    );
+
+    expect(metrics).toMatchObject({
+      highWaterMark: 1_000,
+      rollingDrawdownPct: 0.3,
+      isTradingEnabled: false
+    });
+    expect(target.cachedConfig.TRADING_ENABLED).toBe(false);
+    expect(target.cachedConfig.version).toBe("risk-target-v1:drawdown");
+    await Promise.all(scheduled);
+    expect(events).toEqual([
+      "write:false:risk-target-v1:drawdown",
+      "schedule",
+      "cancel:ALL:MAX_DRAWDOWN_BREACH",
+      "schedule",
+      "notify:risk:max-drawdown"
+    ]);
   });
 });
 

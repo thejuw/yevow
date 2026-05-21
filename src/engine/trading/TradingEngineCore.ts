@@ -62,7 +62,10 @@ import {
   type TradingInventoryStateTarget
 } from "./inventory/TradingInventoryStateRuntime";
 import { resolveMaxPositionPct } from "./risk/PortfolioRiskRuntime";
-import { updateTradingPortfolioRisk } from "./risk/TradingPortfolioRiskRuntime";
+import {
+  updateTradingPortfolioRiskForTarget,
+  type TradingPortfolioRiskTarget
+} from "./risk/TradingPortfolioRiskRuntime";
 import { stateAfterFundingTick } from "./funding/FundingRuntime";
 import { resumeTradingQuotesIfExpired } from "./quotes/TradingQuoteStateRuntime";
 import {
@@ -1689,23 +1692,9 @@ export class TradingEngine {
     oracle: EngineState["oracle"],
     observedAt: string
   ): EngineState["riskMetrics"] {
-    return updateTradingPortfolioRisk(
-      {
-        cachedConfig: this.cachedConfig,
-        engineState: this.engineState,
-        oracle,
-        env: this.env,
-        observedAt
-      },
-      {
-        applyConfig: (config) => {
-          this.cachedConfig = config;
-        },
-        writeConfig: (config) => this.configManager.writeConfig(config),
-        cancelAllQuotes: (instrumentCode, reason) => this.cancelAllQuotes(instrumentCode, reason),
-        schedule: (work) => this.state.waitUntil(work),
-        notify: (notification) => this.notifier.notify(notification)
-      }
+    return updateTradingPortfolioRiskForTarget(
+      { oracle, observedAt },
+      this as unknown as TradingPortfolioRiskTarget
     );
   }
 
