@@ -100,11 +100,8 @@ import {
 import { dispatchExecutionPlanSideEffects } from "./execution/ExecutionPlanDispatchRuntime";
 import { dispatchTradingExecutionIntent } from "./execution/TradingExecutionDispatchRuntime";
 import { applyExecutionReportFlow } from "./execution/ExecutionReportRuntime";
-import {
-  evaluateCroupierRuntime,
-  evaluateOracleRuntime,
-  type OracleTickResult
-} from "./agents/AgentEvaluationRuntime";
+import { evaluateCroupierRuntime, type OracleTickResult } from "./agents/AgentEvaluationRuntime";
+import { evaluateTradingOracle } from "./agents/TradingOracleEvaluationRuntime";
 import { evaluateTradingProfiler } from "./agents/TradingProfilerEvaluationRuntime";
 import { applyIntentPaperExecutionBudgetSideEffects } from "./execution/PaperExecutionBudgetRuntime";
 import {
@@ -2620,14 +2617,13 @@ export class TradingEngine {
     book: InternalOrderBook,
     observedAt: string
   ): { oracleResult: OracleTickResult; oracleLatencyMs: number } {
-    return evaluateOracleRuntime({
-      oracleEnabled: this.cachedConfig.ORACLE_ENABLED,
-      agent: this.oracleAgent,
+    return evaluateTradingOracle({
+      oracleAgent: this.oracleAgent,
+      config: this.cachedConfig,
       oracle: this.engineState.oracle,
       tick,
       book,
-      observedAt,
-      config: this.cachedConfig
+      observedAt
     });
   }
 
