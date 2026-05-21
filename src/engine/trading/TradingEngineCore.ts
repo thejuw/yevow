@@ -48,15 +48,7 @@ import {
 } from "./book/OrderBookResetRuntime";
 import { resolveTradingTickBook } from "./book/TradingTickBookRuntime";
 import { buildDomAnalysisSnapshot, currentDomHeatmapSnapshot } from "./book/DomAnalyzer";
-import {
-  applyShadowQueueDecisionFlow,
-  buildShadowQueueGhostFillRuntimeRecord,
-  emitShadowQueueGhostFillSideEffects,
-  processShadowQueueTickRuntime,
-  resolveShadowQueueGhostFillConfig,
-  resolveShadowQueueNoEdgeLogInterval,
-  resolveShadowQueueSizingConfig
-} from "./shadow/ShadowQueueRuntime";
+import { processTradingShadowQueueTick } from "./shadow/TradingShadowQueueRuntime";
 import { applyAnomalyEmergencyPauseFlow } from "./anomaly/AnomalyRuntime";
 import { emitTradingAnomalyEmergencyPause } from "./anomaly/TradingAnomalyEmergencyRuntime";
 import {
@@ -3000,95 +2992,20 @@ export class TradingEngine {
     observedAt: string,
     options: TickHandlingOptions
   ): ShadowQueueState {
-    return processShadowQueueTickRuntime(
-      { tick, book, observedAt, shadowReplay: options.shadowReplay },
+    return processTradingShadowQueueTick(
       {
-        snapshot: (snapshotObservedAt) => this.ghostBook.snapshot(snapshotObservedAt),
-        observeTrade: (tradeTick, currentBook, tradeObservedAt) =>
-          this.ghostBook.observeTrade(tradeTick, currentBook, tradeObservedAt),
-        recordGhostFill: (fill, fillTick, currentBook, fillObservedAt) =>
-          this.recordShadowQueueGhostFill(fill, fillTick, currentBook, fillObservedAt),
-        handleDecision: (decision, currentBook, decisionObservedAt) =>
-          this.handleShadowQueueDecision(decision, currentBook, decisionObservedAt),
-        recordDecision: (decision) => this.ghostBook.recordDecision(decision),
-        injectBbo: (currentBook, injectionObservedAt) =>
-          this.ghostBook.injectBbo(currentBook, injectionObservedAt)
-      }
-    );
-  }
-
-  private recordShadowQueueGhostFill(
-    fill: ShadowQueueFill,
-    tick: MarketTick,
-    book: InternalOrderBook,
-    observedAt: string
-  ): void {
-    const fillConfig = resolveShadowQueueGhostFillConfig({
-      paperFillParticipationRate: this.env.PAPER_FILL_PARTICIPATION_RATE,
-      paperFillAdverseBps: this.env.PAPER_FILL_ADVERSE_BPS,
-      paperMakerFeeBps: this.env.PAPER_MAKER_FEE_BPS,
-      exchangeFeeBps: this.env.EXCHANGE_FEE_BPS,
-      maxPositionPct: this.env.MAX_POSITION_PCT,
-      kellyFraction: this.env.KELLY_FRACTION
-    });
-    const ghostFillRecord = buildShadowQueueGhostFillRuntimeRecord({
-      fill,
-      tick,
-      book,
-      observedAt,
-      slippage: this.engineState.slippage,
-      fallbackAdverseBps: fillConfig.fallbackAdverseBps,
-      participationRate: fillConfig.participationRate,
-      makerFeeBps: fillConfig.makerFeeBps,
-      cachedConfig: this.cachedConfig,
-      envMaxPositionPct: fillConfig.envMaxPositionPct,
-      envKellyFraction: fillConfig.envKellyFraction,
-      equity: this.engineState.bankroll.equity,
-      inventory: this.engineState.inventory,
-      positionSizeMultiplier: this.engineState.location.positionSizeMultiplier
-    });
-
-    emitShadowQueueGhostFillSideEffects(fill.fillId, ghostFillRecord, {
-      recordExecution: (trade) => this.logger.recordExecution(trade),
-      publish: (type, payload, correlationId) => this.publish(type, payload, correlationId)
-    });
-  }
-
-  private handleShadowQueueDecision(
-    decision: ShadowQueueDecision,
-    book: InternalOrderBook,
-    observedAt: string
-  ): ShadowQueueDecision {
-    const sizing = resolveShadowQueueSizingConfig({
-      cachedConfig: this.cachedConfig,
-      envMaxPositionPct: readPositiveNumber(this.env.MAX_POSITION_PCT, DEFAULT_MAX_POSITION_PCT),
-      envKellyFraction: readPositiveNumber(this.env.KELLY_FRACTION, 0.5)
-    });
-    return applyShadowQueueDecisionFlow(
-      {
-        decision,
+        tick,
         book,
         observedAt,
-        engineId: this.engineState.engineId,
-        baseSpreadBps: this.engineState.shadowQueue.baseSpreadBps,
-        exchangeFeeBps: this.cachedConfig.EXCHANGE_FEE_BPS,
-        toxicityScore: this.engineState.toxicityScore,
-        equity: this.engineState.bankroll.equity,
-        maxPositionPct: sizing.maxPositionPct,
-        kellyFraction: sizing.kellyFraction,
-        inventory: this.engineState.inventory,
-        positionSizeMultiplier: this.engineState.location.positionSizeMultiplier,
-        quoteStateStatus: this.engineState.quoteState.status,
-        cachedConfigVersion: this.cachedConfig.version,
-        tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-        latencyBudgetMs: this.engineState.shadowQueue.latencyBudgetMs,
-        lastLoggedAtByInstrument: this.shadowQueueNoEdgeLogAt,
-        noEdgeNowMs: Date.now(),
-        noEdgeLogIntervalMs: resolveShadowQueueNoEdgeLogInterval(
-          this.env.SHADOW_QUEUE_NO_EDGE_LOG_INTERVAL_MS
-        )
+        options,
+        ghostBook: this.ghostBook,
+        env: this.env,
+        engineState: this.engineState,
+        cachedConfig: this.cachedConfig,
+        noEdgeLogAt: this.shadowQueueNoEdgeLogAt
       },
       {
+        recordExecution: (trade) => this.logger.recordExecution(trade),
         logInfo: (eventType, message, metadata) => this.logger.info(eventType, message, metadata),
         warn: (eventType, message, metadata) => this.logger.warn(eventType, message, metadata),
         publish: (type, payload, correlationId) => this.publish(type, payload, correlationId),
