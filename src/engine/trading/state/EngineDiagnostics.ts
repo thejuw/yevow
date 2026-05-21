@@ -1,8 +1,13 @@
 import type { ProfilerAgent } from "../../../agents/ProfilerAgent";
 import { countBookLevels, microstructureFromBook } from "../book/BookReconstruction";
+import { calculateOrderBookPriceDiscovery } from "../book/BookViews";
 import type { BookSyncState } from "../book/BookTypes";
 import type { SortedBookSide } from "../book/SortedBookSide";
-import { TARGET_ASSET_MATRIX } from "../../../TradingEngineConstants";
+import { ENGINE_STATE_KEY, TARGET_ASSET_MATRIX } from "../../../TradingEngineConstants";
+import {
+  calculateTradingAssetMatrixForTarget,
+  type TradingAssetMatrixTarget
+} from "./TradingAssetMatrixRuntime";
 import type {
   AssetRuntimeState,
   EngineState,
@@ -47,6 +52,20 @@ export interface EngineDiagnosticsContext {
   engineState: EngineState;
   bookSync: Map<string, BookSyncState>;
   profilerAgents: Map<string, ProfilerAgent>;
+}
+
+export interface TradingEngineDiagnosticsTarget extends TradingAssetMatrixTarget {
+  engineState: EngineState;
+  readonly orderBook: Map<string, InternalOrderBook>;
+  readonly bids: Map<string, SortedBookSide>;
+  readonly asks: Map<string, SortedBookSide>;
+  readonly bookSync: Map<string, BookSyncState>;
+  readonly profilerRegistry: TradingAssetMatrixTarget["profilerRegistry"] & {
+    readonly agents: Map<string, ProfilerAgent>;
+    snapshot(): Record<string, ProfilerState>;
+  };
+  readonly startedAt: number;
+  waitUntilStoragePut(key: string, value: unknown, reason: string): void;
 }
 
 export interface HealthReportInput {
@@ -96,6 +115,40 @@ export function syncStateMicrostructureFromBook(
   };
 }
 
+export function syncTradingStateMicrostructureForTarget(
+  target: TradingEngineDiagnosticsTarget
+): void {
+  const nextState = syncStateMicrostructureFromBook({
+    engineState: target.engineState,
+    orderBook: target.orderBook,
+    bids: target.bids,
+    asks: target.asks,
+    calculatePriceDiscovery: (instrumentCode, observedAt) =>
+      calculateOrderBookPriceDiscovery(target.orderBook, instrumentCode, observedAt),
+    calculateAssetMatrix: (
+      observedAt,
+      _latestInstrumentCode,
+      latestOracle,
+      profilerStates,
+      assetQuoteStates
+    ) =>
+      calculateTradingAssetMatrixForTarget(
+        {
+          observedAt,
+          latestOracle,
+          profilerStates,
+          assetQuoteStates
+        },
+        target
+      ),
+    profilerStateSnapshot: () => target.profilerRegistry.snapshot()
+  });
+
+  if (nextState) {
+    target.engineState = nextState;
+  }
+}
+
 export function stateAfterHealthHeartbeat(
   engineState: EngineState,
   observedAt: string
@@ -141,6 +194,20 @@ export function buildHealthReport(input: HealthReportInput): HealthReport {
       }).length
     }
   };
+}
+
+export function buildTradingHealthReportForTarget(
+  target: TradingEngineDiagnosticsTarget,
+  observedAt: string = new Date().toISOString()
+): HealthReport {
+  syncTradingStateMicrostructureForTarget(target);
+  target.engineState = stateAfterHealthHeartbeat(target.engineState, observedAt);
+  target.waitUntilStoragePut(ENGINE_STATE_KEY, target.engineState, "HEALTH_HEARTBEAT");
+
+  return buildHealthReport({
+    engineState: target.engineState,
+    uptimeMs: Date.now() - target.startedAt
+  });
 }
 
 export function engineDiagnostics(context: EngineDiagnosticsContext): JsonRecord {
@@ -195,4 +262,14 @@ export function engineDiagnostics(context: EngineDiagnosticsContext): JsonRecord
     shadowQueue: context.engineState.shadowQueue as unknown as JsonValue,
     assetMatrix: context.engineState.assetMatrix as unknown as JsonValue
   };
+}
+
+export function buildTradingEngineDiagnosticsForTarget(
+  target: TradingEngineDiagnosticsTarget
+): JsonRecord {
+  return engineDiagnostics({
+    engineState: target.engineState,
+    bookSync: target.bookSync,
+    profilerAgents: target.profilerRegistry.agents
+  });
 }

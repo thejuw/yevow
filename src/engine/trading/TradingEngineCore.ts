@@ -20,8 +20,8 @@ import {
   type TradingTopologyTarget
 } from "./helpers/TradingTopologyRuntime";
 import { priceKey, SortedBookSide } from "./book/SortedBookSide";
-import { countBookLevels, microstructureFromBook } from "./book/BookReconstruction";
-import { calculateOrderBookPriceDiscovery, currentOrderBookSnapshot } from "./book/BookViews";
+import { countBookLevels } from "./book/BookReconstruction";
+import { currentOrderBookSnapshot } from "./book/BookViews";
 import {
   handleTradingEngineInformationalBookNotReady,
   handleTradingEngineRejectedBookDelta,
@@ -232,10 +232,10 @@ import {
 } from "./replay/TradingReplayStateRuntime";
 import type { GrpcFatalDropPayload, TickIngestResult } from "./TradingEngineRouteTypes";
 import {
-  buildHealthReport,
-  engineDiagnostics as buildEngineDiagnostics,
-  stateAfterHealthHeartbeat,
-  syncStateMicrostructureFromBook as syncEngineStateMicrostructure
+  buildTradingEngineDiagnosticsForTarget,
+  buildTradingHealthReportForTarget,
+  syncTradingStateMicrostructureForTarget,
+  type TradingEngineDiagnosticsTarget
 } from "./state/EngineDiagnostics";
 import { readEngineBootStorageSnapshot } from "./state/EngineBootStorage";
 import {
@@ -800,53 +800,17 @@ export class TradingEngine {
   }
 
   healthCheck(): HealthReport {
-    const now = new Date().toISOString();
-    this.syncStateMicrostructureFromBook();
-    this.engineState = stateAfterHealthHeartbeat(this.engineState, now);
-    this.waitUntilStoragePut(ENGINE_STATE_KEY, this.engineState, "HEALTH_HEARTBEAT");
-
-    return buildHealthReport({
-      engineState: this.engineState,
-      uptimeMs: Date.now() - this.startedAt
-    });
+    return buildTradingHealthReportForTarget(this as unknown as TradingEngineDiagnosticsTarget);
   }
 
   private syncStateMicrostructureFromBook(): void {
-    const nextState = syncEngineStateMicrostructure({
-      engineState: this.engineState,
-      orderBook: this.orderBook,
-      bids: this.bids,
-      asks: this.asks,
-      calculatePriceDiscovery: (instrumentCode, observedAt) =>
-        calculateOrderBookPriceDiscovery(this.orderBook, instrumentCode, observedAt),
-      calculateAssetMatrix: (
-        observedAt,
-        latestInstrumentCode,
-        latestOracle,
-        profilerStates,
-        assetQuoteStates
-      ) =>
-        this.calculateAssetMatrix(
-          observedAt,
-          latestInstrumentCode,
-          latestOracle,
-          profilerStates,
-          assetQuoteStates
-        ),
-      profilerStateSnapshot: () => this.profilerRegistry.snapshot()
-    });
-
-    if (nextState) {
-      this.engineState = nextState;
-    }
+    syncTradingStateMicrostructureForTarget(this as unknown as TradingEngineDiagnosticsTarget);
   }
 
   private engineDiagnostics(): JsonRecord {
-    return buildEngineDiagnostics({
-      engineState: this.engineState,
-      bookSync: this.bookSync,
-      profilerAgents: this.profilerRegistry.agents
-    });
+    return buildTradingEngineDiagnosticsForTarget(
+      this as unknown as TradingEngineDiagnosticsTarget
+    );
   }
 
   private async deleteRetiredProfilerStorage(): Promise<string[]> {

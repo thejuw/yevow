@@ -8,10 +8,14 @@ import {
   type EngineStreamContextTarget
 } from "../../src/engine/trading/routes/EngineWebSocketStreams";
 import {
+  buildTradingEngineDiagnosticsForTarget,
   buildHealthReport,
+  buildTradingHealthReportForTarget,
   engineDiagnostics,
   stateAfterHealthHeartbeat,
-  syncStateMicrostructureFromBook
+  syncStateMicrostructureFromBook,
+  syncTradingStateMicrostructureForTarget,
+  type TradingEngineDiagnosticsTarget
 } from "../../src/engine/trading/state/EngineDiagnostics";
 import { hydrateEngineBootCollections } from "../../src/engine/trading/state/EngineBootState";
 import {
@@ -481,6 +485,39 @@ describe("engine diagnostics helpers", () => {
     });
     expect(report.memoryUsage.stateBytesEstimate).toBeGreaterThan(0);
   });
+
+  it("syncs health and diagnostics through the trading diagnostics target adapter", () => {
+    const events: string[] = [];
+    const target = tradingDiagnosticsTarget(events);
+
+    syncTradingStateMicrostructureForTarget(target);
+
+    expect(target.engineState).toMatchObject({
+      internalOrderBookDepth: 2,
+      microstructure: {
+        instrumentCode: "btc-usd",
+        midPrice: 100.5
+      }
+    });
+
+    const health = buildTradingHealthReportForTarget(target, "2026-05-19T13:01:00.000Z");
+    const diagnostics = buildTradingEngineDiagnosticsForTarget(target);
+
+    expect(health).toMatchObject({
+      ok: true,
+      engineId: "diagnostics-target",
+      heartbeatAt: "2026-05-19T13:01:00.000Z",
+      internalOrderBookDepth: 2
+    });
+    expect(diagnostics).toMatchObject({
+      ok: true,
+      l1Sync: {
+        ok: true,
+        desyncCount: 0
+      }
+    });
+    expect(events).toEqual(["persist:engine:state:HEALTH_HEARTBEAT"]);
+  });
 });
 
 describe("storage write guard", () => {
@@ -774,6 +811,70 @@ function engineState(overrides: Partial<EngineState> = {}): EngineState {
     heartbeatAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     ...overrides
+  };
+}
+
+function tradingDiagnosticsTarget(events: string[]): TradingEngineDiagnosticsTarget {
+  const state = engineState({
+    engineId: "diagnostics-target",
+    risk: {
+      configVersion: "risk-v1",
+      killSwitch: false,
+      maxGrossExposure: 0,
+      maxNetExposure: 0,
+      maxOrderNotional: 0,
+      maxDrawdownPct: 0,
+      perAssetMaxPosition: {},
+      updatedAt: "2026-05-19T13:00:00.000Z"
+    },
+    quoteState: {
+      status: "ACTIVE",
+      reason: null,
+      suspendedUntil: null,
+      lastQuote: null,
+      updatedAt: "2026-05-19T13:00:00.000Z"
+    } as never,
+    oracle: {
+      instrumentCode: "btc-usd",
+      volatility: 0.02,
+      instrumentStates: {}
+    } as never
+  });
+  const bids = new Map([["btc", bookSide("bid", 100, 2)]]);
+  const asks = new Map([["btc", bookSide("ask", 101, 1)]]);
+  const registry = {
+    agents: new Map([["btc-usd", profilerAgentDiagnostics(true)]]),
+    snapshot: () => ({}),
+    forInstrument: () => ({
+      snapshot: () =>
+        ({
+          toxicityState: "NORMAL",
+          amVpinScore: 0.1,
+          obi: 0.2
+        }) as never
+    })
+  };
+
+  return {
+    engineState: state,
+    orderBook: new Map([["btc", orderBook("btc", "btc-usd", true, 100, 101, 1)]]),
+    bids,
+    asks,
+    bookSync: new Map([["btc", bookSync("btc", true, null)]]),
+    profilerRegistry: registry,
+    startedAt: Date.now() - 1_000,
+    macroBias: {
+      instruments: ["btc-usd"]
+    } as never,
+    cachedConfig: {
+      MAX_POSITION_PCT: 0.1
+    } as never,
+    env: {
+      MAX_POSITION_PCT: undefined
+    },
+    waitUntilStoragePut(key, _value, reason) {
+      events.push(`persist:${key}:${reason}`);
+    }
   };
 }
 
