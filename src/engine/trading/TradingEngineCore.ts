@@ -38,18 +38,6 @@ import {
   tradingLatencyStorageWritesForTarget,
   type TradingLatencyStateTarget
 } from "./performance/TradingLatencyStateRuntime";
-import {
-  applyTradingEngineConfigUpdateForTarget,
-  refreshTradingConfigIfDueForTarget,
-  refreshTradingEngineConfigForTarget,
-  scheduleTradingConfigRefreshForTarget,
-  type TradingConfigRefreshCadenceTarget,
-  type TradingEngineConfigControlTarget
-} from "./config/TradingConfigControlRuntime";
-import {
-  ensureCascadePaperModeArmedForTarget,
-  type CascadePaperModeArmingTarget
-} from "./cascade/CascadePaperModeRuntime";
 import { OrderBookReconstructor } from "./book/OrderBookReconstructor";
 import {
   buildTradingOrderBookStoresForTarget,
@@ -67,7 +55,6 @@ import {
 } from "./routes/EngineFetchRuntime";
 import type { TradingTelemetryBus } from "./telemetry/TelemetryBus";
 import {
-  acceptTradingAgentSignalForTarget,
   emitTradingCascadeOperationalAlertForTarget,
   recordTradingCascadeUiSignalForTarget,
   type TradingSignalBusTarget
@@ -132,7 +119,6 @@ import type { NewsCalendar } from "../../strategy/cascade/NewsCalendar";
 import type { CascadeAlertEventType } from "../../strategy/cascade/OperationalSafeguards";
 import { PositionManager } from "../../strategy/cascade/PositionManager";
 import type {
-  AdminConfigUpdate,
   DomAnalysisSnapshot,
   EngineStabilityStatus,
   AgentName,
@@ -496,37 +482,6 @@ export class TradingEngine {
     this.telemetryBus.publish(type, payload, correlationId);
   }
 
-  private async refreshConfig(
-    source: "ALARM" | "ADMIN_SIGNAL",
-    configSnapshot?: GlobalRiskConfig
-  ): Promise<void> {
-    await refreshTradingEngineConfigForTarget(
-      { source, configSnapshot },
-      this as unknown as TradingEngineConfigControlTarget
-    );
-  }
-
-  private async refreshConfigIfDue(source: "ALARM" | "ADMIN_SIGNAL"): Promise<void> {
-    await refreshTradingConfigIfDueForTarget(
-      source,
-      this as unknown as TradingConfigRefreshCadenceTarget
-    );
-  }
-
-  private async scheduleConfigRefresh(): Promise<void> {
-    await scheduleTradingConfigRefreshForTarget(
-      this as unknown as TradingConfigRefreshCadenceTarget
-    );
-  }
-
-  private async acceptAgentSignal(signal: AgentSignal, latencyMs: number): Promise<void> {
-    await acceptTradingAgentSignalForTarget(
-      signal,
-      latencyMs,
-      this as unknown as TradingSignalBusTarget
-    );
-  }
-
   private emitCascadeOperationalAlert(
     eventType: CascadeAlertEventType,
     title: string,
@@ -544,13 +499,6 @@ export class TradingEngine {
     );
   }
 
-  private async ensureCascadePaperModeArmed(observedAt: string): Promise<void> {
-    await ensureCascadePaperModeArmedForTarget(
-      observedAt,
-      this as unknown as CascadePaperModeArmingTarget
-    );
-  }
-
   private recordCascadeUiSignal(
     signal: AgentSignal,
     outcome: "TAKEN" | "SKIPPED" | "CLOSED"
@@ -559,13 +507,6 @@ export class TradingEngine {
       signal,
       outcome,
       this as unknown as TradingSignalBusTarget
-    );
-  }
-
-  private async applyConfigUpdate(update: AdminConfigUpdate): Promise<void> {
-    await applyTradingEngineConfigUpdateForTarget(
-      update,
-      this as unknown as TradingEngineConfigControlTarget
     );
   }
 }

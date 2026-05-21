@@ -28,6 +28,11 @@ import {
   rebindTradingOrderBookReconstructorForTarget,
   type TradingOrderBookRebindTarget
 } from "../book/OrderBookReconstructorFactory";
+import {
+  ensureCascadePaperModeArmedForTarget,
+  type CascadePaperModeArmingTarget
+} from "../cascade/CascadePaperModeRuntime";
+import { scheduleTradingConfigRefreshForTarget } from "../config/TradingConfigControlRuntime";
 import { filterTargetOrderBooks } from "./AssetSelectionRuntime";
 import { defaultEngineState, resolveMaxLatencyMs } from "./EngineStateDefaults";
 import { buildHydratedEngineState, hydrateEngineBootCollections } from "./EngineBootState";
@@ -73,9 +78,9 @@ export interface TradingEngineBootHydrationTarget {
   readonly cascadeNewsCalendar: Pick<NewsCalendar, "refresh">;
   readonly logger: Pick<Logger, "info">;
   handleStorageWriteFailure(reason: string, error: unknown): void;
-  ensureCascadePaperModeArmed(observedAt: string): Promise<void>;
+  ensureCascadePaperModeArmed?(observedAt: string): Promise<void>;
   safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
-  scheduleConfigRefresh(): Promise<void>;
+  scheduleConfigRefresh?(): Promise<void>;
 }
 
 export async function hydrateTradingEngineBootForTarget(
@@ -133,7 +138,13 @@ export async function hydrateTradingEngineBootForTarget(
   target.activeTemporaryOverride = effectiveGovernance.temporaryOverride;
 
   if (target.cachedConfig.STRATEGY_MODE === "CASCADE_RECOVERY") {
-    target.state.waitUntil(target.ensureCascadePaperModeArmed(now));
+    const armCascadePaperMode = target.ensureCascadePaperModeArmed
+      ? target.ensureCascadePaperModeArmed(now)
+      : ensureCascadePaperModeArmedForTarget(
+          now,
+          target as unknown as CascadePaperModeArmingTarget
+        ).then(() => undefined);
+    target.state.waitUntil(armCascadePaperMode);
   }
 
   target.profilerRegistry.configure(target.cachedConfig);
@@ -163,7 +174,11 @@ export async function hydrateTradingEngineBootForTarget(
   target.lastPerformanceStatus = target.engineState.executionProfile.status;
 
   await target.safeStoragePut(ENGINE_STATE_KEY, target.engineState, "SYSTEM_INIT");
-  await target.scheduleConfigRefresh();
+  await (target.scheduleConfigRefresh
+    ? target.scheduleConfigRefresh()
+    : scheduleTradingConfigRefreshForTarget(
+        target as unknown as { safeSetAlarm(timestamp: number, reason: string): Promise<void> }
+      ));
   target.logger.info("SYSTEM_INIT", "Trading engine singleton initialized", {
     engineId: target.engineState.engineId,
     mode: target.engineState.mode,

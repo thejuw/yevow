@@ -22,6 +22,12 @@ import {
   type HyperliquidRawIngestPayload
 } from "../ingest/HyperliquidRawRouting";
 import {
+  applyTradingEngineConfigUpdateForTarget,
+  refreshTradingConfigIfDueForTarget,
+  type TradingConfigRefreshCadenceTarget,
+  type TradingEngineConfigControlTarget
+} from "../config/TradingConfigControlRuntime";
+import {
   handleTradingHyperliquidRawForTarget,
   type TradingHyperliquidRawEngineTarget
 } from "../ingest/TradingHyperliquidRawRuntime";
@@ -35,6 +41,10 @@ import {
   applyTradingExecutionReportForTarget,
   type TradingExecutionReportTarget
 } from "../execution/TradingExecutionReportRuntime";
+import {
+  acceptTradingAgentSignalForTarget,
+  type TradingSignalBusTarget
+} from "../telemetry/TradingSignalBusRuntime";
 import { pruneTradingOperationalLogs } from "../janitor/TradingJanitorRuntime";
 import {
   runTradingHistoricalReplayForStatefulTarget,
@@ -179,7 +189,7 @@ export interface EngineHttpRouteContextTarget extends TradingBookApplicationTarg
   readonly sentimentAgent: {
     analyzeHeadline(headline: string, env: Env): Promise<EngineState["sentiment"]>;
   };
-  refreshConfigIfDue(source: "ALARM" | "ADMIN_SIGNAL"): Promise<void>;
+  refreshConfigIfDue?(source: "ALARM" | "ADMIN_SIGNAL"): Promise<void>;
   resetLatencyBaseline(observedAt: string, reason: string): void;
   publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
   safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void>;
@@ -188,8 +198,8 @@ export interface EngineHttpRouteContextTarget extends TradingBookApplicationTarg
     payload: Parameters<EngineHttpRouteContext["recoverEngineState"]>[0]
   ): Promise<unknown>;
   enqueueTick(tick: MarketTick, wakeUpTimeMs: number | null): Promise<TickIngestResult>;
-  acceptAgentSignal(signal: AgentSignal, latencyMs: number): Promise<void>;
-  applyConfigUpdate(update: AdminConfigUpdate): Promise<void>;
+  acceptAgentSignal?(signal: AgentSignal, latencyMs: number): Promise<void>;
+  applyConfigUpdate?(update: AdminConfigUpdate): Promise<void>;
 }
 
 export function createTradingEngineHttpRouteContext(
@@ -211,7 +221,13 @@ export function createTradingEngineHttpRouteContext(
     getCachedConfig: () => target.cachedConfig,
     getCascadeBacktester: () => target.cascadeBacktester,
     getCascadeNewsCalendar: () => target.cascadeNewsCalendar,
-    refreshConfigIfDue: (source) => target.refreshConfigIfDue(source),
+    refreshConfigIfDue: (source) =>
+      target.refreshConfigIfDue
+        ? target.refreshConfigIfDue(source)
+        : refreshTradingConfigIfDueForTarget(
+            source,
+            target as unknown as TradingConfigRefreshCadenceTarget
+          ).then(() => undefined),
     healthCheck: () =>
       buildTradingHealthReportForTarget(target as unknown as TradingEngineDiagnosticsTarget),
     engineDiagnostics: () =>
@@ -312,8 +328,21 @@ export function createTradingEngineHttpRouteContext(
       Promise.resolve(
         handleGrpcFatalDropForTarget(payload, target as unknown as GrpcFatalDropTarget)
       ),
-    acceptAgentSignal: (signal, latencyMs) => target.acceptAgentSignal(signal, latencyMs),
-    applyConfigUpdate: (update) => target.applyConfigUpdate(update)
+    acceptAgentSignal: (signal, latencyMs) =>
+      target.acceptAgentSignal
+        ? target.acceptAgentSignal(signal, latencyMs)
+        : acceptTradingAgentSignalForTarget(
+            signal,
+            latencyMs,
+            target as unknown as TradingSignalBusTarget
+          ),
+    applyConfigUpdate: (update) =>
+      target.applyConfigUpdate
+        ? target.applyConfigUpdate(update)
+        : applyTradingEngineConfigUpdateForTarget(
+            update,
+            target as unknown as TradingEngineConfigControlTarget
+          )
   };
 }
 

@@ -6,6 +6,10 @@ import {
   emitProfilerAlertTelemetry,
   type ProfilerTelemetryEvent
 } from "./ProfilerTelemetryRuntime";
+import {
+  acceptTradingAgentSignalForTarget,
+  type TradingSignalBusTarget
+} from "./TradingSignalBusRuntime";
 
 export interface TradingProfilerTelemetryHandlers {
   readonly publish: (
@@ -21,7 +25,7 @@ export interface TradingProfilerSignalTarget {
     waitUntil(work: Promise<void>): void;
   };
   publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
-  acceptAgentSignal(signal: AgentSignal, latencyMs: number): Promise<void>;
+  acceptAgentSignal?(signal: AgentSignal, latencyMs: number): Promise<void>;
   cancelAllQuotes(instrumentCode: string, reason: "PROFILER_ALERT"): Promise<void>;
 }
 
@@ -74,7 +78,14 @@ export async function handleTradingProfilerSignal(
           }
         });
       },
-      acceptSignal: (signal, latencyMs) => target.acceptAgentSignal(signal, latencyMs),
+      acceptSignal: (signal, latencyMs) =>
+        target.acceptAgentSignal
+          ? target.acceptAgentSignal(signal, latencyMs)
+          : acceptTradingAgentSignalForTarget(
+              signal,
+              latencyMs,
+              target as unknown as TradingSignalBusTarget
+            ),
       cancelQuotes: (code, reason) => {
         target.state.waitUntil(target.cancelAllQuotes(code, reason));
       }

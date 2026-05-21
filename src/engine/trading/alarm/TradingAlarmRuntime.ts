@@ -8,20 +8,31 @@ import {
   type TradingEngineJanitorMaintenanceTarget
 } from "../janitor/TradingJanitorRuntime";
 import { resumeTradingQuotesIfExpired } from "../quotes/TradingQuoteStateRuntime";
+import {
+  refreshTradingEngineConfigForTarget,
+  scheduleTradingConfigRefreshForTarget,
+  type TradingConfigRefreshCadenceTarget,
+  type TradingEngineConfigControlTarget
+} from "../config/TradingConfigControlRuntime";
 
 export interface TradingAlarmRuntimeTarget {
   readonly initialized: Promise<void>;
   engineState: EngineState;
-  refreshConfig(source: "ALARM"): Promise<void>;
+  refreshConfig?(source: "ALARM"): Promise<void>;
   drainExecutionQueue?(): Promise<void>;
   runJanitor?(source: "ALARM"): Promise<void>;
-  scheduleConfigRefresh(): Promise<void>;
+  scheduleConfigRefresh?(): Promise<void>;
   publish(type: "RESUME_QUOTES", payload: Record<string, unknown>): void;
 }
 
 export async function runTradingAlarmForTarget(target: TradingAlarmRuntimeTarget): Promise<void> {
   await target.initialized;
-  await target.refreshConfig("ALARM");
+  await (target.refreshConfig
+    ? target.refreshConfig("ALARM")
+    : refreshTradingEngineConfigForTarget(
+        { source: "ALARM" },
+        target as unknown as TradingEngineConfigControlTarget
+      ));
   await (target.drainExecutionQueue
     ? target.drainExecutionQueue()
     : drainTradingExecutionQueueForTarget(target as unknown as TradingExecutionQueueTarget));
@@ -48,5 +59,9 @@ export async function runTradingAlarmForTarget(target: TradingAlarmRuntimeTarget
     }
   );
 
-  await target.scheduleConfigRefresh();
+  await (target.scheduleConfigRefresh
+    ? target.scheduleConfigRefresh()
+    : scheduleTradingConfigRefreshForTarget(
+        target as unknown as TradingConfigRefreshCadenceTarget
+      ));
 }

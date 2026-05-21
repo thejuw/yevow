@@ -126,7 +126,7 @@ export interface TradingEngineConfigControlTarget {
 
 export interface TradingConfigRefreshCadenceTarget {
   lastConfigRefreshAttemptAt: number;
-  refreshConfig(source: "ALARM" | "ADMIN_SIGNAL"): Promise<void>;
+  refreshConfig?(source: "ALARM" | "ADMIN_SIGNAL"): Promise<void>;
   safeSetAlarm(timestamp: number, reason: string): Promise<void>;
 }
 
@@ -277,7 +277,14 @@ export async function refreshTradingConfigIfDueForTarget(
   }
 
   target.lastConfigRefreshAttemptAt = nowMs;
-  await target.refreshConfig(source);
+  if (target.refreshConfig) {
+    await target.refreshConfig(source);
+  } else {
+    await refreshTradingEngineConfigForTarget(
+      { source },
+      target as unknown as TradingEngineConfigControlTarget
+    );
+  }
   return true;
 }
 
