@@ -9,6 +9,10 @@ import type {
 import { ENGINE_STATE_KEY } from "../../../TradingEngineConstants";
 import { currentMarkPriceForInstrument } from "../book/BookViews";
 import {
+  calculateTradingInventoryStateForTarget,
+  type TradingInventoryStateTarget
+} from "../inventory/TradingInventoryStateRuntime";
+import {
   applyExecutionReportFlow,
   type ExecutionReportRuntimeUpdate,
   type ExecutionReportSideEffectHandlers
@@ -49,7 +53,7 @@ export interface TradingExecutionReportTarget {
     ): void;
     recordExecution(execution: TradeExecution): void;
   };
-  calculateInventoryState(
+  calculateInventoryState?(
     observedAt: string,
     openPositions: EngineState["openPositions"]
   ): InventoryState;
@@ -108,7 +112,12 @@ export function applyTradingExecutionReportForTarget(
     },
     {
       calculateInventory: (observedAt, openPositions) =>
-        target.calculateInventoryState(observedAt, openPositions),
+        target.calculateInventoryState
+          ? target.calculateInventoryState(observedAt, openPositions)
+          : calculateTradingInventoryStateForTarget(
+              { observedAt, positions: openPositions },
+              target as unknown as TradingInventoryStateTarget
+            ),
       observeAdverseSelection: (executionReport, order, markPrice, oracleRegime) => {
         target.adverseSelectionModel.observeExecutionReport(
           executionReport,

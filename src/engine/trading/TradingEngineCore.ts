@@ -23,10 +23,6 @@ import {
   type TradingTickBookTarget
 } from "./book/TradingTickBookRuntime";
 import {
-  processTradingShadowQueueTickForTarget,
-  type TradingShadowQueueTarget
-} from "./shadow/TradingShadowQueueRuntime";
-import {
   handleTradingEngineAnomalyEmergencyPause,
   type TradingAnomalyEmergencyTarget
 } from "./anomaly/TradingAnomalyEmergencyRuntime";
@@ -34,15 +30,7 @@ import {
   updateTradingLeadLagMetricsForTarget,
   type TradingLeadLagMetricsTarget
 } from "./leadlag/LeadLagRuntime";
-import {
-  calculateTradingInventoryStateForTarget,
-  type TradingInventoryStateTarget
-} from "./inventory/TradingInventoryStateRuntime";
 import { resolveMaxPositionPct } from "./risk/PortfolioRiskRuntime";
-import {
-  updateTradingPortfolioRiskForTarget,
-  type TradingPortfolioRiskTarget
-} from "./risk/TradingPortfolioRiskRuntime";
 import {
   runTradingAlarmForTarget,
   type TradingAlarmRuntimeTarget
@@ -222,9 +210,7 @@ import type {
   MacroBias,
   MarketTick,
   OrderBookResetRequest,
-  Position,
   SentimentState,
-  ShadowQueueState,
   TemporaryGovernanceOverride,
   TradeIntent
 } from "../../types";
@@ -779,21 +765,6 @@ export class TradingEngine {
     );
   }
 
-  private processShadowQueueTick(
-    tick: MarketTick,
-    book: InternalOrderBook,
-    observedAt: string,
-    options: TickHandlingOptions
-  ): ShadowQueueState {
-    return processTradingShadowQueueTickForTarget(
-      tick,
-      book,
-      observedAt,
-      options,
-      this as unknown as TradingShadowQueueTarget
-    );
-  }
-
   private updateLeadLagMetrics(
     tick: MarketTick,
     book: InternalOrderBook,
@@ -804,26 +775,6 @@ export class TradingEngine {
       book,
       observedAt,
       this as unknown as TradingLeadLagMetricsTarget
-    );
-  }
-
-  private calculateInventoryState(
-    observedAt: string,
-    positions: Record<string, Position> = this.engineState.openPositions
-  ): EngineState["inventory"] {
-    return calculateTradingInventoryStateForTarget(
-      { observedAt, positions },
-      this as unknown as TradingInventoryStateTarget
-    );
-  }
-
-  private updatePortfolioRisk(
-    oracle: EngineState["oracle"],
-    observedAt: string
-  ): EngineState["riskMetrics"] {
-    return updateTradingPortfolioRiskForTarget(
-      { oracle, observedAt },
-      this as unknown as TradingPortfolioRiskTarget
     );
   }
 

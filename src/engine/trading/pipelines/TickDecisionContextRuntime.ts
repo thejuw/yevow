@@ -3,6 +3,14 @@ import { defaultSentimentState } from "../../../agents/SentimentAgent";
 import type { EngineState, GlobalRiskConfig } from "../../../types";
 import { passiveInventoryGuardStateFromInventory } from "../state/EngineStateDefaults";
 import {
+  calculateTradingInventoryStateForTarget,
+  type TradingInventoryStateTarget
+} from "../inventory/TradingInventoryStateRuntime";
+import {
+  updateTradingPortfolioRiskForTarget,
+  type TradingPortfolioRiskTarget
+} from "../risk/TradingPortfolioRiskRuntime";
+import {
   calculateTradingAssetMatrixForTarget,
   type TradingAssetMatrixTarget
 } from "../state/TradingAssetMatrixRuntime";
@@ -44,8 +52,8 @@ export interface TickDecisionContextTarget extends TradingAssetMatrixTarget {
       profilerState: ProfilerEvaluation["state"]
     ): TickDecisionContext["profilerStates"];
   };
-  calculateInventoryState(observedAt: string): TickDecisionContext["inventory"];
-  updatePortfolioRisk(
+  calculateInventoryState?(observedAt: string): TickDecisionContext["inventory"];
+  updatePortfolioRisk?(
     oracle: EngineState["oracle"],
     observedAt: string
   ): TickDecisionContext["riskMetrics"];
@@ -105,9 +113,19 @@ export function buildTickDecisionContextForTarget(
     },
     {
       calculateInventoryState: (decisionObservedAt) =>
-        target.calculateInventoryState(decisionObservedAt),
+        target.calculateInventoryState
+          ? target.calculateInventoryState(decisionObservedAt)
+          : calculateTradingInventoryStateForTarget(
+              { observedAt: decisionObservedAt },
+              target as unknown as TradingInventoryStateTarget
+            ),
       updatePortfolioRisk: (currentOracle, decisionObservedAt) =>
-        target.updatePortfolioRisk(currentOracle, decisionObservedAt),
+        target.updatePortfolioRisk
+          ? target.updatePortfolioRisk(currentOracle, decisionObservedAt)
+          : updateTradingPortfolioRiskForTarget(
+              { oracle: currentOracle, observedAt: decisionObservedAt },
+              target as unknown as TradingPortfolioRiskTarget
+            ),
       profilerSnapshot: (instrumentCode, profilerState) =>
         target.profilerRegistry.snapshot(instrumentCode, profilerState),
       calculateAssetMatrix: (matrixObservedAt, _instrumentCode, currentOracle, profilerStates) =>

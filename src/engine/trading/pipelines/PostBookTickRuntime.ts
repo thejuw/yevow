@@ -17,6 +17,10 @@ import {
   type TradingBookViewTarget
 } from "../book/TradingBookViewRuntime";
 import { cancelLaggingHypeQuotesForTrading } from "../leadlag/TradingCrossAssetCancelRuntime";
+import {
+  processTradingShadowQueueTickForTarget,
+  type TradingShadowQueueTarget
+} from "../shadow/TradingShadowQueueRuntime";
 import type { PostBookTickContext, TickHandlingOptions } from "./TickPipelineTypes";
 
 export interface PostBookTickRuntimeInput {
@@ -78,7 +82,7 @@ export interface TradingPostBookTickRuntimeTarget {
   };
   publish(type: "SUSPEND_QUOTES", payload: JsonRecord): void;
   cancelAllQuotes(instrumentCode: "hype-usd", reason: "BTC_LEAD_MOVE"): Promise<unknown>;
-  processShadowQueueTick(
+  processShadowQueueTick?(
     tick: MarketTick,
     book: InternalOrderBook,
     observedAt: string,
@@ -205,7 +209,15 @@ export function prepareTradingPostBookTickRuntimeForTarget(
       },
       cancelAllQuotes: (instrumentCode, reason) => target.cancelAllQuotes(instrumentCode, reason),
       processShadowQueueTick: (tick, book, observedAt, options) =>
-        target.processShadowQueueTick(tick, book, observedAt, options),
+        target.processShadowQueueTick
+          ? target.processShadowQueueTick(tick, book, observedAt, options)
+          : processTradingShadowQueueTickForTarget(
+              tick,
+              book,
+              observedAt,
+              options,
+              target as unknown as TradingShadowQueueTarget
+            ),
       getLiquidityWalls: (instrumentCode, observedAt, tick) =>
         buildTradingDomAnalysisForTarget(
           target as unknown as TradingBookViewTarget,
