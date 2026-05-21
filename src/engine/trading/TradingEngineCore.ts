@@ -76,10 +76,6 @@ import {
   dispatchTradingExecutionIntentForTarget,
   type TradingExecutionDispatchTarget
 } from "./execution/TradingExecutionDispatchRuntime";
-import {
-  applyTradingExecutionReportForTarget,
-  type TradingExecutionReportTarget
-} from "./execution/TradingExecutionReportRuntime";
 import { type OracleTickResult } from "./agents/AgentEvaluationRuntime";
 import {
   evaluateTradingCroupierForTarget,
@@ -130,7 +126,6 @@ import {
 } from "./performance/TradingLatencyStateRuntime";
 import {
   cancelTradingJanitorOrderForTarget,
-  pruneTradingOperationalLogs,
   runTradingEngineJanitorMaintenanceForTarget,
   type TradingJanitorCancelTarget,
   type TradingEngineJanitorMaintenanceTarget
@@ -236,7 +231,6 @@ import {
   type TradingStorageGuardTarget,
   type StorageWriteGuard
 } from "./state/StorageWriteGuard";
-import { type LogPruneReport } from "../LogRetention";
 import {
   MultiScaleVolatilityModel,
   type MultiScaleVolatilitySnapshot
@@ -269,7 +263,6 @@ import type {
   AgentName,
   AgentSignal,
   AssetRuntimeState,
-  ExecutionReport,
   EngineState,
   Env,
   GlobalRiskConfig,
@@ -1201,13 +1194,6 @@ export class TradingEngine {
     );
   }
 
-  private async applyExecutionReport(report: ExecutionReport): Promise<void> {
-    await applyTradingExecutionReportForTarget(
-      report,
-      this as unknown as TradingExecutionReportTarget
-    );
-  }
-
   private async runJanitor(source: "ALARM" | "ADMIN" = "ALARM"): Promise<void> {
     await runTradingEngineJanitorMaintenanceForTarget(
       source,
@@ -1226,14 +1212,6 @@ export class TradingEngine {
       instrumentCode,
       this as unknown as TradingJanitorCancelTarget
     );
-  }
-
-  private async pruneOperationalLogs(): Promise<LogPruneReport> {
-    return pruneTradingOperationalLogs({
-      db: this.env.TRADING_DB,
-      env: this.env,
-      logger: this.logger
-    });
   }
 
   private prepareShadowReplayState(

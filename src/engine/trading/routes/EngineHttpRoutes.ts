@@ -21,6 +21,11 @@ import {
 } from "../ingest/IngestQueueRuntime";
 import { buildTradingPerformanceMetricsResponseForTarget } from "../telemetry/TradingHotPathTelemetryRuntime";
 import {
+  applyTradingExecutionReportForTarget,
+  type TradingExecutionReportTarget
+} from "../execution/TradingExecutionReportRuntime";
+import { pruneTradingOperationalLogs } from "../janitor/TradingJanitorRuntime";
+import {
   buildTradingEngineDiagnosticsForTarget,
   buildTradingHealthReportForTarget,
   syncTradingStateMicrostructureForTarget,
@@ -167,7 +172,6 @@ export interface EngineHttpRouteContextTarget {
   recoverEngineState(
     payload: Parameters<EngineHttpRouteContext["recoverEngineState"]>[0]
   ): Promise<unknown>;
-  pruneOperationalLogs(): Promise<LogPruneReport>;
   applySnapshot(snapshot: OrderBookSnapshot): Promise<unknown>;
   applyDelta(delta: OrderBookDelta, observedAt: string): Promise<AppliedBookUpdate>;
   runHistoricalReplay(
@@ -178,7 +182,6 @@ export interface EngineHttpRouteContextTarget {
     dateTo: string | null,
     replayOptions: ReplayOptions
   ): Promise<ReplayResult>;
-  applyExecutionReport(report: ExecutionReport): Promise<void>;
   enqueueTick(tick: MarketTick, wakeUpTimeMs: number | null): Promise<TickIngestResult>;
   handleHyperliquidRaw(payload: unknown, wakeUpTimeMs: number | null): Promise<TickIngestResult>;
   handleGrpcFatalDrop(payload: GrpcFatalDropPayload): Promise<{ status: string }>;
@@ -223,7 +226,12 @@ export function createTradingEngineHttpRouteContext(
     safeStoragePutEntries: (entries, reason) => target.safeStoragePut(entries, reason),
     safeStoragePutKey: (key, value, reason) => target.safeStoragePut(key, value, reason),
     recoverEngineState: (payload) => target.recoverEngineState(payload),
-    pruneOperationalLogs: () => target.pruneOperationalLogs(),
+    pruneOperationalLogs: () =>
+      pruneTradingOperationalLogs({
+        db: target.env.TRADING_DB,
+        env: target.env,
+        logger: target.logger
+      }),
     currentBookSnapshot: (instrumentCode, depth) =>
       currentTradingBookSnapshotForTarget(
         target as unknown as TradingBookViewTarget,
@@ -267,7 +275,12 @@ export function createTradingEngineHttpRouteContext(
       currentTradingCascadeHeatSnapshotForTarget(target as unknown as TradingCascadeSnapshotTarget),
     analyzeSentimentHeadline: (headline) =>
       target.sentimentAgent.analyzeHeadline(headline, target.env),
-    applyExecutionReport: (report) => target.applyExecutionReport(report),
+    applyExecutionReport: async (report) => {
+      await applyTradingExecutionReportForTarget(
+        report,
+        target as unknown as TradingExecutionReportTarget
+      );
+    },
     enqueueTick: (tick, wakeUp) => target.enqueueTick(tick, wakeUp),
     handleHyperliquidRaw: (payload, wakeUp) => target.handleHyperliquidRaw(payload, wakeUp),
     handleGrpcFatalDrop: (payload) => target.handleGrpcFatalDrop(payload),
