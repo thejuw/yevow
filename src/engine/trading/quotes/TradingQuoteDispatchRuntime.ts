@@ -22,6 +22,10 @@ import {
   shouldThrottleTradingQuoteRefresh
 } from "./TradingQuoteRefreshRuntime";
 import type { DispatchedQuoteSnapshot } from "./QuoteRefreshRuntime";
+import {
+  dispatchTradingExecutionIntentForTarget,
+  type TradingExecutionDispatchTarget
+} from "../execution/TradingExecutionDispatchRuntime";
 
 export interface TradingQuoteDispatchInput {
   readonly quote: NonNullable<EngineState["quoteState"]["lastQuote"]>;
@@ -63,7 +67,7 @@ export interface TradingQuoteDispatchTarget {
   readonly queuePositionModel: Pick<QueuePositionModel, "adviseRefresh">;
   readonly lastDispatchedQuoteByInstrument: Map<string, DispatchedQuoteSnapshot>;
   readonly quoteRefreshThrottleLogAt: Map<string, number>;
-  dispatchExecution(intent: TradeIntent): Promise<void>;
+  dispatchExecution?(intent: TradeIntent): Promise<void>;
 }
 
 export async function dispatchTradingQuote(
@@ -172,7 +176,14 @@ export function dispatchTradingQuoteForTarget(
           { ...skipped }
         );
       },
-      dispatchExecution: (intent) => target.dispatchExecution(intent),
+      dispatchExecution: (intent) =>
+        target.dispatchExecution
+          ? target.dispatchExecution(intent)
+          : dispatchTradingExecutionIntentForTarget(
+              intent,
+              0,
+              target as unknown as TradingExecutionDispatchTarget
+            ),
       rememberDispatchedQuote: (dispatchedQuote) => {
         rememberTradingDispatchedQuoteForTarget(dispatchedQuote, target);
       },

@@ -7,6 +7,10 @@ import type {
   TradeIntent
 } from "../../../types";
 import { applyInventoryHedgeSideEffects, buildInventoryHedgeIntent } from "./InventoryRuntime";
+import {
+  dispatchTradingExecutionIntentForTarget,
+  type TradingExecutionDispatchTarget
+} from "../execution/TradingExecutionDispatchRuntime";
 
 export interface TradingInventoryHedgeInput {
   readonly book: InternalOrderBook;
@@ -35,7 +39,7 @@ export interface TradingInventoryHedgeTarget {
   readonly state: {
     waitUntil(work: Promise<void>): void;
   };
-  dispatchExecution(intent: TradeIntent): Promise<void>;
+  dispatchExecution?(intent: TradeIntent): Promise<void>;
 }
 
 export function dispatchTradingInventoryHedgeIfNeeded(
@@ -93,7 +97,15 @@ export function dispatchTradingEngineInventoryHedgeIfNeeded(
         );
       },
       scheduleExecution: (intent) => {
-        target.state.waitUntil(target.dispatchExecution(intent));
+        target.state.waitUntil(
+          target.dispatchExecution
+            ? target.dispatchExecution(intent)
+            : dispatchTradingExecutionIntentForTarget(
+                intent,
+                0,
+                target as unknown as TradingExecutionDispatchTarget
+              )
+        );
       }
     }
   );

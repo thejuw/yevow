@@ -8,6 +8,10 @@ import {
   type CascadeManualCloseResponse
 } from "./CascadeManualCloseRuntime";
 import { buildCascadeExitTradeIntentForTarget } from "./CascadeTradeIntents";
+import {
+  dispatchTradingExecutionIntentForTarget,
+  type TradingExecutionDispatchTarget
+} from "../execution/TradingExecutionDispatchRuntime";
 
 export interface TradingCascadeManualCloseInput {
   readonly positions: readonly CascadeOpenPosition[];
@@ -48,7 +52,7 @@ export interface TradingCascadeManualCloseTarget {
   readonly logger: {
     warn(eventType: string, message: string, telemetry?: JsonRecord): void;
   };
-  dispatchExecution(intent: TradeIntent): Promise<void>;
+  dispatchExecution?(intent: TradeIntent): Promise<void>;
   publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
   safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
 }
@@ -94,8 +98,15 @@ export function closeTradingEngineCascadePosition(
       requestManualClose: (id, closeObservedAt, markPrice) =>
         target.cascadePositionManager.requestManualClose(id, closeObservedAt, markPrice),
       dispatchIntent: (intent) => {
+        const tradeIntent = buildCascadeExitTradeIntentForTarget(target, intent, observedAt);
         target.state.waitUntil(
-          target.dispatchExecution(buildCascadeExitTradeIntentForTarget(target, intent, observedAt))
+          target.dispatchExecution
+            ? target.dispatchExecution(tradeIntent)
+            : dispatchTradingExecutionIntentForTarget(
+                tradeIntent,
+                0,
+                target as unknown as TradingExecutionDispatchTarget
+              )
         );
       },
       logManualClose: (metadata) => {

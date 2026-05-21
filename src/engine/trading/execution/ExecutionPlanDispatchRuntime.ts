@@ -1,5 +1,9 @@
 import { evaluateIntentDispatchGate } from "../../IntentGeneration";
 import type { EngineState, GlobalRiskConfig, JsonRecord, TradeIntent } from "../../../types";
+import {
+  dispatchTradingExecutionIntentForTarget,
+  type TradingExecutionDispatchTarget
+} from "./TradingExecutionDispatchRuntime";
 
 export interface ExecutionPlanDispatchLogInput {
   readonly intent: TradeIntent;
@@ -56,7 +60,7 @@ export interface TradingExecutionPlanDispatchTarget {
   readonly state: {
     waitUntil(work: Promise<void>): void;
   };
-  dispatchExecution(intent: TradeIntent, timingJitterMs: number): Promise<void>;
+  dispatchExecution?(intent: TradeIntent, timingJitterMs: number): Promise<void>;
 }
 
 export interface ExecutionPlanSideEffectsInput {
@@ -223,7 +227,13 @@ export function dispatchTradingExecutionPlans(
         target.state.waitUntil(work);
       },
       dispatchExecution: (intent, timingJitterMs) =>
-        target.dispatchExecution(intent, timingJitterMs)
+        target.dispatchExecution
+          ? target.dispatchExecution(intent, timingJitterMs)
+          : dispatchTradingExecutionIntentForTarget(
+              intent,
+              timingJitterMs,
+              target as unknown as TradingExecutionDispatchTarget
+            )
     }
   });
 }

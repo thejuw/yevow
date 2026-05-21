@@ -38,6 +38,10 @@ import type {
 } from "../../../types";
 import { baseAssetFromInstrument } from "../helpers/NativeMarketIdentityRuntime";
 import {
+  dispatchTradingExecutionIntentForTarget,
+  type TradingExecutionDispatchTarget
+} from "../execution/TradingExecutionDispatchRuntime";
+import {
   cascadeAssetProfileFromConfig,
   cascadeRecoverySignalConfig,
   resolveCascadeAtr1h
@@ -100,7 +104,7 @@ export interface TradingCascadePositionUpdateTarget {
   readonly state: {
     waitUntil(work: Promise<void>): void;
   };
-  dispatchExecution(intent: TradeIntent): Promise<void>;
+  dispatchExecution?(intent: TradeIntent): Promise<void>;
   emitCascadeOperationalAlert?(
     eventType: CascadeAlertEventType,
     title: string,
@@ -202,7 +206,7 @@ export interface TradingAcceptedCascadeSignalTarget {
     warn(eventType: string, message: string, telemetry?: JsonRecord): void;
   };
   recordCascadeUiSignal?(signal: AgentSignal, outcome: "TAKEN" | "SKIPPED" | "CLOSED"): void;
-  dispatchExecution(intent: TradeIntent): Promise<void>;
+  dispatchExecution?(intent: TradeIntent): Promise<void>;
   safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
   emitCascadeOperationalAlert?(
     eventType: CascadeAlertEventType,
@@ -248,7 +252,7 @@ export interface TradingCascadeStrategyTarget {
   readonly cascadeEventsById: ReadonlyMap<string, CascadeEvent>;
   readonly env: Pick<Env, "CASCADE_ATR_FALLBACK_USD" | "CASCADE_ATR_FALLBACK_PCT">;
   recordCascadeUiSignal?(signal: AgentSignal, outcome: "TAKEN" | "SKIPPED" | "CLOSED"): void;
-  dispatchExecution(intent: TradeIntent): Promise<void>;
+  dispatchExecution?(intent: TradeIntent): Promise<void>;
   safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
   emitCascadeOperationalAlert?(
     eventType: CascadeAlertEventType,
@@ -314,8 +318,15 @@ export function dispatchTradingCascadePositionUpdates(
 
   applyCascadePositionUpdateSideEffects(updates, observedAt, {
     dispatchCloseIntent: (intent) => {
+      const tradeIntent = buildCascadeExitTradeIntentForTarget(target, intent, observedAt);
       target.state.waitUntil(
-        target.dispatchExecution(buildCascadeExitTradeIntentForTarget(target, intent, observedAt))
+        target.dispatchExecution
+          ? target.dispatchExecution(tradeIntent)
+          : dispatchTradingExecutionIntentForTarget(
+              tradeIntent,
+              0,
+              target as unknown as TradingExecutionDispatchTarget
+            )
       );
     },
     emitOperationalAlert: (alert) => {
@@ -587,7 +598,14 @@ export function processTradingAcceptedCascadeSignal(
       schedule: (work) => {
         target.state.waitUntil(work);
       },
-      dispatchExecution: (tradeIntent) => target.dispatchExecution(tradeIntent),
+      dispatchExecution: (tradeIntent) =>
+        target.dispatchExecution
+          ? target.dispatchExecution(tradeIntent)
+          : dispatchTradingExecutionIntentForTarget(
+              tradeIntent,
+              0,
+              target as unknown as TradingExecutionDispatchTarget
+            ),
       persistPositions: () =>
         target.safeStoragePut(
           CASCADE_POSITIONS_KEY,

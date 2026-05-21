@@ -24,6 +24,10 @@ import {
   type TradingQuoteCancelAllTarget
 } from "../quotes/QuoteCancelRuntime";
 import {
+  dispatchTradingExecutionIntentForTarget,
+  type TradingExecutionDispatchTarget
+} from "../execution/TradingExecutionDispatchRuntime";
+import {
   applyShadowQueueDecisionFlow,
   buildShadowQueueGhostFillRuntimeRecord,
   emitShadowQueueGhostFillSideEffects,
@@ -80,7 +84,7 @@ export interface TradingShadowQueueTarget {
   };
   publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
   cancelAllQuotes?(instrumentCode: string, reason: "SHADOW_QUEUE_RED_LIGHT"): Promise<unknown>;
-  dispatchExecution(intent: TradeIntent): Promise<unknown>;
+  dispatchExecution?(intent: TradeIntent): Promise<unknown>;
 }
 
 export function recordTradingShadowQueueGhostFill(
@@ -246,7 +250,14 @@ export function processTradingShadowQueueTickForTarget(
               reason,
               target as unknown as TradingQuoteCancelAllTarget
             ),
-      dispatchExecution: (intent) => target.dispatchExecution(intent),
+      dispatchExecution: (intent) =>
+        target.dispatchExecution
+          ? target.dispatchExecution(intent)
+          : dispatchTradingExecutionIntentForTarget(
+              intent,
+              0,
+              target as unknown as TradingExecutionDispatchTarget
+            ),
       traceDecision: (trace) => {
         target.logger.traceDecision(trace);
       }

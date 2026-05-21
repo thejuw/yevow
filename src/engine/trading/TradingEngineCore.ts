@@ -23,10 +23,6 @@ import {
   type TradingAlarmRuntimeTarget
 } from "./alarm/TradingAlarmRuntime";
 import type { DispatchedQuoteSnapshot } from "./quotes/QuoteRefreshRuntime";
-import {
-  dispatchTradingExecutionIntentForTarget,
-  type TradingExecutionDispatchTarget
-} from "./execution/TradingExecutionDispatchRuntime";
 import { OrderBookReconstructor } from "./book/OrderBookReconstructor";
 import {
   buildTradingOrderBookStoresForTarget,
@@ -375,17 +371,6 @@ export class TradingEngine {
       wakeUpTimeMs,
       options,
       this as unknown as TradingTickHandlingTarget
-    );
-  }
-
-  private async dispatchExecution(
-    intent: NonNullable<EngineState["lastTradeIntent"]>,
-    initialDelayMs = 0
-  ): Promise<void> {
-    await dispatchTradingExecutionIntentForTarget(
-      intent,
-      initialDelayMs,
-      this as unknown as TradingExecutionDispatchTarget
     );
   }
 

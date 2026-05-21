@@ -4,6 +4,10 @@ import {
   HOT_PATH_LOG_THROTTLE_MS
 } from "../../../TradingEngineConstants";
 import type { JsonRecord, TradeIntent } from "../../../types";
+import {
+  dispatchTradingExecutionIntentForTarget,
+  type TradingExecutionDispatchTarget
+} from "./TradingExecutionDispatchRuntime";
 
 export type ExecutionQueuePriority = "CANCEL" | "NEW";
 
@@ -133,7 +137,7 @@ export interface TradingExecutionQueueTarget {
   handleStorageWriteFailure(reason: string, error: unknown): void;
   safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
   safeSetAlarm(timestampMs: number, reason: string): Promise<void>;
-  dispatchExecution(intent: TradeIntent): Promise<void>;
+  dispatchExecution?(intent: TradeIntent): Promise<void>;
 }
 
 const DEFAULT_MAX_QUEUE_SIZE = 1_000;
@@ -387,7 +391,14 @@ export function drainTradingExecutionQueueForTarget(
         target.handleStorageWriteFailure(reason, error);
       },
       persistQueue: (key, queue, reason) => target.safeStoragePut(key, queue, reason),
-      dispatchExecution: (intent) => target.dispatchExecution(intent),
+      dispatchExecution: (intent) =>
+        target.dispatchExecution
+          ? target.dispatchExecution(intent)
+          : dispatchTradingExecutionIntentForTarget(
+              intent,
+              0,
+              target as unknown as TradingExecutionDispatchTarget
+            ),
       setAlarm: (timestampMs, reason) => target.safeSetAlarm(timestampMs, reason)
     }
   );
