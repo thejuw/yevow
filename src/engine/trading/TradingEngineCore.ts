@@ -28,12 +28,14 @@ import {
   findBestAssetBook as findBestOrderBookForAsset
 } from "./book/BookViews";
 import {
-  applyBookDeltaFlow,
-  applyBookSnapshotFlow,
   applyInformationalBookNotReadyFlow,
   applyRejectedBookDeltaFlow,
   bookDesyncStorageExtra
 } from "./book/BookRuntimeState";
+import {
+  applyTradingBookDelta,
+  applyTradingBookSnapshot
+} from "./book/TradingBookApplicationRuntime";
 import {
   applyOrderBookResetConnectionIds,
   applyOrderBookResetFlow
@@ -330,11 +332,9 @@ import {
   WARM_UP_INTERVAL_MS,
   SIGNAL_BUFFER_LIMIT,
   ADMIN_STREAM_PULSE_INTERVAL_MS,
-  AGENT_SNAPSHOT_TICK_INTERVAL,
   STORAGE_WRITE_BACKOFF_MS,
   DEFAULT_SOURCE_WEIGHT,
   PROCESSING_LATENCY_SAMPLES_KEY,
-  DOM_WALL_HISTORY_KEY,
   RATE_LIMIT_STATE_KEY,
   EXECUTION_QUEUE_KEY,
   PAPER_SESSION_STARTED_AT_KEY,
@@ -1746,29 +1746,20 @@ export class TradingEngine {
     snapshot: OrderBookSnapshot,
     options: { telemetry?: boolean; persist?: boolean } = {}
   ): Promise<InternalOrderBook> {
-    const updatedAt = new Date().toISOString();
-    return applyBookSnapshotFlow(
+    return applyTradingBookSnapshot(
       {
         snapshot,
+        options,
         currentState: this.engineState,
-        updatedAt,
-        engineStateKey: ENGINE_STATE_KEY,
-        domWallHistoryKey: DOM_WALL_HISTORY_KEY,
         domWallHistory: this.domWallHistory,
-        orderBookPrefix: ORDER_BOOK_PREFIX,
-        telemetryEnabled: options.telemetry !== false,
-        persist: options.persist !== false,
-        earlyTickLimit: 5,
-        telemetryInterval: AGENT_SNAPSHOT_TICK_INTERVAL
+        reconstructor: this.orderBookReconstructor,
+        orderBook: this.orderBook,
+        bids: this.bids,
+        asks: this.asks
       },
       {
-        applySnapshotToBook: (nextSnapshot, snapshotUpdatedAt) =>
-          this.orderBookReconstructor.applySnapshot(nextSnapshot, snapshotUpdatedAt),
         getDomSnapshot: (instrumentCode, snapshotUpdatedAt) =>
           this.getLiquidityWalls(instrumentCode, snapshotUpdatedAt),
-        countBookLevels: () => countBookLevels(this.bids, this.asks),
-        calculatePriceDiscovery: (instrumentCode, snapshotUpdatedAt) =>
-          calculateOrderBookPriceDiscovery(this.orderBook, instrumentCode, snapshotUpdatedAt),
         applyState: (state) => {
           this.engineState = state;
         },
@@ -1788,17 +1779,15 @@ export class TradingEngine {
     delta: BookDeltaWithTicker,
     updatedAt: string
   ): Promise<AppliedBookUpdate> {
-    return applyBookDeltaFlow(
+    return applyTradingBookDelta(
       {
         delta,
         currentState: this.engineState,
-        updatedAt
+        updatedAt,
+        reconstructor: this.orderBookReconstructor,
+        orderBook: this.orderBook
       },
       {
-        applyDeltaToBook: (nextDelta, deltaUpdatedAt) =>
-          this.orderBookReconstructor.applyDelta(nextDelta, deltaUpdatedAt),
-        calculatePriceDiscovery: (instrumentCode, deltaUpdatedAt) =>
-          calculateOrderBookPriceDiscovery(this.orderBook, instrumentCode, deltaUpdatedAt),
         applyState: (state) => {
           this.engineState = state;
         }

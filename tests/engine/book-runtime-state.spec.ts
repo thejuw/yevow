@@ -28,14 +28,22 @@ import {
   type BookSnapshotFlowHandlers,
   type BookSnapshotSideEffectHandlers
 } from "../../src/engine/trading/book/BookRuntimeState";
+import {
+  applyTradingBookDelta,
+  applyTradingBookSnapshot
+} from "../../src/engine/trading/book/TradingBookApplicationRuntime";
 import type {
   AppliedBookUpdate,
   BookDeltaWithTicker
 } from "../../src/engine/trading/book/BookTypes";
-import type { AppliedBookSnapshot } from "../../src/engine/trading/book/OrderBookReconstructor";
+import type {
+  AppliedBookSnapshot,
+  OrderBookReconstructor
+} from "../../src/engine/trading/book/OrderBookReconstructor";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type {
   DomAnalysisSnapshot,
+  EngineState,
   InternalOrderBook,
   LatencyMetrics,
   MarketTick,
@@ -427,6 +435,108 @@ describe("BookRuntimeState", () => {
     expect(accepted.events).toEqual(["applyDelta:42", "discovery:btc-usd", "state:100"]);
     expect(rejectedResult.accepted).toBe(false);
     expect(rejected.events).toEqual(["applyDelta:43"]);
+  });
+
+  it("applies trading book snapshots through the reconstructor adapter", async () => {
+    const currentState = defaultEngineState("trading-book-snapshot");
+    const appliedBook = book({ instrumentCode: "hype-usd" });
+    const events: string[] = [];
+    const states: EngineState[] = [];
+
+    const result = await applyTradingBookSnapshot(
+      {
+        snapshot: snapshot({ instrumentCode: "hype-usd", source: "ADMIN" }),
+        options: { telemetry: true, persist: true },
+        currentState,
+        domWallHistory: [],
+        reconstructor: {
+          applySnapshot(nextSnapshot: OrderBookSnapshot, updatedAt: string) {
+            events.push(`applySnapshot:${nextSnapshot.instrumentCode}:${Boolean(updatedAt)}`);
+            return appliedSnapshot(appliedBook);
+          }
+        } as unknown as OrderBookReconstructor,
+        orderBook: new Map([[appliedBook.marketKey, appliedBook]]),
+        bids: new Map(),
+        asks: new Map()
+      },
+      {
+        getDomSnapshot(instrumentCode) {
+          events.push(`dom:${instrumentCode}`);
+          return dom(instrumentCode);
+        },
+        applyState(state) {
+          states.push(state);
+          events.push(`state:${state.microstructure.instrumentCode}`);
+        },
+        persistStorage(writes, reason) {
+          events.push(`persist:${reason}:${Object.keys(writes).length}`);
+          return Promise.resolve();
+        },
+        logSnapshotApplied(metadata) {
+          events.push(`log:${String(metadata.sequence)}`);
+        },
+        publishSnapshotApplied(payload) {
+          events.push(`publish:${String(payload.sequence)}`);
+        }
+      }
+    );
+
+    expect(result.instrumentCode).toBe("hype-usd");
+    expect(states[0]).toMatchObject({
+      engineId: "trading-book-snapshot",
+      microstructure: { instrumentCode: "hype-usd" }
+    });
+    expect(events).toEqual([
+      "applySnapshot:hype-usd:true",
+      "dom:hype-usd",
+      "state:hype-usd",
+      "persist:ORDER_BOOK_SNAPSHOT_APPLIED:3",
+      "log:42",
+      "publish:42"
+    ]);
+  });
+
+  it("applies trading book deltas through the reconstructor adapter", async () => {
+    const appliedBook = book({
+      bids: [{ price: 100, size: 1, updatedAt: OBSERVED_AT }],
+      asks: [{ price: 102, size: 1, updatedAt: OBSERVED_AT }],
+      midPrice: 101,
+      bestBid: 100,
+      bestAsk: 102
+    });
+    const states: EngineState[] = [];
+    const result = await applyTradingBookDelta(
+      {
+        delta: delta(),
+        currentState: defaultEngineState("trading-book-delta"),
+        updatedAt: OBSERVED_AT,
+        reconstructor: {
+          applyDelta(nextDelta: BookDeltaWithTicker, updatedAt: string) {
+            expect(nextDelta.sequence).toBe(42);
+            expect(updatedAt).toBe(OBSERVED_AT);
+            return Promise.resolve({
+              accepted: true,
+              book: appliedBook,
+              timeToBookMs: 2,
+              actualSequence: 42
+            });
+          }
+        } as unknown as OrderBookReconstructor,
+        orderBook: new Map([[appliedBook.marketKey, appliedBook]])
+      },
+      {
+        applyState(state) {
+          states.push(state);
+        }
+      }
+    );
+
+    expect(result.accepted).toBe(true);
+    expect(states[0]).toMatchObject({
+      engineId: "trading-book-delta",
+      microstructure: { midPrice: 101 },
+      priceDiscovery: { instrumentCode: "btc-usd" }
+    });
   });
 
   it("marks informational ticks as book-not-ready without mutating quote state when disabled", () => {
