@@ -68,10 +68,7 @@ import {
   resolveVarConfidenceZ
 } from "./risk/PortfolioRiskRuntime";
 import { calculateEnsembleState as calculateRuntimeEnsembleState } from "./ensemble/EnsembleRuntime";
-import {
-  currentFundingRate as resolveCurrentFundingRate,
-  stateAfterFundingTick
-} from "./funding/FundingRuntime";
+import { stateAfterFundingTick } from "./funding/FundingRuntime";
 import {
   nextQuoteStateForInstrument as nextRuntimeQuoteStateForInstrument,
   resolveQuoteHibernateMs,
@@ -100,7 +97,8 @@ import {
 import { dispatchExecutionPlanSideEffects } from "./execution/ExecutionPlanDispatchRuntime";
 import { dispatchTradingExecutionIntent } from "./execution/TradingExecutionDispatchRuntime";
 import { applyExecutionReportFlow } from "./execution/ExecutionReportRuntime";
-import { evaluateCroupierRuntime, type OracleTickResult } from "./agents/AgentEvaluationRuntime";
+import { type OracleTickResult } from "./agents/AgentEvaluationRuntime";
+import { evaluateTradingCroupier } from "./agents/TradingCroupierEvaluationRuntime";
 import { evaluateTradingOracle } from "./agents/TradingOracleEvaluationRuntime";
 import { evaluateTradingProfiler } from "./agents/TradingProfilerEvaluationRuntime";
 import { applyIntentPaperExecutionBudgetSideEffects } from "./execution/PaperExecutionBudgetRuntime";
@@ -499,11 +497,7 @@ import {
   suspendAssetQuoteStates,
   quotePriceMovedTicks
 } from "./state/AssetStateRuntime";
-import {
-  defaultEnsembleState,
-  disabledCroupierDecision,
-  touchAgentHealth
-} from "./state/AgentStateDefaults";
+import { defaultEnsembleState, touchAgentHealth } from "./state/AgentStateDefaults";
 import {
   defaultLeadLagMetrics,
   defaultMicrostructure,
@@ -2665,29 +2659,19 @@ export class TradingEngine {
     volatilitySnapshot: MultiScaleVolatilitySnapshot | null,
     observedAt: string
   ): { croupierDecision: CroupierDecision; croupierLatencyMs: number } {
-    return evaluateCroupierRuntime({
-      croupierEnabled: this.cachedConfig.CROUPIER_ENABLED,
-      evaluator: this.croupierAgent,
-      disabledDecision: disabledCroupierDecision(this.cachedConfig.MIN_EV_THRESHOLD),
+    return evaluateTradingCroupier({
+      croupierAgent: this.croupierAgent,
       adverseSelectionModel: this.adverseSelectionModel,
-      engineId: this.engineState.engineId,
+      engineState: this.engineState,
+      config: this.cachedConfig,
+      env: this.env,
       book,
       oracle,
       sentiment,
-      toxicityScore: profilerResult.toxicityScore,
+      profilerResult,
       inventory,
       leadLag,
-      config: this.cachedConfig,
-      env: this.env,
-      executionCostBufferBps: this.engineState.slippage.executionCostBufferBps,
-      multiScaleVolatility: volatilitySnapshot,
-      fundingRateHourly: resolveCurrentFundingRate(this.engineState.fundingRates, book),
-      liquidationHeatmap: this.engineState.liquidationHeatmap,
-      profilerToxicityState: profilerResult.state.toxicityState,
-      profilerPressureSide: profilerResult.state.pressureSide,
-      profilerSpreadMultiplier: profilerResult.state.spreadMultiplier,
-      profilerReservationShiftBps: profilerResult.state.reservationShiftBps,
-      sentimentAlphaMode: this.cachedConfig.SENTIMENT_ALPHA_MODE,
+      volatilitySnapshot,
       macroBias: this.macroBias,
       observedAt
     });
