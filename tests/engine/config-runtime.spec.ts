@@ -21,12 +21,15 @@ import {
 } from "../../src/engine/trading/config/ConfigRuntime";
 import {
   applyTradingEngineConfigUpdate,
+  applyTradingEngineConfigUpdateForTarget,
   refreshTradingEngineConfig,
+  refreshTradingEngineConfigForTarget,
+  type TradingEngineConfigControlTarget,
   type TradingEngineConfigRefreshHandlers,
   type TradingEngineConfigUpdateHandlers
 } from "../../src/engine/trading/config/TradingConfigControlRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
-import type { AdminConfigUpdate } from "../../src/types";
+import type { AdminConfigUpdate, EngineState } from "../../src/types";
 
 describe("ConfigRuntime", () => {
   it("applies runtime admin updates while preserving config and governance context", () => {
@@ -503,6 +506,43 @@ describe("ConfigRuntime", () => {
     ]);
   });
 
+  it("refreshes runtime config through the trading engine target adapter", async () => {
+    const currentState = defaultEngineState("trading-config-target-refresh");
+    currentState.location = {
+      ...currentState.location,
+      placement: "remote-nrt"
+    };
+    const target = tradingConfigControlTargetSpy(currentState);
+    target.killSwitchLogged = true;
+
+    await refreshTradingEngineConfigForTarget(
+      {
+        source: "ADMIN_SIGNAL",
+        configSnapshot: {
+          ...defaultConfig,
+          TRADING_ENABLED: true,
+          LATENCY_THRESHOLD_MS: 123,
+          GOLDEN_COLOS: "NRT,HND",
+          version: "config-target"
+        }
+      },
+      target
+    );
+
+    expect(target.cachedConfig.version).toBe("config-target-effective");
+    expect(target.maxLatencyMs).toBe(123);
+    expect(target.killSwitchLogged).toBe(false);
+    expect(target.engineState.cachedConfig.version).toBe("config-target-effective");
+    expect(target.events).toEqual([
+      "effective:config-target",
+      "snapshot-profilers",
+      "matrix",
+      "configure:config-target-effective",
+      "persist:CONFIG_REFRESH",
+      "warn:CONFIG_REFRESHED:config-target-effective"
+    ]);
+  });
+
   it("applies runtime config update side effects in persistence order", async () => {
     const state = defaultEngineState("runtime-config-side-effects");
     state.mode = "PAPER";
@@ -647,6 +687,39 @@ describe("ConfigRuntime", () => {
       "state:HALTED:2026-05-18T17:00:00.000Z",
       "persist",
       "warn:config-current"
+    ]);
+  });
+
+  it("applies admin config updates through the trading engine target adapter", async () => {
+    const target = tradingConfigControlTargetSpy(
+      defaultEngineState("trading-config-target-update")
+    );
+
+    await applyTradingEngineConfigUpdateForTarget(
+      {
+        config: {
+          TRADING_ENABLED: true,
+          LATENCY_THRESHOLD_MS: 150,
+          version: "config-refresh"
+        },
+        mode: "HALTED",
+        maxLatencyMs: 150
+      },
+      target
+    );
+
+    expect(target.maxLatencyMs).toBe(150);
+    expect(target.engineState.mode).toBe("HALTED");
+    expect(target.events).toEqual([
+      "effective:config-refresh",
+      "snapshot-profilers",
+      "matrix",
+      "configure:config-refresh-effective",
+      "persist:CONFIG_REFRESH",
+      "warn:CONFIG_REFRESHED:config-refresh-effective",
+      "alarm:CONFIG_REFRESH_ALARM",
+      "persist:ADMIN_CONFIG_APPLIED",
+      "warn:ADMIN_CONFIG_APPLIED:config-current"
     ]);
   });
 });
@@ -820,6 +893,80 @@ function runtimeConfigUpdateSideEffectSpy(): {
       warnApplied(metadata) {
         events.push(`warn:${String(metadata.riskConfigVersion)}`);
       }
+    }
+  };
+}
+
+function tradingConfigControlTargetSpy(
+  currentState: EngineState
+): TradingEngineConfigControlTarget & { events: string[] } {
+  const events: string[] = [];
+
+  return {
+    events,
+    cachedConfig: {
+      ...defaultConfig,
+      version: "config-current"
+    },
+    macroBias: neutralMacroBias(),
+    activeTemporaryOverride: null,
+    maxLatencyMs: 250,
+    killSwitchLogged: false,
+    engineState: currentState,
+    env: {
+      PLACEMENT_TARGET_COLO: "NRT",
+      GOLDEN_COLOS: "NRT,HND",
+      HIGH_LATENCY_COLO_RISK_MULTIPLIER: "0.25"
+    },
+    configManager: {
+      fetchConfig() {
+        events.push("fetch");
+        return Promise.resolve({
+          ...defaultConfig,
+          version: "config-fetched"
+        });
+      }
+    },
+    governor: {
+      readEffectiveConfig(config) {
+        events.push(`effective:${config.version}`);
+        return Promise.resolve({
+          config: {
+            ...config,
+            version: `${config.version}-effective`
+          },
+          macroBias: neutralMacroBias(),
+          temporaryOverride: null
+        });
+      }
+    },
+    profilerRegistry: {
+      snapshot() {
+        events.push("snapshot-profilers");
+        return currentState.profilerStates;
+      },
+      configure(config) {
+        events.push(`configure:${config.version}`);
+      }
+    },
+    logger: {
+      warn(eventType, _message, metadata) {
+        events.push(
+          `warn:${eventType}:${String(metadata?.configVersion ?? metadata?.riskConfigVersion)}`
+        );
+      }
+    },
+    calculateAssetMatrix() {
+      events.push("matrix");
+      return {};
+    },
+    safeStoragePut(_key, _value, reason) {
+      events.push(`persist:${reason}`);
+      return Promise.resolve();
+    },
+    safeSetAlarm(_timestamp, reason) {
+      events.push(`alarm:${reason}`);
+      return Promise.resolve();
     }
   };
 }

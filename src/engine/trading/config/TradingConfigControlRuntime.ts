@@ -7,6 +7,7 @@ import type {
   MacroBias,
   TemporaryGovernanceOverride
 } from "../../../types";
+import { CONFIG_ALARM_INTERVAL_MS, ENGINE_STATE_KEY } from "../../../TradingEngineConstants";
 import {
   applyAdminConfigUpdateFlow,
   applyConfigRefreshFlow,
@@ -87,6 +88,41 @@ export interface TradingEngineConfigUpdateHandlers extends TradingConfigUpdateHa
   readonly nowIso: () => string;
 }
 
+export interface TradingEngineConfigControlTarget {
+  cachedConfig: GlobalRiskConfig;
+  macroBias: MacroBias;
+  activeTemporaryOverride: TemporaryGovernanceOverride | null;
+  maxLatencyMs: number;
+  killSwitchLogged: boolean;
+  engineState: EngineState;
+  readonly env: Pick<
+    Env,
+    "PLACEMENT_TARGET_COLO" | "GOLDEN_COLOS" | "HIGH_LATENCY_COLO_RISK_MULTIPLIER"
+  >;
+  readonly configManager: {
+    fetchConfig(): Promise<GlobalRiskConfig>;
+  };
+  readonly governor: {
+    readEffectiveConfig(config: GlobalRiskConfig): Promise<EffectiveGovernanceConfig>;
+  };
+  readonly profilerRegistry: {
+    snapshot(): EngineState["profilerStates"];
+    configure(config: GlobalRiskConfig): void;
+  };
+  readonly logger: {
+    warn(eventType: string, message: string, telemetry?: JsonRecord): void;
+  };
+  calculateAssetMatrix(
+    observedAt: string,
+    latestInstrumentCode: string | undefined,
+    latestOracle: EngineState["oracle"],
+    profilerStates: EngineState["profilerStates"],
+    assetQuoteStates: EngineState["assetQuoteStates"]
+  ): EngineState["assetMatrix"];
+  safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
+  safeSetAlarm(timestamp: number, reason: string): Promise<void>;
+}
+
 export async function refreshTradingConfig(
   input: TradingConfigRefreshInput,
   handlers: TradingConfigRefreshHandlers
@@ -161,5 +197,100 @@ export function applyTradingEngineConfigUpdate(
       observedAt: handlers.nowIso()
     },
     handlers
+  );
+}
+
+export function refreshTradingEngineConfigForTarget(
+  input: Pick<TradingEngineConfigRefreshInput, "source" | "configSnapshot">,
+  target: TradingEngineConfigControlTarget
+): Promise<void> {
+  return refreshTradingEngineConfig(
+    {
+      source: input.source,
+      cachedConfig: target.cachedConfig,
+      configSnapshot: input.configSnapshot,
+      currentState: target.engineState,
+      env: target.env
+    },
+    {
+      nowIso: () => new Date().toISOString(),
+      createRequestId: () => crypto.randomUUID(),
+      fetchConfig: () => target.configManager.fetchConfig(),
+      readEffectiveConfig: (config) => target.governor.readEffectiveConfig(config),
+      snapshotProfilers: () => target.profilerRegistry.snapshot(),
+      calculateAssetMatrix: (
+        observedAt,
+        latestInstrumentCode,
+        latestOracle,
+        profilerStates,
+        assetQuoteStates
+      ) =>
+        target.calculateAssetMatrix(
+          observedAt,
+          latestInstrumentCode,
+          latestOracle,
+          profilerStates,
+          assetQuoteStates
+        ),
+      applyConfigCache: (config, macroBias, temporaryOverride) => {
+        target.cachedConfig = config;
+        target.macroBias = macroBias;
+        target.activeTemporaryOverride = temporaryOverride;
+      },
+      configureProfilers: (config) => {
+        target.profilerRegistry.configure(config);
+      },
+      setMaxLatencyMs: (maxLatencyMs) => {
+        target.maxLatencyMs = maxLatencyMs;
+      },
+      clearKillSwitchLog: () => {
+        target.killSwitchLogged = false;
+      },
+      applyState: (state) => {
+        target.engineState = state;
+      },
+      persistRefreshState: () =>
+        target.safeStoragePut(ENGINE_STATE_KEY, target.engineState, "CONFIG_REFRESH"),
+      warnRefresh: (metadata) => {
+        target.logger.warn("CONFIG_REFRESHED", "Trading engine config cache refreshed", metadata);
+      }
+    }
+  );
+}
+
+export function applyTradingEngineConfigUpdateForTarget(
+  update: AdminConfigUpdate,
+  target: TradingEngineConfigControlTarget
+): Promise<void> {
+  return applyTradingEngineConfigUpdate(
+    {
+      update,
+      currentState: target.engineState,
+      cachedConfig: target.cachedConfig,
+      macroBias: target.macroBias,
+      temporaryOverride: target.activeTemporaryOverride,
+      currentMaxLatencyMs: target.maxLatencyMs
+    },
+    {
+      nowIso: () => new Date().toISOString(),
+      refreshConfig: (directConfig) =>
+        refreshTradingEngineConfigForTarget(
+          { source: "ADMIN_SIGNAL", configSnapshot: directConfig },
+          target
+        ),
+      scheduleConfigRefresh: () =>
+        target.safeSetAlarm(Date.now() + CONFIG_ALARM_INTERVAL_MS, "CONFIG_REFRESH_ALARM"),
+      setMaxLatencyMs: (maxLatencyMs) => {
+        target.maxLatencyMs = maxLatencyMs;
+      },
+      applyState: (state) => {
+        target.engineState = state;
+      },
+      persistAppliedState: () =>
+        target.safeStoragePut(ENGINE_STATE_KEY, target.engineState, "ADMIN_CONFIG_APPLIED"),
+      warnApplied: (metadata) => {
+        target.logger.warn("ADMIN_CONFIG_APPLIED", "Runtime configuration updated", metadata);
+      }
+    }
   );
 }

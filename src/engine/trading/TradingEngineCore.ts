@@ -136,8 +136,9 @@ import {
   type TradingCascadeAbsorptionTarget
 } from "./cascade/CascadeAbsorptionRuntime";
 import {
-  applyTradingEngineConfigUpdate,
-  refreshTradingEngineConfig
+  applyTradingEngineConfigUpdateForTarget,
+  refreshTradingEngineConfigForTarget,
+  type TradingEngineConfigControlTarget
 } from "./config/TradingConfigControlRuntime";
 import {
   absorptionAnalyzerConfigFromRuntime,
@@ -2902,54 +2903,9 @@ export class TradingEngine {
     source: "ALARM" | "ADMIN_SIGNAL",
     configSnapshot?: GlobalRiskConfig
   ): Promise<void> {
-    await refreshTradingEngineConfig(
-      {
-        source,
-        cachedConfig: this.cachedConfig,
-        configSnapshot,
-        currentState: this.engineState,
-        env: this.env
-      },
-      {
-        nowIso: () => new Date().toISOString(),
-        createRequestId: () => crypto.randomUUID(),
-        fetchConfig: () => this.configManager.fetchConfig(),
-        readEffectiveConfig: (config) => this.governor.readEffectiveConfig(config),
-        snapshotProfilers: () => this.profilerRegistry.snapshot(),
-        calculateAssetMatrix: (
-          matrixObservedAt,
-          latestInstrumentCode,
-          latestOracle,
-          profilerStates,
-          assetQuoteStates
-        ) =>
-          this.calculateAssetMatrix(
-            matrixObservedAt,
-            latestInstrumentCode,
-            latestOracle,
-            profilerStates,
-            assetQuoteStates
-          ),
-        applyConfigCache: (config, macroBias, temporaryOverride) => {
-          this.cachedConfig = config;
-          this.macroBias = macroBias;
-          this.activeTemporaryOverride = temporaryOverride;
-        },
-        configureProfilers: (config) => this.profilerRegistry.configure(config),
-        setMaxLatencyMs: (maxLatencyMs) => {
-          this.maxLatencyMs = maxLatencyMs;
-        },
-        clearKillSwitchLog: () => {
-          this.killSwitchLogged = false;
-        },
-        applyState: (state) => {
-          this.engineState = state;
-        },
-        persistRefreshState: () =>
-          this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "CONFIG_REFRESH"),
-        warnRefresh: (metadata) =>
-          this.logger.warn("CONFIG_REFRESHED", "Trading engine config cache refreshed", metadata)
-      }
+    await refreshTradingEngineConfigForTarget(
+      { source, configSnapshot },
+      this as unknown as TradingEngineConfigControlTarget
     );
   }
 
@@ -3058,30 +3014,9 @@ export class TradingEngine {
   }
 
   private async applyConfigUpdate(update: AdminConfigUpdate): Promise<void> {
-    await applyTradingEngineConfigUpdate(
-      {
-        update,
-        currentState: this.engineState,
-        cachedConfig: this.cachedConfig,
-        macroBias: this.macroBias,
-        temporaryOverride: this.activeTemporaryOverride,
-        currentMaxLatencyMs: this.maxLatencyMs
-      },
-      {
-        nowIso: () => new Date().toISOString(),
-        refreshConfig: (directConfig) => this.refreshConfig("ADMIN_SIGNAL", directConfig),
-        scheduleConfigRefresh: () => this.scheduleConfigRefresh(),
-        setMaxLatencyMs: (maxLatencyMs) => {
-          this.maxLatencyMs = maxLatencyMs;
-        },
-        applyState: (state) => {
-          this.engineState = state;
-        },
-        persistAppliedState: () =>
-          this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "ADMIN_CONFIG_APPLIED"),
-        warnApplied: (metadata) =>
-          this.logger.warn("ADMIN_CONFIG_APPLIED", "Runtime configuration updated", metadata)
-      }
+    await applyTradingEngineConfigUpdateForTarget(
+      update,
+      this as unknown as TradingEngineConfigControlTarget
     );
   }
 }
