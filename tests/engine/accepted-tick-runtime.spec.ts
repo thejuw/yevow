@@ -23,7 +23,11 @@ import {
   commitAcceptedTickStateForTarget,
   type AcceptedTickStateCommitTarget
 } from "../../src/engine/trading/pipelines/AcceptedTickStateTransitionRuntime";
-import { buildTickDecisionContextFlow } from "../../src/engine/trading/pipelines/TickDecisionContextRuntime";
+import {
+  buildTickDecisionContextFlow,
+  buildTickDecisionContextForTarget,
+  type TickDecisionContextTarget
+} from "../../src/engine/trading/pipelines/TickDecisionContextRuntime";
 import type {
   AcceptedDecisionPipelineInput,
   AcceptedExecutionContext,
@@ -344,6 +348,74 @@ describe("AcceptedTickRuntime", () => {
       `risk:${state.oracle.updatedAt}:${OBSERVED_AT}`,
       "profiler:btc-usd:NORMAL",
       `matrix:${OBSERVED_AT}:btc-usd:${state.oracle.updatedAt}:true`
+    ]);
+  });
+
+  it("builds tick decision context against a trading target", () => {
+    const state = defaultEngineState("tick-decision-context-target");
+    const profilerResult: ProfilerEvaluation = {
+      processed: true,
+      skippedReason: null,
+      closedBuckets: 0,
+      toxicityScore: 0.2,
+      state: { toxicityState: "NORMAL" } as ProfilerEvaluation["state"],
+      signal: null
+    };
+    const profilerStates = { "btc-usd": profilerResult.state };
+    const events: string[] = [];
+    const target = {
+      engineState: state,
+      cachedConfig: {
+        ...state.cachedConfig,
+        SENTIMENT_ENABLED: false
+      },
+      macroBias: state.macroBias,
+      env: {
+        MAX_POSITION_PCT: undefined
+      },
+      orderBook: new Map(),
+      profilerRegistry: {
+        snapshot(instrumentCode: string, profilerState: ProfilerEvaluation["state"]) {
+          events.push(`profiler:${instrumentCode}:${profilerState.toxicityState}`);
+          return profilerStates;
+        },
+        forInstrument() {
+          return {
+            snapshot: () => ({ toxicityState: "NORMAL", amVpinScore: 0, obi: null }) as never
+          };
+        }
+      },
+      calculateInventoryState(observedAt: string) {
+        events.push(`inventory:${observedAt}`);
+        return state.inventory;
+      },
+      updatePortfolioRisk(oracle: typeof state.oracle, observedAt: string) {
+        events.push(`risk:${oracle.updatedAt}:${observedAt}`);
+        return state.riskMetrics;
+      }
+    } as unknown as TickDecisionContextTarget;
+
+    const context = buildTickDecisionContextForTarget(
+      { instrumentCode: "btc-usd" } as AcceptedDecisionPipelineInput["tick"],
+      state.oracle,
+      profilerResult,
+      OBSERVED_AT,
+      target
+    );
+
+    expect(context).toMatchObject({
+      inventory: state.inventory,
+      riskMetrics: state.riskMetrics,
+      profilerStates,
+      sentimentForDecision: {
+        updatedAt: OBSERVED_AT
+      }
+    });
+    expect(context.assetMatrix["btc-usd"]).toMatchObject({ instrumentCode: "btc-usd" });
+    expect(events).toEqual([
+      `inventory:${OBSERVED_AT}`,
+      `risk:${state.oracle.updatedAt}:${OBSERVED_AT}`,
+      "profiler:btc-usd:NORMAL"
     ]);
   });
 

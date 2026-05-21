@@ -1,7 +1,11 @@
 import type { ProfilerEvaluation } from "../../../agents/ProfilerAgent";
 import { defaultSentimentState } from "../../../agents/SentimentAgent";
-import type { EngineState } from "../../../types";
+import type { EngineState, GlobalRiskConfig } from "../../../types";
 import { passiveInventoryGuardStateFromInventory } from "../state/EngineStateDefaults";
+import {
+  calculateTradingAssetMatrixForTarget,
+  type TradingAssetMatrixTarget
+} from "../state/TradingAssetMatrixRuntime";
 import type { AcceptedDecisionPipelineInput, TickDecisionContext } from "./TickPipelineTypes";
 
 export interface TickDecisionContextFlowInput {
@@ -29,6 +33,22 @@ export interface TickDecisionContextFlowHandlers {
     oracle: EngineState["oracle"],
     profilerStates: TickDecisionContext["profilerStates"]
   ) => TickDecisionContext["assetMatrix"];
+}
+
+export interface TickDecisionContextTarget extends TradingAssetMatrixTarget {
+  readonly engineState: EngineState;
+  readonly cachedConfig: GlobalRiskConfig;
+  readonly profilerRegistry: TradingAssetMatrixTarget["profilerRegistry"] & {
+    snapshot(
+      instrumentCode: string,
+      profilerState: ProfilerEvaluation["state"]
+    ): TickDecisionContext["profilerStates"];
+  };
+  calculateInventoryState(observedAt: string): TickDecisionContext["inventory"];
+  updatePortfolioRisk(
+    oracle: EngineState["oracle"],
+    observedAt: string
+  ): TickDecisionContext["riskMetrics"];
 }
 
 export function buildTickDecisionContextFlow(
@@ -65,4 +85,40 @@ export function buildTickDecisionContextFlow(
     inventoryGuard,
     sentimentForDecision
   };
+}
+
+export function buildTickDecisionContextForTarget(
+  tick: AcceptedDecisionPipelineInput["tick"],
+  oracle: EngineState["oracle"],
+  profilerResult: ProfilerEvaluation,
+  observedAt: string,
+  target: TickDecisionContextTarget
+): TickDecisionContext {
+  return buildTickDecisionContextFlow(
+    {
+      tick,
+      oracle,
+      profilerResult,
+      observedAt,
+      currentState: target.engineState,
+      sentimentEnabled: target.cachedConfig.SENTIMENT_ENABLED
+    },
+    {
+      calculateInventoryState: (decisionObservedAt) =>
+        target.calculateInventoryState(decisionObservedAt),
+      updatePortfolioRisk: (currentOracle, decisionObservedAt) =>
+        target.updatePortfolioRisk(currentOracle, decisionObservedAt),
+      profilerSnapshot: (instrumentCode, profilerState) =>
+        target.profilerRegistry.snapshot(instrumentCode, profilerState),
+      calculateAssetMatrix: (matrixObservedAt, _instrumentCode, currentOracle, profilerStates) =>
+        calculateTradingAssetMatrixForTarget(
+          {
+            observedAt: matrixObservedAt,
+            latestOracle: currentOracle,
+            profilerStates
+          },
+          target
+        )
+    }
+  );
 }

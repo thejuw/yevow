@@ -433,7 +433,10 @@ import {
   resolveMaxLatencyMs
 } from "./state/EngineStateDefaults";
 import { applyAcceptedDecisionPipelineFlow } from "./pipelines/AcceptedTickLifecycleRuntime";
-import { buildTickDecisionContextFlow } from "./pipelines/TickDecisionContextRuntime";
+import {
+  buildTickDecisionContextForTarget,
+  type TickDecisionContextTarget
+} from "./pipelines/TickDecisionContextRuntime";
 import {
   commitAcceptedTickStateForTarget,
   type AcceptedTickStateCommitTarget
@@ -1546,25 +1549,12 @@ export class TradingEngine {
     profilerResult: ProfilerEvaluation,
     observedAt: string
   ): TickDecisionContext {
-    return buildTickDecisionContextFlow(
-      {
-        tick,
-        oracle,
-        profilerResult,
-        observedAt,
-        currentState: this.engineState,
-        sentimentEnabled: this.cachedConfig.SENTIMENT_ENABLED
-      },
-      {
-        calculateInventoryState: (decisionObservedAt) =>
-          this.calculateInventoryState(decisionObservedAt),
-        updatePortfolioRisk: (currentOracle, decisionObservedAt) =>
-          this.updatePortfolioRisk(currentOracle, decisionObservedAt),
-        profilerSnapshot: (instrumentCode, profilerState) =>
-          this.profilerRegistry.snapshot(instrumentCode, profilerState),
-        calculateAssetMatrix: (matrixObservedAt, instrumentCode, currentOracle, profilerStates) =>
-          this.calculateAssetMatrix(matrixObservedAt, instrumentCode, currentOracle, profilerStates)
-      }
+    return buildTickDecisionContextForTarget(
+      tick,
+      oracle,
+      profilerResult,
+      observedAt,
+      this as unknown as TickDecisionContextTarget
     );
   }
 
