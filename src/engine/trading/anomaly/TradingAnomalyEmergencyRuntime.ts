@@ -65,6 +65,30 @@ export interface TradingAnomalyEmergencyPauseHandlers extends TradingAnomalyEmer
   ) => void;
 }
 
+export interface TradingAnomalyEmergencyTarget {
+  engineState: EngineState;
+  readonly latencyHistory: readonly LatencyMetrics[];
+  readonly processingLatencySamples: readonly number[];
+  readonly domWallHistory: readonly LiquidityWall[];
+  readonly bids: Map<string, SortedBookSide>;
+  readonly asks: Map<string, SortedBookSide>;
+  readonly logger: {
+    writeLog(level: "CRITICAL", source: string, message: string, metadata: JsonRecord): void;
+  };
+  readonly notifier: {
+    notify(notification: AnomalyEmergencyPauseTelemetry["notification"]): void;
+  };
+  observeExecutionProfile(metrics: LatencyMetrics, trace: ExecutionTraceInput): void;
+  safeStoragePut(writes: Record<string, unknown>, reason: string): Promise<void>;
+  publish(type: "EMERGENCY_PAUSE", payload: JsonRecord, correlationId: string): void;
+  publishTickTelemetry(
+    tick: MarketTick,
+    metrics: LatencyMetrics,
+    status: "FRESH",
+    hotPathStartedAt: number
+  ): void;
+}
+
 export function emitTradingAnomalyEmergencyPause(
   event: AnomalyEmergencyPauseTelemetry,
   handlers: TradingAnomalyEmergencyHandlers
@@ -120,6 +144,60 @@ export async function handleTradingAnomalyEmergencyPause(
         emitTradingAnomalyEmergencyPause(event, handlers);
       },
       publishTickTelemetry: handlers.publishTickTelemetry
+    }
+  );
+}
+
+export function handleTradingEngineAnomalyEmergencyPause(
+  tick: MarketTick,
+  book: InternalOrderBook,
+  domSnapshot: DomAnalysisSnapshot,
+  anomalyResult: AnomalyDetectionResult,
+  anomalyLogicStartedAt: number,
+  metrics: LatencyMetrics,
+  wakeUpTimeMs: number | null,
+  orderBookUpdateMs: number,
+  hotPathStartedAt: number,
+  target: TradingAnomalyEmergencyTarget
+): Promise<TickIngestResult> {
+  return handleTradingAnomalyEmergencyPause(
+    {
+      currentState: target.engineState,
+      latencyHistory: target.latencyHistory,
+      processingLatencySamples: target.processingLatencySamples,
+      domWallHistory: target.domWallHistory,
+      anomalyResult,
+      book,
+      tick,
+      domSnapshot,
+      metrics,
+      bids: target.bids,
+      asks: target.asks,
+      anomalyLogicStartedAt,
+      wakeUpTimeMs,
+      orderBookUpdateMs,
+      hotPathStartedAt
+    },
+    {
+      observeExecutionProfile: (profileMetrics, trace) => {
+        target.observeExecutionProfile(profileMetrics, trace);
+      },
+      applyState: (state) => {
+        target.engineState = state;
+      },
+      persistStorageWrites: (writes) => target.safeStoragePut(writes, "ANOMALY_EMERGENCY_PAUSE"),
+      writeCriticalLog: (source, message, metadata) => {
+        target.logger.writeLog("CRITICAL", source, message, metadata);
+      },
+      publish: (type, payload, correlationId) => {
+        target.publish(type, payload, correlationId);
+      },
+      notify: (notification) => {
+        target.notifier.notify(notification);
+      },
+      publishTickTelemetry: (telemetryTick, telemetryMetrics, status, telemetryStartedAt) => {
+        target.publishTickTelemetry(telemetryTick, telemetryMetrics, status, telemetryStartedAt);
+      }
     }
   );
 }

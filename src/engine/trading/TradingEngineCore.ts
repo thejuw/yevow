@@ -45,7 +45,10 @@ import {
   type DomAnalyzerContextTarget
 } from "./book/DomAnalyzer";
 import { processTradingShadowQueueTick } from "./shadow/TradingShadowQueueRuntime";
-import { handleTradingAnomalyEmergencyPause } from "./anomaly/TradingAnomalyEmergencyRuntime";
+import {
+  handleTradingEngineAnomalyEmergencyPause,
+  type TradingAnomalyEmergencyTarget
+} from "./anomaly/TradingAnomalyEmergencyRuntime";
 import { updateLeadLagMetrics as updateLeadLagRuntimeMetrics } from "./leadlag/LeadLagRuntime";
 import { dispatchTradingInventoryHedgeIfNeeded } from "./inventory/TradingInventoryHedgeRuntime";
 import { calculateTradingInventoryState } from "./inventory/TradingInventoryStateRuntime";
@@ -1688,38 +1691,17 @@ export class TradingEngine {
     orderBookUpdateMs: number,
     hotPathStartedAt: number
   ): Promise<TickIngestResult> {
-    return handleTradingAnomalyEmergencyPause(
-      {
-        currentState: this.engineState,
-        latencyHistory: this.latencyHistory,
-        processingLatencySamples: this.processingLatencySamples,
-        domWallHistory: this.domWallHistory,
-        anomalyResult,
-        book,
-        tick,
-        domSnapshot,
-        metrics,
-        bids: this.bids,
-        asks: this.asks,
-        anomalyLogicStartedAt,
-        wakeUpTimeMs,
-        orderBookUpdateMs,
-        hotPathStartedAt
-      },
-      {
-        observeExecutionProfile: (profileMetrics, trace) =>
-          this.observeExecutionProfile(profileMetrics, trace),
-        applyState: (state) => {
-          this.engineState = state;
-        },
-        persistStorageWrites: (writes) => this.safeStoragePut(writes, "ANOMALY_EMERGENCY_PAUSE"),
-        writeCriticalLog: (source, message, metadata) =>
-          this.logger.writeLog("CRITICAL", source, message, metadata),
-        publish: (type, payload, correlationId) => this.publish(type, payload, correlationId),
-        notify: (notification) => this.notifier.notify(notification),
-        publishTickTelemetry: (telemetryTick, telemetryMetrics, status, telemetryStartedAt) =>
-          this.publishTickTelemetry(telemetryTick, telemetryMetrics, status, telemetryStartedAt)
-      }
+    return handleTradingEngineAnomalyEmergencyPause(
+      tick,
+      book,
+      domSnapshot,
+      anomalyResult,
+      anomalyLogicStartedAt,
+      metrics,
+      wakeUpTimeMs,
+      orderBookUpdateMs,
+      hotPathStartedAt,
+      this as unknown as TradingAnomalyEmergencyTarget
     );
   }
 

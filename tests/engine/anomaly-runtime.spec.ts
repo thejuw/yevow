@@ -11,7 +11,11 @@ import {
   type AnomalyEmergencyPauseFlowHandlers,
   type AnomalyEmergencyPauseSideEffectHandlers
 } from "../../src/engine/trading/anomaly/AnomalyRuntime";
-import { handleTradingAnomalyEmergencyPause } from "../../src/engine/trading/anomaly/TradingAnomalyEmergencyRuntime";
+import {
+  handleTradingAnomalyEmergencyPause,
+  handleTradingEngineAnomalyEmergencyPause,
+  type TradingAnomalyEmergencyTarget
+} from "../../src/engine/trading/anomaly/TradingAnomalyEmergencyRuntime";
 import { SortedBookSide } from "../../src/engine/trading/book/SortedBookSide";
 import type { AnomalyDetectionResult } from "../../src/agents/AnomalyDetector";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
@@ -302,6 +306,68 @@ describe("AnomalyRuntime", () => {
     expect(sideEffects.events[0]).toMatch(/^profile:/);
     expect(sideEffects.events.slice(1)).toEqual([
       "state:HALTED:2",
+      "persist:8",
+      "log:CRITICAL:TradingEngine:MARKET_ANOMALY_EMERGENCY_PAUSE",
+      "publish:EMERGENCY_PAUSE:anomaly-1",
+      "notify:CRITICAL",
+      "telemetry:FRESH:123"
+    ]);
+  });
+
+  it("handles anomaly emergency pause through the trading engine target adapter", async () => {
+    const events: string[] = [];
+    const bidSide = new SortedBookSide("bid");
+    const askSide = new SortedBookSide("ask");
+    bidSide.upsert(99, 1, OBSERVED_AT, 1);
+    askSide.upsert(101, 1, OBSERVED_AT, 1);
+    const target: TradingAnomalyEmergencyTarget = {
+      engineState: defaultEngineState("trading-anomaly-target"),
+      latencyHistory: [latency()],
+      processingLatencySamples: [1],
+      domWallHistory: dom().walls,
+      bids: new Map([["hyperliquid:btc-usd", bidSide]]),
+      asks: new Map([["hyperliquid:btc-usd", askSide]]),
+      logger: {
+        writeLog(level, source, _message, metadata) {
+          events.push(`log:${level}:${source}:${metadata.eventType}`);
+        }
+      },
+      notifier: {
+        notify(notification) {
+          events.push(`notify:${notification.priority}`);
+        }
+      },
+      observeExecutionProfile(_metrics, trace) {
+        events.push(`profile:${String(trace.orderBookUpdateMs)}:${String(trace.agentLogicMs)}`);
+      },
+      async safeStoragePut(writes) {
+        events.push(`persist:${Object.keys(writes).length}`);
+      },
+      publish(type, _payload, correlationId) {
+        events.push(`publish:${type}:${correlationId}`);
+      },
+      publishTickTelemetry(_tick, _metrics, status, hotPathStartedAt) {
+        events.push(`telemetry:${status}:${hotPathStartedAt}`);
+      }
+    };
+
+    const result = await handleTradingEngineAnomalyEmergencyPause(
+      tick(),
+      book(),
+      dom(),
+      anomalyResult(),
+      0,
+      latency(),
+      2,
+      1,
+      123,
+      target
+    );
+
+    expect(result).toMatchObject({ accepted: false, status: "ANOMALY_PAUSE" });
+    expect(target.engineState.mode).toBe("HALTED");
+    expect(events[0]).toMatch(/^profile:1:/);
+    expect(events.slice(1)).toEqual([
       "persist:8",
       "log:CRITICAL:TradingEngine:MARKET_ANOMALY_EMERGENCY_PAUSE",
       "publish:EMERGENCY_PAUSE:anomaly-1",
