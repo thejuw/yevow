@@ -87,11 +87,7 @@ import {
   strategyQuoteDisabledReason as runtimeStrategyQuoteDisabledReason
 } from "./quotes/QuoteLifecycleRuntime";
 import { applyResumeExpiredQuoteStatesSideEffects } from "./quotes/QuoteResumeRuntime";
-import {
-  applyQuoteSuppressionRuntime,
-  applyQuoteSuppressionSideEffects,
-  quoteSuppressionPolicyProjection
-} from "./quotes/QuoteSuppressionRuntime";
+import { applyTradingQuoteSuppression } from "./quotes/TradingQuoteSuppressionRuntime";
 import { dispatchTradingQuote } from "./quotes/TradingQuoteDispatchRuntime";
 import {
   applyQuoteRefreshThrottleSideEffects,
@@ -2465,36 +2461,26 @@ export class TradingEngine {
     ensembleAnomalyCircuitBreaker: boolean,
     ensembleRationale: string
   ): QuotePolicyResult {
-    const profilerSignalType = profilerResult.signal?.featureVector.signalType;
-    const quotePolicy = applyQuoteSuppressionRuntime({
-      assetQuoteStates: this.engineState.assetQuoteStates,
-      quoteState: this.engineState.quoteState,
-      instrumentCode,
-      quote: croupierDecision.quote,
-      pullAllQuotes: croupierDecision.pullAllQuotes,
-      instrumentSelected: isInstrumentSelectedByMoltworker(instrumentCode, this.macroBias),
-      config: this.cachedConfig,
-      envQuoteHibernateMs: this.env.QUOTE_HIBERNATE_MS,
-      tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-      shadowReplay,
-      executionPlans,
-      profilerSignalType,
-      profilerSuspendedUntil:
-        typeof profilerResult.signal?.featureVector.suspendedUntil === "string"
-          ? profilerResult.signal.featureVector.suspendedUntil
-          : undefined,
-      profilerQuoteHaltUntil: profilerResult.state.quoteHaltUntil,
-      ensembleAnomalyCircuitBreaker,
-      ensembleRationale,
-      observedAt
-    });
-
-    applyQuoteSuppressionSideEffects(quotePolicy.sideEffects, {
-      publishSuspend: (payload) => this.publish("SUSPEND_QUOTES", payload),
-      cancelQuotes: (reason) => this.state.waitUntil(this.cancelAllQuotes(instrumentCode, reason))
-    });
-
-    return quoteSuppressionPolicyProjection(quotePolicy);
+    return applyTradingQuoteSuppression(
+      {
+        engineState: this.engineState,
+        instrumentCode,
+        croupierDecision,
+        profilerResult,
+        executionPlans,
+        observedAt,
+        shadowReplay,
+        ensembleAnomalyCircuitBreaker,
+        ensembleRationale,
+        macroBias: this.macroBias,
+        config: this.cachedConfig,
+        envQuoteHibernateMs: this.env.QUOTE_HIBERNATE_MS
+      },
+      {
+        publishSuspend: (payload) => this.publish("SUSPEND_QUOTES", payload),
+        cancelQuotes: (reason) => this.state.waitUntil(this.cancelAllQuotes(instrumentCode, reason))
+      }
+    );
   }
 
   private prepareTickLatency(
