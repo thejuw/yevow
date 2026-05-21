@@ -327,7 +327,6 @@ import {
   ENGINE_STATE_KEY,
   ORDER_BOOK_PREFIX,
   PERFORMANCE_HISTORY_KEY,
-  CASCADE_POSITIONS_KEY,
   CASCADE_PAPER_ARMED_AT_KEY,
   CASCADE_LAST_BACKTEST_REPORT_KEY,
   RISK_LIMITS_KEY,
@@ -384,7 +383,10 @@ import {
   parseTickSizeMap,
   parsePositiveNumberMap
 } from "./book/BookRuntimeHelpers";
-import { closeTradingCascadePosition } from "./cascade/TradingCascadeManualCloseRuntime";
+import {
+  closeTradingEngineCascadePosition,
+  type TradingCascadeManualCloseTarget
+} from "./cascade/TradingCascadeManualCloseRuntime";
 import { normalizeNativeCoin, splitNativeInstrument } from "./helpers/NativeMarketIdentityRuntime";
 import { nativeBookSideLevels } from "./helpers/NativeHyperliquidRuntime";
 import {
@@ -1058,45 +1060,9 @@ export class TradingEngine {
     actor: string,
     reason: string
   ): Promise<{ ok: boolean; error?: string; position?: JsonRecord; intents?: JsonRecord[] }> {
-    const observedAt = new Date().toISOString();
-
-    return closeTradingCascadePosition(
-      {
-        positions: this.cascadePositionManager.snapshot(),
-        positionId,
-        actor,
-        reason,
-        observedAt,
-        markPriceContext: {
-          orderBook: this.orderBook,
-          assetMatrix: this.engineState.assetMatrix,
-          microstructure: this.engineState.microstructure
-        }
-      },
-      {
-        requestManualClose: (id, closeObservedAt, markPrice) =>
-          this.cascadePositionManager.requestManualClose(id, closeObservedAt, markPrice),
-        dispatchIntent: (intent) =>
-          this.state.waitUntil(
-            this.dispatchExecution(this.tradeIntentFromCascadePositionIntent(intent, observedAt))
-          ),
-        logManualClose: (metadata) =>
-          this.logger.warn(
-            "CASCADE_POSITION_MANUAL_CLOSE",
-            "Operator requested cascade position close",
-            metadata
-          ),
-        publishManualClose: (payload, correlationId) =>
-          this.publish("CASCADE_POSITION_MANUAL_CLOSE", payload, correlationId),
-        persistPositions: () =>
-          this.state.waitUntil(
-            this.safeStoragePut(
-              CASCADE_POSITIONS_KEY,
-              this.cascadePositionManager.snapshot(),
-              "CASCADE_POSITION_MANUAL_CLOSE"
-            )
-          )
-      }
+    return closeTradingEngineCascadePosition(
+      { positionId, actor, reason },
+      this as unknown as TradingCascadeManualCloseTarget
     );
   }
 

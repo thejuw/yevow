@@ -8,6 +8,12 @@ import {
   executableManualCloseIntents,
   openCascadePositionById
 } from "../../src/engine/trading/cascade/CascadeManualCloseRuntime";
+import {
+  closeTradingEngineCascadePosition,
+  type TradingCascadeManualCloseTarget
+} from "../../src/engine/trading/cascade/TradingCascadeManualCloseRuntime";
+import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
+import type { TradeIntent } from "../../src/types";
 import type { CascadeOpenPosition, CascadePositionIntent } from "../../src/strategy/cascade/types";
 
 const OBSERVED_AT = "2026-05-18T19:00:00.000Z";
@@ -163,6 +169,74 @@ describe("CascadeManualCloseRuntime", () => {
     ).toEqual(cascadePositionNotOpenResponse());
   });
 
+  it("closes cascade positions through the trading engine target adapter", async () => {
+    const open = position("position-1", "OPEN");
+    const close = intent("close", "CLOSE", 1);
+    const calls: string[] = [];
+    const scheduled: Promise<void>[] = [];
+    const engineState = defaultEngineState("manual-close-target");
+    engineState.microstructure.instrumentCode = "btc-usd";
+    engineState.microstructure.midPrice = 101;
+    const target: TradingCascadeManualCloseTarget = {
+      orderBook: new Map(),
+      engineState,
+      cascadePositionManager: {
+        snapshot() {
+          calls.push("snapshot");
+          return [open];
+        },
+        requestManualClose(positionId, observedAt, markPrice) {
+          calls.push(`request:${positionId}:${observedAt.length}:${markPrice}`);
+          return { intents: [close] };
+        }
+      },
+      state: {
+        waitUntil(work) {
+          calls.push("schedule");
+          scheduled.push(work);
+        }
+      },
+      logger: {
+        warn(eventType, _message, metadata) {
+          calls.push(`warn:${eventType}:${metadata?.positionId as string}`);
+        }
+      },
+      tradeIntentFromCascadePositionIntent(closeIntent) {
+        calls.push(`intent:${closeIntent.intentId}`);
+        return tradeIntent(`trade-${closeIntent.intentId}`);
+      },
+      async dispatchExecution(trade) {
+        calls.push(`dispatch:${trade.intentId}`);
+      },
+      publish(type, _payload, correlationId) {
+        calls.push(`publish:${type}:${correlationId ?? "none"}`);
+      },
+      async safeStoragePut(key, value, reason) {
+        calls.push(`persist:${key}:${(value as unknown[]).length}:${reason}`);
+      }
+    };
+
+    const response = closeTradingEngineCascadePosition(
+      { positionId: "position-1", actor: "operator", reason: "manual-risk-off" },
+      target
+    );
+    await Promise.all(scheduled);
+
+    expect(response.ok).toBe(true);
+    expect(calls).toEqual([
+      "snapshot",
+      "request:position-1:24:101",
+      "intent:close",
+      "dispatch:trade-close",
+      "schedule",
+      "warn:CASCADE_POSITION_MANUAL_CLOSE:position-1",
+      "publish:CASCADE_POSITION_MANUAL_CLOSE:position-1",
+      "snapshot",
+      "persist:cascade:positions:1:CASCADE_POSITION_MANUAL_CLOSE",
+      "schedule"
+    ]);
+  });
+
   it("returns not-open when the manual close target or manager update is unavailable", () => {
     expect(
       buildCascadeManualCloseRuntimeResult({
@@ -240,6 +314,39 @@ function intent(
     executionStyle: "TAKER_IOC",
     size,
     referencePrice: 100,
+    createdAt: OBSERVED_AT
+  };
+}
+
+function tradeIntent(intentId: string): TradeIntent {
+  return {
+    schemaVersion: "trade-intent.v1",
+    intentId,
+    traceId: `trace-${intentId}`,
+    instrumentCode: "btc-usd",
+    marketKey: "hyperliquid:btc-usd",
+    source_exchange: "hyperliquid",
+    direction: "SHORT",
+    executionStyle: "TAKER_IOC",
+    action: "SELL",
+    orderType: "IOC",
+    postOnly: false,
+    timeInForce: "IOC",
+    intendedPrice: 100,
+    expectedPrice: 100,
+    requestedSize: 1,
+    approvedSize: 1,
+    probabilityWin: 1,
+    probabilityLoss: 0,
+    profit: 0,
+    loss: 0,
+    executionCosts: 0,
+    adverseSelectionCost: 0,
+    expectedValue: 0,
+    minEvThreshold: 0,
+    maxSlippageBps: 10,
+    confidence: 1,
+    rationale: "manual close",
     createdAt: OBSERVED_AT
   };
 }
