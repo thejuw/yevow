@@ -73,8 +73,8 @@ import { evaluateTradingOracle } from "./agents/TradingOracleEvaluationRuntime";
 import { evaluateTradingProfiler } from "./agents/TradingProfilerEvaluationRuntime";
 import { applyIntentPaperExecutionBudgetSideEffects } from "./execution/PaperExecutionBudgetRuntime";
 import {
-  applyExecutionQueueDrainSideEffects,
-  applyExecutionQueueEnqueueSideEffects,
+  drainTradingExecutionQueue,
+  enqueueTradingExecutionIntent,
   type QueuedExecutionIntent
 } from "./execution/ExecutionQueueRuntime";
 import { calculateTradingAssetMatrix } from "./state/TradingAssetMatrixRuntime";
@@ -3037,23 +3037,19 @@ export class TradingEngine {
     priority: QueuedExecutionIntent["priority"],
     waitMs: number
   ): Promise<void> {
-    const now = Date.now();
-    await applyExecutionQueueEnqueueSideEffects(
+    await enqueueTradingExecutionIntent(
       {
         intent,
         priority,
         waitMs,
-        nowMs: now,
-        enqueuedAtIso: new Date(now).toISOString(),
-        alarmCapMs: CONFIG_ALARM_INTERVAL_MS,
-        lastDeferralLoggedAtMs: this.rateLimitDeferralLogAt,
-        throttleMs: HOT_PATH_LOG_THROTTLE_MS
+        nowMs: Date.now(),
+        lastDeferralLoggedAtMs: this.rateLimitDeferralLogAt
       },
       {
-        readQueue: () => this.readExecutionQueue("EXECUTION_QUEUE_ENQUEUE_READ"),
-        persistQueue: (queue) =>
-          this.safeStoragePut(EXECUTION_QUEUE_KEY, queue, "EXECUTION_QUEUE_ENQUEUE"),
-        setAlarm: (timestampMs) => this.safeSetAlarm(timestampMs, "EXECUTION_QUEUE_ALARM"),
+        readStoredQueue: () => this.state.storage.get<QueuedExecutionIntent[]>(EXECUTION_QUEUE_KEY),
+        handleStorageFailure: (reason, error) => this.handleStorageWriteFailure(reason, error),
+        persistQueue: (key, queue, reason) => this.safeStoragePut(key, queue, reason),
+        setAlarm: (timestampMs, reason) => this.safeSetAlarm(timestampMs, reason),
         markDeferralLogged: (loggedAtMs) => {
           this.rateLimitDeferralLogAt = loggedAtMs;
         },
@@ -3067,28 +3063,17 @@ export class TradingEngine {
     );
   }
 
-  private async readExecutionQueue(reason: string): Promise<QueuedExecutionIntent[]> {
-    try {
-      return (await this.state.storage.get<QueuedExecutionIntent[]>(EXECUTION_QUEUE_KEY)) ?? [];
-    } catch (error) {
-      this.handleStorageWriteFailure(reason, error);
-      return [];
-    }
-  }
-
   private async drainExecutionQueue(): Promise<void> {
-    const now = Date.now();
-    await applyExecutionQueueDrainSideEffects(
+    await drainTradingExecutionQueue(
       {
-        nowMs: now,
-        alarmCapMs: CONFIG_ALARM_INTERVAL_MS
+        nowMs: Date.now()
       },
       {
-        readQueue: () => this.readExecutionQueue("EXECUTION_QUEUE_DRAIN_READ"),
-        persistQueue: (queue) =>
-          this.safeStoragePut(EXECUTION_QUEUE_KEY, queue, "EXECUTION_QUEUE_DRAIN"),
+        readStoredQueue: () => this.state.storage.get<QueuedExecutionIntent[]>(EXECUTION_QUEUE_KEY),
+        handleStorageFailure: (reason, error) => this.handleStorageWriteFailure(reason, error),
+        persistQueue: (key, queue, reason) => this.safeStoragePut(key, queue, reason),
         dispatchExecution: (intent) => this.dispatchExecution(intent),
-        setAlarm: (timestampMs) => this.safeSetAlarm(timestampMs, "EXECUTION_QUEUE_NEXT_WAKE")
+        setAlarm: (timestampMs, reason) => this.safeSetAlarm(timestampMs, reason)
       }
     );
   }

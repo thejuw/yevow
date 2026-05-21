@@ -1,3 +1,8 @@
+import {
+  CONFIG_ALARM_INTERVAL_MS,
+  EXECUTION_QUEUE_KEY,
+  HOT_PATH_LOG_THROTTLE_MS
+} from "../../../TradingEngineConstants";
 import type { JsonRecord, TradeIntent } from "../../../types";
 
 export type ExecutionQueuePriority = "CANCEL" | "NEW";
@@ -78,6 +83,41 @@ export interface ExecutionQueueEnqueueSideEffectHandlers {
   readonly setAlarm: (timestampMs: number) => Promise<void>;
   readonly markDeferralLogged: (loggedAtMs: number) => void;
   readonly warnDeferral: (metadata: JsonRecord) => void;
+}
+
+export interface TradingExecutionQueueReadHandlers {
+  readonly readStoredQueue: () => Promise<QueuedExecutionIntent[] | undefined>;
+  readonly handleStorageFailure: (reason: string, error: unknown) => void;
+}
+
+export interface TradingExecutionQueueStorageHandlers extends TradingExecutionQueueReadHandlers {
+  readonly persistQueue: (
+    key: string,
+    queue: readonly QueuedExecutionIntent[],
+    reason: string
+  ) => Promise<void>;
+  readonly setAlarm: (timestampMs: number, reason: string) => Promise<void>;
+}
+
+export interface TradingExecutionQueueEnqueueInput {
+  readonly intent: TradeIntent;
+  readonly priority: ExecutionQueuePriority;
+  readonly waitMs: number;
+  readonly nowMs: number;
+  readonly lastDeferralLoggedAtMs: number;
+}
+
+export interface TradingExecutionQueueEnqueueHandlers extends TradingExecutionQueueStorageHandlers {
+  readonly markDeferralLogged: (loggedAtMs: number) => void;
+  readonly warnDeferral: (metadata: JsonRecord) => void;
+}
+
+export interface TradingExecutionQueueDrainInput {
+  readonly nowMs: number;
+}
+
+export interface TradingExecutionQueueDrainHandlers extends TradingExecutionQueueStorageHandlers {
+  readonly dispatchExecution: (intent: TradeIntent) => Promise<void>;
 }
 
 const DEFAULT_MAX_QUEUE_SIZE = 1_000;
@@ -224,4 +264,61 @@ export async function applyExecutionQueueDrainSideEffects(
   }
 
   return plan;
+}
+
+export async function readTradingExecutionQueue(
+  reason: string,
+  handlers: TradingExecutionQueueReadHandlers
+): Promise<QueuedExecutionIntent[]> {
+  try {
+    return (await handlers.readStoredQueue()) ?? [];
+  } catch (error) {
+    handlers.handleStorageFailure(reason, error);
+    return [];
+  }
+}
+
+export async function enqueueTradingExecutionIntent(
+  input: TradingExecutionQueueEnqueueInput,
+  handlers: TradingExecutionQueueEnqueueHandlers
+): Promise<ExecutionQueueEnqueuePlan> {
+  return applyExecutionQueueEnqueueSideEffects(
+    {
+      intent: input.intent,
+      priority: input.priority,
+      waitMs: input.waitMs,
+      nowMs: input.nowMs,
+      enqueuedAtIso: new Date(input.nowMs).toISOString(),
+      alarmCapMs: CONFIG_ALARM_INTERVAL_MS,
+      lastDeferralLoggedAtMs: input.lastDeferralLoggedAtMs,
+      throttleMs: HOT_PATH_LOG_THROTTLE_MS
+    },
+    {
+      readQueue: () => readTradingExecutionQueue("EXECUTION_QUEUE_ENQUEUE_READ", handlers),
+      persistQueue: (queue) =>
+        handlers.persistQueue(EXECUTION_QUEUE_KEY, queue, "EXECUTION_QUEUE_ENQUEUE"),
+      setAlarm: (timestampMs) => handlers.setAlarm(timestampMs, "EXECUTION_QUEUE_ALARM"),
+      markDeferralLogged: handlers.markDeferralLogged,
+      warnDeferral: handlers.warnDeferral
+    }
+  );
+}
+
+export async function drainTradingExecutionQueue(
+  input: TradingExecutionQueueDrainInput,
+  handlers: TradingExecutionQueueDrainHandlers
+): Promise<ExecutionQueueDrainPlan | null> {
+  return applyExecutionQueueDrainSideEffects(
+    {
+      nowMs: input.nowMs,
+      alarmCapMs: CONFIG_ALARM_INTERVAL_MS
+    },
+    {
+      readQueue: () => readTradingExecutionQueue("EXECUTION_QUEUE_DRAIN_READ", handlers),
+      persistQueue: (queue) =>
+        handlers.persistQueue(EXECUTION_QUEUE_KEY, queue, "EXECUTION_QUEUE_DRAIN"),
+      dispatchExecution: handlers.dispatchExecution,
+      setAlarm: (timestampMs) => handlers.setAlarm(timestampMs, "EXECUTION_QUEUE_NEXT_WAKE")
+    }
+  );
 }

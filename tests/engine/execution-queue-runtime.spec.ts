@@ -4,9 +4,12 @@ import {
   applyExecutionQueueEnqueueSideEffects,
   buildExecutionQueueEnqueuePlan,
   compareExecutionQueueItems,
+  drainTradingExecutionQueue,
+  enqueueTradingExecutionIntent,
   type ExecutionQueueDrainSideEffectHandlers,
   executionQueueDeferralLogMetadata,
   type ExecutionQueueEnqueueSideEffectHandlers,
+  readTradingExecutionQueue,
   shouldLogExecutionQueueDeferral,
   splitExecutionQueueForDrain,
   type ExecutionQueuePriority,
@@ -197,6 +200,120 @@ describe("ExecutionQueueRuntime", () => {
     ).resolves.toBeNull();
 
     expect(sideEffects.events).toEqual(["read"]);
+  });
+
+  it("reads the trading execution queue through durable storage handlers", async () => {
+    const storedQueue = [queuedIntent({ id: "stored", priority: "NEW", runAfterMs: 2_000 })];
+    const failures: string[] = [];
+
+    await expect(
+      readTradingExecutionQueue("TEST_READ", {
+        readStoredQueue: () => Promise.resolve(storedQueue),
+        handleStorageFailure: (reason) => failures.push(reason)
+      })
+    ).resolves.toBe(storedQueue);
+
+    expect(failures).toEqual([]);
+  });
+
+  it("fails closed to an empty execution queue when durable storage read fails", async () => {
+    const failures: string[] = [];
+
+    await expect(
+      readTradingExecutionQueue("TEST_READ_FAILURE", {
+        readStoredQueue: () => Promise.reject(new Error("d1 storage unavailable")),
+        handleStorageFailure: (reason, error) => {
+          failures.push(`${reason}:${error instanceof Error ? error.message : "unknown"}`);
+        }
+      })
+    ).resolves.toEqual([]);
+
+    expect(failures).toEqual(["TEST_READ_FAILURE:d1 storage unavailable"]);
+  });
+
+  it("enqueues trading execution intents with canonical storage and alarm reasons", async () => {
+    const events: string[] = [];
+
+    const plan = await enqueueTradingExecutionIntent(
+      {
+        intent: tradeIntent({ intentId: "adapter-queued" }),
+        priority: "NEW",
+        waitMs: 7_500,
+        nowMs: 1_000,
+        lastDeferralLoggedAtMs: -60_000
+      },
+      {
+        readStoredQueue: () => {
+          events.push("read");
+          return Promise.resolve([]);
+        },
+        handleStorageFailure: (reason) => events.push(`failure:${reason}`),
+        persistQueue: (key, queue, reason) => {
+          events.push(
+            `persist:${key}:${reason}:${queue.map((item) => item.intent.intentId).join(",")}`
+          );
+          return Promise.resolve();
+        },
+        setAlarm: (timestampMs, reason) => {
+          events.push(`alarm:${reason}:${timestampMs}`);
+          return Promise.resolve();
+        },
+        markDeferralLogged: (loggedAtMs) => events.push(`mark:${loggedAtMs}`),
+        warnDeferral: (metadata) =>
+          events.push(`warn:${String(metadata.intentId)}:${String(metadata.waitMs)}`)
+      }
+    );
+
+    expect(plan.runAfterMs).toBe(8_500);
+    expect(events).toEqual([
+      "read",
+      "persist:execution:deferred-queue:EXECUTION_QUEUE_ENQUEUE:adapter-queued",
+      "alarm:EXECUTION_QUEUE_ALARM:6000",
+      "mark:1000",
+      "warn:adapter-queued:7500"
+    ]);
+  });
+
+  it("drains trading execution queues and schedules the next durable wake", async () => {
+    const events: string[] = [];
+
+    const plan = await drainTradingExecutionQueue(
+      {
+        nowMs: 1_000
+      },
+      {
+        readStoredQueue: () => {
+          events.push("read");
+          return Promise.resolve([
+            queuedIntent({ id: "due", priority: "NEW", runAfterMs: 500 }),
+            queuedIntent({ id: "pending", priority: "NEW", runAfterMs: 9_000 })
+          ]);
+        },
+        handleStorageFailure: (reason) => events.push(`failure:${reason}`),
+        persistQueue: (key, queue, reason) => {
+          events.push(
+            `persist:${key}:${reason}:${queue.map((item) => item.intent.intentId).join(",")}`
+          );
+          return Promise.resolve();
+        },
+        dispatchExecution: (intent) => {
+          events.push(`dispatch:${intent.intentId}`);
+          return Promise.resolve();
+        },
+        setAlarm: (timestampMs, reason) => {
+          events.push(`alarm:${reason}:${timestampMs}`);
+          return Promise.resolve();
+        }
+      }
+    );
+
+    expect(plan?.due.map((item) => item.intent.intentId)).toEqual(["due"]);
+    expect(events).toEqual([
+      "read",
+      "persist:execution:deferred-queue:EXECUTION_QUEUE_DRAIN:pending",
+      "dispatch:due",
+      "alarm:EXECUTION_QUEUE_NEXT_WAKE:6000"
+    ]);
   });
 });
 
