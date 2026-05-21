@@ -37,6 +37,11 @@ import {
   type StaleDataKillSwitchSideEffectHandlers
 } from "../../src/engine/trading/performance/StaleLatencyGuardRuntime";
 import {
+  handleTradingHardStaleTickDrop,
+  handleTradingSoftStaleTick,
+  type TradingStaleLatencyTarget
+} from "../../src/engine/trading/performance/TradingStaleLatencyRuntime";
+import {
   applyLatencyBaselineResetSideEffects,
   latencyBaselineResetArtifacts,
   stateAfterLatencyBaselineReset,
@@ -769,6 +774,92 @@ describe("LatencyRuntime", () => {
       "snapshot:2026-05-18T15:00:00.250Z"
     ]);
     await Promise.all(flow.scheduled);
+  });
+
+  it("routes stale latency decisions through the trading engine target adapter", async () => {
+    const currentState = defaultEngineState("stale-target-flow");
+    currentState.staleTickCount = 2;
+    const events: string[] = [];
+    const scheduled: Promise<unknown>[] = [];
+    const target: TradingStaleLatencyTarget = {
+      engineState: currentState,
+      cachedConfig: {
+        TRADING_ENABLED: true,
+        QUOTE_HIBERNATE_MS: 60_000
+      },
+      env: {
+        QUOTE_HIBERNATE_MS: undefined
+      },
+      maxLatencyMs: 250,
+      state: {
+        waitUntil(work) {
+          events.push("schedule");
+          scheduled.push(work);
+        }
+      },
+      logger: {
+        warn(eventType, _message, metadata) {
+          events.push(`warn:${eventType}:${String(metadata.sequence)}`);
+        }
+      },
+      notifier: {
+        notify(notification) {
+          events.push(`notify:${notification.priority}`);
+        }
+      },
+      resetLatencyBaseline(_observedAt, reason) {
+        events.push(`reset:${reason}`);
+      },
+      latencyStorageWrites(extra) {
+        events.push(`writes:${extra ? Object.keys(extra).length : 0}`);
+        return { latency: true, ...(extra ?? {}) };
+      },
+      async persistHotStorageSnapshot(writes, reason) {
+        events.push(`persist:${reason}:${Object.keys(writes).length}`);
+      },
+      logPerformance(metrics) {
+        events.push(`performance:${metrics.totalLatencyMs}`);
+      },
+      publish(type, payload) {
+        events.push(`publish:${type}:${String(payload.action)}`);
+      },
+      async cancelAllQuotes(instrumentCode, reason) {
+        events.push(`cancel:${instrumentCode}:${reason}`);
+      },
+      observeExecutionProfile(metrics) {
+        events.push(`profile:${metrics.totalLatencyMs}`);
+      },
+      publishTickTelemetry(_tick, _metrics, status, hotPathStartedAt) {
+        events.push(`telemetry:${status}:${hotPathStartedAt}`);
+      },
+      maybeRecordAgentSnapshot(observedAt) {
+        events.push(`snapshot:${observedAt}`);
+      }
+    };
+
+    const hard = await handleTradingHardStaleTickDrop(
+      tick({ sequence: 900 }),
+      latencyMetrics({ totalLatencyMs: 900 }),
+      "dwellir-btc",
+      150,
+      target
+    );
+    const soft = await handleTradingSoftStaleTick(
+      tick({ sequence: 901 }),
+      latencyMetrics({ status: "STALE", totalLatencyMs: 650 }),
+      2,
+      123,
+      target
+    );
+
+    expect(hard).toMatchObject({ status: "STALE_DROPPED" });
+    expect(soft).toMatchObject({ status: "STALE" });
+    expect(target.engineState.staleTickCount).toBeGreaterThan(2);
+    expect(events).toContain("warn:HARD_STALE_TICK_DROPPED:900");
+    expect(events).toContain("publish:STALE_DATA_KILL_SWITCH:PULL_ALL_QUOTES");
+    expect(events).toContain("publish:STALE_DATA_KILL_SWITCH:PULL_CURRENT_QUOTES");
+    expect(events).toContain("telemetry:STALE:123");
+    await Promise.all(scheduled);
   });
 
   it("pulls native Hyperliquid quotes when latency exceeds the hot-path threshold", () => {

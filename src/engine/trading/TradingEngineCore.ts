@@ -53,7 +53,6 @@ import { resolveMaxPositionPct } from "./risk/PortfolioRiskRuntime";
 import { updateTradingPortfolioRisk } from "./risk/TradingPortfolioRiskRuntime";
 import { calculateTradingEnsembleState } from "./ensemble/TradingEnsembleRuntime";
 import { stateAfterFundingTick } from "./funding/FundingRuntime";
-import { resolveQuoteHibernateMs } from "./quotes/QuoteLifecycleRuntime";
 import { resumeTradingQuotesIfExpired } from "./quotes/TradingQuoteStateRuntime";
 import { applyTradingQuoteSuppression } from "./quotes/TradingQuoteSuppressionRuntime";
 import { dispatchTradingQuote } from "./quotes/TradingQuoteDispatchRuntime";
@@ -87,11 +86,14 @@ import { type ExecutionTraceInput } from "./performance/LatencyRuntime";
 import { buildTradingPerformanceMetricsResponse } from "./performance/TradingPerformanceMetricsResponseRuntime";
 import { observeTradingExecutionProfile } from "./performance/TradingExecutionProfileRuntime";
 import {
-  applyHardStaleTickDropFlow,
-  applySoftStaleTickFlow,
   applyTradingNativeHyperliquidLatencyPull,
   latencySnapshotStorageWrites
 } from "./performance/StaleLatencyGuardRuntime";
+import {
+  handleTradingHardStaleTickDrop,
+  handleTradingSoftStaleTick,
+  type TradingStaleLatencyTarget
+} from "./performance/TradingStaleLatencyRuntime";
 import {
   applyLatencyBaselineResetSideEffects,
   latencyBaselineResetArtifacts
@@ -1615,31 +1617,12 @@ export class TradingEngine {
     streamId: string | null,
     hardStaleDropMs: number
   ): Promise<TickIngestResult> {
-    return applyHardStaleTickDropFlow(
-      {
-        currentState: this.engineState,
-        tick,
-        metrics,
-        streamId,
-        hardStaleDropMs,
-        tradingEnabled: this.cachedConfig.TRADING_ENABLED
-      },
-      {
-        applyState: (state) => {
-          this.engineState = state;
-        },
-        resetLatencyBaseline: (observedAt, reason) => this.resetLatencyBaseline(observedAt, reason),
-        persistLatencySnapshot: (reason) =>
-          this.persistHotStorageSnapshot(this.latencyStorageWrites(), reason),
-        warnHardStale: (metadata) =>
-          this.logger.warn("HARD_STALE_TICK_DROPPED", "Dropped tick beyond hard stale threshold", {
-            ...metadata
-          }),
-        logPerformance: (staleMetrics) => this.logPerformance(staleMetrics),
-        publishPull: (payload) => this.publish("STALE_DATA_KILL_SWITCH", payload),
-        schedule: (work) => this.state.waitUntil(work),
-        cancelAllQuotes: (instrumentCode, reason) => this.cancelAllQuotes(instrumentCode, reason)
-      }
+    return handleTradingHardStaleTickDrop(
+      tick,
+      metrics,
+      streamId,
+      hardStaleDropMs,
+      this as unknown as TradingStaleLatencyTarget
     );
   }
 
@@ -1649,39 +1632,12 @@ export class TradingEngine {
     wakeUpTimeMs: number | null,
     hotPathStartedAt: number
   ): Promise<TickIngestResult> {
-    return applySoftStaleTickFlow(
-      {
-        tick,
-        metrics,
-        maxLatencyMs: this.maxLatencyMs,
-        quoteHibernateMs: resolveQuoteHibernateMs(this.cachedConfig, this.env.QUOTE_HIBERNATE_MS),
-        tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-        trace: {
-          wakeUpTimeMs,
-          orderBookUpdateMs: null,
-          agentLogicMs: null,
-          hotPathStartedAt,
-          observedAt: metrics.brainTimestamp
-        }
-      },
-      {
-        readCurrentState: () => this.engineState,
-        observeExecutionProfile: (profileMetrics, trace) =>
-          this.observeExecutionProfile(profileMetrics, trace),
-        applyState: (state) => {
-          this.engineState = state;
-        },
-        persistLatencySnapshot: (extra, reason) =>
-          this.persistHotStorageSnapshot(this.latencyStorageWrites(extra), reason),
-        logPerformance: (staleMetrics) => this.logPerformance(staleMetrics),
-        publishKillSwitch: (payload) => this.publish("STALE_DATA_KILL_SWITCH", payload),
-        notify: (notification) => this.notifier.notify(notification),
-        schedule: (work) => this.state.waitUntil(work),
-        cancelAllQuotes: (instrumentCode, reason) => this.cancelAllQuotes(instrumentCode, reason),
-        publishTickTelemetry: (telemetryTick, telemetryMetrics, status, telemetryStartedAt) =>
-          this.publishTickTelemetry(telemetryTick, telemetryMetrics, status, telemetryStartedAt),
-        recordAgentSnapshot: (observedAt) => this.maybeRecordAgentSnapshot(observedAt)
-      }
+    return handleTradingSoftStaleTick(
+      tick,
+      metrics,
+      wakeUpTimeMs,
+      hotPathStartedAt,
+      this as unknown as TradingStaleLatencyTarget
     );
   }
 
