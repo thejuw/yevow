@@ -79,7 +79,10 @@ import {
   type TradingExecutionPlanDispatchTarget
 } from "./execution/ExecutionPlanDispatchRuntime";
 import { dispatchTradingExecutionIntent } from "./execution/TradingExecutionDispatchRuntime";
-import { applyTradingExecutionReport } from "./execution/TradingExecutionReportRuntime";
+import {
+  applyTradingExecutionReportForTarget,
+  type TradingExecutionReportTarget
+} from "./execution/TradingExecutionReportRuntime";
 import { type OracleTickResult } from "./agents/AgentEvaluationRuntime";
 import { evaluateTradingCroupier } from "./agents/TradingCroupierEvaluationRuntime";
 import { evaluateTradingOracle } from "./agents/TradingOracleEvaluationRuntime";
@@ -2444,36 +2447,9 @@ export class TradingEngine {
   }
 
   private async applyExecutionReport(report: ExecutionReport): Promise<void> {
-    await applyTradingExecutionReport(
-      {
-        state: this.engineState,
-        report,
-        orderBook: this.orderBook,
-        microstructure: this.engineState.microstructure
-      },
-      {
-        calculateInventory: (observedAt, openPositions) =>
-          this.calculateInventoryState(observedAt, openPositions),
-        observeAdverseSelection: (executionReport, order, markPrice, oracleRegime) =>
-          this.adverseSelectionModel.observeExecutionReport(
-            executionReport,
-            order,
-            markPrice,
-            oracleRegime
-          ),
-        recordExecutionQuality: (record) => this.logger.recordExecutionQuality(record),
-        applyState: async (state) => {
-          this.engineState = state;
-          await this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "EXECUTION_REPORT");
-        },
-        recordExecution: (tradeExecution) => this.logger.recordExecution(tradeExecution),
-        publishTradeExecution: (tradeExecution) =>
-          this.publish(
-            "TRADE_EXECUTION_UPDATE",
-            tradeExecution as unknown as Record<string, unknown>,
-            tradeExecution.tradeId
-          )
-      }
+    await applyTradingExecutionReportForTarget(
+      report,
+      this as unknown as TradingExecutionReportTarget
     );
   }
 

@@ -17,6 +17,10 @@ import {
   type ExecutionReportFlowHandlers,
   type ExecutionReportSideEffectHandlers
 } from "../../src/engine/trading/execution/ExecutionReportRuntime";
+import {
+  applyTradingExecutionReportForTarget,
+  type TradingExecutionReportTarget
+} from "../../src/engine/trading/execution/TradingExecutionReportRuntime";
 import { evaluateIntentDispatchGate } from "../../src/engine/IntentGeneration";
 import { countOrderBookLevels } from "../../src/engine/OrderBookState";
 import { QueuePositionModel } from "../../src/engine/QueuePositionModel";
@@ -118,6 +122,7 @@ describe("execution accounting", () => {
         })
       }
     });
+    state.oracle = { regime: "REGIME_RANGE" } as EngineState["oracle"];
     const inventory = inventoryState({ netDelta: 0.5, updatedAt: observedAt });
     const report: ExecutionReport = {
       clientId: "order-open",
@@ -247,6 +252,79 @@ describe("execution accounting", () => {
       "state:FILLED",
       "record:order-open",
       "publish:order-open"
+    ]);
+  });
+
+  it("applies execution reports through the trading target adapter", async () => {
+    const observedAt = "2026-05-18T12:00:00.000Z";
+    const calls: string[] = [];
+    const state = engineState({
+      lastTradeIntent: tradeIntent({ intentId: "intent-open" }),
+      orderMap: {
+        "order-open": managedOrder({
+          clientId: "order-open",
+          intentId: "intent-open",
+          side: "BUY",
+          price: 100,
+          size: 1
+        })
+      }
+    });
+    state.oracle = { regime: "REGIME_RANGE" } as EngineState["oracle"];
+    const target: TradingExecutionReportTarget = {
+      engineState: state,
+      orderBook: new Map(),
+      adverseSelectionModel: {
+        observeExecutionReport(_report, order, markPrice, oracleRegime) {
+          calls.push(`adverse:${order.clientId}:${markPrice}:${oracleRegime}`);
+        }
+      },
+      logger: {
+        recordExecutionQuality(record) {
+          calls.push(`quality:${record.clientId}`);
+        },
+        recordExecution(execution) {
+          calls.push(`record:${execution.tradeId}`);
+        }
+      },
+      calculateInventoryState(inventoryObservedAt, openPositions) {
+        calls.push(
+          `inventory:${inventoryObservedAt}:${openPositions["btc-usd"]?.quantity ?? "missing"}`
+        );
+        return inventoryState({ netDelta: 0.5, updatedAt: observedAt });
+      },
+      async safeStoragePut(key, _value, reason) {
+        calls.push(`persist:${key}:${reason}`);
+      },
+      publish(type, _payload, correlationId) {
+        calls.push(`publish:${type}:${correlationId ?? "none"}`);
+      }
+    };
+
+    await applyTradingExecutionReportForTarget(
+      {
+        clientId: "order-open",
+        instrumentCode: "btc-usd",
+        side: "BUY",
+        status: "FILLED",
+        filledSize: 0.5,
+        achievedPrice: 101,
+        expectedPrice: 100,
+        fees: 0.05,
+        latencyMs: 12,
+        observedAt
+      },
+      target
+    );
+
+    expect(target.engineState.orderMap["order-open"]?.status).toBe("FILLED");
+    expect(calls).toEqual([
+      "inventory:2026-05-18T12:00:00.000Z:0.5",
+      "adverse:order-open:100:REGIME_RANGE",
+      "quality:order-open",
+      "persist:engine:state:EXECUTION_REPORT",
+      "record:execution:order-open:local:FILLED:1779105600000",
+      "publish:TRADE_EXECUTION_UPDATE:execution:order-open:local:FILLED:1779105600000"
     ]);
   });
 

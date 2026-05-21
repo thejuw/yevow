@@ -3,8 +3,10 @@ import type {
   ExecutionReport,
   InternalOrderBook,
   InventoryState,
-  MicrostructureMetrics
+  MicrostructureMetrics,
+  TradeExecution
 } from "../../../types";
+import { ENGINE_STATE_KEY } from "../../../TradingEngineConstants";
 import { currentMarkPriceForInstrument } from "../book/BookViews";
 import {
   applyExecutionReportFlow,
@@ -28,6 +30,31 @@ export interface TradingExecutionReportHandlers extends Omit<
     openPositions: EngineState["openPositions"]
   ) => InventoryState;
   readonly applyState: (state: EngineState) => Promise<void>;
+}
+
+export interface TradingExecutionReportTarget {
+  engineState: EngineState;
+  readonly orderBook: Map<string, InternalOrderBook>;
+  readonly adverseSelectionModel: {
+    observeExecutionReport(
+      report: ExecutionReport,
+      order: Parameters<ExecutionReportSideEffectHandlers["observeAdverseSelection"]>[1],
+      markPrice: number,
+      oracleRegime: EngineState["oracle"]["regime"]
+    ): void;
+  };
+  readonly logger: {
+    recordExecutionQuality(
+      record: Parameters<ExecutionReportSideEffectHandlers["recordExecutionQuality"]>[0]
+    ): void;
+    recordExecution(execution: TradeExecution): void;
+  };
+  calculateInventoryState(
+    observedAt: string,
+    openPositions: EngineState["openPositions"]
+  ): InventoryState;
+  safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
+  publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
 }
 
 export function markPriceForTradingExecutionReport(
@@ -64,6 +91,49 @@ export function applyTradingExecutionReport(
       applyState: handlers.applyState,
       recordExecution: handlers.recordExecution,
       publishTradeExecution: handlers.publishTradeExecution
+    }
+  );
+}
+
+export function applyTradingExecutionReportForTarget(
+  report: ExecutionReport,
+  target: TradingExecutionReportTarget
+): Promise<ExecutionReportRuntimeUpdate> {
+  return applyTradingExecutionReport(
+    {
+      state: target.engineState,
+      report,
+      orderBook: target.orderBook,
+      microstructure: target.engineState.microstructure
+    },
+    {
+      calculateInventory: (observedAt, openPositions) =>
+        target.calculateInventoryState(observedAt, openPositions),
+      observeAdverseSelection: (executionReport, order, markPrice, oracleRegime) => {
+        target.adverseSelectionModel.observeExecutionReport(
+          executionReport,
+          order,
+          markPrice,
+          oracleRegime
+        );
+      },
+      recordExecutionQuality: (record) => {
+        target.logger.recordExecutionQuality(record);
+      },
+      applyState: async (state) => {
+        target.engineState = state;
+        await target.safeStoragePut(ENGINE_STATE_KEY, target.engineState, "EXECUTION_REPORT");
+      },
+      recordExecution: (tradeExecution) => {
+        target.logger.recordExecution(tradeExecution);
+      },
+      publishTradeExecution: (tradeExecution) => {
+        target.publish(
+          "TRADE_EXECUTION_UPDATE",
+          tradeExecution as unknown as Record<string, unknown>,
+          tradeExecution.tradeId
+        );
+      }
     }
   );
 }
