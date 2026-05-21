@@ -3,6 +3,11 @@ import type { Backtester } from "../../../strategy/cascade/Backtester";
 import type { NewsCalendar } from "../../../strategy/cascade/NewsCalendar";
 import type { AppliedBookUpdate } from "../book/BookTypes";
 import {
+  applyTradingBookDeltaForTarget,
+  applyTradingBookSnapshotForTarget,
+  type TradingBookApplicationTarget
+} from "../book/TradingBookApplicationRuntime";
+import {
   resetTradingOrderBookForTarget,
   type TradingOrderBookResetTarget
 } from "../book/OrderBookResetRuntime";
@@ -158,7 +163,7 @@ export interface EngineHttpRouteContext {
   applyConfigUpdate(update: AdminConfigUpdate): Promise<void>;
 }
 
-export interface EngineHttpRouteContextTarget {
+export interface EngineHttpRouteContextTarget extends TradingBookApplicationTarget {
   readonly env: Env;
   readonly state: DurableObjectState;
   readonly logger: Logger;
@@ -182,8 +187,6 @@ export interface EngineHttpRouteContextTarget {
   recoverEngineState(
     payload: Parameters<EngineHttpRouteContext["recoverEngineState"]>[0]
   ): Promise<unknown>;
-  applySnapshot(snapshot: OrderBookSnapshot): Promise<unknown>;
-  applyDelta(delta: OrderBookDelta, observedAt: string): Promise<AppliedBookUpdate>;
   enqueueTick(tick: MarketTick, wakeUpTimeMs: number | null): Promise<TickIngestResult>;
   acceptAgentSignal(signal: AgentSignal, latencyMs: number): Promise<void>;
   applyConfigUpdate(update: AdminConfigUpdate): Promise<void>;
@@ -240,8 +243,8 @@ export function createTradingEngineHttpRouteContext(
       ),
     currentDomHeatmap: (instrumentCode) =>
       currentTradingDomHeatmapForTarget(target as unknown as TradingBookViewTarget, instrumentCode),
-    applySnapshot: (snapshot) => target.applySnapshot(snapshot),
-    applyDelta: (delta, observedAt) => target.applyDelta(delta, observedAt),
+    applySnapshot: (snapshot) => applyTradingBookSnapshotForTarget(snapshot, {}, target),
+    applyDelta: (delta, observedAt) => applyTradingBookDeltaForTarget(delta, observedAt, target),
     enqueueOrderBookReset: (payload) =>
       enqueueTradingIngestJob(target as unknown as TradingIngestQueueTarget, () =>
         resetTradingOrderBookForTarget(payload, target as unknown as TradingOrderBookResetTarget)

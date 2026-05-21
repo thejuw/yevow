@@ -4,6 +4,15 @@ import type { TickBookResolution } from "../pipelines/TickPipelineTypes";
 import type { AppliedBookUpdate, BookDeltaWithTicker } from "./BookTypes";
 import { currentBookForMarketTick } from "./BookViews";
 import { resolveTickBookFlow } from "./TickBookResolutionRuntime";
+import {
+  applyTradingBookDeltaForTarget,
+  type TradingBookApplicationTarget
+} from "./TradingBookApplicationRuntime";
+import {
+  handleTradingEngineInformationalBookNotReady,
+  handleTradingEngineRejectedBookDelta,
+  type TradingBookEarlyReturnTarget
+} from "./TradingBookEarlyReturnRuntime";
 
 export interface TradingTickBookInput {
   readonly orderBook: Map<string, InternalOrderBook>;
@@ -35,24 +44,9 @@ export interface TradingTickBookHandlers {
   ) => Promise<TickIngestResult>;
 }
 
-export interface TradingTickBookTarget {
+export interface TradingTickBookTarget
+  extends TradingBookApplicationTarget, TradingBookEarlyReturnTarget {
   readonly orderBook: Map<string, InternalOrderBook>;
-  applyDelta(delta: BookDeltaWithTicker, observedAt: string): Promise<AppliedBookUpdate>;
-  handleInformationalBookNotReady(
-    tick: MarketTick,
-    metrics: LatencyMetrics,
-    wakeUpTimeMs: number | null,
-    orderBookUpdateMs: number,
-    hotPathStartedAt: number
-  ): Promise<TickIngestResult>;
-  handleRejectedBookDelta(
-    tick: MarketTick,
-    metrics: LatencyMetrics,
-    applied: AppliedBookUpdate,
-    wakeUpTimeMs: number | null,
-    orderBookUpdateMs: number,
-    hotPathStartedAt: number
-  ): Promise<TickIngestResult>;
 }
 
 export function resolveTradingTickBook(
@@ -85,7 +79,7 @@ export function resolveTradingTickBookForTarget(
       orderBook: target.orderBook
     },
     {
-      applyDelta: (delta, observedAt) => target.applyDelta(delta, observedAt),
+      applyDelta: (delta, observedAt) => applyTradingBookDeltaForTarget(delta, observedAt, target),
       handleInformationalBookNotReady: (
         tick,
         metrics,
@@ -93,12 +87,13 @@ export function resolveTradingTickBookForTarget(
         orderBookUpdateMs,
         hotPathStartedAt
       ) =>
-        target.handleInformationalBookNotReady(
+        handleTradingEngineInformationalBookNotReady(
           tick,
           metrics,
           wakeUpTimeMs,
           orderBookUpdateMs,
-          hotPathStartedAt
+          hotPathStartedAt,
+          target
         ),
       handleRejectedBookDelta: (
         tick,
@@ -108,13 +103,14 @@ export function resolveTradingTickBookForTarget(
         orderBookUpdateMs,
         hotPathStartedAt
       ) =>
-        target.handleRejectedBookDelta(
+        handleTradingEngineRejectedBookDelta(
           tick,
           metrics,
           applied,
           wakeUpTimeMs,
           orderBookUpdateMs,
-          hotPathStartedAt
+          hotPathStartedAt,
+          target
         )
     }
   );

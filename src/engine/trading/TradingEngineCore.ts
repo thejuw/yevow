@@ -15,16 +15,6 @@ import { CroupierAgent, type CroupierDecision } from "../../agents/CroupierAgent
 import { AdverseSelectionModel } from "../AdverseSelectionModel";
 import { priceKey, SortedBookSide } from "./book/SortedBookSide";
 import {
-  handleTradingEngineInformationalBookNotReady,
-  handleTradingEngineRejectedBookDelta,
-  type TradingBookEarlyReturnTarget
-} from "./book/TradingBookEarlyReturnRuntime";
-import {
-  applyTradingBookDeltaForTarget,
-  applyTradingBookSnapshotForTarget,
-  type TradingBookApplicationTarget
-} from "./book/TradingBookApplicationRuntime";
-import {
   resetTradingOrderBookForTarget,
   type TradingOrderBookResetTarget
 } from "./book/OrderBookResetRuntime";
@@ -143,7 +133,7 @@ import {
   createTradingOrderBookReconstructor,
   type TradingOrderBookStoresTarget
 } from "./book/OrderBookReconstructorFactory";
-import type { AppliedBookUpdate, BookDeltaWithTicker, BookSyncState } from "./book/BookTypes";
+import type { BookSyncState } from "./book/BookTypes";
 import {
   enqueueTradingIngestJob,
   type TradingIngestQueueTarget
@@ -241,7 +231,6 @@ import type {
   MacroBias,
   MarketTick,
   OrderBookResetRequest,
-  OrderBookSnapshot,
   Position,
   SentimentState,
   ShadowQueueState,
@@ -555,28 +544,6 @@ export class TradingEngine {
     );
   }
 
-  private async applySnapshot(
-    snapshot: OrderBookSnapshot,
-    options: { telemetry?: boolean; persist?: boolean } = {}
-  ): Promise<InternalOrderBook> {
-    return applyTradingBookSnapshotForTarget(
-      snapshot,
-      options,
-      this as unknown as TradingBookApplicationTarget
-    );
-  }
-
-  private async applyDelta(
-    delta: BookDeltaWithTicker,
-    updatedAt: string
-  ): Promise<AppliedBookUpdate> {
-    return applyTradingBookDeltaForTarget(
-      delta,
-      updatedAt,
-      this as unknown as TradingBookApplicationTarget
-    );
-  }
-
   private async handleHardStaleTickDrop(
     tick: MarketTick,
     metrics: LatencyMetrics,
@@ -604,42 +571,6 @@ export class TradingEngine {
       wakeUpTimeMs,
       hotPathStartedAt,
       this as unknown as TradingStaleLatencyTarget
-    );
-  }
-
-  private async handleInformationalBookNotReady(
-    tick: MarketTick,
-    metrics: LatencyMetrics,
-    wakeUpTimeMs: number | null,
-    orderBookUpdateMs: number,
-    hotPathStartedAt: number
-  ): Promise<TickIngestResult> {
-    return handleTradingEngineInformationalBookNotReady(
-      tick,
-      metrics,
-      wakeUpTimeMs,
-      orderBookUpdateMs,
-      hotPathStartedAt,
-      this as unknown as TradingBookEarlyReturnTarget
-    );
-  }
-
-  private async handleRejectedBookDelta(
-    tick: MarketTick,
-    metrics: LatencyMetrics,
-    applied: AppliedBookUpdate,
-    wakeUpTimeMs: number | null,
-    orderBookUpdateMs: number,
-    hotPathStartedAt: number
-  ): Promise<TickIngestResult> {
-    return handleTradingEngineRejectedBookDelta(
-      tick,
-      metrics,
-      applied,
-      wakeUpTimeMs,
-      orderBookUpdateMs,
-      hotPathStartedAt,
-      this as unknown as TradingBookEarlyReturnTarget
     );
   }
 

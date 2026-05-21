@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { resolveTickBookFlow } from "../../src/engine/trading/book/TickBookResolutionRuntime";
 import { resolveTradingTickBookForTarget } from "../../src/engine/trading/book/TradingTickBookRuntime";
-import type { AppliedBookUpdate } from "../../src/engine/trading/book/BookTypes";
+import type {
+  AppliedBookUpdate,
+  BookDeltaWithTicker
+} from "../../src/engine/trading/book/BookTypes";
 import type { InternalOrderBook, LatencyMetrics, MarketTick } from "../../src/types";
+import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 
 describe("TickBookResolutionRuntime", () => {
   it("returns an existing book for informational ticks without applying deltas", async () => {
@@ -90,13 +94,16 @@ describe("TickBookResolutionRuntime", () => {
       },
       {
         orderBook: orderBooks,
-        applyDelta(delta, observedAt) {
-          events.push(`delta:${delta.instrumentCode}:${observedAt}`);
-          return Promise.resolve({
-            accepted: true,
-            book,
-            timeToBookMs: 9
-          });
+        engineState: defaultEngineState("tick-book-target"),
+        orderBookReconstructor: {
+          applyDelta(delta: BookDeltaWithTicker, observedAt: string) {
+            events.push(`delta:${delta.instrumentCode}:${observedAt}`);
+            return {
+              accepted: true,
+              book,
+              timeToBookMs: 9
+            };
+          }
         },
         handleInformationalBookNotReady(_tick, _metrics, wakeUpTimeMs) {
           events.push(`book-not-ready:${wakeUpTimeMs}`);
@@ -106,7 +113,7 @@ describe("TickBookResolutionRuntime", () => {
             reason: "missing-book"
           });
         },
-        handleRejectedBookDelta(_tick, _metrics, applied) {
+        handleRejectedBookDelta(_tick, _metrics, applied: AppliedBookUpdate) {
           events.push(`rejected:${applied.reason}`);
           return Promise.resolve({
             accepted: false,
@@ -114,7 +121,7 @@ describe("TickBookResolutionRuntime", () => {
             reason: applied.reason
           });
         }
-      }
+      } as unknown as TradingTickBookTarget
     );
 
     expect(result).toMatchObject({ kind: "BOOK", book });

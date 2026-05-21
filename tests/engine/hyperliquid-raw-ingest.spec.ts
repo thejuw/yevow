@@ -40,7 +40,7 @@ import {
   type TradingHyperliquidRawEngineTarget,
   type TradingHyperliquidRawRouteTarget
 } from "../../src/engine/trading/ingest/TradingHyperliquidRawRuntime";
-import type { InternalOrderBook, MarketTick } from "../../src/types";
+import type { InternalOrderBook, MarketTick, OrderBookSnapshot } from "../../src/types";
 import type { BookSyncState } from "../../src/engine/trading/book/BookTypes";
 import type { TickIngestResult } from "../../src/engine/trading/TradingEngineRouteTypes";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
@@ -684,7 +684,7 @@ describe("hyperliquid raw ingest helpers", () => {
     state.latencySampleCount = 10;
     const events: string[] = [];
     const pending: Promise<unknown>[] = [];
-    const target: TradingHyperliquidL2BookTarget = {
+    const target = {
       env: {
         DWELLIR_MAX_LATENCY_MS: "1000",
         HL_STALE_AFTER_MS: "1000",
@@ -696,7 +696,34 @@ describe("hyperliquid raw ingest helpers", () => {
       cachedConfig: { TRADING_ENABLED: true },
       bookSync: new Map([["hyperliquid:btc-usd", bookSync(10)]]),
       orderBook: new Map(),
+      bids: new Map(),
+      asks: new Map(),
+      domWallHistory: [],
+      domWallHistoryLimit: 20,
+      domScanRangePct: 0.02,
+      domSpoofProximityBps: 10,
+      domPriceBinSize: 1,
       orderBookReconstructor: {
+        applySnapshot: (snapshot: OrderBookSnapshot) => {
+          events.push(`snapshot:${snapshot.sequence ?? "NONE"}`);
+          const appliedBook = internalBook({
+            lastSequence: snapshot.sequence,
+            sequence: snapshot.sequence
+          });
+          return {
+            book: appliedBook,
+            marketKey: appliedBook.marketKey,
+            instrumentCode: appliedBook.instrumentCode,
+            exchangeCode: appliedBook.exchangeCode,
+            sourceExchange: appliedBook.source_exchange,
+            source: appliedBook.source,
+            sequence: snapshot.sequence ?? 0,
+            bidLevels: appliedBook.bids.length,
+            askLevels: appliedBook.asks.length,
+            tickSize: appliedBook.tickSize,
+            timeToBookMs: appliedBook.ttbLatencyMs
+          };
+        },
         handleCrossedBookSnapshot: async () => {
           events.push("crossed");
         }
@@ -707,14 +734,15 @@ describe("hyperliquid raw ingest helpers", () => {
         }
       },
       logger: {
+        info() {
+          // no-op for adapter test
+        },
         warn(eventType) {
           events.push(`warn:${eventType}`);
         }
       },
-      applySnapshot: async (snapshot) => {
-        events.push(`snapshot:${snapshot.sequence ?? "NONE"}`);
-        return internalBook({ lastSequence: snapshot.sequence, sequence: snapshot.sequence });
-      },
+      safeStoragePut: async () => undefined,
+      publish: () => undefined,
       quoteStateStalePull: (instrumentCode) => {
         events.push(`stale-pull:${instrumentCode}`);
       },
@@ -724,14 +752,14 @@ describe("hyperliquid raw ingest helpers", () => {
       cancelAllQuotes: async (instrumentCode, reason) => {
         events.push(`cancel:${instrumentCode}:${reason}`);
       },
-      publishTickTelemetry: (tick) => {
+      publishTickTelemetry: (tick: MarketTick) => {
         events.push(`telemetry:${tick.instrumentCode}`);
       },
-      handleTick: async (tick, wakeUpTimeMs) => {
+      handleTick: async (tick: MarketTick, wakeUpTimeMs: number | null) => {
         events.push(`tick:${tick.instrumentCode}:${tick.sequence}:${wakeUpTimeMs ?? "NONE"}`);
         return freshResult();
       }
-    };
+    } as unknown as TradingHyperliquidL2BookTarget;
 
     const result = await handleTradingEngineHyperliquidL2Book(
       {

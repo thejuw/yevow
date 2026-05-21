@@ -12,6 +12,10 @@ import type { ExecutionTraceInput } from "../performance/LatencyRuntime";
 import type { TickIngestResult } from "../TradingEngineRouteTypes";
 import type { BookSyncState } from "../book/BookTypes";
 import { markBookSyncDesynced, stateAfterDesyncedBook } from "../book/BookRuntimeState";
+import {
+  applyTradingBookSnapshotForTarget,
+  type TradingBookApplicationTarget
+} from "../book/TradingBookApplicationRuntime";
 import { highResolutionNow } from "../helpers/RuntimeClock";
 import {
   applyAcceptedHyperliquidL2BookSideEffects,
@@ -73,14 +77,13 @@ export interface TradingHyperliquidL2BookHandlers {
   readonly handleTick: (tick: MarketTick, wakeUpTimeMs: number | null) => Promise<TickIngestResult>;
 }
 
-export interface TradingHyperliquidL2BookTarget {
+export interface TradingHyperliquidL2BookTarget extends TradingBookApplicationTarget {
   readonly env: TradingHyperliquidL2BookInput["env"];
   readonly maxLatencyMs: number;
   engineState: EngineState;
   readonly cachedConfig: Pick<GlobalRiskConfig, "TRADING_ENABLED">;
   readonly bookSync: Pick<Map<string, BookSyncState>, "get">;
-  readonly orderBook: Pick<Map<string, InternalOrderBook>, "set">;
-  readonly orderBookReconstructor: {
+  readonly orderBookReconstructor: TradingBookApplicationTarget["orderBookReconstructor"] & {
     handleCrossedBookSnapshot(
       book: InternalOrderBook,
       sequence: number,
@@ -91,13 +94,9 @@ export interface TradingHyperliquidL2BookTarget {
   readonly state: {
     waitUntil(work: Promise<unknown>): void;
   };
-  readonly logger: {
+  readonly logger: TradingBookApplicationTarget["logger"] & {
     warn(eventType: string, message: string, metadata?: JsonRecord): void;
   };
-  applySnapshot(
-    snapshot: OrderBookSnapshot,
-    options?: { readonly telemetry?: boolean; readonly persist?: boolean }
-  ): Promise<InternalOrderBook>;
   quoteStateStalePull(
     instrumentCode: string,
     sequence: number,
@@ -139,7 +138,8 @@ export function handleTradingEngineHyperliquidL2Book(
       },
       resolveBookSync: (marketKey) => target.bookSync.get(marketKey),
       applyBook: (marketKey, book) => target.orderBook.set(marketKey, book),
-      applySnapshot: (snapshot, options) => target.applySnapshot(snapshot, options),
+      applySnapshot: (snapshot, options) =>
+        applyTradingBookSnapshotForTarget(snapshot, options ?? {}, target),
       handleCrossedBookSnapshot: (book, sequence, totalLatencyMs, observedAt) =>
         target.orderBookReconstructor.handleCrossedBookSnapshot(
           book,
