@@ -91,15 +91,6 @@ import {
   type TradingNativeHyperliquidLatencyPullTarget
 } from "./performance/StaleLatencyGuardRuntime";
 import {
-  handleTradingHardStaleTickDrop,
-  handleTradingSoftStaleTick,
-  type TradingStaleLatencyTarget
-} from "./performance/TradingStaleLatencyRuntime";
-import {
-  prepareTradingTickLatencyForTarget,
-  type TradingTickLatencyTarget
-} from "./performance/TradingTickLatencyRuntime";
-import {
   resetTradingLatencyBaselineForTarget,
   tradingLatencyStorageWritesForState,
   tradingLatencyStorageWritesForTarget,
@@ -544,36 +535,6 @@ export class TradingEngine {
     );
   }
 
-  private async handleHardStaleTickDrop(
-    tick: MarketTick,
-    metrics: LatencyMetrics,
-    streamId: string | null,
-    hardStaleDropMs: number
-  ): Promise<TickIngestResult> {
-    return handleTradingHardStaleTickDrop(
-      tick,
-      metrics,
-      streamId,
-      hardStaleDropMs,
-      this as unknown as TradingStaleLatencyTarget
-    );
-  }
-
-  private async handleSoftStaleTick(
-    tick: MarketTick,
-    metrics: LatencyMetrics,
-    wakeUpTimeMs: number | null,
-    hotPathStartedAt: number
-  ): Promise<TickIngestResult> {
-    return handleTradingSoftStaleTick(
-      tick,
-      metrics,
-      wakeUpTimeMs,
-      hotPathStartedAt,
-      this as unknown as TradingStaleLatencyTarget
-    );
-  }
-
   private async handleAnomalyEmergencyPause(
     tick: MarketTick,
     book: InternalOrderBook,
@@ -646,24 +607,6 @@ export class TradingEngine {
           this.killSwitchLogged = logged;
         }
       }
-    );
-  }
-
-  private prepareTickLatency(
-    tick: MarketTick,
-    shadowReplay: boolean
-  ): {
-    metrics: LatencyMetrics;
-    streamId: string | null;
-    hardStaleDropMs: number;
-    isHardStale: boolean;
-  } {
-    return prepareTradingTickLatencyForTarget(
-      {
-        tick,
-        shadowReplay
-      },
-      this as unknown as TradingTickLatencyTarget
     );
   }
 

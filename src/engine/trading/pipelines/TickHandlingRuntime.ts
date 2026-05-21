@@ -10,6 +10,15 @@ import type {
 import { isShadowMode } from "../../../utils/CitadelProtocol";
 import { stateAfterFundingTick } from "../funding/FundingRuntime";
 import { highResolutionNow } from "../helpers/RuntimeClock";
+import {
+  handleTradingHardStaleTickDrop,
+  handleTradingSoftStaleTick,
+  type TradingStaleLatencyTarget
+} from "../performance/TradingStaleLatencyRuntime";
+import {
+  prepareTradingTickLatencyForTarget,
+  type TradingTickLatencyTarget
+} from "../performance/TradingTickLatencyRuntime";
 import type { TickIngestResult } from "../TradingEngineRouteTypes";
 import { evaluateTickTargetPreflight } from "../state/TickPreflightRuntime";
 import type {
@@ -95,7 +104,13 @@ export interface TickHandlingRuntimeHandlers {
 
 export interface TradingTickHandlingTarget extends Omit<
   TickHandlingRuntimeHandlers,
-  "rememberLastTickTimestamp" | "applyFundingTick" | "evaluateAnomaly" | "nowMs"
+  | "rememberLastTickTimestamp"
+  | "applyFundingTick"
+  | "evaluateAnomaly"
+  | "nowMs"
+  | "prepareTickLatency"
+  | "handleHardStaleTickDrop"
+  | "handleSoftStaleTick"
 > {
   readonly cachedConfig: Pick<GlobalRiskConfig, "TRADING_ENABLED">;
   readonly env: Pick<Env, "SHADOW_MODE">;
@@ -109,6 +124,9 @@ export interface TradingTickHandlingTarget extends Omit<
       readonly observedAt: string;
     }): AnomalyDetectionResult;
   };
+  readonly prepareTickLatency?: TickHandlingRuntimeHandlers["prepareTickLatency"];
+  readonly handleHardStaleTickDrop?: TickHandlingRuntimeHandlers["handleHardStaleTickDrop"];
+  readonly handleSoftStaleTick?: TickHandlingRuntimeHandlers["handleSoftStaleTick"];
 }
 
 export async function handleTickRuntime(
@@ -225,6 +243,12 @@ export function handleTickForTarget(
   target: TradingTickHandlingTarget
 ): Promise<TickIngestResult> {
   const hotPathStartedAt = highResolutionNow();
+  const latencyOverrides: Partial<
+    Pick<
+      TickHandlingRuntimeHandlers,
+      "prepareTickLatency" | "handleHardStaleTickDrop" | "handleSoftStaleTick"
+    >
+  > = target;
 
   return handleTickRuntime(
     {
@@ -248,11 +272,37 @@ export function handleTickForTarget(
         target.observeCascadeAbsorption(currentTick);
       },
       prepareTickLatency: (currentTick, shadowReplay) =>
-        target.prepareTickLatency(currentTick, shadowReplay),
+        latencyOverrides.prepareTickLatency
+          ? latencyOverrides.prepareTickLatency(currentTick, shadowReplay)
+          : prepareTradingTickLatencyForTarget(
+              { tick: currentTick, shadowReplay },
+              target as unknown as TradingTickLatencyTarget
+            ),
       handleHardStaleTickDrop: (currentTick, metrics, streamId, hardStaleDropMs) =>
-        target.handleHardStaleTickDrop(currentTick, metrics, streamId, hardStaleDropMs),
+        latencyOverrides.handleHardStaleTickDrop
+          ? latencyOverrides.handleHardStaleTickDrop(
+              currentTick,
+              metrics,
+              streamId,
+              hardStaleDropMs
+            )
+          : handleTradingHardStaleTickDrop(
+              currentTick,
+              metrics,
+              streamId,
+              hardStaleDropMs,
+              target as unknown as TradingStaleLatencyTarget
+            ),
       handleSoftStaleTick: (currentTick, metrics, wakeUp, startedAt) =>
-        target.handleSoftStaleTick(currentTick, metrics, wakeUp, startedAt),
+        latencyOverrides.handleSoftStaleTick
+          ? latencyOverrides.handleSoftStaleTick(currentTick, metrics, wakeUp, startedAt)
+          : handleTradingSoftStaleTick(
+              currentTick,
+              metrics,
+              wakeUp,
+              startedAt,
+              target as unknown as TradingStaleLatencyTarget
+            ),
       applyFundingTick: (currentTick, observedAt) => {
         const fundingState = stateAfterFundingTick(target.engineState, currentTick, observedAt);
         if (fundingState.changed) {
