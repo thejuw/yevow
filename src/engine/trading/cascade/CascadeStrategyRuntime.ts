@@ -38,6 +38,10 @@ import {
   resolveCascadeAtr1h
 } from "./CascadeConfigRuntime";
 import {
+  buildCascadeEntryTradeIntentForTarget,
+  buildCascadeExitTradeIntentForTarget
+} from "./CascadeTradeIntents";
+import {
   isCascadeInstrumentEnabledForConfig,
   latestAbsorptionForInstrument,
   latestCascadeAtForInstrument,
@@ -74,6 +78,8 @@ export interface CascadePositionUpdateSideEffectHandlers {
 }
 
 export interface TradingCascadePositionUpdateTarget {
+  readonly cachedConfig: GlobalRiskConfig;
+  readonly engineState: Pick<EngineState, "engineId">;
   readonly cascadePositionManager: {
     onTick(input: {
       readonly instrumentCode: string;
@@ -89,10 +95,6 @@ export interface TradingCascadePositionUpdateTarget {
   readonly state: {
     waitUntil(work: Promise<void>): void;
   };
-  tradeIntentFromCascadePositionIntent(
-    intent: CascadePositionIntent,
-    observedAt: string
-  ): TradeIntent;
   dispatchExecution(intent: TradeIntent): Promise<void>;
   emitCascadeOperationalAlert(
     eventType: CascadeAlertEventType,
@@ -194,15 +196,6 @@ export interface TradingAcceptedCascadeSignalTarget {
     traceDecision(decision: AgentDecisionTrace): void;
     warn(eventType: string, message: string, telemetry?: JsonRecord): void;
   };
-  tradeIntentFromCascadeSignal(
-    signal: CascadeRecoverySignal,
-    size: number,
-    observedAt: string
-  ): TradeIntent;
-  tradeIntentFromCascadePositionIntent(
-    intent: CascadePositionIntent,
-    observedAt: string
-  ): TradeIntent;
   recordCascadeUiSignal(signal: AgentSignal, outcome: "TAKEN" | "SKIPPED" | "CLOSED"): void;
   dispatchExecution(intent: TradeIntent): Promise<void>;
   safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
@@ -249,15 +242,6 @@ export interface TradingCascadeStrategyTarget {
   readonly cascadeAbsorptionsById: ReadonlyMap<string, AbsorptionConfirmed>;
   readonly cascadeEventsById: ReadonlyMap<string, CascadeEvent>;
   readonly env: Pick<Env, "CASCADE_ATR_FALLBACK_USD" | "CASCADE_ATR_FALLBACK_PCT">;
-  tradeIntentFromCascadeSignal(
-    signal: CascadeRecoverySignal,
-    size: number,
-    observedAt: string
-  ): TradeIntent;
-  tradeIntentFromCascadePositionIntent(
-    intent: CascadePositionIntent,
-    observedAt: string
-  ): TradeIntent;
   recordCascadeUiSignal(signal: AgentSignal, outcome: "TAKEN" | "SKIPPED" | "CLOSED"): void;
   dispatchExecution(intent: TradeIntent): Promise<void>;
   safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
@@ -326,7 +310,7 @@ export function dispatchTradingCascadePositionUpdates(
   applyCascadePositionUpdateSideEffects(updates, observedAt, {
     dispatchCloseIntent: (intent) => {
       target.state.waitUntil(
-        target.dispatchExecution(target.tradeIntentFromCascadePositionIntent(intent, observedAt))
+        target.dispatchExecution(buildCascadeExitTradeIntentForTarget(target, intent, observedAt))
       );
     },
     emitOperationalAlert: (alert) => {
@@ -580,7 +564,7 @@ export function processTradingAcceptedCascadeSignal(
       registerPosition: (acceptedSignal, sizeDecision, acceptedAt) =>
         target.cascadePositionManager.registerFromSignal(acceptedSignal, sizeDecision, acceptedAt),
       buildEntryIntent: (acceptedSignal, size, acceptedAt) =>
-        target.tradeIntentFromCascadeSignal(acceptedSignal, size, acceptedAt),
+        buildCascadeEntryTradeIntentForTarget(target, acceptedSignal, size, acceptedAt),
       recordUiSignal: (agentSignal, outcome) => {
         target.recordCascadeUiSignal(agentSignal, outcome);
       },

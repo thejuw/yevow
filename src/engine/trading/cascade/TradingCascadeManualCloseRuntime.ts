@@ -1,5 +1,5 @@
 import { CASCADE_POSITIONS_KEY } from "../../../TradingEngineConstants";
-import type { EngineState, JsonRecord, TradeIntent } from "../../../types";
+import type { EngineState, GlobalRiskConfig, JsonRecord, TradeIntent } from "../../../types";
 import type { CascadeOpenPosition, CascadePositionIntent } from "../../../strategy/cascade/types";
 import { nullableMarkPriceForInstrument, type NullableMarkPriceContext } from "../book/BookViews";
 import {
@@ -7,6 +7,7 @@ import {
   buildCascadeManualCloseRuntimeResult,
   type CascadeManualCloseResponse
 } from "./CascadeManualCloseRuntime";
+import { buildCascadeExitTradeIntentForTarget } from "./CascadeTradeIntents";
 
 export interface TradingCascadeManualCloseInput {
   readonly positions: readonly CascadeOpenPosition[];
@@ -30,8 +31,9 @@ export interface TradingCascadeManualCloseHandlers {
 }
 
 export interface TradingCascadeManualCloseTarget {
+  readonly cachedConfig: GlobalRiskConfig;
   readonly orderBook: NullableMarkPriceContext["orderBook"];
-  readonly engineState: Pick<EngineState, "assetMatrix" | "microstructure">;
+  readonly engineState: Pick<EngineState, "assetMatrix" | "engineId" | "microstructure">;
   readonly cascadePositionManager: {
     snapshot(): readonly CascadeOpenPosition[];
     requestManualClose(
@@ -46,10 +48,6 @@ export interface TradingCascadeManualCloseTarget {
   readonly logger: {
     warn(eventType: string, message: string, telemetry?: JsonRecord): void;
   };
-  tradeIntentFromCascadePositionIntent(
-    intent: CascadePositionIntent,
-    observedAt: string
-  ): TradeIntent;
   dispatchExecution(intent: TradeIntent): Promise<void>;
   publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
   safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
@@ -97,7 +95,7 @@ export function closeTradingEngineCascadePosition(
         target.cascadePositionManager.requestManualClose(id, closeObservedAt, markPrice),
       dispatchIntent: (intent) => {
         target.state.waitUntil(
-          target.dispatchExecution(target.tradeIntentFromCascadePositionIntent(intent, observedAt))
+          target.dispatchExecution(buildCascadeExitTradeIntentForTarget(target, intent, observedAt))
         );
       },
       logManualClose: (metadata) => {

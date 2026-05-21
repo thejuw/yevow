@@ -138,11 +138,6 @@ import {
   type TradingEngineJanitorMaintenanceTarget
 } from "./janitor/TradingJanitorRuntime";
 import {
-  buildCascadeEntryTradeIntentForTarget,
-  buildCascadeExitTradeIntentForTarget,
-  type TradingCascadeTradeIntentTarget
-} from "./cascade/CascadeTradeIntents";
-import {
   observeTradingEngineCascadeAbsorption,
   type TradingCascadeAbsorptionTarget
 } from "./cascade/CascadeAbsorptionRuntime";
@@ -307,12 +302,7 @@ import type {
   TemporaryGovernanceOverride,
   TradeIntent
 } from "../../types";
-import type {
-  AbsorptionConfirmed,
-  CascadeEvent,
-  CascadePositionIntent,
-  CascadeRecoverySignal
-} from "../../strategy/cascade/types";
+import type { AbsorptionConfirmed, CascadeEvent } from "../../strategy/cascade/types";
 
 import {
   ORDER_BOOK_PREFIX,
@@ -711,30 +701,6 @@ export class TradingEngine {
 
   private observeCascadeAbsorption(tick: MarketTick): void {
     observeTradingEngineCascadeAbsorption(tick, this as unknown as TradingCascadeAbsorptionTarget);
-  }
-
-  private tradeIntentFromCascadeSignal(
-    signal: CascadeRecoverySignal,
-    size: number,
-    observedAt: string
-  ): TradeIntent {
-    return buildCascadeEntryTradeIntentForTarget(
-      this as unknown as TradingCascadeTradeIntentTarget,
-      signal,
-      size,
-      observedAt
-    );
-  }
-
-  private tradeIntentFromCascadePositionIntent(
-    intent: CascadePositionIntent,
-    observedAt: string
-  ): TradeIntent {
-    return buildCascadeExitTradeIntentForTarget(
-      this as unknown as TradingCascadeTradeIntentTarget,
-      intent,
-      observedAt
-    );
   }
 
   private async handleGrpcFatalDrop(

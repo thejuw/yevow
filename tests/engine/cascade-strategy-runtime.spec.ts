@@ -180,14 +180,6 @@ describe("CascadeStrategyRuntime", () => {
           calls.push(`warn:${eventType}:${metadata?.signalId as string}`);
         }
       },
-      tradeIntentFromCascadeSignal(signal) {
-        calls.push(`intent:${signal.signalId}`);
-        return tradeIntent({ intentId: `intent-${signal.signalId}` });
-      },
-      tradeIntentFromCascadePositionIntent(intent, observedAt) {
-        calls.push(`position-intent:${intent.intentId}:${observedAt}`);
-        return tradeIntent({ intentId: `position-${intent.intentId}` });
-      },
       recordCascadeUiSignal(agentSignal, outcome) {
         calls.push(`signal:${agentSignal.signalId}:${outcome}`);
       },
@@ -262,6 +254,8 @@ describe("CascadeStrategyRuntime", () => {
     const calls: string[] = [];
     const close = positionIntent("close", "STOP_LOSS", 1);
     const target: TradingCascadePositionUpdateTarget = {
+      cachedConfig: defaultConfig,
+      engineState: defaultEngineState("cascade-position-update-target"),
       cascadePositionManager: {
         onTick(input) {
           calls.push(`tick:${input.instrumentCode}:${input.price}:${String(input.atr)}`);
@@ -284,10 +278,6 @@ describe("CascadeStrategyRuntime", () => {
           scheduled.push(work);
         }
       },
-      tradeIntentFromCascadePositionIntent(intent, observedAt) {
-        calls.push(`intent:${intent.intentId}:${observedAt}`);
-        return tradeIntent({ intentId: `trade-${intent.intentId}` });
-      },
       async dispatchExecution(intent) {
         calls.push(`dispatch:${intent.intentId}`);
       },
@@ -305,8 +295,7 @@ describe("CascadeStrategyRuntime", () => {
     expect(calls).toEqual([
       "candles:btc-usd:1m:32",
       "tick:btc-usd:100:null",
-      "intent:close:2026-05-18T20:01:00.000Z",
-      "dispatch:trade-close",
+      "dispatch:cascade-exit-close",
       "schedule",
       "alert:STOP_HIT:position-1:position-1",
       "snapshot",
@@ -495,10 +484,6 @@ describe("CascadeStrategyRuntime", () => {
           calls.push(`warn:${eventType}:${metadata?.signalId as string}`);
         }
       },
-      tradeIntentFromCascadeSignal(signal, size) {
-        calls.push(`intent:${signal.signalId}:${size}`);
-        return tradeIntent({ intentId: `intent-${signal.signalId}` });
-      },
       recordCascadeUiSignal(agentSignal, outcome) {
         calls.push(`signal:${agentSignal.signalId}:${outcome}`);
       },
@@ -521,16 +506,15 @@ describe("CascadeStrategyRuntime", () => {
     await Promise.all(scheduled);
 
     expect(result.position?.signalId).toBe("signal-target");
-    expect(result.intent?.intentId).toBe("intent-signal-target");
+    expect(result.intent?.intentId).toBe("cascade-entry-signal-target");
     expect(calls).toEqual([
       "snapshot",
       "heat:1",
       "alert:SIGNAL_EMITTED:signal-target",
       "register:signal-target:20",
-      "intent:signal-target:20",
       "signal:signal-target:TAKEN",
       "trace:cascade-entry-signal-target",
-      "dispatch:intent-signal-target",
+      "dispatch:cascade-entry-signal-target",
       "schedule",
       "snapshot",
       "persist:cascade:positions:1:CASCADE_POSITION_OPENED",

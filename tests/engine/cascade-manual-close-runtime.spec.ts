@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { defaultConfig } from "../../src/ConfigManager";
 import {
   applyCascadeManualCloseSideEffects,
   buildCascadeManualCloseRuntimeResult,
@@ -13,7 +14,6 @@ import {
   type TradingCascadeManualCloseTarget
 } from "../../src/engine/trading/cascade/TradingCascadeManualCloseRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
-import type { TradeIntent } from "../../src/types";
 import type { CascadeOpenPosition, CascadePositionIntent } from "../../src/strategy/cascade/types";
 
 const OBSERVED_AT = "2026-05-18T19:00:00.000Z";
@@ -178,6 +178,7 @@ describe("CascadeManualCloseRuntime", () => {
     engineState.microstructure.instrumentCode = "btc-usd";
     engineState.microstructure.midPrice = 101;
     const target: TradingCascadeManualCloseTarget = {
+      cachedConfig: defaultConfig,
       orderBook: new Map(),
       engineState,
       cascadePositionManager: {
@@ -201,10 +202,6 @@ describe("CascadeManualCloseRuntime", () => {
           calls.push(`warn:${eventType}:${metadata?.positionId as string}`);
         }
       },
-      tradeIntentFromCascadePositionIntent(closeIntent) {
-        calls.push(`intent:${closeIntent.intentId}`);
-        return tradeIntent(`trade-${closeIntent.intentId}`);
-      },
       async dispatchExecution(trade) {
         calls.push(`dispatch:${trade.intentId}`);
       },
@@ -226,8 +223,7 @@ describe("CascadeManualCloseRuntime", () => {
     expect(calls).toEqual([
       "snapshot",
       "request:position-1:24:101",
-      "intent:close",
-      "dispatch:trade-close",
+      "dispatch:cascade-exit-close",
       "schedule",
       "warn:CASCADE_POSITION_MANUAL_CLOSE:position-1",
       "publish:CASCADE_POSITION_MANUAL_CLOSE:position-1",
@@ -314,39 +310,6 @@ function intent(
     executionStyle: "TAKER_IOC",
     size,
     referencePrice: 100,
-    createdAt: OBSERVED_AT
-  };
-}
-
-function tradeIntent(intentId: string): TradeIntent {
-  return {
-    schemaVersion: "trade-intent.v1",
-    intentId,
-    traceId: `trace-${intentId}`,
-    instrumentCode: "btc-usd",
-    marketKey: "hyperliquid:btc-usd",
-    source_exchange: "hyperliquid",
-    direction: "SHORT",
-    executionStyle: "TAKER_IOC",
-    action: "SELL",
-    orderType: "IOC",
-    postOnly: false,
-    timeInForce: "IOC",
-    intendedPrice: 100,
-    expectedPrice: 100,
-    requestedSize: 1,
-    approvedSize: 1,
-    probabilityWin: 1,
-    probabilityLoss: 0,
-    profit: 0,
-    loss: 0,
-    executionCosts: 0,
-    adverseSelectionCost: 0,
-    expectedValue: 0,
-    minEvThreshold: 0,
-    maxSlippageBps: 10,
-    confidence: 1,
-    rationale: "manual close",
     createdAt: OBSERVED_AT
   };
 }
