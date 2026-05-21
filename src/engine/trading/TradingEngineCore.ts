@@ -130,10 +130,10 @@ import {
 } from "./execution/ExecutionQueueRuntime";
 import { calculateAssetMatrix as calculateRuntimeAssetMatrix } from "./state/AssetMatrixRuntime";
 import {
-  applyExecutionProfileFlow,
   buildPerformanceMetricsText,
   type ExecutionTraceInput
 } from "./performance/LatencyRuntime";
+import { observeTradingExecutionProfile } from "./performance/TradingExecutionProfileRuntime";
 import {
   applyHardStaleTickDropFlow,
   applyNativeHyperliquidLatencyPullSideEffects,
@@ -430,7 +430,6 @@ import {
   DEFAULT_JITTER_SAMPLE_WINDOW,
   DEFAULT_JITTER_COMPUTE_INTERVAL_TICKS,
   DEFAULT_JITTER_THRESHOLD_MS,
-  COLD_START_WAKEUP_THRESHOLD_MS,
   DEFAULT_DOM_PRICE_BIN_SIZE,
   DEFAULT_DOM_SCAN_RANGE_PCT,
   DEFAULT_DOM_WALL_HISTORY_LIMIT,
@@ -4042,18 +4041,15 @@ export class TradingEngine {
   }
 
   private observeExecutionProfile(metrics: LatencyMetrics, trace: ExecutionTraceInput): void {
-    applyExecutionProfileFlow(
+    observeTradingExecutionProfile(
       {
-        engineId: this.engineState.engineId,
-        previousProfile: this.engineState.executionProfile,
-        processedTicks: this.engineState.processedTicks,
+        engineState: this.engineState,
         processingLatencySamples: this.processingLatencySamples,
         metrics,
         trace,
         jitterThresholdMs: this.jitterThresholdMs,
         jitterSampleWindow: this.jitterSampleWindow,
         jitterComputeIntervalTicks: this.jitterComputeIntervalTicks,
-        coldStartWakeupThresholdMs: COLD_START_WAKEUP_THRESHOLD_MS,
         lastPerformanceStatus: this.lastPerformanceStatus
       },
       {
