@@ -203,22 +203,10 @@ import {
   publishTradingProfilerAlert
 } from "./telemetry/TradingProfilerTelemetryRuntime";
 import { publishTradingTickTelemetry } from "./telemetry/TradingTickTelemetryRuntime";
-import { type ReplayOptions, type ReplayScenario } from "./routes/ReplayAdminRoutes";
-import {
-  loadReplayShadowTradesFromJournal,
-  loadScenarioReplayTicksFromJournal
-} from "./replay/ReplayDataRuntime";
+import { type ReplayOptions } from "./routes/ReplayAdminRoutes";
 import { type ReplayJournal } from "./replay/ReplayJournal";
-import { runShadowReplayLoop, type ShadowReplayLoopResult } from "./replay/ReplayLoopRuntime";
 import { applyShadowReplayPreparation } from "./replay/ReplayPreparationRuntime";
-import {
-  recordCompletedReplaySideEffects,
-  writeReplayRunningStatusSideEffect
-} from "./replay/ReplayResultRuntime";
-import {
-  runHistoricalReplayRuntime,
-  runShadowReplayWithRestoreRuntime
-} from "./replay/ReplayRunRuntime";
+import { runTradingHistoricalReplay } from "./replay/TradingReplayRunRuntime";
 import {
   captureEngineReplaySnapshot,
   restoreReplaySnapshotSideEffects,
@@ -399,7 +387,6 @@ import {
   DEFAULT_HEATMAP_PRICE_BIN_SIZE,
   DEFAULT_HEATMAP_CLUSTER_NOTIONAL_USD,
   DEFAULT_CASCADE_DISTANCE_PCT,
-  DEFAULT_PAPER_BANKROLL_USD,
   DEFAULT_MARKET_TICK_MAX_ROWS,
   DEFAULT_SHADOW_VLO_CAPACITY,
   DEFAULT_SHADOW_VLO_DRIFT_TRADES,
@@ -510,13 +497,8 @@ import type {
   AcceptedExecutionContext,
   AcceptedTickSideEffectsInput,
   AcceptedTickStateCommitInput,
-  HistoricalReplayCompletionInput,
-  HistoricalReplayStatusInput,
-  LoadedReplayShadowTrades,
-  LoadedReplayTicks,
   PostBookTickContext,
   QuotePolicyResult,
-  ShadowReplayWithRestoreInput,
   TickBookResolution,
   TickDecisionContext,
   TickHandlingOptions
@@ -3475,104 +3457,6 @@ export class TradingEngine {
     );
   }
 
-  private async recordCompletedHistoricalReplay(
-    input: HistoricalReplayCompletionInput
-  ): Promise<ReplayResult> {
-    const completedAt = new Date().toISOString();
-    return recordCompletedReplaySideEffects(
-      {
-        replayId: input.replayId,
-        replayOptions: input.replayOptions,
-        ticksLength: input.ticksLength,
-        ticksReplayed: input.replayLoop.ticksReplayed,
-        initialShadowBankroll: input.initialShadowBankroll,
-        historicalTradeCount: input.historicalTradeCount,
-        generatedIntentCount: input.replayLoop.generatedIntentCount,
-        speedMultiplier: input.speedMultiplier,
-        modeledTrades: input.replayLoop.modeledTrades,
-        shadowTrades: input.shadowTrades,
-        sentiment: this.engineState.sentiment,
-        dateFrom: input.dateFrom,
-        dateTo: input.dateTo,
-        startedAt: input.startedAt,
-        completedAt
-      },
-      {
-        writeCompletionLog: (metadata) =>
-          this.logger.warn("REPLAY_COMPLETED", "Historical shadow replay completed", metadata),
-        recordBacktestRun: (result, replayOptions, dateFrom, dateTo) =>
-          this.replayJournal.recordBacktestRun(result, replayOptions, dateFrom, dateTo),
-        writeStatus: (status) => this.replayJournal.writeStatus(status)
-      }
-    );
-  }
-
-  private async writeHistoricalReplayRunningStatus(
-    input: HistoricalReplayStatusInput
-  ): Promise<void> {
-    await writeReplayRunningStatusSideEffect(
-      {
-        replayId: input.replayId,
-        ticksTotal: input.ticksTotal,
-        speedMultiplier: input.speedMultiplier,
-        shadowBankroll: input.shadowBankroll,
-        dateFrom: input.dateFrom,
-        dateTo: input.dateTo,
-        scenario: input.scenario,
-        startedAt: input.startedAt,
-        updatedAt: input.updatedAt
-      },
-      {
-        writeStatus: (status) => this.replayJournal.writeStatus(status)
-      }
-    );
-  }
-
-  private async loadScenarioReplayTicks(
-    limit: number,
-    dateFrom: string | null,
-    dateTo: string | null,
-    scenario: ReplayScenario
-  ): Promise<LoadedReplayTicks> {
-    return loadScenarioReplayTicksFromJournal({
-      replayJournal: this.replayJournal,
-      limit,
-      dateFrom,
-      dateTo,
-      scenario
-    });
-  }
-
-  private async loadReplayShadowTrades(ticks: MarketTick[]): Promise<LoadedReplayShadowTrades> {
-    return loadReplayShadowTradesFromJournal({
-      replayJournal: this.replayJournal,
-      ticks
-    });
-  }
-
-  private async runShadowReplayWithRestore(
-    input: ShadowReplayWithRestoreInput
-  ): Promise<ShadowReplayLoopResult> {
-    return runShadowReplayWithRestoreRuntime(input, {
-      runShadowReplay: (replayInput) =>
-        runShadowReplayLoop({
-          replayId: replayInput.replayId,
-          ticks: replayInput.ticks,
-          replayOptions: replayInput.replayOptions,
-          speedMultiplier: replayInput.speedMultiplier,
-          initialShadowBankroll: replayInput.initialShadowBankroll,
-          dateFrom: replayInput.dateFrom,
-          dateTo: replayInput.dateTo,
-          startedAt: replayInput.startedAt,
-          enqueueShadowReplayTick: (tick) => this.enqueueTick(tick, null, { shadowReplay: true }),
-          lastTradeIntent: () => this.engineState.lastTradeIntent,
-          oracleRegime: () => this.engineState.oracle.regime,
-          writeStatus: (status) => this.replayJournal.writeStatus(status)
-        }),
-      restoreReplaySnapshot: (snapshot) => this.restoreReplaySnapshot(snapshot)
-    });
-  }
-
   private async runHistoricalReplay(
     limit: number,
     shadowBankroll: number,
@@ -3591,37 +3475,33 @@ export class TradingEngine {
       actor: "admin"
     }
   ): Promise<ReplayResult> {
-    const startedAt = new Date().toISOString();
-    const replayId = crypto.randomUUID();
-
-    return runHistoricalReplayRuntime(
+    return runTradingHistoricalReplay(
       {
         limit,
-        requestedShadowBankroll: shadowBankroll,
+        shadowBankroll,
         speedMultiplier,
         dateFrom,
         dateTo,
-        replayOptions,
-        startedAt,
-        replayId,
-        fallbackBankroll: DEFAULT_PAPER_BANKROLL_USD
+        replayOptions
       },
       {
+        replayJournal: this.replayJournal,
         nowIso: () => new Date().toISOString(),
-        writeRunningStatus: (statusInput) => this.writeHistoricalReplayRunningStatus(statusInput),
+        createReplayId: () => crypto.randomUUID(),
         captureReplaySnapshot: () => this.captureReplaySnapshot(),
-        loadScenarioReplayTicks: (replayLimit, replayDateFrom, replayDateTo, scenario) =>
-          this.loadScenarioReplayTicks(replayLimit, replayDateFrom, replayDateTo, scenario),
         currentLiveBankroll: () => ({
           equity: this.engineState.bankroll.equity,
           cash: this.engineState.bankroll.cash
         }),
-        loadReplayShadowTrades: (ticks) => this.loadReplayShadowTrades(ticks),
         prepareShadowReplayState: (initialShadowBankroll, replayStartedAt, runtimeReplayId) =>
           this.prepareShadowReplayState(initialShadowBankroll, replayStartedAt, runtimeReplayId),
-        runShadowReplayWithRestore: (replayInput) => this.runShadowReplayWithRestore(replayInput),
-        recordCompletedReplay: (completionInput) =>
-          this.recordCompletedHistoricalReplay(completionInput)
+        enqueueShadowReplayTick: (tick) => this.enqueueTick(tick, null, { shadowReplay: true }),
+        lastTradeIntent: () => this.engineState.lastTradeIntent,
+        oracleRegime: () => this.engineState.oracle.regime,
+        currentSentiment: () => this.engineState.sentiment,
+        restoreReplaySnapshot: (snapshot) => this.restoreReplaySnapshot(snapshot),
+        writeCompletionLog: (metadata) =>
+          this.logger.warn("REPLAY_COMPLETED", "Historical shadow replay completed", metadata)
       }
     );
   }
