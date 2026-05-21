@@ -47,10 +47,6 @@ import {
   type TradingAnomalyEmergencyTarget
 } from "./anomaly/TradingAnomalyEmergencyRuntime";
 import { updateLeadLagMetrics as updateLeadLagRuntimeMetrics } from "./leadlag/LeadLagRuntime";
-import {
-  dispatchTradingEngineInventoryHedgeIfNeeded,
-  type TradingInventoryHedgeTarget
-} from "./inventory/TradingInventoryHedgeRuntime";
 import { calculateTradingInventoryState } from "./inventory/TradingInventoryStateRuntime";
 import { resolveMaxPositionPct } from "./risk/PortfolioRiskRuntime";
 import { updateTradingPortfolioRisk } from "./risk/TradingPortfolioRiskRuntime";
@@ -64,17 +60,9 @@ import {
 } from "./quotes/TradingQuoteDispatchRuntime";
 import type { DispatchedQuoteSnapshot } from "./quotes/QuoteRefreshRuntime";
 import {
-  dispatchTradingCroupierQuoteAction,
-  type TradingCroupierQuoteActionTarget
-} from "./quotes/QuoteActionRuntime";
-import {
   cancelAllTradingQuotesForTarget,
   type TradingQuoteCancelAllTarget
 } from "./quotes/QuoteCancelRuntime";
-import {
-  dispatchTradingExecutionPlans,
-  type TradingExecutionPlanDispatchTarget
-} from "./execution/ExecutionPlanDispatchRuntime";
 import {
   dispatchTradingExecutionIntentForTarget,
   type TradingExecutionDispatchTarget
@@ -203,16 +191,10 @@ import {
 import {
   buildTradingPerformanceMetricsResponseForTarget,
   logTradingPerformanceForTarget,
-  maybeRecordTradingAgentSnapshotForTarget,
   observeTradingExecutionProfileForTarget,
   publishTradingTickTelemetryForTarget,
   type TradingHotPathTelemetryTarget
 } from "./telemetry/TradingHotPathTelemetryRuntime";
-import {
-  handleTradingProfilerSignal,
-  publishTradingAmVpinTelemetry,
-  type TradingProfilerSignalTarget
-} from "./telemetry/TradingProfilerTelemetryRuntime";
 import { type ReplayOptions } from "./routes/ReplayAdminRoutes";
 import { type ReplayJournal } from "./replay/ReplayJournal";
 import {
@@ -252,10 +234,6 @@ import {
 } from "./state/EngineBootServices";
 import { maybeResumeTradingShadowMode } from "./state/TradingShadowModeAutoResumeRuntime";
 import { resolveTradingTickAvailability } from "./state/TradingAvailabilityRuntime";
-import {
-  recordTradingAcceptedTickJournal,
-  scheduleTradingAcceptedTickSnapshot
-} from "./state/TradingTickPersistenceRuntime";
 import { stateAfterAcceptedTick } from "./state/TickStateRuntime";
 import { applyTradingAdminRecoveryFlow } from "./state/RecoveryRuntime";
 import {
@@ -299,7 +277,6 @@ import type {
   AgentName,
   AgentSignal,
   AssetRuntimeState,
-  BayesianUpdateTrace,
   BookSnapshotResponse,
   ExecutionReport,
   EngineState,
@@ -465,7 +442,10 @@ import {
   commitAcceptedTickStateForTarget,
   type AcceptedTickStateCommitTarget
 } from "./pipelines/AcceptedTickStateTransitionRuntime";
-import { finalizeAcceptedTickFlow } from "./pipelines/AcceptedTickFinalizationRuntime";
+import {
+  finalizeAcceptedTickForTarget,
+  type AcceptedTickFinalizationTarget
+} from "./pipelines/AcceptedTickFinalizationRuntime";
 import {
   prepareAcceptedExecutionContextForTarget,
   type AcceptedExecutionContextTarget
@@ -1516,50 +1496,6 @@ export class TradingEngine {
     );
   }
 
-  private scheduleAcceptedTickSnapshot(
-    tick: MarketTick,
-    book: InternalOrderBook,
-    anomalyResult: AnomalyDetectionResult,
-    profilerResult: ProfilerEvaluation
-  ): void {
-    scheduleTradingAcceptedTickSnapshot(
-      {
-        engineState: this.engineState,
-        latencyHistory: this.latencyHistory,
-        processingLatencySamples: this.processingLatencySamples,
-        domWallHistory: this.domWallHistory,
-        anomalyResult,
-        book,
-        tick,
-        profilerResult
-      },
-      {
-        persistSnapshot: (writes, reason) => this.persistHotStorageSnapshot(writes, reason),
-        schedule: (work) => this.state.waitUntil(work)
-      }
-    );
-  }
-
-  private journalAcceptedTick(
-    tick: MarketTick,
-    metrics: LatencyMetrics,
-    bayesianTrace: BayesianUpdateTrace | null
-  ): void {
-    recordTradingAcceptedTickJournal(
-      {
-        tick,
-        metrics,
-        bayesianTrace,
-        engineState: this.engineState,
-        marketTickJournalInterval: this.env.MARKET_TICK_JOURNAL_INTERVAL
-      },
-      {
-        recordMarketTick: (marketTick) => this.logger.recordMarketTick(marketTick),
-        logInfo: (eventType, message, metadata) => this.logger.info(eventType, message, metadata)
-      }
-    );
-  }
-
   private prepareTickLatency(
     tick: MarketTick,
     shadowReplay: boolean
@@ -1813,71 +1749,7 @@ export class TradingEngine {
   }
 
   private async finalizeAcceptedTick(input: AcceptedTickSideEffectsInput): Promise<void> {
-    await finalizeAcceptedTickFlow(
-      {
-        sideEffects: input,
-        tradingEnabled: this.cachedConfig.TRADING_ENABLED
-      },
-      {
-        scheduleAcceptedTickSnapshot: (sideEffects) =>
-          this.scheduleAcceptedTickSnapshot(
-            sideEffects.tick,
-            sideEffects.book,
-            sideEffects.anomalyResult,
-            sideEffects.profilerResult
-          ),
-        journalAcceptedTick: (sideEffects) =>
-          this.journalAcceptedTick(
-            sideEffects.tick,
-            sideEffects.metrics,
-            sideEffects.oracleBayesianTrace
-          ),
-        handleCroupierQuoteAction: (instrumentCode, action) =>
-          dispatchTradingCroupierQuoteAction(
-            instrumentCode,
-            action,
-            this as unknown as TradingCroupierQuoteActionTarget
-          ),
-        dispatchExecutionPlans: (executionPlans, shadowReplay) =>
-          dispatchTradingExecutionPlans(
-            executionPlans,
-            shadowReplay,
-            this as unknown as TradingExecutionPlanDispatchTarget
-          ),
-        dispatchInventoryHedgeIfNeeded: (book, inventory, observedAt, shadowReplay) =>
-          dispatchTradingEngineInventoryHedgeIfNeeded(
-            book,
-            inventory,
-            observedAt,
-            shadowReplay,
-            this as unknown as TradingInventoryHedgeTarget
-          ),
-        handleProfilerSignal: (
-          instrumentCode,
-          profilerResult,
-          profilerLatencyMs,
-          isProfilerQuoteHalt,
-          shadowReplay,
-          hasQuote
-        ) =>
-          handleTradingProfilerSignal(
-            instrumentCode,
-            profilerResult,
-            profilerLatencyMs,
-            isProfilerQuoteHalt,
-            shadowReplay,
-            hasQuote,
-            this as unknown as TradingProfilerSignalTarget
-          ),
-        publishTickTelemetry: (tick, metrics, status, hotPathStartedAt) =>
-          this.publishTickTelemetry(tick, metrics, status, hotPathStartedAt),
-        publishAmVpinTelemetry: (profilerState, instrumentCode, observedAt) =>
-          publishTradingAmVpinTelemetry(profilerState, instrumentCode, observedAt, {
-            publish: (type, payload, correlationId) => this.publish(type, payload, correlationId)
-          }),
-        maybeRecordAgentSnapshot: (observedAt) => this.maybeRecordAgentSnapshot(observedAt)
-      }
-    );
+    await finalizeAcceptedTickForTarget(input, this as unknown as AcceptedTickFinalizationTarget);
   }
 
   private async processAcceptedDecisionPipeline(
@@ -2343,13 +2215,6 @@ export class TradingEngine {
       metrics,
       status,
       hotPathStartedAt,
-      this as unknown as TradingHotPathTelemetryTarget
-    );
-  }
-
-  private maybeRecordAgentSnapshot(observedAt: string): void {
-    maybeRecordTradingAgentSnapshotForTarget(
-      observedAt,
       this as unknown as TradingHotPathTelemetryTarget
     );
   }

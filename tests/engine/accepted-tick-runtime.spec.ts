@@ -14,7 +14,9 @@ import {
 } from "../../src/engine/trading/pipelines/AcceptedExecutionContextRuntime";
 import {
   buildAcceptedTickFinalizationArtifacts,
-  finalizeAcceptedTickFlow
+  finalizeAcceptedTickFlow,
+  finalizeAcceptedTickForTarget,
+  type AcceptedTickFinalizationTarget
 } from "../../src/engine/trading/pipelines/AcceptedTickFinalizationRuntime";
 import {
   buildAcceptedTickStateTransition,
@@ -650,6 +652,151 @@ describe("AcceptedTickRuntime", () => {
       `telemetry:btc-usd:${OBSERVED_AT}:FRESH:456`,
       `amvpin:btc-usd:${OBSERVED_AT}`,
       `agents:${OBSERVED_AT}`
+    ]);
+  });
+
+  it("finalizes accepted tick side effects against a trading target", async () => {
+    const state = defaultEngineState("accepted-finalize-target");
+    const croupierDecision: CroupierDecision = {
+      intent: null,
+      quote: null,
+      pullAllQuotes: false,
+      adverseSelectionCost: 0.01,
+      minEvThreshold: 0.02
+    };
+    const profilerResult: ProfilerEvaluation = {
+      processed: true,
+      skippedReason: null,
+      closedBuckets: 1,
+      toxicityScore: 0.42,
+      state: {
+        toxicityState: "NORMAL",
+        amVpinBucketCompletions: 1
+      } as ProfilerEvaluation["state"],
+      signal: null
+    };
+    const sideEffects = {
+      tick: {
+        instrumentCode: "btc-usd",
+        exchangeCode: "HL",
+        sequence: 7
+      },
+      metrics: {
+        status: "FRESH",
+        brainTimestamp: OBSERVED_AT,
+        networkLatencyMs: 1,
+        processingLatencyMs: 2,
+        totalLatencyMs: 3,
+        timeToBookMs: 4
+      },
+      book: {
+        instrumentCode: "btc-usd",
+        marketKey: "hl:btc-usd",
+        source_exchange: "HL",
+        midPrice: 100,
+        bestBid: 99,
+        bestAsk: 101,
+        tickSize: 1
+      },
+      anomalyResult: { status: state.anomaly, state: state.anomaly },
+      profilerResult,
+      profilerLatencyMs: 4,
+      croupierDecision,
+      executionPlans: [],
+      inventory: state.inventory,
+      strategyQuoteDisableReason: null,
+      isCascadeShield: false,
+      isProfilerQuoteHalt: false,
+      oracleBayesianTrace: null,
+      hotPathStartedAt: 456,
+      shadowReplay: false
+    } as unknown as AcceptedTickSideEffectsInput;
+    const events: string[] = [];
+    const scheduled: Promise<unknown>[] = [];
+    const target = {
+      cachedConfig: {
+        ...state.cachedConfig,
+        TRADING_ENABLED: true,
+        HEDGE_ENABLED: false
+      },
+      engineState: state,
+      latencyHistory: [],
+      processingLatencySamples: [],
+      domWallHistory: [],
+      env: {
+        MARKET_TICK_JOURNAL_INTERVAL: 1
+      },
+      macroBias: state.macroBias,
+      activeTemporaryOverride: null,
+      adminSockets: { size: 0 },
+      signals: [],
+      latestAgentSignals: new Map(),
+      lastHedgeDispatchedAt: new Map(),
+      logger: {
+        recordMarketTick() {
+          events.push("record-tick");
+        },
+        info(eventType: string) {
+          events.push(`info:${eventType}`);
+        },
+        warn(eventType: string) {
+          events.push(`warn:${eventType}`);
+        },
+        logPerformanceSnapshot() {
+          events.push("perf-snapshot");
+        },
+        logPerformance() {
+          events.push("perf");
+        }
+      },
+      notifier: {
+        notify() {
+          events.push("notify");
+        }
+      },
+      state: {
+        waitUntil(work: Promise<void>) {
+          events.push("wait");
+          scheduled.push(work);
+        }
+      },
+      publish(type: string, _payload: Record<string, unknown>, correlationId?: string) {
+        events.push(`publish:${type}:${correlationId ?? ""}`);
+      },
+      persistHotStorageSnapshot(_writes: Record<string, unknown>, reason: string) {
+        events.push(`persist:${reason}`);
+        return Promise.resolve();
+      },
+      cancelAllQuotes() {
+        events.push("cancel");
+        return Promise.resolve();
+      },
+      dispatchQuote() {
+        events.push("dispatch-quote");
+        return Promise.resolve();
+      },
+      dispatchExecution() {
+        events.push("dispatch-execution");
+        return Promise.resolve();
+      },
+      acceptAgentSignal() {
+        events.push("accept-signal");
+        return Promise.resolve();
+      }
+    } as unknown as AcceptedTickFinalizationTarget;
+
+    const finalization = await finalizeAcceptedTickForTarget(sideEffects, target);
+    await Promise.all(scheduled);
+
+    expect(finalization.shouldPublishAmVpinTelemetry).toBe(true);
+    expect(finalization.croupierQuoteAction.kind).toBe("NONE");
+    expect(events).toEqual([
+      "persist:HOT_PATH_TICK_SNAPSHOT",
+      "wait",
+      "record-tick",
+      "info:MARKET_TICK_ACCEPTED",
+      "publish:TICK_TELEMETRY:btc-usd:7",
+      "publish:AM_VPIN_TELEMETRY:am-vpin:btc-usd:1"
     ]);
   });
 });
