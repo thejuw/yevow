@@ -1,10 +1,13 @@
 import type {
   DomAnalysisSnapshot,
+  EngineState,
+  Env,
   InternalOrderBook,
   LiquidityWall,
   MarketTick,
   MicrostructureMetrics
 } from "../../../types";
+import { DOM_MAX_LEVELS_PER_SIDE } from "../../../TradingEngineConstants";
 import { normalizeMarketKey } from "../state/AssetStateRuntime";
 import {
   aggregateDomBins,
@@ -20,6 +23,7 @@ import {
 import { roundCrypto, type SortedBookSide } from "./SortedBookSide";
 import { getInstrumentBook } from "./BookReconstruction";
 import { selectOrderBookMarketKey, type BookSelection } from "./BookViews";
+import { resolveDomBinSize } from "./BookRuntimeHelpers";
 
 export interface DomAnalyzerContext {
   readonly orderBook: Map<string, InternalOrderBook>;
@@ -32,6 +36,35 @@ export interface DomAnalyzerContext {
   readonly domSpoofProximityBps: number;
   readonly domMaxLevelsPerSide: number;
   readonly resolveBinSize: (instrumentCode: string) => number;
+}
+
+export interface DomAnalyzerContextTarget {
+  readonly orderBook: Map<string, InternalOrderBook>;
+  readonly bids: Map<string, SortedBookSide>;
+  readonly asks: Map<string, SortedBookSide>;
+  readonly engineState: Pick<EngineState, "microstructure">;
+  readonly domWallHistory: LiquidityWall[];
+  readonly domWallHistoryLimit: number;
+  readonly domScanRangePct: number;
+  readonly domSpoofProximityBps: number;
+  readonly domMaxLevelsPerSide?: number;
+  readonly env: Env;
+  readonly domPriceBinSize: number;
+}
+
+export function createDomAnalyzerContext(target: DomAnalyzerContextTarget): DomAnalyzerContext {
+  return {
+    orderBook: target.orderBook,
+    bids: target.bids,
+    asks: target.asks,
+    microstructure: target.engineState.microstructure,
+    domWallHistory: target.domWallHistory,
+    domWallHistoryLimit: target.domWallHistoryLimit,
+    domScanRangePct: target.domScanRangePct,
+    domSpoofProximityBps: target.domSpoofProximityBps,
+    domMaxLevelsPerSide: target.domMaxLevelsPerSide ?? DOM_MAX_LEVELS_PER_SIDE,
+    resolveBinSize: (code) => resolveDomBinSize(target.env, code, target.domPriceBinSize)
+  };
 }
 
 export function currentDomHeatmapSnapshot(

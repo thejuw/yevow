@@ -38,7 +38,12 @@ import {
 } from "./book/TradingBookApplicationRuntime";
 import { resetTradingOrderBook } from "./book/OrderBookResetRuntime";
 import { resolveTradingTickBook } from "./book/TradingTickBookRuntime";
-import { buildDomAnalysisSnapshot, currentDomHeatmapSnapshot } from "./book/DomAnalyzer";
+import {
+  buildDomAnalysisSnapshot,
+  createDomAnalyzerContext,
+  currentDomHeatmapSnapshot,
+  type DomAnalyzerContextTarget
+} from "./book/DomAnalyzer";
 import { processTradingShadowQueueTick } from "./shadow/TradingShadowQueueRuntime";
 import { handleTradingAnomalyEmergencyPause } from "./anomaly/TradingAnomalyEmergencyRuntime";
 import { updateLeadLagMetrics as updateLeadLagRuntimeMetrics } from "./leadlag/LeadLagRuntime";
@@ -330,7 +335,6 @@ import {
   DEFAULT_DOM_SCAN_RANGE_PCT,
   DEFAULT_DOM_WALL_HISTORY_LIMIT,
   DEFAULT_DOM_SPOOF_PROXIMITY_BPS,
-  DOM_MAX_LEVELS_PER_SIDE,
   DEFAULT_ANOMALY_PRICE_Z_THRESHOLD,
   DEFAULT_ANOMALY_VOLUME_Z_THRESHOLD,
   DEFAULT_ANOMALY_CANCEL_EXEC_RATIO_THRESHOLD,
@@ -360,7 +364,6 @@ import {
   hydrateLegacyLevel,
   levelsToBookSide,
   resolveTickSize,
-  resolveDomBinSize,
   parseTickSizeMap,
   parsePositiveNumberMap
 } from "./book/BookRuntimeHelpers";
@@ -1720,18 +1723,7 @@ export class TradingEngine {
   }
 
   private domAnalyzerContext() {
-    return {
-      orderBook: this.orderBook,
-      bids: this.bids,
-      asks: this.asks,
-      microstructure: this.engineState.microstructure,
-      domWallHistory: this.domWallHistory,
-      domWallHistoryLimit: this.domWallHistoryLimit,
-      domScanRangePct: this.domScanRangePct,
-      domSpoofProximityBps: this.domSpoofProximityBps,
-      domMaxLevelsPerSide: DOM_MAX_LEVELS_PER_SIDE,
-      resolveBinSize: (code: string) => resolveDomBinSize(this.env, code, this.domPriceBinSize)
-    };
+    return createDomAnalyzerContext(this as unknown as DomAnalyzerContextTarget);
   }
 
   private getBookSync(

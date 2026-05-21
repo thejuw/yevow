@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   appendDomHistory,
   buildDomAnalysisSnapshot,
+  createDomAnalyzerContext,
   currentDomHeatmapSnapshot,
   type DomAnalyzerContext
 } from "../../src/engine/trading/book/DomAnalyzer";
@@ -17,6 +18,32 @@ import type {
 const OBSERVED_AT = "2026-05-18T08:00:00.000Z";
 
 describe("DomAnalyzer", () => {
+  it("creates DOM analyzer context from engine runtime bindings", () => {
+    const target = {
+      orderBook: new Map([["hyperliquid:btc-usd", book()]]),
+      bids: new Map(),
+      asks: new Map(),
+      engineState: {
+        microstructure: micro({ marketKey: "hyperliquid:btc-usd", instrumentCode: "btc-usd" })
+      },
+      domWallHistory: [wall("wall-1")],
+      domWallHistoryLimit: 10,
+      domScanRangePct: 0.01,
+      domSpoofProximityBps: 15,
+      env: {} as never,
+      domPriceBinSize: 0.5
+    };
+
+    const context = createDomAnalyzerContext(target);
+
+    expect(context.orderBook.get("hyperliquid:btc-usd")?.midPrice).toBe(100);
+    expect(context.microstructure.instrumentCode).toBe("btc-usd");
+    expect(context.domWallHistory).toHaveLength(1);
+    expect(context.domWallHistoryLimit).toBe(10);
+    expect(context.domMaxLevelsPerSide).toBeGreaterThan(0);
+    expect(context.resolveBinSize("btc-usd")).toBe(0.5);
+  });
+
   it("returns cached heatmaps and empty snapshots for unavailable books", () => {
     const context = domContext({ microstructure: micro({ instrumentCode: "btc-usd" }) });
     const cached = emptyDom("btc-usd");
