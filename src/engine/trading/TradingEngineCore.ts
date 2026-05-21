@@ -121,10 +121,8 @@ import {
   type QueuedExecutionIntent
 } from "./execution/ExecutionQueueRuntime";
 import { calculateAssetMatrix as calculateRuntimeAssetMatrix } from "./state/AssetMatrixRuntime";
-import {
-  buildPerformanceMetricsText,
-  type ExecutionTraceInput
-} from "./performance/LatencyRuntime";
+import { type ExecutionTraceInput } from "./performance/LatencyRuntime";
+import { buildTradingPerformanceMetricsResponse } from "./performance/TradingPerformanceMetricsResponseRuntime";
 import { observeTradingExecutionProfile } from "./performance/TradingExecutionProfileRuntime";
 import {
   applyHardStaleTickDropFlow,
@@ -4035,19 +4033,7 @@ export class TradingEngine {
   }
 
   private performanceMetricsResponse(): Response {
-    const body = buildPerformanceMetricsText({
-      engineId: this.engineState.engineId,
-      profile: this.engineState.executionProfile,
-      processedTicks: this.engineState.processedTicks,
-      toxicityScore: this.engineState.toxicityScore
-    });
-
-    return new Response(body, {
-      headers: {
-        "content-type": "text/plain; version=0.0.4;charset=UTF-8",
-        "cache-control": "no-store"
-      }
-    });
+    return buildTradingPerformanceMetricsResponse(this.engineState);
   }
 
   private publishTickTelemetry(
