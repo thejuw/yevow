@@ -66,6 +66,48 @@ export interface AcceptedDecisionPipelineFlowHandlers {
   readonly finalizeAcceptedTick: (input: AcceptedTickSideEffectsInput) => Promise<void>;
 }
 
+export interface AcceptedDecisionPipelineTarget extends AcceptedDecisionPipelineFlowHandlers {
+  evaluateProfilerForTick(
+    tick: AcceptedDecisionPipelineInput["tick"],
+    book: AcceptedDecisionPipelineInput["book"],
+    domSnapshot: AcceptedDecisionPipelineInput["domSnapshot"],
+    observedAt: string,
+    jumpDetected: boolean,
+    metrics: AcceptedDecisionPipelineInput["metrics"],
+    wakeUpTimeMs: AcceptedDecisionPipelineInput["wakeUpTimeMs"],
+    orderBookUpdateMs: AcceptedDecisionPipelineInput["orderBookUpdateMs"],
+    hotPathStartedAt: AcceptedDecisionPipelineInput["hotPathStartedAt"]
+  ): AcceptedProfilerRuntimeResult;
+  evaluateOracleForTick(
+    tick: AcceptedDecisionPipelineInput["tick"],
+    book: AcceptedDecisionPipelineInput["book"],
+    observedAt: string
+  ): AcceptedOracleRuntimeResult;
+  buildTickDecisionContext(
+    tick: AcceptedDecisionPipelineInput["tick"],
+    oracle: EngineOracleState,
+    profilerResult: ProfilerEvaluation,
+    observedAt: string
+  ): TickDecisionContext;
+  evaluateCroupierForTick(
+    book: AcceptedDecisionPipelineInput["book"],
+    oracle: EngineOracleState,
+    sentiment: TickDecisionContext["sentimentForDecision"],
+    profilerResult: ProfilerEvaluation,
+    inventory: TickDecisionContext["inventory"],
+    leadLag: TickDecisionContext["leadLag"],
+    volatilitySnapshot: AcceptedDecisionPipelineInput["volatilitySnapshot"],
+    observedAt: string
+  ): AcceptedCroupierRuntimeResult;
+  prepareAcceptedExecutionContext(
+    input: AcceptedDecisionPipelineInput,
+    profilerResult: ProfilerEvaluation,
+    oracleState: EngineOracleState,
+    croupierDecision: CroupierDecision,
+    decisionContext: TickDecisionContext
+  ): AcceptedExecutionContext;
+}
+
 export interface AcceptedTickLifecycleArtifacts {
   readonly commitInput: AcceptedTickStateCommitInput;
   readonly sideEffectsInput: AcceptedTickSideEffectsInput;
@@ -131,6 +173,69 @@ export async function applyAcceptedDecisionPipelineFlow(
   await handlers.finalizeAcceptedTick(lifecycle.sideEffectsInput);
 
   return lifecycle;
+}
+
+export function applyAcceptedDecisionPipelineForTarget(
+  input: AcceptedDecisionPipelineInput,
+  target: AcceptedDecisionPipelineTarget
+): Promise<AcceptedTickLifecycleArtifacts> {
+  return applyAcceptedDecisionPipelineFlow(
+    input,
+    {
+      evaluateProfiler: (pipeline) =>
+        target.evaluateProfilerForTick(
+          pipeline.tick,
+          pipeline.book,
+          pipeline.domSnapshot,
+          pipeline.metrics.brainTimestamp,
+          pipeline.volatilitySnapshot?.jumpDetected ?? false,
+          pipeline.metrics,
+          pipeline.wakeUpTimeMs,
+          pipeline.orderBookUpdateMs,
+          pipeline.hotPathStartedAt
+        ),
+      evaluateOracle: (pipeline) =>
+        target.evaluateOracleForTick(pipeline.tick, pipeline.book, pipeline.metrics.brainTimestamp),
+      buildDecisionContext: (pipeline, oracle, profilerResult) =>
+        target.buildTickDecisionContext(
+          pipeline.tick,
+          oracle,
+          profilerResult,
+          pipeline.metrics.brainTimestamp
+        ),
+      evaluateCroupier: (pipeline, oracle, profilerResult, decisionContext) =>
+        target.evaluateCroupierForTick(
+          pipeline.book,
+          oracle,
+          decisionContext.sentimentForDecision,
+          profilerResult,
+          decisionContext.inventory,
+          decisionContext.leadLag,
+          pipeline.volatilitySnapshot,
+          pipeline.metrics.brainTimestamp
+        ),
+      prepareExecutionContext: (
+        pipeline,
+        profilerResult,
+        oracle,
+        croupierDecision,
+        decisionContext
+      ) =>
+        target.prepareAcceptedExecutionContext(
+          pipeline,
+          profilerResult,
+          oracle,
+          croupierDecision,
+          decisionContext
+        )
+    },
+    {
+      commitAcceptedTickState: (commitInput) => {
+        target.commitAcceptedTickState(commitInput);
+      },
+      finalizeAcceptedTick: (sideEffectsInput) => target.finalizeAcceptedTick(sideEffectsInput)
+    }
+  );
 }
 
 function buildAcceptedTickStateCommitInput(

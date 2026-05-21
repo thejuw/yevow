@@ -441,7 +441,10 @@ import {
   mergeRiskLimits,
   resolveMaxLatencyMs
 } from "./state/EngineStateDefaults";
-import { applyAcceptedDecisionPipelineFlow } from "./pipelines/AcceptedTickLifecycleRuntime";
+import {
+  applyAcceptedDecisionPipelineForTarget,
+  type AcceptedDecisionPipelineTarget
+} from "./pipelines/AcceptedTickLifecycleRuntime";
 import {
   buildTickDecisionContextForTarget,
   type TickDecisionContextTarget
@@ -1620,60 +1623,9 @@ export class TradingEngine {
   private async processAcceptedDecisionPipeline(
     input: AcceptedDecisionPipelineInput
   ): Promise<void> {
-    await applyAcceptedDecisionPipelineFlow(
+    await applyAcceptedDecisionPipelineForTarget(
       input,
-      {
-        evaluateProfiler: (pipeline) =>
-          this.evaluateProfilerForTick(
-            pipeline.tick,
-            pipeline.book,
-            pipeline.domSnapshot,
-            pipeline.metrics.brainTimestamp,
-            pipeline.volatilitySnapshot?.jumpDetected ?? false,
-            pipeline.metrics,
-            pipeline.wakeUpTimeMs,
-            pipeline.orderBookUpdateMs,
-            pipeline.hotPathStartedAt
-          ),
-        evaluateOracle: (pipeline) =>
-          this.evaluateOracleForTick(pipeline.tick, pipeline.book, pipeline.metrics.brainTimestamp),
-        buildDecisionContext: (pipeline, oracle, profilerResult) =>
-          this.buildTickDecisionContext(
-            pipeline.tick,
-            oracle,
-            profilerResult,
-            pipeline.metrics.brainTimestamp
-          ),
-        evaluateCroupier: (pipeline, oracle, profilerResult, decisionContext) =>
-          this.evaluateCroupierForTick(
-            pipeline.book,
-            oracle,
-            decisionContext.sentimentForDecision,
-            profilerResult,
-            decisionContext.inventory,
-            decisionContext.leadLag,
-            pipeline.volatilitySnapshot,
-            pipeline.metrics.brainTimestamp
-          ),
-        prepareExecutionContext: (
-          pipeline,
-          profilerResult,
-          oracle,
-          croupierDecision,
-          decisionContext
-        ) =>
-          this.prepareAcceptedExecutionContext(
-            pipeline,
-            profilerResult,
-            oracle,
-            croupierDecision,
-            decisionContext
-          )
-      },
-      {
-        commitAcceptedTickState: (commitInput) => this.commitAcceptedTickState(commitInput),
-        finalizeAcceptedTick: (sideEffectsInput) => this.finalizeAcceptedTick(sideEffectsInput)
-      }
+      this as unknown as AcceptedDecisionPipelineTarget
     );
   }
 

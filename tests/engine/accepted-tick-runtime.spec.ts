@@ -3,9 +3,11 @@ import type { CroupierDecision } from "../../src/agents/CroupierAgent";
 import type { ProfilerEvaluation } from "../../src/agents/ProfilerAgent";
 import type { OracleTickResult } from "../../src/engine/trading/agents/AgentEvaluationRuntime";
 import {
+  applyAcceptedDecisionPipelineForTarget,
   applyAcceptedDecisionPipelineFlow,
   buildAcceptedDecisionPipelineLifecycle,
-  buildAcceptedTickLifecycleArtifacts
+  buildAcceptedTickLifecycleArtifacts,
+  type AcceptedDecisionPipelineTarget
 } from "../../src/engine/trading/pipelines/AcceptedTickLifecycleRuntime";
 import {
   prepareAcceptedExecutionContextFlow,
@@ -143,6 +145,50 @@ describe("AcceptedTickRuntime", () => {
         }
       }
     );
+    const targetEvents: string[] = [];
+    const pipelineTarget: AcceptedDecisionPipelineTarget = {
+      evaluateProfilerForTick(tick, book, domSnapshot, observedAt, jumpDetected) {
+        void book;
+        void domSnapshot;
+        targetEvents.push(`profiler:${tick.instrumentCode}:${observedAt}:${jumpDetected}`);
+        return { profilerResult, profilerLatencyMs: 2.5 };
+      },
+      evaluateOracleForTick(tick, book, observedAt) {
+        void book;
+        targetEvents.push(`oracle:${tick.instrumentCode}:${observedAt}`);
+        return { oracleResult, oracleLatencyMs: 1.5 };
+      },
+      buildTickDecisionContext(tick, oracle, currentProfilerResult, observedAt) {
+        targetEvents.push(
+          `context:${tick.instrumentCode}:${oracle.updatedAt}:${currentProfilerResult.toxicityScore}:${observedAt}`
+        );
+        return decisionContext;
+      },
+      evaluateCroupierForTick(book, oracle, sentiment, currentProfilerResult, inventory) {
+        void book;
+        void inventory;
+        targetEvents.push(
+          `croupier:${oracle.updatedAt}:${sentiment.updatedAt}:${currentProfilerResult.toxicityScore}`
+        );
+        return { croupierDecision, croupierLatencyMs: 3.5 };
+      },
+      prepareAcceptedExecutionContext(currentPipeline, currentProfilerResult, oracleState) {
+        void currentPipeline;
+        void currentProfilerResult;
+        targetEvents.push(`execution:${oracleState.updatedAt}`);
+        return executionContext;
+      },
+      commitAcceptedTickState(commitInput) {
+        targetEvents.push(`commit:${commitInput.tick.instrumentCode}:${commitInput.observedAt}`);
+      },
+      finalizeAcceptedTick(sideEffectsInput) {
+        targetEvents.push(
+          `finalize:${sideEffectsInput.tick.instrumentCode}:${sideEffectsInput.hotPathStartedAt}`
+        );
+        return Promise.resolve();
+      }
+    };
+    const targetArtifacts = await applyAcceptedDecisionPipelineForTarget(pipeline, pipelineTarget);
 
     expect(artifacts.commitInput).toMatchObject({
       tick: pipeline.tick,
@@ -160,7 +206,17 @@ describe("AcceptedTickRuntime", () => {
     });
     expect(pipelineArtifacts).toEqual(artifacts);
     expect(flowArtifacts).toEqual(artifacts);
+    expect(targetArtifacts).toEqual(artifacts);
     expect(flowEvents).toEqual(["commit:btc-usd:2026-05-18T20:00:00.000Z", "finalize:btc-usd:123"]);
+    expect(targetEvents).toEqual([
+      "profiler:btc-usd:2026-05-18T20:00:00.000Z:false",
+      "oracle:btc-usd:2026-05-18T20:00:00.000Z",
+      `context:btc-usd:${state.oracle.updatedAt}:0.42:2026-05-18T20:00:00.000Z`,
+      `croupier:${state.oracle.updatedAt}:${state.sentiment.updatedAt}:0.42`,
+      `execution:${state.oracle.updatedAt}`,
+      "commit:btc-usd:2026-05-18T20:00:00.000Z",
+      "finalize:btc-usd:123"
+    ]);
     expect(artifacts.sideEffectsInput).toMatchObject({
       tick: pipeline.tick,
       metrics: pipeline.metrics,
