@@ -19,6 +19,7 @@ import { applyBookDeltaFlow, applyBookSnapshotFlow } from "./BookRuntimeState";
 import type { AppliedBookUpdate, BookDeltaWithTicker } from "./BookTypes";
 import type { OrderBookReconstructor } from "./OrderBookReconstructor";
 import type { SortedBookSide } from "./SortedBookSide";
+import { putTradingStorageForTargetOrHandler } from "../state/StorageWriteGuard";
 import {
   buildTradingDomAnalysisForTarget,
   type TradingBookViewTarget
@@ -70,7 +71,7 @@ export interface TradingBookApplicationTarget {
   readonly logger: {
     info(eventType: string, message: string, metadata: JsonRecord): void;
   };
-  safeStoragePut(writes: Record<string, unknown>, reason: string): Promise<void>;
+  safeStoragePut?(writes: Record<string, unknown>, reason: string): Promise<void>;
   publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
 }
 
@@ -137,7 +138,8 @@ export async function applyTradingBookSnapshotForTarget(
       applyState: (state) => {
         target.engineState = state;
       },
-      persistStorage: (writes, reason) => target.safeStoragePut(writes, reason),
+      persistStorage: (writes, reason) =>
+        putTradingStorageForTargetOrHandler(target, writes, reason),
       logSnapshotApplied: (metadata) => {
         target.logger.info(
           "ORDER_BOOK_SNAPSHOT_APPLIED",

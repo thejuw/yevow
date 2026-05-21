@@ -33,6 +33,7 @@ import {
 } from "../book/OrderBookReconstructorFactory";
 import {
   deleteTradingStorageKeysForTarget,
+  putTradingStorageForTargetOrHandler,
   recordTradingStorageWriteFailureForTargetOrHandler
 } from "../state/StorageWriteGuard";
 
@@ -129,7 +130,7 @@ export interface TradingReplayRestoreTarget extends TradingReplaySnapshotTarget 
   };
   handleStorageWriteFailure?(reason: string, error: unknown): void;
   safeStorageDelete?(keys: string[], reason: string): Promise<void>;
-  safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void>;
+  safeStoragePut?(entries: Record<string, unknown>, reason: string): Promise<void>;
 }
 
 export function prepareTradingShadowReplayState(
@@ -250,7 +251,8 @@ export function restoreTradingReplaySnapshotForTarget(
     },
     deletePersistedBookKeys: (keys) =>
       deleteTradingStorageKeysForTarget(target, [...keys], "REPLAY_RESTORE_DELETE_BOOKS"),
-    writeRestoreState: (writes) => target.safeStoragePut(writes, "REPLAY_RESTORE")
+    writeRestoreState: (writes) =>
+      putTradingStorageForTargetOrHandler(target, writes, "REPLAY_RESTORE")
   });
 }
 

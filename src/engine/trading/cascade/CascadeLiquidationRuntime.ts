@@ -31,7 +31,10 @@ import {
   emitTradingCascadeOperationalAlertForTarget,
   type TradingSignalBusTarget
 } from "../telemetry/TradingSignalBusRuntime";
-import { recordTradingStorageWriteFailureForTargetOrHandler } from "../state/StorageWriteGuard";
+import {
+  putTradingStorageForTargetOrHandler,
+  recordTradingStorageWriteFailureForTargetOrHandler
+} from "../state/StorageWriteGuard";
 export {
   buildCascadeDetectedArtifacts,
   cascadeDetectedAlertMetadata,
@@ -222,7 +225,7 @@ export interface TradingLiquidationIngestTarget {
   readonly logger: {
     warn(eventType: string, message: string, metadata?: JsonRecord): void;
   };
-  safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void>;
+  safeStoragePut?(entries: Record<string, unknown>, reason: string): Promise<void>;
   handleStorageWriteFailure?(reason: string, error: unknown): void;
   publish(type: string, payload: JsonRecord): void;
   emitCascadeOperationalAlert?(
@@ -500,7 +503,9 @@ export function handleTradingEngineLiquidationEvents(
         );
       },
       scheduleStorageWrites: (storageWrites) => {
-        target.state.waitUntil(target.safeStoragePut(storageWrites, "LIQUIDATION_EVENT"));
+        target.state.waitUntil(
+          putTradingStorageForTargetOrHandler(target, storageWrites, "LIQUIDATION_EVENT")
+        );
       },
       publish: (type, publishPayload) => {
         target.publish(type, publishPayload);

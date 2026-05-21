@@ -31,6 +31,7 @@ import {
   publishTradingTickTelemetryForTarget,
   type TradingHotPathTelemetryTarget
 } from "../telemetry/TradingHotPathTelemetryRuntime";
+import { putTradingStorageForTargetOrHandler } from "../state/StorageWriteGuard";
 
 export type { AnomalyEmergencyPauseTelemetry };
 
@@ -84,7 +85,7 @@ export interface TradingAnomalyEmergencyTarget {
     notify(notification: AnomalyEmergencyPauseTelemetry["notification"]): void;
   };
   observeExecutionProfile?(metrics: LatencyMetrics, trace: ExecutionTraceInput): void;
-  safeStoragePut(writes: Record<string, unknown>, reason: string): Promise<void>;
+  safeStoragePut?(writes: Record<string, unknown>, reason: string): Promise<void>;
   publish(type: "EMERGENCY_PAUSE", payload: JsonRecord, correlationId: string): void;
   publishTickTelemetry?(
     tick: MarketTick,
@@ -198,7 +199,8 @@ export function handleTradingEngineAnomalyEmergencyPause(
       applyState: (state) => {
         target.engineState = state;
       },
-      persistStorageWrites: (writes) => target.safeStoragePut(writes, "ANOMALY_EMERGENCY_PAUSE"),
+      persistStorageWrites: (writes) =>
+        putTradingStorageForTargetOrHandler(target, writes, "ANOMALY_EMERGENCY_PAUSE"),
       writeCriticalLog: (source, message, metadata) => {
         target.logger.writeLog("CRITICAL", source, message, metadata);
       },

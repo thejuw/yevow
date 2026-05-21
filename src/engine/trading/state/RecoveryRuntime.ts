@@ -22,6 +22,7 @@ import {
   defaultInventoryState,
   defaultRiskMetrics
 } from "./EngineStateDefaults";
+import { putTradingStorageForTargetOrHandler } from "./StorageWriteGuard";
 import {
   deleteRetiredProfilerStorageForTarget,
   type TradingRetiredProfilerStorageTarget
@@ -168,7 +169,7 @@ export interface TradingAdminRecoveryTarget {
   };
   resetOrderBook?(payload: Partial<OrderBookResetRequest>): Promise<void>;
   resetLatencyBaseline?(observedAt: string, reason: string): void;
-  safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void>;
+  safeStoragePut?(entries: Record<string, unknown>, reason: string): Promise<void>;
   publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
 }
 
@@ -476,7 +477,7 @@ export async function recoverTradingEngineStateForTarget(
         target.engineState = state;
       },
       persistStorageEntries: (entries) =>
-        target.safeStoragePut(entries, "ADMIN_CONTROLLED_RECOVERY"),
+        putTradingStorageForTargetOrHandler(target, entries, "ADMIN_CONTROLLED_RECOVERY"),
       putPaperSessionStartedAt: (observedAt) => {
         target.state.waitUntil(
           target.env.CONFIG_STORE.put(PAPER_SESSION_STARTED_AT_KEY, observedAt)

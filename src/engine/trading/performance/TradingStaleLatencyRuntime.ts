@@ -26,6 +26,7 @@ import {
   cancelAllTradingQuotesForTarget,
   type TradingQuoteCancelAllTarget
 } from "../quotes/QuoteCancelRuntime";
+import { applyHotStorageSnapshotForTargetOrHandler } from "../state/StorageWriteGuard";
 
 export interface TradingStaleLatencyTarget {
   engineState: EngineState;
@@ -43,7 +44,7 @@ export interface TradingStaleLatencyTarget {
   };
   resetLatencyBaseline(observedAt: string, reason: string): void;
   latencyStorageWrites?(extra?: Record<string, unknown>): Record<string, unknown>;
-  persistHotStorageSnapshot(writes: Record<string, unknown>, reason: string): Promise<void>;
+  persistHotStorageSnapshot?(writes: Record<string, unknown>, reason: string): Promise<void>;
   logPerformance?(latencyMetrics: LatencyMetrics): void;
   publish(type: "STALE_DATA_KILL_SWITCH", payload: JsonRecord): void;
   cancelAllQuotes?(instrumentCode: string, reason: string): Promise<void>;
@@ -81,7 +82,11 @@ export function handleTradingHardStaleTickDrop(
         target.resetLatencyBaseline(observedAt, reason);
       },
       persistLatencySnapshot: (reason) =>
-        target.persistHotStorageSnapshot(tradingStaleLatencyStorageWrites(target), reason),
+        applyHotStorageSnapshotForTargetOrHandler(
+          target,
+          tradingStaleLatencyStorageWrites(target),
+          reason
+        ),
       warnHardStale: (metadata) => {
         target.logger.warn("HARD_STALE_TICK_DROPPED", "Dropped tick beyond hard stale threshold", {
           ...metadata
@@ -133,7 +138,11 @@ export function handleTradingSoftStaleTick(
         target.engineState = state;
       },
       persistLatencySnapshot: (extra, reason) =>
-        target.persistHotStorageSnapshot(tradingStaleLatencyStorageWrites(target, extra), reason),
+        applyHotStorageSnapshotForTargetOrHandler(
+          target,
+          tradingStaleLatencyStorageWrites(target, extra),
+          reason
+        ),
       logPerformance: (staleMetrics) => {
         logTradingStalePerformance(target, staleMetrics);
       },

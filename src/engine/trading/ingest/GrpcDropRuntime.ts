@@ -10,6 +10,7 @@ import {
   cancelAllTradingQuotesForTarget,
   type TradingQuoteCancelAllTarget
 } from "../quotes/QuoteCancelRuntime";
+import { applyHotStorageSnapshotForTargetOrHandler } from "../state/StorageWriteGuard";
 
 export interface ResolvedGrpcFatalDrop {
   readonly observedAt: string;
@@ -78,7 +79,7 @@ export interface GrpcFatalDropTarget {
   readonly logger: {
     error(eventType: string, message: string, metadata?: JsonRecord): void;
   };
-  persistHotStorageSnapshot(
+  persistHotStorageSnapshot?(
     writes: Record<string, unknown>,
     reason: "GRPC_FATAL_DROP"
   ): Promise<unknown>;
@@ -241,7 +242,8 @@ export function handleGrpcFatalDropForTarget(
     applyState: (state) => {
       target.engineState = state;
     },
-    persistStorage: (writes, reason) => target.persistHotStorageSnapshot(writes, reason),
+    persistStorage: (writes, reason) =>
+      applyHotStorageSnapshotForTargetOrHandler(target, writes, reason),
     schedule: (work) => {
       target.state.waitUntil(work);
     },

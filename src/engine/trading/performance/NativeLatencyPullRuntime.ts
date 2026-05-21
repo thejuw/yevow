@@ -18,6 +18,7 @@ import {
   logTradingPerformanceForTarget,
   type TradingHotPathTelemetryTarget
 } from "../telemetry/TradingHotPathTelemetryRuntime";
+import { applyHotStorageSnapshotForTargetOrHandler } from "../state/StorageWriteGuard";
 
 export interface NativeHyperliquidLatencyPullInput {
   readonly currentState: EngineState;
@@ -84,7 +85,7 @@ export interface TradingNativeHyperliquidLatencyPullTarget {
   readonly state: {
     waitUntil(work: Promise<unknown>): void;
   };
-  persistHotStorageSnapshot(
+  persistHotStorageSnapshot?(
     writes: Record<string, unknown>,
     reason: "NATIVE_HL_LATENCY_PULL"
   ): Promise<unknown>;
@@ -239,7 +240,8 @@ export function applyTradingNativeHyperliquidLatencyPullForTarget(
       applyState: (state) => {
         target.engineState = state;
       },
-      persistStorage: (writes, reason) => target.persistHotStorageSnapshot(writes, reason),
+      persistStorage: (writes, reason) =>
+        applyHotStorageSnapshotForTargetOrHandler(target, writes, reason),
       schedule: (work) => {
         target.state.waitUntil(work);
       },

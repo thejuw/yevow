@@ -37,7 +37,10 @@ import { filterTargetOrderBooks } from "./AssetSelectionRuntime";
 import { defaultEngineState, resolveMaxLatencyMs } from "./EngineStateDefaults";
 import { buildHydratedEngineState, hydrateEngineBootCollections } from "./EngineBootState";
 import { readEngineBootStorageSnapshot } from "./EngineBootStorage";
-import { recordTradingStorageWriteFailureForTargetOrHandler } from "./StorageWriteGuard";
+import {
+  putTradingStorageForTargetOrHandler,
+  recordTradingStorageWriteFailureForTargetOrHandler
+} from "./StorageWriteGuard";
 
 export interface TradingEngineBootHydrationTarget {
   readonly state: DurableObjectState;
@@ -80,7 +83,7 @@ export interface TradingEngineBootHydrationTarget {
   readonly logger: Pick<Logger, "info">;
   handleStorageWriteFailure?(reason: string, error: unknown): void;
   ensureCascadePaperModeArmed?(observedAt: string): Promise<void>;
-  safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
+  safeStoragePut?(key: string, value: unknown, reason: string): Promise<void>;
   scheduleConfigRefresh?(): Promise<void>;
 }
 
@@ -174,7 +177,12 @@ export async function hydrateTradingEngineBootForTarget(
   });
   target.lastPerformanceStatus = target.engineState.executionProfile.status;
 
-  await target.safeStoragePut(ENGINE_STATE_KEY, target.engineState, "SYSTEM_INIT");
+  await putTradingStorageForTargetOrHandler(
+    target,
+    ENGINE_STATE_KEY,
+    target.engineState,
+    "SYSTEM_INIT"
+  );
   await (target.scheduleConfigRefresh
     ? target.scheduleConfigRefresh()
     : scheduleTradingConfigRefreshForTarget(

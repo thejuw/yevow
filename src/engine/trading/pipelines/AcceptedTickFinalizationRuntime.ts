@@ -36,6 +36,7 @@ import {
   recordTradingAcceptedTickJournal,
   scheduleTradingAcceptedTickSnapshot
 } from "../state/TradingTickPersistenceRuntime";
+import { applyHotStorageSnapshotForTargetOrHandler } from "../state/StorageWriteGuard";
 import type { AcceptedTickSideEffectsInput } from "./TickPipelineTypes";
 
 export interface AcceptedTickFinalizationInput {
@@ -98,7 +99,7 @@ export interface AcceptedTickFinalizationTarget {
   readonly state: {
     waitUntil(work: Promise<void>): void;
   };
-  persistHotStorageSnapshot(writes: Record<string, unknown>, reason: string): Promise<void>;
+  persistHotStorageSnapshot?(writes: Record<string, unknown>, reason: string): Promise<unknown>;
 }
 
 export function buildAcceptedTickFinalizationArtifacts(
@@ -196,7 +197,8 @@ export async function finalizeAcceptedTickForTarget(
             profilerResult: currentSideEffects.profilerResult
           },
           {
-            persistSnapshot: (writes, reason) => target.persistHotStorageSnapshot(writes, reason),
+            persistSnapshot: (writes, reason) =>
+              applyHotStorageSnapshotForTargetOrHandler(target, writes, reason),
             schedule: (work) => {
               target.state.waitUntil(work);
             }

@@ -18,6 +18,7 @@ import {
   tradingLatencyStorageWritesForState,
   type TradingLatencyStateTarget
 } from "../performance/TradingLatencyStateRuntime";
+import { applyHotStorageSnapshotForTargetOrHandler } from "../state/StorageWriteGuard";
 
 export interface TradingBookEarlyReturnHandlers {
   readonly observeExecutionProfile: (metrics: LatencyMetrics, trace: ExecutionTraceInput) => void;
@@ -70,7 +71,7 @@ export interface TradingBookEarlyReturnTarget {
     state: EngineState,
     extra?: Record<string, unknown>
   ): Record<string, unknown>;
-  persistHotStorageSnapshot(writes: Record<string, unknown>, reason: string): Promise<unknown>;
+  persistHotStorageSnapshot?(writes: Record<string, unknown>, reason: string): Promise<unknown>;
   publishTickTelemetry?(
     tick: MarketTick,
     metrics: LatencyMetrics,
@@ -107,7 +108,8 @@ export function createTradingBookEarlyReturnHandlers(
     applyState: (state) => {
       target.engineState = state;
     },
-    persistStorage: (writes, reason) => target.persistHotStorageSnapshot(writes, reason),
+    persistStorage: (writes, reason) =>
+      applyHotStorageSnapshotForTargetOrHandler(target, writes, reason),
     publishTickTelemetry: (telemetryTick, telemetryMetrics, status, telemetryStartedAt) => {
       if (target.publishTickTelemetry) {
         target.publishTickTelemetry(telemetryTick, telemetryMetrics, status, telemetryStartedAt);

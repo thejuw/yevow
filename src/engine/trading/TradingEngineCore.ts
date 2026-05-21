@@ -54,10 +54,8 @@ import {
   tradingEngineLoggerRuntimeContext
 } from "./state/EngineBootServices";
 import {
-  applyHotStorageSnapshotForTarget,
   putTradingStorageForTarget,
   recordTradingStorageWriteFailureForTarget,
-  type TradingHotStorageSnapshotTarget,
   type TradingStorageGuardTarget,
   type StorageWriteGuard
 } from "./state/StorageWriteGuard";
@@ -203,7 +201,13 @@ export class TradingEngine {
           engineState: this.engineState
         }),
       readStorage: (key) => state.storage.get(key),
-      writeStorage: (key, value, reason) => this.safeStoragePut(key, value, reason),
+      writeStorage: (key, value, reason) =>
+        putTradingStorageForTarget(
+          this as unknown as TradingStorageGuardTarget,
+          key,
+          value,
+          reason
+        ),
       publish: (type, payload, correlationId) => this.publish(type, payload, correlationId),
       onStorageReadFailure: (reason, error) =>
         recordTradingStorageWriteFailureForTarget(
@@ -262,32 +266,6 @@ export class TradingEngine {
 
   async fetch(request: Request): Promise<Response> {
     return handleTradingEngineFetchForTarget(request, this as unknown as TradingEngineFetchTarget);
-  }
-
-  private async safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
-  private async safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void>;
-  private async safeStoragePut(
-    keyOrEntries: string | Record<string, unknown>,
-    valueOrReason: unknown,
-    maybeReason?: string
-  ): Promise<void> {
-    await putTradingStorageForTarget(
-      this as unknown as TradingStorageGuardTarget,
-      keyOrEntries,
-      valueOrReason,
-      maybeReason
-    );
-  }
-
-  private async persistHotStorageSnapshot(
-    entries: Record<string, unknown>,
-    reason: string
-  ): Promise<void> {
-    await applyHotStorageSnapshotForTarget(
-      entries,
-      reason,
-      this as unknown as TradingHotStorageSnapshotTarget
-    );
   }
 
   private publish(type: string, payload: Record<string, unknown>, correlationId?: string): void {

@@ -18,6 +18,7 @@ import {
   cancelAllTradingQuotesForTarget,
   type TradingQuoteCancelAllTarget
 } from "../quotes/QuoteCancelRuntime";
+import { putTradingStorageForTargetOrHandler } from "../state/StorageWriteGuard";
 
 export interface TradingSignalBusTarget {
   signals: AgentSignal[];
@@ -33,8 +34,8 @@ export interface TradingSignalBusTarget {
   readonly notifier: {
     notify(notification: NotifierEvent): void;
   };
-  safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void>;
-  safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
+  safeStoragePut?(entries: Record<string, unknown>, reason: string): Promise<void>;
+  safeStoragePut?(key: string, value: unknown, reason: string): Promise<void>;
   publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
   cancelAllQuotes?(instrumentCode: string, reason: "HAWKES_FLOW_CLUSTER"): Promise<void>;
 }
@@ -57,7 +58,8 @@ export function acceptTradingAgentSignalForTarget(
       applyState: (state) => {
         target.engineState = state;
       },
-      persistStorageEntries: (entries) => target.safeStoragePut(entries, "AGENT_SIGNAL"),
+      persistStorageEntries: (entries) =>
+        putTradingStorageForTargetOrHandler(target, entries, "AGENT_SIGNAL"),
       logAgentDecision: (agentSignal, signalLatencyMs) => {
         target.logger.agentDecision(agentSignal, signalLatencyMs);
       },
@@ -122,7 +124,7 @@ export function recordTradingCascadeUiSignalForTarget(
         target.state.waitUntil(work);
       },
       persistStorageSignal: (key, signalToPersist, reason) =>
-        target.safeStoragePut(key, signalToPersist, reason),
+        putTradingStorageForTargetOrHandler(target, key, signalToPersist, reason),
       publish: (telemetryType, payload, correlationId) => {
         target.publish(telemetryType, payload, correlationId);
       }

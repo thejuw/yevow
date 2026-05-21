@@ -19,6 +19,7 @@ import {
 } from "../performance/TradingLatencyStateRuntime";
 import {
   deleteTradingStorageKeysForTarget,
+  putTradingStorageForTargetOrHandler,
   recordTradingStorageWriteFailureForTargetOrHandler
 } from "../state/StorageWriteGuard";
 
@@ -126,7 +127,7 @@ export interface TradingOrderBookResetTarget {
   };
   handleStorageWriteFailure?(reason: string, error: unknown): void;
   resetLatencyBaseline?(observedAt: string, reason: string): void;
-  safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void>;
+  safeStoragePut?(entries: Record<string, unknown>, reason: string): Promise<void>;
   safeStorageDelete?(keys: string[], reason: string): Promise<void>;
   readonly logger: {
     warn(eventType: string, message: string, telemetry?: JsonRecord): void;
@@ -401,7 +402,8 @@ export async function resetTradingOrderBookForTarget(
           target as unknown as TradingLatencyStateTarget
         );
       },
-      persistWrites: (writes) => target.safeStoragePut(writes, "ORDER_BOOK_RESET"),
+      persistWrites: (writes) =>
+        putTradingStorageForTargetOrHandler(target, writes, "ORDER_BOOK_RESET"),
       deleteStorageKeys: (keys) =>
         deleteTradingStorageKeysForTarget(target, [...keys], "ORDER_BOOK_RESET_DELETE"),
       logReset: (telemetry) => {

@@ -19,7 +19,10 @@ import {
   applyRuntimeConfigUpdateSideEffects,
   type EffectiveGovernanceConfig
 } from "./ConfigRuntime";
-import { setTradingStorageAlarmForTargetOrScheduler } from "../state/StorageWriteGuard";
+import {
+  putTradingStorageForTargetOrHandler,
+  setTradingStorageAlarmForTargetOrScheduler
+} from "../state/StorageWriteGuard";
 
 export interface TradingConfigRefreshInput {
   readonly source: "ALARM" | "ADMIN_SIGNAL";
@@ -121,7 +124,7 @@ export interface TradingEngineConfigControlTarget {
   readonly logger: {
     warn(eventType: string, message: string, telemetry?: JsonRecord): void;
   };
-  safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
+  safeStoragePut?(key: string, value: unknown, reason: string): Promise<void>;
   safeSetAlarm?(timestamp: number, reason: string): Promise<void>;
 }
 
@@ -260,7 +263,12 @@ export function refreshTradingEngineConfigForTarget(
         target.engineState = state;
       },
       persistRefreshState: () =>
-        target.safeStoragePut(ENGINE_STATE_KEY, target.engineState, "CONFIG_REFRESH"),
+        putTradingStorageForTargetOrHandler(
+          target,
+          ENGINE_STATE_KEY,
+          target.engineState,
+          "CONFIG_REFRESH"
+        ),
       warnRefresh: (metadata) => {
         target.logger.warn("CONFIG_REFRESHED", "Trading engine config cache refreshed", metadata);
       }
@@ -328,7 +336,12 @@ export function applyTradingEngineConfigUpdateForTarget(
         target.engineState = state;
       },
       persistAppliedState: () =>
-        target.safeStoragePut(ENGINE_STATE_KEY, target.engineState, "ADMIN_CONFIG_APPLIED"),
+        putTradingStorageForTargetOrHandler(
+          target,
+          ENGINE_STATE_KEY,
+          target.engineState,
+          "ADMIN_CONFIG_APPLIED"
+        ),
       warnApplied: (metadata) => {
         target.logger.warn("ADMIN_CONFIG_APPLIED", "Runtime configuration updated", metadata);
       }

@@ -1,6 +1,7 @@
 import { HOT_PATH_LOG_THROTTLE_MS, RATE_LIMIT_STATE_KEY } from "../../../TradingEngineConstants";
 import type { Env, JsonRecord } from "../../../types";
 import { wait } from "../helpers/RuntimeMath";
+import { putTradingStorageForTargetOrHandler } from "../state/StorageWriteGuard";
 
 export interface QuoteCancelDispatchPayload {
   readonly instrumentCode: string;
@@ -86,7 +87,7 @@ export interface TradingQuoteCancelAllTarget {
   readonly state: {
     waitUntil(work: Promise<void>): void;
   };
-  safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
+  safeStoragePut?(key: string, value: unknown, reason: string): Promise<void>;
 }
 
 export function evaluateQuoteCancelDispatch(
@@ -225,7 +226,8 @@ export function cancelAllTradingQuotesForTarget(
       reserveCancelCapacity: () => target.rateLimiter.reserve("default", "CANCEL"),
       persistRateLimitState: () => {
         target.state.waitUntil(
-          target.safeStoragePut(
+          putTradingStorageForTargetOrHandler(
+            target,
             RATE_LIMIT_STATE_KEY,
             target.rateLimiter.exportState(),
             "EXECUTION_RATE_LIMIT_DRAIN"

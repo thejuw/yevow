@@ -28,7 +28,10 @@ import type {
   JanitorCancelReservation,
   JanitorExecutionerFetcher
 } from "./JanitorRuntime";
-import { scheduleTradingStoragePutForTarget } from "../state/StorageWriteGuard";
+import {
+  putTradingStorageForTargetOrHandler,
+  scheduleTradingStoragePutForTarget
+} from "../state/StorageWriteGuard";
 
 export interface TradingJanitorLogger {
   warn(eventType: string, message: string, telemetry?: JsonRecord): void;
@@ -97,7 +100,7 @@ export interface TradingEngineJanitorMaintenanceTarget {
     instrumentCode?: string
   ): Promise<void>;
   pruneOperationalLogs(): Promise<LogPruneReport>;
-  safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
+  safeStoragePut?(key: string, value: unknown, reason: string): Promise<void>;
 }
 
 export interface TradingJanitorCancelInput {
@@ -222,7 +225,8 @@ export function runTradingEngineJanitorMaintenanceForTarget(
       applyState: (state) => {
         target.engineState = state;
       },
-      persistState: (state) => target.safeStoragePut(ENGINE_STATE_KEY, state, "JANITOR_REPORT")
+      persistState: (state) =>
+        putTradingStorageForTargetOrHandler(target, ENGINE_STATE_KEY, state, "JANITOR_REPORT")
     }
   );
 }

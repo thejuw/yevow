@@ -12,6 +12,7 @@ import {
   dispatchTradingExecutionIntentForTarget,
   type TradingExecutionDispatchTarget
 } from "../execution/TradingExecutionDispatchRuntime";
+import { putTradingStorageForTargetOrHandler } from "../state/StorageWriteGuard";
 
 export interface TradingCascadeManualCloseInput {
   readonly positions: readonly CascadeOpenPosition[];
@@ -54,7 +55,7 @@ export interface TradingCascadeManualCloseTarget {
   };
   dispatchExecution?(intent: TradeIntent): Promise<void>;
   publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
-  safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
+  safeStoragePut?(key: string, value: unknown, reason: string): Promise<void>;
 }
 
 export function closeTradingCascadePosition(
@@ -121,7 +122,8 @@ export function closeTradingEngineCascadePosition(
       },
       persistPositions: () => {
         target.state.waitUntil(
-          target.safeStoragePut(
+          putTradingStorageForTargetOrHandler(
+            target,
             CASCADE_POSITIONS_KEY,
             target.cascadePositionManager.snapshot(),
             "CASCADE_POSITION_MANUAL_CLOSE"

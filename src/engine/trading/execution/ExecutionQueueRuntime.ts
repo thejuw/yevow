@@ -9,6 +9,7 @@ import {
   type TradingExecutionDispatchTarget
 } from "./TradingExecutionDispatchRuntime";
 import {
+  putTradingStorageForTargetOrHandler,
   recordTradingStorageWriteFailureForTargetOrHandler,
   setTradingStorageAlarmForTargetOrScheduler
 } from "../state/StorageWriteGuard";
@@ -139,7 +140,7 @@ export interface TradingExecutionQueueTarget {
     warn(eventType: string, message: string, telemetry?: JsonRecord): void;
   };
   handleStorageWriteFailure?(reason: string, error: unknown): void;
-  safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
+  safeStoragePut?(key: string, value: unknown, reason: string): Promise<void>;
   safeSetAlarm?(timestampMs: number, reason: string): Promise<void>;
   dispatchExecution?(intent: TradeIntent): Promise<void>;
 }
@@ -366,7 +367,8 @@ export function enqueueTradingExecutionIntentForTarget(
       handleStorageFailure: (reason, error) => {
         recordTradingStorageWriteFailureForTargetOrHandler(target, reason, error);
       },
-      persistQueue: (key, queue, reason) => target.safeStoragePut(key, queue, reason),
+      persistQueue: (key, queue, reason) =>
+        putTradingStorageForTargetOrHandler(target, key, queue, reason),
       setAlarm: (timestampMs, reason) =>
         setTradingStorageAlarmForTargetOrScheduler(target, timestampMs, reason),
       markDeferralLogged: (loggedAtMs) => {
@@ -395,7 +397,8 @@ export function drainTradingExecutionQueueForTarget(
       handleStorageFailure: (reason, error) => {
         recordTradingStorageWriteFailureForTargetOrHandler(target, reason, error);
       },
-      persistQueue: (key, queue, reason) => target.safeStoragePut(key, queue, reason),
+      persistQueue: (key, queue, reason) =>
+        putTradingStorageForTargetOrHandler(target, key, queue, reason),
       dispatchExecution: (intent) =>
         target.dispatchExecution
           ? target.dispatchExecution(intent)

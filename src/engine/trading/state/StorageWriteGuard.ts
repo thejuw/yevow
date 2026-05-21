@@ -23,6 +23,11 @@ export interface HotStorageSnapshotSideEffectHandlers {
   readonly persistSnapshot: (entries: Record<string, unknown>, reason: string) => Promise<void>;
 }
 
+export interface SafeTradingStoragePutHandler {
+  (key: string, value: unknown, reason: string): Promise<void>;
+  (entries: Record<string, unknown>, reason: string): Promise<void>;
+}
+
 export interface TradingHotStorageSnapshotTarget {
   lastHotStorageSnapshotAt: number;
   lastHotStorageSnapshotTick: number;
@@ -33,7 +38,8 @@ export interface TradingHotStorageSnapshotTarget {
     readonly HOT_STORAGE_SNAPSHOT_INTERVAL_MS?: string;
     readonly HOT_STORAGE_SNAPSHOT_TICK_INTERVAL?: string;
   };
-  safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void>;
+  readonly storageGuard?: StorageWriteGuard;
+  safeStoragePut?: unknown;
 }
 
 export interface TradingStorageGuardTarget {
@@ -45,6 +51,23 @@ export interface TradingStoragePutSchedulerTarget {
   readonly storageGuard?: StorageWriteGuard;
   readonly state?: Pick<DurableObjectState, "waitUntil">;
   waitUntilStoragePut?(key: string, value: unknown, reason: string): void;
+}
+
+export interface TradingStoragePutHandlerTarget {
+  readonly storageGuard?: StorageWriteGuard;
+  safeStoragePut?: unknown;
+}
+
+export interface TradingHotStorageSnapshotSchedulerTarget {
+  lastHotStorageSnapshotAt?: number;
+  lastHotStorageSnapshotTick?: number;
+  readonly engineState?: {
+    readonly processedTicks: number;
+  };
+  readonly env?: unknown;
+  readonly storageGuard?: StorageWriteGuard;
+  safeStoragePut?: unknown;
+  persistHotStorageSnapshot?(entries: Record<string, unknown>, reason: string): Promise<unknown>;
 }
 
 export interface TradingStorageDeleteSchedulerTarget {
@@ -143,7 +166,7 @@ export async function applyHotStorageSnapshotForTarget(
         target.lastHotStorageSnapshotTick = snapshotTick;
       },
       persistSnapshot: (snapshotEntries, snapshotReason) =>
-        target.safeStoragePut(snapshotEntries, snapshotReason)
+        putTradingStorageForTargetOrHandler(target, snapshotEntries, snapshotReason)
     }
   );
 }
@@ -162,6 +185,76 @@ export async function putTradingStorageForTarget(
   await target.storageGuard.put(
     keyOrEntries,
     typeof valueOrReason === "string" ? valueOrReason : "STORAGE_WRITE"
+  );
+}
+
+export async function putTradingStorageForTargetOrHandler(
+  target: TradingStoragePutHandlerTarget,
+  key: string,
+  value: unknown,
+  reason: string
+): Promise<void>;
+export async function putTradingStorageForTargetOrHandler(
+  target: TradingStoragePutHandlerTarget,
+  entries: Record<string, unknown>,
+  reason: string
+): Promise<void>;
+export async function putTradingStorageForTargetOrHandler(
+  target: TradingStoragePutHandlerTarget,
+  keyOrEntries: string | Record<string, unknown>,
+  valueOrReason: unknown,
+  maybeReason?: string
+): Promise<void> {
+  const safeStoragePut = target.safeStoragePut as SafeTradingStoragePutHandler | undefined;
+
+  if (safeStoragePut) {
+    if (typeof keyOrEntries === "string") {
+      await safeStoragePut(keyOrEntries, valueOrReason, maybeReason ?? "STORAGE_WRITE");
+      return;
+    }
+
+    await safeStoragePut(
+      keyOrEntries,
+      typeof valueOrReason === "string" ? valueOrReason : "STORAGE_WRITE"
+    );
+    return;
+  }
+
+  if (!target.storageGuard) {
+    throw new Error("Trading storage put requires storageGuard binding");
+  }
+
+  await putTradingStorageForTarget(
+    target as TradingStorageGuardTarget,
+    keyOrEntries,
+    valueOrReason,
+    maybeReason
+  );
+}
+
+export async function applyHotStorageSnapshotForTargetOrHandler(
+  target: TradingHotStorageSnapshotSchedulerTarget,
+  entries: Record<string, unknown>,
+  reason: string
+): Promise<void> {
+  if (target.persistHotStorageSnapshot) {
+    await target.persistHotStorageSnapshot(entries, reason);
+    return;
+  }
+
+  if (
+    typeof target.lastHotStorageSnapshotAt !== "number" ||
+    typeof target.lastHotStorageSnapshotTick !== "number" ||
+    !target.engineState ||
+    !target.env
+  ) {
+    throw new Error("Hot storage snapshot requires target snapshot counters and env");
+  }
+
+  await applyHotStorageSnapshotForTarget(
+    entries,
+    reason,
+    target as TradingHotStorageSnapshotTarget
   );
 }
 

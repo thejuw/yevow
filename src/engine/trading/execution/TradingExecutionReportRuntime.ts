@@ -17,6 +17,7 @@ import {
   type ExecutionReportRuntimeUpdate,
   type ExecutionReportSideEffectHandlers
 } from "./ExecutionReportRuntime";
+import { putTradingStorageForTargetOrHandler } from "../state/StorageWriteGuard";
 
 export interface TradingExecutionReportInput {
   readonly state: EngineState;
@@ -57,7 +58,7 @@ export interface TradingExecutionReportTarget {
     observedAt: string,
     openPositions: EngineState["openPositions"]
   ): InventoryState;
-  safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
+  safeStoragePut?(key: string, value: unknown, reason: string): Promise<void>;
   publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
 }
 
@@ -131,7 +132,12 @@ export function applyTradingExecutionReportForTarget(
       },
       applyState: async (state) => {
         target.engineState = state;
-        await target.safeStoragePut(ENGINE_STATE_KEY, target.engineState, "EXECUTION_REPORT");
+        await putTradingStorageForTargetOrHandler(
+          target,
+          ENGINE_STATE_KEY,
+          target.engineState,
+          "EXECUTION_REPORT"
+        );
       },
       recordExecution: (tradeExecution) => {
         target.logger.recordExecution(tradeExecution);

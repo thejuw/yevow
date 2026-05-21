@@ -113,6 +113,7 @@ import {
   PERFORMANCE_HISTORY_LIMIT,
   SIGNAL_BUFFER_LIMIT
 } from "../../../TradingEngineConstants";
+import { putTradingStorageForTargetOrHandler } from "../state/StorageWriteGuard";
 import type { TickIngestResult, GrpcFatalDropPayload } from "../TradingEngineRouteTypes";
 
 export interface EngineHttpRouteContext {
@@ -201,8 +202,8 @@ export interface EngineHttpRouteContextTarget extends TradingBookApplicationTarg
   refreshConfigIfDue?(source: "ALARM" | "ADMIN_SIGNAL"): Promise<void>;
   resetLatencyBaseline?(observedAt: string, reason: string): void;
   publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
-  safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void>;
-  safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
+  safeStoragePut?(entries: Record<string, unknown>, reason: string): Promise<void>;
+  safeStoragePut?(key: string, value: unknown, reason: string): Promise<void>;
   recoverEngineState?(
     payload: Parameters<EngineHttpRouteContext["recoverEngineState"]>[0]
   ): Promise<unknown>;
@@ -255,8 +256,10 @@ export function createTradingEngineHttpRouteContext(
     publish: (type, payload, correlationId) => {
       target.publish(type, payload, correlationId);
     },
-    safeStoragePutEntries: (entries, reason) => target.safeStoragePut(entries, reason),
-    safeStoragePutKey: (key, value, reason) => target.safeStoragePut(key, value, reason),
+    safeStoragePutEntries: (entries, reason) =>
+      putTradingStorageForTargetOrHandler(target, entries, reason),
+    safeStoragePutKey: (key, value, reason) =>
+      putTradingStorageForTargetOrHandler(target, key, value, reason),
     recoverEngineState: (payload) =>
       target.recoverEngineState
         ? target.recoverEngineState(payload)

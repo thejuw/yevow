@@ -7,6 +7,7 @@ import {
   recordTradingCascadeUiSignalForTarget,
   type TradingSignalBusTarget
 } from "../telemetry/TradingSignalBusRuntime";
+import { putTradingStorageForTargetOrHandler } from "../state/StorageWriteGuard";
 import { CascadeRecoverySignalEngine } from "../../../strategy/cascade/CascadeRecoverySignal";
 import { calculateAtr } from "../../../strategy/cascade/indicators/ATR";
 import { cumulativeVolumeDelta } from "../../../strategy/cascade/indicators/CumulativeVolumeDelta";
@@ -112,7 +113,7 @@ export interface TradingCascadePositionUpdateTarget {
     metadata: JsonRecord,
     dedupeKey: string
   ): void;
-  safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
+  safeStoragePut?(key: string, value: unknown, reason: string): Promise<void>;
 }
 
 export interface CascadeClosedCandleSignalHandlers {
@@ -207,7 +208,7 @@ export interface TradingAcceptedCascadeSignalTarget {
   };
   recordCascadeUiSignal?(signal: AgentSignal, outcome: "TAKEN" | "SKIPPED" | "CLOSED"): void;
   dispatchExecution?(intent: TradeIntent): Promise<void>;
-  safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
+  safeStoragePut?(key: string, value: unknown, reason: string): Promise<void>;
   emitCascadeOperationalAlert?(
     eventType: CascadeAlertEventType,
     title: string,
@@ -253,7 +254,7 @@ export interface TradingCascadeStrategyTarget {
   readonly env: Pick<Env, "CASCADE_ATR_FALLBACK_USD" | "CASCADE_ATR_FALLBACK_PCT">;
   recordCascadeUiSignal?(signal: AgentSignal, outcome: "TAKEN" | "SKIPPED" | "CLOSED"): void;
   dispatchExecution?(intent: TradeIntent): Promise<void>;
-  safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
+  safeStoragePut?(key: string, value: unknown, reason: string): Promise<void>;
   emitCascadeOperationalAlert?(
     eventType: CascadeAlertEventType,
     title: string,
@@ -341,7 +342,8 @@ export function dispatchTradingCascadePositionUpdates(
     },
     persistPositions: () => {
       target.state.waitUntil(
-        target.safeStoragePut(
+        putTradingStorageForTargetOrHandler(
+          target,
           CASCADE_POSITIONS_KEY,
           target.cascadePositionManager.snapshot(),
           "CASCADE_POSITION_UPDATE"
@@ -607,7 +609,8 @@ export function processTradingAcceptedCascadeSignal(
               target as unknown as TradingExecutionDispatchTarget
             ),
       persistPositions: () =>
-        target.safeStoragePut(
+        putTradingStorageForTargetOrHandler(
+          target,
           CASCADE_POSITIONS_KEY,
           target.cascadePositionManager.snapshot(),
           "CASCADE_POSITION_OPENED"
