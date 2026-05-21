@@ -76,7 +76,10 @@ import {
   type TradingExecutionReportTarget
 } from "./execution/TradingExecutionReportRuntime";
 import { type OracleTickResult } from "./agents/AgentEvaluationRuntime";
-import { evaluateTradingCroupier } from "./agents/TradingCroupierEvaluationRuntime";
+import {
+  evaluateTradingCroupierForTarget,
+  type TradingCroupierEvaluationTarget
+} from "./agents/TradingCroupierEvaluationRuntime";
 import { evaluateTradingOracle } from "./agents/TradingOracleEvaluationRuntime";
 import { evaluateTradingProfiler } from "./agents/TradingProfilerEvaluationRuntime";
 import {
@@ -1568,22 +1571,19 @@ export class TradingEngine {
     volatilitySnapshot: MultiScaleVolatilitySnapshot | null,
     observedAt: string
   ): { croupierDecision: CroupierDecision; croupierLatencyMs: number } {
-    return evaluateTradingCroupier({
-      croupierAgent: this.croupierAgent,
-      adverseSelectionModel: this.adverseSelectionModel,
-      engineState: this.engineState,
-      config: this.cachedConfig,
-      env: this.env,
-      book,
-      oracle,
-      sentiment,
-      profilerResult,
-      inventory,
-      leadLag,
-      volatilitySnapshot,
-      macroBias: this.macroBias,
-      observedAt
-    });
+    return evaluateTradingCroupierForTarget(
+      {
+        book,
+        oracle,
+        sentiment,
+        profilerResult,
+        inventory,
+        leadLag,
+        volatilitySnapshot,
+        observedAt
+      },
+      this as unknown as TradingCroupierEvaluationTarget
+    );
   }
 
   private commitAcceptedTickState(input: AcceptedTickStateCommitInput): void {

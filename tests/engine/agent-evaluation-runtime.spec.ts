@@ -12,6 +12,10 @@ import {
   type OracleRuntimeAgent,
   type ProfilerRuntimeAgent
 } from "../../src/engine/trading/agents/AgentEvaluationRuntime";
+import {
+  evaluateTradingCroupierForTarget,
+  type TradingCroupierEvaluationTarget
+} from "../../src/engine/trading/agents/TradingCroupierEvaluationRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { CroupierDecision, CroupierInput } from "../../src/agents/CroupierAgent";
 import type {
@@ -349,6 +353,64 @@ describe("AgentEvaluationRuntime", () => {
     ).toEqual({
       croupierDecision: disabledDecision,
       croupierLatencyMs: 0
+    });
+  });
+
+  it("evaluates Croupier decisions through a trading target adapter", () => {
+    const state = defaultEngineState("croupier-target");
+    let captured: CroupierInput | null = null;
+    const decision: CroupierDecision = {
+      intent: null,
+      quote: null,
+      pullAllQuotes: false,
+      adverseSelectionCost: 0,
+      minEvThreshold: 0.01
+    };
+    const target = {
+      croupierAgent: {
+        evaluate(input: CroupierInput) {
+          captured = input;
+          return decision;
+        }
+      },
+      adverseSelectionModel: new AdverseSelectionModel(),
+      engineState: state,
+      cachedConfig: defaultConfig,
+      env: {},
+      macroBias: state.macroBias
+    } as unknown as TradingCroupierEvaluationTarget;
+
+    const result = evaluateTradingCroupierForTarget(
+      {
+        book: book(),
+        oracle: state.oracle,
+        sentiment: state.sentiment,
+        profilerResult: {
+          processed: true,
+          skippedReason: null,
+          closedBuckets: 0,
+          toxicityScore: 0.33,
+          state: {
+            toxicityState: "NORMAL",
+            pressureSide: "NEUTRAL",
+            spreadMultiplier: 1,
+            reservationShiftBps: 0
+          } as never,
+          signal: null
+        },
+        inventory: state.inventory,
+        leadLag: state.leadLag,
+        volatilitySnapshot: null,
+        observedAt: OBSERVED_AT
+      },
+      target
+    );
+
+    expect(result.croupierDecision).toBe(decision);
+    expect(captured).toMatchObject({
+      engineId: "croupier-target",
+      toxicityScore: 0.33,
+      observedAt: OBSERVED_AT
     });
   });
 });
