@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { defaultConfig } from "../../src/ConfigManager";
 import {
   applyCascadeOpenPositionSideEffects,
   applyCascadePositionUpdateSideEffects,
@@ -6,6 +7,7 @@ import {
   applyCascadeSizeRejectionSideEffects,
   closedOneMinuteCandlesForTick,
   evaluateCascadeStrategyFlow,
+  evaluateTradingCascadeRecoverySignal,
   processCascadeClosedCandleSignals,
   processAcceptedCascadeSignalFlow,
   type CascadeAcceptedSignalFlowHandlers,
@@ -318,6 +320,37 @@ describe("CascadeStrategyRuntime", () => {
       "evaluate:99",
       "reject:cascade-rejected:2026-05-18T20:01:00.000Z"
     ]);
+  });
+
+  it("builds trading cascade recovery signal context from runtime collaborators", () => {
+    const calls: string[] = [];
+    const result = evaluateTradingCascadeRecoverySignal(
+      {
+        cascade: cascade("cascade-btc-usd", "btc-usd"),
+        absorption: absorption("btc-usd"),
+        reclaimCandle: candle({ close: 101 }),
+        observedAt: "2026-05-18T20:01:00.000Z",
+        config: defaultConfig,
+        midPrice: 100,
+        oracleRegime: "REGIME_RANGE",
+        riskTradingEnabled: true,
+        cascadeEventsById: new Map(),
+        env: {}
+      },
+      {
+        snapshotCandles: (instrumentCode, timeframe, limit) => {
+          calls.push(`candles:${instrumentCode}:${timeframe}:${limit}`);
+          return [candle({ close: 99 }), candle({ close: 100 }), candle({ close: 101 })];
+        },
+        isWithinBlackout: (_observedAt, baseAsset) => {
+          calls.push(`blackout:${baseAsset}`);
+          return { blocked: false };
+        }
+      }
+    );
+
+    expect(calls).toEqual(["candles:btc-usd:1m:64", "blackout:BTC"]);
+    expect(result.accepted).toEqual(expect.any(Boolean));
   });
 });
 

@@ -122,16 +122,14 @@ import {
 import {
   absorptionAnalyzerConfigFromRuntime,
   cascadeAssetProfileFromConfig,
-  cascadeDetectorConfigFromRuntime,
-  cascadeRecoverySignalConfig as buildCascadeRecoverySignalConfig,
-  resolveCascadeAtr1h as resolveCascadeAtr1hFromConfig
+  cascadeDetectorConfigFromRuntime
 } from "./cascade/CascadeConfigRuntime";
 import { ensureCascadePaperModeArmedRuntime } from "./cascade/CascadePaperModeRuntime";
 import {
   applyCascadePositionUpdateSideEffects,
   applyCascadeSignalRejectionSideEffects,
   evaluateCascadeStrategyFlow,
-  processCascadeClosedCandleSignals,
+  evaluateTradingCascadeRecoverySignal,
   processAcceptedCascadeSignalFlow
 } from "./cascade/CascadeStrategyRuntime";
 import { OrderBookReconstructor, type OrderBookStores } from "./book/OrderBookReconstructor";
@@ -242,15 +240,12 @@ import type { CascadeAssetProfile } from "../../strategy/cascade/AssetProfiles";
 import type { Backtester } from "../../strategy/cascade/Backtester";
 import { CascadeCandleAggregator } from "../../strategy/cascade/CandleAggregator";
 import { CascadeDetector } from "../../strategy/cascade/CascadeDetector";
-import { CascadeRecoverySignalEngine } from "../../strategy/cascade/CascadeRecoverySignal";
 import { calculateAtr } from "../../strategy/cascade/indicators/ATR";
-import { cumulativeVolumeDelta } from "../../strategy/cascade/indicators/CumulativeVolumeDelta";
 import { HyperliquidLiquidationStream } from "../../strategy/cascade/LiquidationStream";
 import { HeatManager } from "../../strategy/cascade/HeatManager";
 import type { NewsCalendar } from "../../strategy/cascade/NewsCalendar";
 import type { CascadeAlertEventType } from "../../strategy/cascade/OperationalSafeguards";
 import { PositionManager } from "../../strategy/cascade/PositionManager";
-import { calculateVwap } from "../../strategy/cascade/indicators/VWAP";
 import type {
   AdminConfigUpdate,
   AnomalyDetectorState,
@@ -370,17 +365,10 @@ import {
 } from "./book/BookRuntimeHelpers";
 import {
   isCascadeInstrumentEnabledForConfig,
-  latestAbsorptionForInstrument,
-  latestCascadeAtForInstrument,
-  recentSwingLow,
-  recentSwingHigh
+  latestAbsorptionForInstrument
 } from "./cascade/CascadeSelectionRuntime";
 import { closeTradingCascadePosition } from "./cascade/TradingCascadeManualCloseRuntime";
-import {
-  normalizeNativeCoin,
-  splitNativeInstrument,
-  baseAssetFromInstrument
-} from "./helpers/NativeMarketIdentityRuntime";
+import { normalizeNativeCoin, splitNativeInstrument } from "./helpers/NativeMarketIdentityRuntime";
 import { nativeBookSideLevels } from "./helpers/NativeHyperliquidRuntime";
 import {
   epochMillis,
@@ -1343,40 +1331,26 @@ export class TradingEngine {
     reclaimCandle: Candle,
     observedAt: string
   ): CascadeRecoverySignalResult {
-    const recent1mCandles = this.candleAggregator.snapshot(reclaimCandle.instrumentCode, "1m", 64);
-    const latestRawEvent = cascade.rawEvents.at(-1) ?? null;
-    const blackout = this.cascadeNewsCalendar.isWithinBlackout(
-      new Date(observedAt),
-      baseAssetFromInstrument(reclaimCandle.instrumentCode)
+    return evaluateTradingCascadeRecoverySignal(
+      {
+        cascade,
+        absorption,
+        reclaimCandle,
+        observedAt,
+        config: this.cachedConfig,
+        midPrice: this.engineState.microstructure.midPrice,
+        oracleRegime: this.engineState.oracle.regime ?? "UNKNOWN",
+        riskTradingEnabled: this.engineState.riskMetrics.isTradingEnabled,
+        cascadeEventsById: this.cascadeEventsById,
+        env: this.env
+      },
+      {
+        snapshotCandles: (instrumentCode, timeframe, limit) =>
+          this.candleAggregator.snapshot(instrumentCode, timeframe, limit),
+        isWithinBlackout: (blackoutObservedAt, baseAsset) =>
+          this.cascadeNewsCalendar.isWithinBlackout(blackoutObservedAt, baseAsset)
+      }
     );
-
-    return this.cascadeSignalEngineWithConfig().evaluate({
-      cascade,
-      absorption,
-      reclaimCandle,
-      recent1mCandles,
-      atr1m: calculateAtr(recent1mCandles, 14),
-      atr1h: latestRawEvent
-        ? resolveCascadeAtr1hFromConfig({
-            event: latestRawEvent,
-            midPrice: this.engineState.microstructure.midPrice,
-            fallbackUsdValue: this.env.CASCADE_ATR_FALLBACK_USD,
-            fallbackPctValue: this.env.CASCADE_ATR_FALLBACK_PCT
-          })
-        : null,
-      preCascadeSwingLow: recentSwingLow(recent1mCandles),
-      preCascadeSwingHigh: recentSwingHigh(recent1mCandles),
-      cascadeVwap: calculateVwap(recent1mCandles),
-      cvd1m: cumulativeVolumeDelta(recent1mCandles),
-      openInterestDelta: 0,
-      oracleRegime: this.engineState.oracle.regime ?? "UNKNOWN",
-      recentSecondCascadeAt: latestCascadeAtForInstrument(this.cascadeEventsById, cascade),
-      majorNewsWithinBlackout: blackout.blocked,
-      realizedVolPercentile1h: 0.5,
-      dailyLossLimitBreached: !this.engineState.riskMetrics.isTradingEnabled,
-      weeklyLossLimitBreached: false,
-      observedAt
-    });
   }
 
   private async evaluateCascadeStrategy(tick: MarketTick, observedAt: string): Promise<void> {
@@ -1483,10 +1457,6 @@ export class TradingEngine {
         logWarn: (event, message, metadata) => this.logger.warn(event, message, metadata)
       }
     );
-  }
-
-  private cascadeSignalEngineWithConfig(): CascadeRecoverySignalEngine {
-    return new CascadeRecoverySignalEngine(buildCascadeRecoverySignalConfig(this.cachedConfig));
   }
 
   private tradeIntentFromCascadeSignal(

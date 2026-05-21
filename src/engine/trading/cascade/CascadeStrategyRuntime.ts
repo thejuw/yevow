@@ -2,6 +2,10 @@ import {
   cascadeCloseOperationalAlert,
   type CascadeCloseOperationalAlert
 } from "../telemetry/CascadeSignalTelemetryRuntime";
+import { CascadeRecoverySignalEngine } from "../../../strategy/cascade/CascadeRecoverySignal";
+import { calculateAtr } from "../../../strategy/cascade/indicators/ATR";
+import { cumulativeVolumeDelta } from "../../../strategy/cascade/indicators/CumulativeVolumeDelta";
+import { calculateVwap } from "../../../strategy/cascade/indicators/VWAP";
 import type {
   AbsorptionConfirmed,
   Candle,
@@ -12,7 +16,14 @@ import type {
   CascadeRecoverySignalResult,
   PositionManagerUpdate
 } from "../../../strategy/cascade/types";
-import type { GlobalRiskConfig, MarketTick } from "../../../types";
+import type { Env, GlobalRiskConfig, MarketRegime, MarketTick } from "../../../types";
+import { baseAssetFromInstrument } from "../helpers/NativeMarketIdentityRuntime";
+import { cascadeRecoverySignalConfig, resolveCascadeAtr1h } from "./CascadeConfigRuntime";
+import {
+  latestCascadeAtForInstrument,
+  recentSwingHigh,
+  recentSwingLow
+} from "./CascadeSelectionRuntime";
 export {
   applyCascadeOpenPositionSideEffects,
   applyCascadeSignalRejectionSideEffects,
@@ -73,6 +84,24 @@ export interface CascadeStrategyEvaluationResult {
   readonly evaluated: boolean;
   readonly closedCandles: readonly Candle[];
   readonly reason: "STRATEGY_DISABLED" | "INSTRUMENT_DISABLED" | "EVALUATED";
+}
+
+export interface TradingCascadeRecoverySignalEvaluationInput {
+  readonly cascade: CascadeEvent;
+  readonly absorption: AbsorptionConfirmed;
+  readonly reclaimCandle: Candle;
+  readonly observedAt: string;
+  readonly config: GlobalRiskConfig;
+  readonly midPrice: number | null;
+  readonly oracleRegime: MarketRegime | "UNKNOWN";
+  readonly riskTradingEnabled: boolean;
+  readonly cascadeEventsById: ReadonlyMap<string, CascadeEvent>;
+  readonly env: Pick<Env, "CASCADE_ATR_FALLBACK_USD" | "CASCADE_ATR_FALLBACK_PCT">;
+}
+
+export interface TradingCascadeRecoverySignalEvaluationHandlers {
+  readonly snapshotCandles: (instrumentCode: string, timeframe: "1m", limit: number) => Candle[];
+  readonly isWithinBlackout: (observedAt: Date, baseAsset: string) => { readonly blocked: boolean };
 }
 
 export function shouldEvaluateCascadeStrategy(
@@ -179,4 +208,45 @@ export async function evaluateCascadeStrategyFlow(
     closedCandles,
     reason: "EVALUATED"
   };
+}
+
+export function evaluateTradingCascadeRecoverySignal(
+  input: TradingCascadeRecoverySignalEvaluationInput,
+  handlers: TradingCascadeRecoverySignalEvaluationHandlers
+): CascadeRecoverySignalResult {
+  const recent1mCandles = handlers.snapshotCandles(input.reclaimCandle.instrumentCode, "1m", 64);
+  const latestRawEvent = input.cascade.rawEvents.at(-1) ?? null;
+  const blackout = handlers.isWithinBlackout(
+    new Date(input.observedAt),
+    baseAssetFromInstrument(input.reclaimCandle.instrumentCode)
+  );
+  const engine = new CascadeRecoverySignalEngine(cascadeRecoverySignalConfig(input.config));
+
+  return engine.evaluate({
+    cascade: input.cascade,
+    absorption: input.absorption,
+    reclaimCandle: input.reclaimCandle,
+    recent1mCandles,
+    atr1m: calculateAtr(recent1mCandles, 14),
+    atr1h: latestRawEvent
+      ? resolveCascadeAtr1h({
+          event: latestRawEvent,
+          midPrice: input.midPrice,
+          fallbackUsdValue: input.env.CASCADE_ATR_FALLBACK_USD,
+          fallbackPctValue: input.env.CASCADE_ATR_FALLBACK_PCT
+        })
+      : null,
+    preCascadeSwingLow: recentSwingLow(recent1mCandles),
+    preCascadeSwingHigh: recentSwingHigh(recent1mCandles),
+    cascadeVwap: calculateVwap(recent1mCandles),
+    cvd1m: cumulativeVolumeDelta(recent1mCandles),
+    openInterestDelta: 0,
+    oracleRegime: input.oracleRegime,
+    recentSecondCascadeAt: latestCascadeAtForInstrument(input.cascadeEventsById, input.cascade),
+    majorNewsWithinBlackout: blackout.blocked,
+    realizedVolPercentile1h: 0.5,
+    dailyLossLimitBreached: !input.riskTradingEnabled,
+    weeklyLossLimitBreached: false,
+    observedAt: input.observedAt
+  });
 }
