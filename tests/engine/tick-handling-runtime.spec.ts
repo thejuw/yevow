@@ -1,10 +1,13 @@
 import { AnomalyDetector, type AnomalyDetectionResult } from "../../src/agents/AnomalyDetector";
 import {
+  handleTickForTarget,
   handleTickRuntime,
   type PreparedTickLatencyDecision,
+  type TradingTickHandlingTarget,
   type TickHandlingRuntimeHandlers,
   type TickHandlingRuntimeInput
 } from "../../src/engine/trading/pipelines/TickHandlingRuntime";
+import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type {
   AcceptedDecisionPipelineInput,
   PostBookTickContext,
@@ -182,6 +185,91 @@ describe("TickHandlingRuntime", () => {
       "now",
       "anomaly:2026-05-18T12:00:00.050Z",
       "emergency:88:2:333"
+    ]);
+  });
+
+  it("adapts a trading engine target into tick handling runtime handlers", async () => {
+    const events: string[] = [];
+    let capturedPipeline: AcceptedDecisionPipelineInput | null = null;
+    const book = orderBook();
+    const metrics = latencyMetrics();
+    const target: TradingTickHandlingTarget = {
+      cachedConfig: {
+        TRADING_ENABLED: true
+      },
+      env: {
+        SHADOW_MODE: "true"
+      },
+      engineState: defaultEngineState("tick-target"),
+      lastTickTimestamp: null,
+      anomalyDetector: {
+        evaluate({ observedAt }) {
+          events.push(`anomaly:${observedAt}`);
+          return anomalyResult();
+        }
+      },
+      maybeAutoResumeShadowMode(_tick, shadowReplay) {
+        events.push(`auto:${shadowReplay}`);
+      },
+      resolveTradingAvailability(_tick, shadowReplay) {
+        events.push(`availability:${shadowReplay}`);
+        return null;
+      },
+      observeCascadeAbsorption(tick) {
+        events.push(`absorb:${tick.instrumentCode}`);
+      },
+      prepareTickLatency(_tick, shadowReplay) {
+        events.push(`latency:${shadowReplay}`);
+        return preparedLatency({ metrics });
+      },
+      handleHardStaleTickDrop() {
+        throw new Error("unexpected hard stale");
+      },
+      handleSoftStaleTick() {
+        throw new Error("unexpected soft stale");
+      },
+      resolveTickBook(_tick, currentMetrics, wakeUpTimeMs) {
+        events.push(`book:${currentMetrics.status}:${wakeUpTimeMs}`);
+        return Promise.resolve({ kind: "BOOK", book, orderBookUpdateMs: 6 });
+      },
+      preparePostBookTickContext(_tick, _book, observedAt, tickOptions) {
+        events.push(`post:${observedAt}:${tickOptions.shadowReplay === true}`);
+        return Promise.resolve(postBookContext());
+      },
+      handleAnomalyEmergencyPause() {
+        throw new Error("unexpected anomaly pause");
+      },
+      processAcceptedDecisionPipeline(pipeline) {
+        events.push(`pipeline:${pipeline.tick.instrumentCode}:${pipeline.orderBookUpdateMs}`);
+        capturedPipeline = pipeline;
+        return Promise.resolve();
+      }
+    };
+
+    const result = await handleTickForTarget(marketTick(), 12, { shadowReplay: true }, target);
+
+    expect(result).toEqual({
+      accepted: true,
+      status: "FRESH",
+      metrics,
+      book
+    });
+    expect(target.lastTickTimestamp).toBe("2026-05-18T12:00:00.010Z");
+    expect(capturedPipeline).toMatchObject({
+      tick: { instrumentCode: "btc-usd" },
+      wakeUpTimeMs: 12,
+      orderBookUpdateMs: 6,
+      shadowReplay: true
+    });
+    expect(events).toEqual([
+      "auto:true",
+      "availability:true",
+      "absorb:btc-usd",
+      "latency:true",
+      "book:FRESH:12",
+      "post:2026-05-18T12:00:00.050Z:true",
+      "anomaly:2026-05-18T12:00:00.050Z",
+      "pipeline:btc-usd:6"
     ]);
   });
 });

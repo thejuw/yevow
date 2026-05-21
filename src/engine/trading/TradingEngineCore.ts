@@ -66,7 +66,6 @@ import {
   updateTradingPortfolioRiskForTarget,
   type TradingPortfolioRiskTarget
 } from "./risk/TradingPortfolioRiskRuntime";
-import { stateAfterFundingTick } from "./funding/FundingRuntime";
 import {
   runTradingAlarmForTarget,
   type TradingAlarmRuntimeTarget
@@ -411,7 +410,6 @@ import {
   nativeNumber,
   nativeSide
 } from "./helpers/NativeValueRuntime";
-import { highResolutionNow } from "./helpers/RuntimeClock";
 import {
   prometheusLabels,
   escapePrometheusLabel,
@@ -485,7 +483,10 @@ import {
   prepareTradingPostBookTickRuntimeForTarget,
   type TradingPostBookTickRuntimeTarget
 } from "./pipelines/PostBookTickRuntime";
-import { handleTickRuntime } from "./pipelines/TickHandlingRuntime";
+import {
+  handleTickForTarget,
+  type TradingTickHandlingTarget
+} from "./pipelines/TickHandlingRuntime";
 import type {
   AcceptedDecisionPipelineInput,
   AcceptedExecutionContext,
@@ -1518,74 +1519,11 @@ export class TradingEngine {
     wakeUpTimeMs: number | null,
     options: TickHandlingOptions = {}
   ): Promise<TickIngestResult> {
-    const hotPathStartedAt = highResolutionNow();
-    return handleTickRuntime(
-      {
-        tick,
-        wakeUpTimeMs,
-        options,
-        hotPathStartedAt,
-        tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-        shadowModeActive: isShadowMode(this.env)
-      },
-      {
-        maybeAutoResumeShadowMode: (currentTick, shadowReplay) =>
-          this.maybeAutoResumeShadowMode(currentTick, shadowReplay),
-        resolveTradingAvailability: (currentTick, shadowReplay) =>
-          this.resolveTradingAvailability(currentTick, shadowReplay),
-        rememberLastTickTimestamp: (receivedAt) => {
-          this.lastTickTimestamp = receivedAt;
-        },
-        observeCascadeAbsorption: (currentTick) => this.observeCascadeAbsorption(currentTick),
-        prepareTickLatency: (currentTick, shadowReplay) =>
-          this.prepareTickLatency(currentTick, shadowReplay),
-        handleHardStaleTickDrop: (currentTick, metrics, streamId, hardStaleDropMs) =>
-          this.handleHardStaleTickDrop(currentTick, metrics, streamId, hardStaleDropMs),
-        handleSoftStaleTick: (currentTick, metrics, wakeUp, startedAt) =>
-          this.handleSoftStaleTick(currentTick, metrics, wakeUp, startedAt),
-        applyFundingTick: (currentTick, observedAt) => {
-          const fundingState = stateAfterFundingTick(this.engineState, currentTick, observedAt);
-          if (fundingState.changed) {
-            this.engineState = fundingState.state;
-          }
-        },
-        resolveTickBook: (currentTick, metrics, wakeUp, startedAt) =>
-          this.resolveTickBook(currentTick, metrics, wakeUp, startedAt),
-        preparePostBookTickContext: (currentTick, book, observedAt, tickOptions) =>
-          this.preparePostBookTickContext(currentTick, book, observedAt, tickOptions),
-        evaluateAnomaly: (currentTick, book, domSnapshot, observedAt) =>
-          this.anomalyDetector.evaluate({
-            tick: currentTick,
-            book,
-            dom: domSnapshot,
-            observedAt
-          }),
-        nowMs: () => highResolutionNow(),
-        handleAnomalyEmergencyPause: (
-          currentTick,
-          book,
-          domSnapshot,
-          anomalyResult,
-          anomalyStartedAt,
-          metrics,
-          wakeUp,
-          orderBookUpdateMs,
-          startedAt
-        ) =>
-          this.handleAnomalyEmergencyPause(
-            currentTick,
-            book,
-            domSnapshot,
-            anomalyResult,
-            anomalyStartedAt,
-            metrics,
-            wakeUp,
-            orderBookUpdateMs,
-            startedAt
-          ),
-        processAcceptedDecisionPipeline: (pipeline) =>
-          this.processAcceptedDecisionPipeline(pipeline)
-      }
+    return handleTickForTarget(
+      tick,
+      wakeUpTimeMs,
+      options,
+      this as unknown as TradingTickHandlingTarget
     );
   }
 

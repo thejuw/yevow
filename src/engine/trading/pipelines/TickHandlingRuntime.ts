@@ -1,5 +1,15 @@
 import type { AnomalyDetectionResult } from "../../../agents/AnomalyDetector";
-import type { InternalOrderBook, LatencyMetrics, MarketTick } from "../../../types";
+import type {
+  EngineState,
+  Env,
+  GlobalRiskConfig,
+  InternalOrderBook,
+  LatencyMetrics,
+  MarketTick
+} from "../../../types";
+import { isShadowMode } from "../../../utils/CitadelProtocol";
+import { stateAfterFundingTick } from "../funding/FundingRuntime";
+import { highResolutionNow } from "../helpers/RuntimeClock";
 import type { TickIngestResult } from "../TradingEngineRouteTypes";
 import { evaluateTickTargetPreflight } from "../state/TickPreflightRuntime";
 import type {
@@ -81,6 +91,24 @@ export interface TickHandlingRuntimeHandlers {
     hotPathStartedAt: number
   ) => Promise<TickIngestResult>;
   readonly processAcceptedDecisionPipeline: (input: AcceptedDecisionPipelineInput) => Promise<void>;
+}
+
+export interface TradingTickHandlingTarget extends Omit<
+  TickHandlingRuntimeHandlers,
+  "rememberLastTickTimestamp" | "applyFundingTick" | "evaluateAnomaly" | "nowMs"
+> {
+  readonly cachedConfig: Pick<GlobalRiskConfig, "TRADING_ENABLED">;
+  readonly env: Pick<Env, "SHADOW_MODE">;
+  engineState: EngineState;
+  lastTickTimestamp: string | null;
+  readonly anomalyDetector: {
+    evaluate(input: {
+      readonly tick: MarketTick;
+      readonly book: InternalOrderBook;
+      readonly dom: PostBookTickContext["domSnapshot"];
+      readonly observedAt: string;
+    }): AnomalyDetectionResult;
+  };
 }
 
 export async function handleTickRuntime(
@@ -188,4 +216,85 @@ export async function handleTickRuntime(
     metrics,
     book
   };
+}
+
+export function handleTickForTarget(
+  tick: MarketTick,
+  wakeUpTimeMs: number | null,
+  options: TickHandlingOptions,
+  target: TradingTickHandlingTarget
+): Promise<TickIngestResult> {
+  const hotPathStartedAt = highResolutionNow();
+
+  return handleTickRuntime(
+    {
+      tick,
+      wakeUpTimeMs,
+      options,
+      hotPathStartedAt,
+      tradingEnabled: target.cachedConfig.TRADING_ENABLED,
+      shadowModeActive: isShadowMode(target.env)
+    },
+    {
+      maybeAutoResumeShadowMode: (currentTick, shadowReplay) => {
+        target.maybeAutoResumeShadowMode(currentTick, shadowReplay);
+      },
+      resolveTradingAvailability: (currentTick, shadowReplay) =>
+        target.resolveTradingAvailability(currentTick, shadowReplay),
+      rememberLastTickTimestamp: (receivedAt) => {
+        target.lastTickTimestamp = receivedAt;
+      },
+      observeCascadeAbsorption: (currentTick) => {
+        target.observeCascadeAbsorption(currentTick);
+      },
+      prepareTickLatency: (currentTick, shadowReplay) =>
+        target.prepareTickLatency(currentTick, shadowReplay),
+      handleHardStaleTickDrop: (currentTick, metrics, streamId, hardStaleDropMs) =>
+        target.handleHardStaleTickDrop(currentTick, metrics, streamId, hardStaleDropMs),
+      handleSoftStaleTick: (currentTick, metrics, wakeUp, startedAt) =>
+        target.handleSoftStaleTick(currentTick, metrics, wakeUp, startedAt),
+      applyFundingTick: (currentTick, observedAt) => {
+        const fundingState = stateAfterFundingTick(target.engineState, currentTick, observedAt);
+        if (fundingState.changed) {
+          target.engineState = fundingState.state;
+        }
+      },
+      resolveTickBook: (currentTick, metrics, wakeUp, startedAt) =>
+        target.resolveTickBook(currentTick, metrics, wakeUp, startedAt),
+      preparePostBookTickContext: (currentTick, book, observedAt, tickOptions) =>
+        target.preparePostBookTickContext(currentTick, book, observedAt, tickOptions),
+      evaluateAnomaly: (currentTick, book, domSnapshot, observedAt) =>
+        target.anomalyDetector.evaluate({
+          tick: currentTick,
+          book,
+          dom: domSnapshot,
+          observedAt
+        }),
+      nowMs: () => highResolutionNow(),
+      handleAnomalyEmergencyPause: (
+        currentTick,
+        book,
+        domSnapshot,
+        anomalyResult,
+        anomalyStartedAt,
+        metrics,
+        wakeUp,
+        orderBookUpdateMs,
+        startedAt
+      ) =>
+        target.handleAnomalyEmergencyPause(
+          currentTick,
+          book,
+          domSnapshot,
+          anomalyResult,
+          anomalyStartedAt,
+          metrics,
+          wakeUp,
+          orderBookUpdateMs,
+          startedAt
+        ),
+      processAcceptedDecisionPipeline: (pipeline) =>
+        target.processAcceptedDecisionPipeline(pipeline)
+    }
+  );
 }
