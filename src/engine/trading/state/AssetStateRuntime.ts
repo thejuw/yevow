@@ -1,17 +1,23 @@
-import { TARGET_ASSET_MATRIX, TARGET_INSTRUMENTS } from "../../../TradingEngineConstants";
+import { TARGET_ASSET_MATRIX } from "../../../TradingEngineConstants";
 import { normalizeNativeInstrumentCode } from "../helpers/NativeMarketIdentityRuntime";
 import {
   DEFAULT_ORDER_BOOK_TICK_SIZE,
   normalizePriceToTick,
   roundMetric
 } from "../book/SortedBookSide";
-import type {
-  AssetRuntimeState,
-  EngineState,
-  GlobalRiskConfig,
-  InternalOrderBook,
-  MacroBias
-} from "../../../types";
+import type { AssetRuntimeState, EngineState, GlobalRiskConfig, MacroBias } from "../../../types";
+import {
+  isTargetInstrument,
+  selectedMoltworkerInstruments,
+  targetAssetSelectedByMoltworker
+} from "./AssetSelectionRuntime";
+export {
+  filterTargetOrderBooks,
+  isInstrumentSelectedByMoltworker,
+  isTargetInstrument,
+  selectedMoltworkerInstruments,
+  targetAssetSelectedByMoltworker
+} from "./AssetSelectionRuntime";
 
 export function defaultQuoteState(): EngineState["quoteState"] {
   return {
@@ -32,11 +38,7 @@ export function defaultAssetQuoteStates(
 
   return Object.fromEntries(
     TARGET_ASSET_MATRIX.map((asset) => {
-      const selectedByMoltworker =
-        selected.size === 0 ||
-        selected.has(asset.instrumentCode) ||
-        selected.has(asset.coin.toLowerCase()) ||
-        selected.has(`${asset.coin.toLowerCase()}-perp`);
+      const selectedByMoltworker = targetAssetSelectedByMoltworker(asset, selected);
       const active = config.TRADING_ENABLED && selectedByMoltworker;
 
       return [
@@ -53,34 +55,6 @@ export function defaultAssetQuoteStates(
         } satisfies EngineState["quoteState"]
       ];
     })
-  );
-}
-
-export function selectedMoltworkerInstruments(macroBias: MacroBias): Set<string> {
-  return new Set(
-    (macroBias.instruments ?? [])
-      .filter((instrument) => typeof instrument === "string" && instrument.trim().length > 0)
-      .map((instrument) => normalizeNativeInstrumentCode(instrument))
-  );
-}
-
-export function isTargetInstrument(instrumentCode: string): boolean {
-  return TARGET_INSTRUMENTS.has(normalizeNativeInstrumentCode(instrumentCode));
-}
-
-export function isInstrumentSelectedByMoltworker(
-  instrumentCode: string,
-  macroBias: MacroBias
-): boolean {
-  const selected = selectedMoltworkerInstruments(macroBias);
-  const normalized = normalizeNativeInstrumentCode(instrumentCode);
-  const coin = normalized.split("-")[0];
-
-  return (
-    selected.size === 0 ||
-    selected.has(normalized) ||
-    selected.has(coin) ||
-    selected.has(`${coin}-perp`)
   );
 }
 
@@ -111,14 +85,6 @@ export function normalizeAssetMatrix(
   );
 }
 
-export function filterTargetOrderBooks(
-  books: Map<string, InternalOrderBook>
-): Map<string, InternalOrderBook> {
-  return new Map(
-    [...books.entries()].filter(([, book]) => isTargetInstrument(book.instrumentCode))
-  );
-}
-
 export function defaultAssetMatrix(
   config: GlobalRiskConfig,
   macroBias: MacroBias,
@@ -138,11 +104,7 @@ export function defaultAssetMatrix(
 
   return Object.fromEntries(
     TARGET_ASSET_MATRIX.map((asset) => {
-      const selectedByMoltworker =
-        selected.size === 0 ||
-        selected.has(asset.instrumentCode) ||
-        selected.has(asset.coin.toLowerCase()) ||
-        selected.has(`${asset.coin.toLowerCase()}-perp`);
+      const selectedByMoltworker = targetAssetSelectedByMoltworker(asset, selected);
 
       return [
         asset.instrumentCode,
@@ -210,11 +172,7 @@ export function reconcileAssetQuoteStatesForConfig(
   return Object.fromEntries(
     TARGET_ASSET_MATRIX.map((asset) => {
       const existing = current[asset.instrumentCode] ?? defaults[asset.instrumentCode];
-      const selectedByMoltworker =
-        selected.size === 0 ||
-        selected.has(asset.instrumentCode) ||
-        selected.has(asset.coin.toLowerCase()) ||
-        selected.has(`${asset.coin.toLowerCase()}-perp`);
+      const selectedByMoltworker = targetAssetSelectedByMoltworker(asset, selected);
 
       if (!config.TRADING_ENABLED || !selectedByMoltworker) {
         return [asset.instrumentCode, defaults[asset.instrumentCode]];
