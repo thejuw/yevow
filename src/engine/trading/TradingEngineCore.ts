@@ -284,12 +284,8 @@ import {
   createTradingEngineBootServices,
   tradingEngineLoggerRuntimeContext
 } from "./state/EngineBootServices";
-import {
-  applyShadowModeAutoResumeSideEffects,
-  shadowModeAutoResumeArtifacts,
-  shouldAutoResumeShadowMode,
-  stateAfterAcceptedTick
-} from "./state/TickStateRuntime";
+import { stateAfterAcceptedTick } from "./state/TickStateRuntime";
+import { maybeResumeTradingShadowMode } from "./state/TradingShadowModeAutoResumeRuntime";
 import {
   applyTickAvailabilitySideEffects,
   evaluateTickAvailability
@@ -517,16 +513,13 @@ import {
 import { resolveGhostBookConfig } from "./shadow/GhostBookConfigRuntime";
 import {
   defaultQuoteState,
-  defaultAssetQuoteStates,
   selectedMoltworkerInstruments,
   isInstrumentSelectedByMoltworker,
   normalizeAssetMatrix,
   filterTargetOrderBooks,
   defaultAssetMatrix,
-  normalizeAssetQuoteStates,
   quoteStateForInstrumentState,
   suspendAssetQuoteStates,
-  aggregateQuoteState,
   quotePriceMovedTicks
 } from "./state/AssetStateRuntime";
 import {
@@ -541,7 +534,6 @@ import {
 } from "./state/MarketStateDefaults";
 import {
   defaultEngineState,
-  normalizePaperBankroll,
   parseDeltaNormalizationWeights,
   defaultAnomalyStatus,
   normalizeExecutionProfile,
@@ -2373,49 +2365,31 @@ export class TradingEngine {
   }
 
   private maybeAutoResumeShadowMode(tick: MarketTick, shadowReplay: boolean): void {
-    if (
-      !shouldAutoResumeShadowMode({
+    maybeResumeTradingShadowMode(
+      {
+        tick,
         shadowReplay,
-        shadowMode: isShadowMode(this.env),
-        tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-        mode: this.engineState.mode
-      })
-    ) {
-      return;
-    }
-
-    const resumedAt = new Date().toISOString();
-    const assetQuoteStates = normalizeAssetQuoteStates(
-      defaultAssetQuoteStates(this.cachedConfig, this.macroBias, resumedAt),
-      this.cachedConfig,
-      this.macroBias,
-      resumedAt
+        env: this.env,
+        config: this.cachedConfig,
+        macroBias: this.macroBias,
+        currentState: this.engineState
+      },
+      {
+        applyState: (state) => {
+          this.engineState = state;
+        },
+        clearKillSwitchLogged: () => {
+          this.killSwitchLogged = false;
+        },
+        warnResume: (metadata) =>
+          this.logger.warn(
+            "SHADOW_MODE_AUTO_RESUME",
+            "Shadow mode resumed paper trading after a stale halt",
+            metadata
+          ),
+        publishResume: (payload) => this.publish("RESUME_QUOTES", payload)
+      }
     );
-
-    const artifacts = shadowModeAutoResumeArtifacts({
-      currentState: this.engineState,
-      normalizedBankroll: normalizePaperBankroll(this.engineState.bankroll, this.env, resumedAt),
-      assetQuoteStates,
-      quoteState: aggregateQuoteState(assetQuoteStates, this.engineState.quoteState, resumedAt),
-      observedAt: resumedAt,
-      tick,
-      configVersion: this.cachedConfig.version
-    });
-    applyShadowModeAutoResumeSideEffects(artifacts, {
-      applyState: (state) => {
-        this.engineState = state;
-      },
-      clearKillSwitchLogged: () => {
-        this.killSwitchLogged = false;
-      },
-      warnResume: (metadata) =>
-        this.logger.warn(
-          "SHADOW_MODE_AUTO_RESUME",
-          "Shadow mode resumed paper trading after a stale halt",
-          metadata
-        ),
-      publishResume: (payload) => this.publish("RESUME_QUOTES", payload)
-    });
   }
 
   private resolveTradingAvailability(
