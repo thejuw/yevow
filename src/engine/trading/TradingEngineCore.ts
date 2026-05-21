@@ -235,11 +235,11 @@ import {
   emitCascadeOperationalAlertSideEffects,
   recordCascadeUiSignalSideEffects
 } from "./telemetry/CascadeSignalTelemetryRuntime";
+import { applyProfilerSignalSideEffects } from "./telemetry/ProfilerTelemetryRuntime";
 import {
-  applyProfilerSignalSideEffects,
-  emitAmVpinTelemetry,
-  emitProfilerAlertTelemetry
-} from "./telemetry/ProfilerTelemetryRuntime";
+  publishTradingAmVpinTelemetry,
+  publishTradingProfilerAlert
+} from "./telemetry/TradingProfilerTelemetryRuntime";
 import { publishTradingTickTelemetry } from "./telemetry/TradingTickTelemetryRuntime";
 import { type ReplayOptions, type ReplayScenario } from "./routes/ReplayAdminRoutes";
 import {
@@ -2362,7 +2362,10 @@ export class TradingEngine {
         croupierHasQuote
       },
       {
-        publishAlert: (signal, profilerState) => this.publishProfilerAlert(signal, profilerState),
+        publishAlert: (signal, profilerState) =>
+          publishTradingProfilerAlert(signal, profilerState, {
+            publish: (type, payload, correlationId) => this.publish(type, payload, correlationId)
+          }),
         acceptSignal: (signal, latencyMs) => this.acceptAgentSignal(signal, latencyMs),
         cancelQuotes: (code, reason) => this.state.waitUntil(this.cancelAllQuotes(code, reason))
       }
@@ -2897,7 +2900,9 @@ export class TradingEngine {
         publishTickTelemetry: (tick, metrics, status, hotPathStartedAt) =>
           this.publishTickTelemetry(tick, metrics, status, hotPathStartedAt),
         publishAmVpinTelemetry: (profilerState, instrumentCode, observedAt) =>
-          this.publishAmVpinTelemetry(profilerState, instrumentCode, observedAt),
+          publishTradingAmVpinTelemetry(profilerState, instrumentCode, observedAt, {
+            publish: (type, payload, correlationId) => this.publish(type, payload, correlationId)
+          }),
         maybeRecordAgentSnapshot: (observedAt) => this.maybeRecordAgentSnapshot(observedAt)
       }
     );
@@ -4140,22 +4145,6 @@ export class TradingEngine {
         logPerformance: (metrics) => this.logger.logPerformance(metrics)
       }
     );
-  }
-
-  private publishProfilerAlert(signal: AgentSignal, profilerState: ProfilerState): void {
-    emitProfilerAlertTelemetry(signal, profilerState, {
-      publish: (type, payload, correlationId) => this.publish(type, payload, correlationId)
-    });
-  }
-
-  private publishAmVpinTelemetry(
-    profilerState: ProfilerState,
-    instrumentCode: string,
-    observedAt: string
-  ): void {
-    emitAmVpinTelemetry(profilerState, instrumentCode, observedAt, {
-      publish: (type, payload, correlationId) => this.publish(type, payload, correlationId)
-    });
   }
 
   private publish(type: string, payload: Record<string, unknown>, correlationId?: string): void {
