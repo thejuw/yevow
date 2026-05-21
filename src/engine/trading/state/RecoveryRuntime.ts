@@ -22,6 +22,10 @@ import {
   defaultInventoryState,
   defaultRiskMetrics
 } from "./EngineStateDefaults";
+import {
+  deleteRetiredProfilerStorageForTarget,
+  type TradingRetiredProfilerStorageTarget
+} from "./ProfilerStorageRuntime";
 import { adminRecoveryPlan, applyAdminRecoveryPlanSideEffects } from "./RecoveryPlanRuntime";
 import type {
   AdminRecoveryPlan,
@@ -156,7 +160,6 @@ export interface TradingAdminRecoveryTarget {
   };
   resetOrderBook(payload: Partial<OrderBookResetRequest>): Promise<void>;
   resetLatencyBaseline(observedAt: string, reason: string): void;
-  deleteRetiredProfilerStorage(): Promise<string[]>;
   safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void>;
   publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
 }
@@ -442,7 +445,10 @@ export async function recoverTradingEngineStateForTarget(
         target.ghostBook.reset();
         target.shadowQueueNoEdgeLogAt.clear();
       },
-      deleteRetiredProfilerStorage: () => target.deleteRetiredProfilerStorage(),
+      deleteRetiredProfilerStorage: () =>
+        deleteRetiredProfilerStorageForTarget(
+          target as unknown as TradingRetiredProfilerStorageTarget
+        ),
       shadowQueueSnapshot: (observedAt) => target.ghostBook.snapshot(observedAt),
       applyState: (state) => {
         target.engineState = state;

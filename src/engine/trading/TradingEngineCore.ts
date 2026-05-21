@@ -685,12 +685,6 @@ export class TradingEngine {
     );
   }
 
-  private async deleteRetiredProfilerStorage(): Promise<string[]> {
-    return this.profilerRegistry.deleteRetiredStorage(this.state.storage, (reason, error) =>
-      this.handleStorageWriteFailure(reason, error)
-    );
-  }
-
   private calculateAssetMatrix(
     observedAt: string,
     _latestInstrumentCode: string | undefined,

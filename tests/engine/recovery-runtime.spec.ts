@@ -636,9 +636,16 @@ describe("RecoveryRuntime", () => {
           }
         },
         state: {
+          storage: {},
           waitUntil(work: Promise<unknown>) {
             calls.push("wait");
             scheduled.push(work);
+          }
+        },
+        profilerRegistry: {
+          async deleteRetiredStorage() {
+            calls.push("prune-profilers");
+            return ["profiler:legacy"];
           }
         },
         logger: {
@@ -652,9 +659,8 @@ describe("RecoveryRuntime", () => {
         resetLatencyBaseline(observedAt: string, reason: string) {
           calls.push(`latency:${observedAt}:${reason}`);
         },
-        async deleteRetiredProfilerStorage() {
-          calls.push("prune-profilers");
-          return ["profiler:legacy"];
+        handleStorageWriteFailure(reason: string) {
+          calls.push(`storage-failure:${reason}`);
         },
         async safeStoragePut(entries: Record<string, unknown>, reason: string) {
           calls.push(`safe-persist:${reason}:${Object.keys(entries).join(",")}`);
