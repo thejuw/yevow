@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyQuoteCancelAllSideEffects,
+  cancelAllTradingQuotes,
   dispatchQuoteCancelAll,
   evaluateQuoteCancelDispatch,
   type QuoteCancelAllSideEffectHandlers,
@@ -125,6 +126,49 @@ describe("QuoteCancelRuntime", () => {
       "wait:275",
       "dispatch:btc-usd:JANITOR"
     ]);
+  });
+
+  it("wraps trading cancel-all with rate limits and executioner dispatch", async () => {
+    const sideEffects = sideEffectSpy({ allowed: false, waitMs: 275 });
+    const requests: Request[] = [];
+    const { logger, warnings } = loggerSpy();
+
+    const decision = await cancelAllTradingQuotes(
+      {
+        instrumentCode: "hype-usd",
+        reason: "BTC_LEAD_MOVE",
+        executioner: {
+          fetch(request) {
+            requests.push(request);
+            return Promise.resolve(Response.json({ ok: true }));
+          }
+        },
+        logger,
+        nowMs: 30_000,
+        lastDispatchAtMs: 1_000,
+        throttleMs: 5_000
+      },
+      {
+        markDispatch: sideEffects.handlers.markDispatch,
+        reserveCancelCapacity: sideEffects.handlers.reserveCancelCapacity,
+        persistRateLimitState: sideEffects.handlers.persistRateLimitState,
+        wait: sideEffects.handlers.wait
+      }
+    );
+
+    expect(decision).toMatchObject({ shouldDispatch: true });
+    expect(sideEffects.events).toEqual([
+      "mark:hype-usd:BTC_LEAD_MOVE:30000",
+      "reserve",
+      "persist",
+      "wait:275"
+    ]);
+    expect(requests[0].url).toBe("https://executioner.internal/cancel-all");
+    await expect(requests[0].json()).resolves.toEqual({
+      instrumentCode: "hype-usd",
+      reason: "BTC_LEAD_MOVE"
+    });
+    expect(warnings[0]).toMatchObject({ eventType: "QUOTE_CANCEL_ALL_DISPATCHED" });
   });
 
   it("dispatches cancel-all requests to the executioner and logs success", async () => {

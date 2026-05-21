@@ -61,10 +61,7 @@ import {
   dispatchCroupierQuoteActionSideEffects,
   type CroupierQuoteAction
 } from "./quotes/QuoteActionRuntime";
-import {
-  applyQuoteCancelAllSideEffects,
-  dispatchQuoteCancelAll
-} from "./quotes/QuoteCancelRuntime";
+import { cancelAllTradingQuotes } from "./quotes/QuoteCancelRuntime";
 import { type ApprovedExecutionPlan } from "./execution/ExecutionPlanRuntime";
 import { prepareTradingExecutionPlan } from "./execution/TradingExecutionPlanPreparationRuntime";
 import { dispatchExecutionPlanSideEffects } from "./execution/ExecutionPlanDispatchRuntime";
@@ -3097,16 +3094,15 @@ export class TradingEngine {
   }
 
   private async cancelAllQuotes(instrumentCode: string, reason: string): Promise<void> {
-    const executioner = this.env.EXECUTIONER;
     const now = Date.now();
-    await applyQuoteCancelAllSideEffects(
+    await cancelAllTradingQuotes(
       {
         instrumentCode,
         reason,
-        hasExecutioner: Boolean(executioner),
+        executioner: this.env.EXECUTIONER,
+        logger: this.logger,
         nowMs: now,
-        lastDispatchAtMs: this.cancelAllLogAt.get(`${instrumentCode}:${reason}`),
-        throttleMs: HOT_PATH_LOG_THROTTLE_MS
+        lastDispatchAtMs: this.cancelAllLogAt.get(`${instrumentCode}:${reason}`)
       },
       {
         markDispatch: (dispatchKey, dispatchedAtMs) =>
@@ -3119,18 +3115,7 @@ export class TradingEngine {
               this.rateLimiter.exportState(),
               "EXECUTION_RATE_LIMIT_DRAIN"
             )
-          ),
-        wait,
-        dispatch: (payload) => {
-          if (!executioner) {
-            return Promise.resolve();
-          }
-          return dispatchQuoteCancelAll({
-            executioner,
-            logger: this.logger,
-            payload
-          });
-        }
+          )
       }
     );
   }

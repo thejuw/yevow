@@ -1,4 +1,6 @@
+import { HOT_PATH_LOG_THROTTLE_MS } from "../../../TradingEngineConstants";
 import type { JsonRecord } from "../../../types";
+import { wait } from "../helpers/RuntimeMath";
 
 export interface QuoteCancelDispatchPayload {
   readonly instrumentCode: string;
@@ -43,6 +45,16 @@ export interface DispatchQuoteCancelAllInput {
   readonly payload: QuoteCancelDispatchPayload;
 }
 
+export interface TradingQuoteCancelAllInput {
+  readonly instrumentCode: string;
+  readonly reason: string;
+  readonly executioner: QuoteCancelExecutionerFetcher | undefined;
+  readonly logger: QuoteCancelLogger;
+  readonly nowMs: number;
+  readonly lastDispatchAtMs?: number;
+  readonly throttleMs?: number;
+}
+
 export interface QuoteCancelReservation {
   readonly allowed: boolean;
   readonly waitMs: number;
@@ -54,6 +66,13 @@ export interface QuoteCancelAllSideEffectHandlers {
   readonly persistRateLimitState: () => void;
   readonly wait: (ms: number) => Promise<void>;
   readonly dispatch: (payload: QuoteCancelDispatchPayload) => Promise<void>;
+}
+
+export interface TradingQuoteCancelAllHandlers {
+  readonly markDispatch: (dispatchKey: string, dispatchedAtMs: number) => void;
+  readonly reserveCancelCapacity: () => QuoteCancelReservation;
+  readonly persistRateLimitState: () => void;
+  readonly wait?: (ms: number) => Promise<void>;
 }
 
 export function evaluateQuoteCancelDispatch(
@@ -135,4 +154,36 @@ export async function dispatchQuoteCancelAll(input: DispatchQuoteCancelAllInput)
       error: error instanceof Error ? error.message : "UNKNOWN_ERROR"
     });
   }
+}
+
+export async function cancelAllTradingQuotes(
+  input: TradingQuoteCancelAllInput,
+  handlers: TradingQuoteCancelAllHandlers
+): Promise<QuoteCancelDispatchDecision> {
+  return applyQuoteCancelAllSideEffects(
+    {
+      instrumentCode: input.instrumentCode,
+      reason: input.reason,
+      hasExecutioner: Boolean(input.executioner),
+      nowMs: input.nowMs,
+      lastDispatchAtMs: input.lastDispatchAtMs,
+      throttleMs: input.throttleMs ?? HOT_PATH_LOG_THROTTLE_MS
+    },
+    {
+      markDispatch: handlers.markDispatch,
+      reserveCancelCapacity: handlers.reserveCancelCapacity,
+      persistRateLimitState: handlers.persistRateLimitState,
+      wait: handlers.wait ?? wait,
+      dispatch: (payload) => {
+        if (!input.executioner) {
+          return Promise.resolve();
+        }
+        return dispatchQuoteCancelAll({
+          executioner: input.executioner,
+          logger: input.logger,
+          payload
+        });
+      }
+    }
+  );
 }
