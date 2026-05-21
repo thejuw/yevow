@@ -112,7 +112,7 @@ import {
   applyExecutionQueueEnqueueSideEffects,
   type QueuedExecutionIntent
 } from "./execution/ExecutionQueueRuntime";
-import { calculateAssetMatrix as calculateRuntimeAssetMatrix } from "./state/AssetMatrixRuntime";
+import { calculateTradingAssetMatrix } from "./state/TradingAssetMatrixRuntime";
 import { type ExecutionTraceInput } from "./performance/LatencyRuntime";
 import { buildTradingPerformanceMetricsResponse } from "./performance/TradingPerformanceMetricsResponseRuntime";
 import { observeTradingExecutionProfile } from "./performance/TradingExecutionProfileRuntime";
@@ -358,8 +358,6 @@ import type {
   ReplayResult,
   RiskLimits,
   SentimentState,
-  ShadowQueueDecision,
-  ShadowQueueFill,
   ShadowQueueState,
   TemporaryGovernanceOverride,
   TradeIntent
@@ -985,13 +983,7 @@ export class TradingEngine {
     profilerStates: Record<string, ProfilerState>,
     assetQuoteStates: EngineState["assetQuoteStates"] = this.engineState.assetQuoteStates
   ): Record<string, AssetRuntimeState> {
-    const maxPositionPct = resolveMaxPositionPct(
-      this.cachedConfig,
-      this.env.MAX_POSITION_PCT,
-      DEFAULT_MAX_POSITION_PCT
-    );
-
-    return calculateRuntimeAssetMatrix({
+    return calculateTradingAssetMatrix({
       observedAt,
       latestOracle,
       profilerStates,
@@ -999,11 +991,10 @@ export class TradingEngine {
       fallbackQuoteState: this.engineState.quoteState,
       macroBias: this.macroBias,
       equity: this.engineState.bankroll.equity,
-      maxPositionPct,
-      findBestAssetBook: (instrumentCode) =>
-        findBestOrderBookForAsset(this.orderBook, instrumentCode),
-      profilerStateForInstrument: (instrumentCode) =>
-        this.profilerRegistry.forInstrument(instrumentCode).snapshot()
+      config: this.cachedConfig,
+      envMaxPositionPct: this.env.MAX_POSITION_PCT,
+      orderBook: this.orderBook,
+      profilerRegistry: this.profilerRegistry
     });
   }
 
