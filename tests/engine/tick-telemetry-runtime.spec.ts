@@ -9,6 +9,14 @@ import {
   shouldLogMarketTickAccepted,
   type TickTelemetryPublishHandlers
 } from "../../src/engine/trading/telemetry/TickTelemetryRuntime";
+import {
+  buildTradingPerformanceMetricsResponseForTarget,
+  logTradingPerformanceForTarget,
+  maybeRecordTradingAgentSnapshotForTarget,
+  observeTradingExecutionProfileForTarget,
+  publishTradingTickTelemetryForTarget,
+  type TradingHotPathTelemetryTarget
+} from "../../src/engine/trading/telemetry/TradingHotPathTelemetryRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { AgentSignal, BayesianUpdateTrace, LatencyMetrics, MarketTick } from "../../src/types";
 
@@ -148,6 +156,43 @@ describe("TickTelemetryRuntime", () => {
     expect(sideEffects.events).toEqual(["publish:TICK_TELEMETRY:btc-usd:10"]);
   });
 
+  it("routes hot-path telemetry through the trading target adapter", async () => {
+    const events: string[] = [];
+    const target = hotPathTelemetryTarget(events);
+
+    observeTradingExecutionProfileForTarget(
+      latencyMetrics(),
+      {
+        wakeUpTimeMs: 1,
+        orderBookUpdateMs: 2,
+        agentLogicMs: 3,
+        hotPathStartedAt: 0,
+        observedAt: "2026-05-19T12:00:01.000Z"
+      },
+      target
+    );
+    publishTradingTickTelemetryForTarget(tick(), latencyMetrics(), "FRESH", 0, target);
+    target.engineState.processedTicks = 1_000;
+    maybeRecordTradingAgentSnapshotForTarget("2026-05-19T12:00:02.000Z", target);
+    logTradingPerformanceForTarget(latencyMetrics(), target);
+
+    const metricsText = await buildTradingPerformanceMetricsResponseForTarget(target).text();
+
+    expect(target.lastPerformanceStatus).toBe("UNSTABLE");
+    expect(target.engineState.executionProfile.status).toBe("UNSTABLE");
+    expect(metricsText).toContain(
+      'sovereign_sigma_processed_ticks_total{engine_id="hot-path-target",status="UNSTABLE"} 1000'
+    );
+    expect(events).toEqual([
+      "snapshot:UNSTABLE",
+      "publish:ENGINE_PERFORMANCE_UNSTABLE:hot-path-target:5",
+      "notify:HIGH",
+      "publish:TICK_TELEMETRY:btc-usd:10",
+      "publish:AGENT_STATE_SNAPSHOT:agent-snapshot:1000",
+      "performance:250"
+    ]);
+  });
+
   it("builds accepted tick and Bayesian posterior log metadata", () => {
     expect(shouldLogMarketTickAccepted(1)).toBe(true);
     expect(shouldLogMarketTickAccepted(999)).toBe(false);
@@ -218,6 +263,42 @@ function tickTelemetryPublishSpy(): {
       publish(type, _payload, correlationId) {
         events.push(`publish:${type}:${correlationId}`);
       }
+    }
+  };
+}
+
+function hotPathTelemetryTarget(events: string[]): TradingHotPathTelemetryTarget {
+  const engineState = defaultEngineState("hot-path-target");
+  engineState.processedTicks = 4;
+
+  return {
+    engineState,
+    processingLatencySamples: [1, 1],
+    lastPerformanceStatus: "STABLE",
+    jitterThresholdMs: 1,
+    jitterSampleWindow: 10,
+    jitterComputeIntervalTicks: 1,
+    macroBias: neutralMacroBias(),
+    activeTemporaryOverride: null,
+    adminSockets: { size: 2 },
+    signals: [signal("recent-signal")],
+    latestAgentSignals: new Map([["ORACLE", signal("latest-signal")]]),
+    performanceSpikeLogAt: new Map(),
+    logger: {
+      logPerformanceSnapshot(snapshot) {
+        events.push(`snapshot:${snapshot.status}`);
+      },
+      logPerformance(metrics) {
+        events.push(`performance:${metrics.totalLatencyMs}`);
+      }
+    },
+    notifier: {
+      notify(notification) {
+        events.push(`notify:${notification.priority}`);
+      }
+    },
+    publish(type, _payload, correlationId) {
+      events.push(`publish:${type}:${correlationId ?? "none"}`);
     }
   };
 }

@@ -101,15 +101,12 @@ import {
 } from "./execution/ExecutionQueueRuntime";
 import { calculateTradingAssetMatrix } from "./state/TradingAssetMatrixRuntime";
 import { type ExecutionTraceInput } from "./performance/LatencyRuntime";
-import { buildTradingPerformanceMetricsResponse } from "./performance/TradingPerformanceMetricsResponseRuntime";
-import { observeTradingExecutionProfile } from "./performance/TradingExecutionProfileRuntime";
 import { applyTradingNativeHyperliquidLatencyPull } from "./performance/StaleLatencyGuardRuntime";
 import {
   handleTradingHardStaleTickDrop,
   handleTradingSoftStaleTick,
   type TradingStaleLatencyTarget
 } from "./performance/TradingStaleLatencyRuntime";
-import { logTradingPerformanceSpike } from "./performance/TradingPerformanceSpikeRuntime";
 import { prepareTradingTickLatency } from "./performance/TradingTickLatencyRuntime";
 import {
   resetTradingLatencyBaselineForTarget,
@@ -196,7 +193,6 @@ import {
   type EngineStreamContextTarget
 } from "./routes/EngineWebSocketStreams";
 import type { TradingTelemetryBus } from "./telemetry/TelemetryBus";
-import { maybePublishTradingAgentSnapshot } from "./telemetry/TradingAgentSnapshotRuntime";
 import {
   acceptTradingAgentSignalForTarget,
   emitTradingCascadeOperationalAlertForTarget,
@@ -204,11 +200,18 @@ import {
   type TradingSignalBusTarget
 } from "./telemetry/TradingSignalBusRuntime";
 import {
+  buildTradingPerformanceMetricsResponseForTarget,
+  logTradingPerformanceForTarget,
+  maybeRecordTradingAgentSnapshotForTarget,
+  observeTradingExecutionProfileForTarget,
+  publishTradingTickTelemetryForTarget,
+  type TradingHotPathTelemetryTarget
+} from "./telemetry/TradingHotPathTelemetryRuntime";
+import {
   handleTradingProfilerSignal,
   publishTradingAmVpinTelemetry,
   type TradingProfilerSignalTarget
 } from "./telemetry/TradingProfilerTelemetryRuntime";
-import { publishTradingTickTelemetry } from "./telemetry/TradingTickTelemetryRuntime";
 import { type ReplayOptions } from "./routes/ReplayAdminRoutes";
 import { type ReplayJournal } from "./replay/ReplayJournal";
 import {
@@ -2518,41 +2521,17 @@ export class TradingEngine {
   }
 
   private observeExecutionProfile(metrics: LatencyMetrics, trace: ExecutionTraceInput): void {
-    observeTradingExecutionProfile(
-      {
-        engineState: this.engineState,
-        processingLatencySamples: this.processingLatencySamples,
-        metrics,
-        trace,
-        jitterThresholdMs: this.jitterThresholdMs,
-        jitterSampleWindow: this.jitterSampleWindow,
-        jitterComputeIntervalTicks: this.jitterComputeIntervalTicks,
-        lastPerformanceStatus: this.lastPerformanceStatus
-      },
-      {
-        applyProfile: (profile) => {
-          this.engineState = {
-            ...this.engineState,
-            executionProfile: profile
-          };
-        },
-        markPerformanceStatus: (status) => {
-          this.lastPerformanceStatus = status;
-        },
-        logPerformanceSnapshot: (snapshot) => this.logger.logPerformanceSnapshot(snapshot),
-        publishTransition: (transition) =>
-          this.publish(
-            transition.telemetryType,
-            transition.telemetryPayload,
-            transition.correlationId
-          ),
-        notify: (notification) => this.notifier.notify(notification)
-      }
+    observeTradingExecutionProfileForTarget(
+      metrics,
+      trace,
+      this as unknown as TradingHotPathTelemetryTarget
     );
   }
 
   private performanceMetricsResponse(): Response {
-    return buildTradingPerformanceMetricsResponse(this.engineState);
+    return buildTradingPerformanceMetricsResponseForTarget(
+      this as unknown as TradingHotPathTelemetryTarget
+    );
   }
 
   private publishTickTelemetry(
@@ -2561,46 +2540,26 @@ export class TradingEngine {
     status: LatencyMetrics["status"],
     hotPathStartedAt: number
   ): void {
-    publishTradingTickTelemetry(
-      {
-        tick,
-        metrics,
-        status,
-        hotPathStartedAt,
-        engineState: this.engineState,
-        macroBias: this.macroBias,
-        temporaryOverride: this.activeTemporaryOverride,
-        connectedAdminStreams: this.adminSockets.size,
-        signals: this.signals
-      },
-      {
-        publish: (type, payload, correlationId) => this.publish(type, payload, correlationId)
-      }
+    publishTradingTickTelemetryForTarget(
+      tick,
+      metrics,
+      status,
+      hotPathStartedAt,
+      this as unknown as TradingHotPathTelemetryTarget
     );
   }
 
   private maybeRecordAgentSnapshot(observedAt: string): void {
-    maybePublishTradingAgentSnapshot(
-      {
-        engineState: this.engineState,
-        latestAgentSignals: this.latestAgentSignals,
-        observedAt
-      },
-      {
-        publish: (type, payload, correlationId) => this.publish(type, payload, correlationId)
-      }
+    maybeRecordTradingAgentSnapshotForTarget(
+      observedAt,
+      this as unknown as TradingHotPathTelemetryTarget
     );
   }
 
   private logPerformance(latencyMetrics: LatencyMetrics): void {
-    logTradingPerformanceSpike(
-      {
-        logAt: this.performanceSpikeLogAt,
-        latencyMetrics
-      },
-      {
-        logPerformance: (metrics) => this.logger.logPerformance(metrics)
-      }
+    logTradingPerformanceForTarget(
+      latencyMetrics,
+      this as unknown as TradingHotPathTelemetryTarget
     );
   }
 
