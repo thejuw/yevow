@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { resolveTickBookFlow } from "../../src/engine/trading/book/TickBookResolutionRuntime";
+import { resolveTradingTickBookForTarget } from "../../src/engine/trading/book/TradingTickBookRuntime";
 import type { AppliedBookUpdate } from "../../src/engine/trading/book/BookTypes";
 import type { InternalOrderBook, LatencyMetrics, MarketTick } from "../../src/types";
 
@@ -72,6 +73,53 @@ describe("TickBookResolutionRuntime", () => {
     expect(result).toEqual({ kind: "BOOK", book, orderBookUpdateMs: 3.456 });
     expect(metrics.timeToBookMs).toBe(17);
     expect(events).toEqual(["delta:btc-usd:42:2026-05-18T12:00:00.050Z"]);
+  });
+
+  it("adapts a trading engine target into tick book handlers", async () => {
+    const book = orderBook();
+    const metrics = latencyMetrics();
+    const events: string[] = [];
+    const orderBooks = new Map<string, InternalOrderBook>([["hyperliquid:btc-usd", book]]);
+
+    const result = await resolveTradingTickBookForTarget(
+      {
+        tick: marketTick(),
+        metrics,
+        wakeUpTimeMs: 7,
+        hotPathStartedAt: 17
+      },
+      {
+        orderBook: orderBooks,
+        applyDelta(delta, observedAt) {
+          events.push(`delta:${delta.instrumentCode}:${observedAt}`);
+          return Promise.resolve({
+            accepted: true,
+            book,
+            timeToBookMs: 9
+          });
+        },
+        handleInformationalBookNotReady(_tick, _metrics, wakeUpTimeMs) {
+          events.push(`book-not-ready:${wakeUpTimeMs}`);
+          return Promise.resolve({
+            accepted: false,
+            status: "BOOK_NOT_READY",
+            reason: "missing-book"
+          });
+        },
+        handleRejectedBookDelta(_tick, _metrics, applied) {
+          events.push(`rejected:${applied.reason}`);
+          return Promise.resolve({
+            accepted: false,
+            status: "DESYNC",
+            reason: applied.reason
+          });
+        }
+      }
+    );
+
+    expect(result).toMatchObject({ kind: "BOOK", book });
+    expect(metrics.timeToBookMs).toBe(9);
+    expect(events).toEqual(["delta:btc-usd:2026-05-18T12:00:00.050Z"]);
   });
 
   it("routes rejected deltas through rejected early-return handling", async () => {

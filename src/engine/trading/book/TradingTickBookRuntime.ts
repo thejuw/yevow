@@ -35,6 +35,26 @@ export interface TradingTickBookHandlers {
   ) => Promise<TickIngestResult>;
 }
 
+export interface TradingTickBookTarget {
+  readonly orderBook: Map<string, InternalOrderBook>;
+  applyDelta(delta: BookDeltaWithTicker, observedAt: string): Promise<AppliedBookUpdate>;
+  handleInformationalBookNotReady(
+    tick: MarketTick,
+    metrics: LatencyMetrics,
+    wakeUpTimeMs: number | null,
+    orderBookUpdateMs: number,
+    hotPathStartedAt: number
+  ): Promise<TickIngestResult>;
+  handleRejectedBookDelta(
+    tick: MarketTick,
+    metrics: LatencyMetrics,
+    applied: AppliedBookUpdate,
+    wakeUpTimeMs: number | null,
+    orderBookUpdateMs: number,
+    hotPathStartedAt: number
+  ): Promise<TickIngestResult>;
+}
+
 export function resolveTradingTickBook(
   input: TradingTickBookInput,
   handlers: TradingTickBookHandlers
@@ -51,6 +71,51 @@ export function resolveTradingTickBook(
       applyDelta: handlers.applyDelta,
       handleInformationalBookNotReady: handlers.handleInformationalBookNotReady,
       handleRejectedBookDelta: handlers.handleRejectedBookDelta
+    }
+  );
+}
+
+export function resolveTradingTickBookForTarget(
+  input: Omit<TradingTickBookInput, "orderBook">,
+  target: TradingTickBookTarget
+): Promise<TickBookResolution> {
+  return resolveTradingTickBook(
+    {
+      ...input,
+      orderBook: target.orderBook
+    },
+    {
+      applyDelta: (delta, observedAt) => target.applyDelta(delta, observedAt),
+      handleInformationalBookNotReady: (
+        tick,
+        metrics,
+        wakeUpTimeMs,
+        orderBookUpdateMs,
+        hotPathStartedAt
+      ) =>
+        target.handleInformationalBookNotReady(
+          tick,
+          metrics,
+          wakeUpTimeMs,
+          orderBookUpdateMs,
+          hotPathStartedAt
+        ),
+      handleRejectedBookDelta: (
+        tick,
+        metrics,
+        applied,
+        wakeUpTimeMs,
+        orderBookUpdateMs,
+        hotPathStartedAt
+      ) =>
+        target.handleRejectedBookDelta(
+          tick,
+          metrics,
+          applied,
+          wakeUpTimeMs,
+          orderBookUpdateMs,
+          hotPathStartedAt
+        )
     }
   );
 }

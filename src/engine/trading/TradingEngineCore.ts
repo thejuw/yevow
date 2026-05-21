@@ -35,7 +35,10 @@ import {
   resetTradingOrderBookForTarget,
   type TradingOrderBookResetTarget
 } from "./book/OrderBookResetRuntime";
-import { resolveTradingTickBook } from "./book/TradingTickBookRuntime";
+import {
+  resolveTradingTickBookForTarget,
+  type TradingTickBookTarget
+} from "./book/TradingTickBookRuntime";
 import {
   buildDomAnalysisSnapshot,
   createDomAnalyzerContext,
@@ -1422,47 +1425,14 @@ export class TradingEngine {
     wakeUpTimeMs: number | null,
     hotPathStartedAt: number
   ): Promise<TickBookResolution> {
-    return resolveTradingTickBook(
+    return resolveTradingTickBookForTarget(
       {
-        orderBook: this.orderBook,
         tick,
         metrics,
         wakeUpTimeMs,
         hotPathStartedAt
       },
-      {
-        applyDelta: (delta, observedAt) => this.applyDelta(delta, observedAt),
-        handleInformationalBookNotReady: (
-          telemetryTick,
-          telemetryMetrics,
-          wakeUp,
-          orderBookUpdateMs,
-          telemetryStartedAt
-        ) =>
-          this.handleInformationalBookNotReady(
-            telemetryTick,
-            telemetryMetrics,
-            wakeUp,
-            orderBookUpdateMs,
-            telemetryStartedAt
-          ),
-        handleRejectedBookDelta: (
-          rejectedTick,
-          rejectedMetrics,
-          applied,
-          wakeUp,
-          orderBookUpdateMs,
-          telemetryStartedAt
-        ) =>
-          this.handleRejectedBookDelta(
-            rejectedTick,
-            rejectedMetrics,
-            applied,
-            wakeUp,
-            orderBookUpdateMs,
-            telemetryStartedAt
-          )
-      }
+      this as unknown as TradingTickBookTarget
     );
   }
 
