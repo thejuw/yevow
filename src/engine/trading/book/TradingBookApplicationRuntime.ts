@@ -56,6 +56,21 @@ export interface TradingBookDeltaHandlers {
   readonly applyState: (state: EngineState) => void;
 }
 
+export interface TradingBookApplicationTarget {
+  engineState: EngineState;
+  readonly domWallHistory: readonly LiquidityWall[];
+  readonly orderBookReconstructor: OrderBookReconstructor;
+  readonly orderBook: Map<string, InternalOrderBook>;
+  readonly bids: Map<string, SortedBookSide>;
+  readonly asks: Map<string, SortedBookSide>;
+  readonly logger: {
+    info(eventType: string, message: string, metadata: JsonRecord): void;
+  };
+  getLiquidityWalls(instrumentCode: string, observedAt: string): DomAnalysisSnapshot;
+  safeStoragePut(writes: Record<string, unknown>, reason: string): Promise<void>;
+  publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
+}
+
 export async function applyTradingBookSnapshot(
   input: TradingBookSnapshotInput,
   handlers: TradingBookSnapshotHandlers
@@ -91,6 +106,43 @@ export async function applyTradingBookSnapshot(
   );
 }
 
+export async function applyTradingBookSnapshotForTarget(
+  snapshot: OrderBookSnapshot,
+  options: TradingBookSnapshotOptions,
+  target: TradingBookApplicationTarget
+): Promise<InternalOrderBook> {
+  return applyTradingBookSnapshot(
+    {
+      snapshot,
+      options,
+      currentState: target.engineState,
+      domWallHistory: target.domWallHistory,
+      reconstructor: target.orderBookReconstructor,
+      orderBook: target.orderBook,
+      bids: target.bids,
+      asks: target.asks
+    },
+    {
+      getDomSnapshot: (instrumentCode, snapshotUpdatedAt) =>
+        target.getLiquidityWalls(instrumentCode, snapshotUpdatedAt),
+      applyState: (state) => {
+        target.engineState = state;
+      },
+      persistStorage: (writes, reason) => target.safeStoragePut(writes, reason),
+      logSnapshotApplied: (metadata) => {
+        target.logger.info(
+          "ORDER_BOOK_SNAPSHOT_APPLIED",
+          "Full order book snapshot applied",
+          metadata
+        );
+      },
+      publishSnapshotApplied: (payload) => {
+        target.publish("ORDER_BOOK_SNAPSHOT_APPLIED", payload);
+      }
+    }
+  );
+}
+
 export async function applyTradingBookDelta(
   input: TradingBookDeltaInput,
   handlers: TradingBookDeltaHandlers
@@ -107,6 +159,27 @@ export async function applyTradingBookDelta(
       calculatePriceDiscovery: (instrumentCode, deltaUpdatedAt) =>
         calculateTradingBookPriceDiscovery(input.orderBook, instrumentCode, deltaUpdatedAt),
       applyState: handlers.applyState
+    }
+  );
+}
+
+export async function applyTradingBookDeltaForTarget(
+  delta: BookDeltaWithTicker,
+  updatedAt: string,
+  target: TradingBookApplicationTarget
+): Promise<AppliedBookUpdate> {
+  return applyTradingBookDelta(
+    {
+      delta,
+      currentState: target.engineState,
+      updatedAt,
+      reconstructor: target.orderBookReconstructor,
+      orderBook: target.orderBook
+    },
+    {
+      applyState: (state) => {
+        target.engineState = state;
+      }
     }
   );
 }

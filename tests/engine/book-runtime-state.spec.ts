@@ -30,7 +30,10 @@ import {
 } from "../../src/engine/trading/book/BookRuntimeState";
 import {
   applyTradingBookDelta,
-  applyTradingBookSnapshot
+  applyTradingBookDeltaForTarget,
+  applyTradingBookSnapshot,
+  applyTradingBookSnapshotForTarget,
+  type TradingBookApplicationTarget
 } from "../../src/engine/trading/book/TradingBookApplicationRuntime";
 import {
   handleTradingEngineInformationalBookNotReady,
@@ -546,6 +549,95 @@ describe("BookRuntimeState", () => {
       microstructure: { midPrice: 101 },
       priceDiscovery: { instrumentCode: "btc-usd" }
     });
+  });
+
+  it("applies trading book updates through a target adapter", async () => {
+    const firstBook = book({
+      instrumentCode: "hype-usd",
+      marketKey: "hyperliquid:hype-usd",
+      bids: [{ price: 100, size: 1, updatedAt: OBSERVED_AT }],
+      asks: [{ price: 102, size: 1, updatedAt: OBSERVED_AT }],
+      midPrice: 101,
+      bestBid: 100,
+      bestAsk: 102
+    });
+    const nextBook = {
+      ...firstBook,
+      bids: [{ price: 101, size: 1, updatedAt: OBSERVED_AT }],
+      asks: [{ price: 103, size: 1, updatedAt: OBSERVED_AT }],
+      midPrice: 102,
+      bestBid: 101,
+      bestAsk: 103
+    };
+    const events: string[] = [];
+    const target = {
+      engineState: defaultEngineState("trading-book-target"),
+      domWallHistory: [],
+      orderBookReconstructor: {
+        applySnapshot(nextSnapshot: OrderBookSnapshot, updatedAt: string) {
+          events.push(`snapshot:${nextSnapshot.instrumentCode}:${Boolean(updatedAt)}`);
+          return appliedSnapshot(firstBook);
+        },
+        applyDelta(nextDelta: BookDeltaWithTicker, updatedAt: string) {
+          events.push(`delta:${nextDelta.sequence}:${updatedAt}`);
+          return Promise.resolve({
+            accepted: true,
+            book: nextBook,
+            timeToBookMs: 3,
+            actualSequence: nextDelta.sequence
+          });
+        }
+      } as unknown as OrderBookReconstructor,
+      orderBook: new Map([[firstBook.marketKey, firstBook]]),
+      bids: new Map(),
+      asks: new Map(),
+      logger: {
+        info(eventType: string, _message: string, metadata: Record<string, unknown>) {
+          events.push(`log:${eventType}:${String(metadata.sequence)}`);
+        }
+      },
+      getLiquidityWalls(instrumentCode: string) {
+        events.push(`dom:${instrumentCode}`);
+        return dom(instrumentCode);
+      },
+      safeStoragePut(writes: Record<string, unknown>, reason: string) {
+        events.push(`persist:${reason}:${Object.keys(writes).length}`);
+        return Promise.resolve();
+      },
+      publish(type: string, payload: Record<string, unknown>) {
+        events.push(`publish:${type}:${String(payload.sequence)}`);
+      }
+    } as unknown as TradingBookApplicationTarget;
+
+    const snapshotResult = await applyTradingBookSnapshotForTarget(
+      snapshot({ instrumentCode: "hype-usd", source: "ADMIN" }),
+      { telemetry: true, persist: true },
+      target
+    );
+    const deltaResult = await applyTradingBookDeltaForTarget(
+      delta({
+        instrumentCode: "hype-usd",
+        marketKey: "hyperliquid:hype-usd"
+      }),
+      OBSERVED_AT,
+      target
+    );
+
+    expect(snapshotResult.instrumentCode).toBe("hype-usd");
+    expect(deltaResult).toMatchObject({ accepted: true, timeToBookMs: 3 });
+    expect(target.engineState).toMatchObject({
+      engineId: "trading-book-target",
+      microstructure: { instrumentCode: "hype-usd", midPrice: 102 },
+      priceDiscovery: { instrumentCode: "hype-usd" }
+    });
+    expect(events).toEqual([
+      "snapshot:hype-usd:true",
+      "dom:hype-usd",
+      "persist:ORDER_BOOK_SNAPSHOT_APPLIED:3",
+      "log:ORDER_BOOK_SNAPSHOT_APPLIED:42",
+      "publish:ORDER_BOOK_SNAPSHOT_APPLIED:42",
+      `delta:42:${OBSERVED_AT}`
+    ]);
   });
 
   it("marks informational ticks as book-not-ready without mutating quote state when disabled", () => {

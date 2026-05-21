@@ -27,8 +27,9 @@ import {
   type TradingBookEarlyReturnTarget
 } from "./book/TradingBookEarlyReturnRuntime";
 import {
-  applyTradingBookDelta,
-  applyTradingBookSnapshot
+  applyTradingBookDeltaForTarget,
+  applyTradingBookSnapshotForTarget,
+  type TradingBookApplicationTarget
 } from "./book/TradingBookApplicationRuntime";
 import {
   resetTradingOrderBookForTarget,
@@ -1200,32 +1201,10 @@ export class TradingEngine {
     snapshot: OrderBookSnapshot,
     options: { telemetry?: boolean; persist?: boolean } = {}
   ): Promise<InternalOrderBook> {
-    return applyTradingBookSnapshot(
-      {
-        snapshot,
-        options,
-        currentState: this.engineState,
-        domWallHistory: this.domWallHistory,
-        reconstructor: this.orderBookReconstructor,
-        orderBook: this.orderBook,
-        bids: this.bids,
-        asks: this.asks
-      },
-      {
-        getDomSnapshot: (instrumentCode, snapshotUpdatedAt) =>
-          this.getLiquidityWalls(instrumentCode, snapshotUpdatedAt),
-        applyState: (state) => {
-          this.engineState = state;
-        },
-        persistStorage: (writes, reason) => this.safeStoragePut(writes, reason),
-        logSnapshotApplied: (metadata) =>
-          this.logger.info(
-            "ORDER_BOOK_SNAPSHOT_APPLIED",
-            "Full order book snapshot applied",
-            metadata
-          ),
-        publishSnapshotApplied: (payload) => this.publish("ORDER_BOOK_SNAPSHOT_APPLIED", payload)
-      }
+    return applyTradingBookSnapshotForTarget(
+      snapshot,
+      options,
+      this as unknown as TradingBookApplicationTarget
     );
   }
 
@@ -1233,19 +1212,10 @@ export class TradingEngine {
     delta: BookDeltaWithTicker,
     updatedAt: string
   ): Promise<AppliedBookUpdate> {
-    return applyTradingBookDelta(
-      {
-        delta,
-        currentState: this.engineState,
-        updatedAt,
-        reconstructor: this.orderBookReconstructor,
-        orderBook: this.orderBook
-      },
-      {
-        applyState: (state) => {
-          this.engineState = state;
-        }
-      }
+    return applyTradingBookDeltaForTarget(
+      delta,
+      updatedAt,
+      this as unknown as TradingBookApplicationTarget
     );
   }
 
