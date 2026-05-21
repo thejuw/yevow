@@ -135,11 +135,9 @@ import {
   nextCascadeCvd
 } from "./cascade/CascadeAbsorptionRuntime";
 import {
-  applyAdminConfigUpdateFlow,
-  applyConfigRefreshFlow,
-  applyConfigRefreshSideEffects,
-  applyRuntimeConfigUpdateSideEffects
-} from "./config/ConfigRuntime";
+  applyTradingConfigUpdate,
+  refreshTradingConfig
+} from "./config/TradingConfigControlRuntime";
 import {
   absorptionAnalyzerConfigFromRuntime,
   cascadeAssetProfileFromConfig,
@@ -3903,10 +3901,10 @@ export class TradingEngine {
   ): Promise<void> {
     const now = new Date().toISOString();
 
-    await applyConfigRefreshFlow(
+    await refreshTradingConfig(
       {
         source,
-        previousVersion: this.cachedConfig.version,
+        cachedConfig: this.cachedConfig,
         configSnapshot,
         currentState: this.engineState,
         observedAt: now,
@@ -3931,32 +3929,25 @@ export class TradingEngine {
             profilerStates,
             assetQuoteStates
           ),
-        applyRefreshSideEffects: (refresh) =>
-          applyConfigRefreshSideEffects(refresh, {
-            applyConfigCache: (config, macroBias, temporaryOverride) => {
-              this.cachedConfig = config;
-              this.macroBias = macroBias;
-              this.activeTemporaryOverride = temporaryOverride;
-            },
-            configureProfilers: (config) => this.profilerRegistry.configure(config),
-            setMaxLatencyMs: (maxLatencyMs) => {
-              this.maxLatencyMs = maxLatencyMs;
-            },
-            clearKillSwitchLog: () => {
-              this.killSwitchLogged = false;
-            },
-            applyState: (state) => {
-              this.engineState = state;
-            },
-            persistState: () =>
-              this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "CONFIG_REFRESH"),
-            warnRefresh: (metadata) =>
-              this.logger.warn(
-                "CONFIG_REFRESHED",
-                "Trading engine config cache refreshed",
-                metadata
-              )
-          })
+        applyConfigCache: (config, macroBias, temporaryOverride) => {
+          this.cachedConfig = config;
+          this.macroBias = macroBias;
+          this.activeTemporaryOverride = temporaryOverride;
+        },
+        configureProfilers: (config) => this.profilerRegistry.configure(config),
+        setMaxLatencyMs: (maxLatencyMs) => {
+          this.maxLatencyMs = maxLatencyMs;
+        },
+        clearKillSwitchLog: () => {
+          this.killSwitchLogged = false;
+        },
+        applyState: (state) => {
+          this.engineState = state;
+        },
+        persistRefreshState: () =>
+          this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "CONFIG_REFRESH"),
+        warnRefresh: (metadata) =>
+          this.logger.warn("CONFIG_REFRESHED", "Trading engine config cache refreshed", metadata)
       }
     );
   }
@@ -4073,7 +4064,7 @@ export class TradingEngine {
   }
 
   private async applyConfigUpdate(update: AdminConfigUpdate): Promise<void> {
-    await applyAdminConfigUpdateFlow(
+    await applyTradingConfigUpdate(
       {
         update,
         currentState: this.engineState,
@@ -4086,19 +4077,16 @@ export class TradingEngine {
       {
         refreshConfig: (directConfig) => this.refreshConfig("ADMIN_SIGNAL", directConfig),
         scheduleConfigRefresh: () => this.scheduleConfigRefresh(),
-        applyRuntimeUpdate: (runtimeUpdate) =>
-          applyRuntimeConfigUpdateSideEffects(runtimeUpdate, {
-            setMaxLatencyMs: (maxLatencyMs) => {
-              this.maxLatencyMs = maxLatencyMs;
-            },
-            applyState: (state) => {
-              this.engineState = state;
-            },
-            persistState: () =>
-              this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "ADMIN_CONFIG_APPLIED"),
-            warnApplied: (metadata) =>
-              this.logger.warn("ADMIN_CONFIG_APPLIED", "Runtime configuration updated", metadata)
-          })
+        setMaxLatencyMs: (maxLatencyMs) => {
+          this.maxLatencyMs = maxLatencyMs;
+        },
+        applyState: (state) => {
+          this.engineState = state;
+        },
+        persistAppliedState: () =>
+          this.safeStoragePut(ENGINE_STATE_KEY, this.engineState, "ADMIN_CONFIG_APPLIED"),
+        warnApplied: (metadata) =>
+          this.logger.warn("ADMIN_CONFIG_APPLIED", "Runtime configuration updated", metadata)
       }
     );
   }
