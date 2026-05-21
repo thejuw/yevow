@@ -13,6 +13,17 @@ import {
   syncTradingStateMicrostructureForTarget,
   type TradingEngineDiagnosticsTarget
 } from "../state/EngineDiagnostics";
+import {
+  currentCascadeSignalSnapshot as buildCurrentCascadeSignalSnapshot,
+  currentTradingCascadeActiveSnapshotForTarget,
+  currentTradingCascadeHeatSnapshotForTarget,
+  currentTradingCascadePositionSnapshotForTarget,
+  type TradingCascadeSnapshotTarget
+} from "../cascade/CascadeSnapshots";
+import {
+  closeTradingEngineCascadePosition,
+  type TradingCascadeManualCloseTarget
+} from "../cascade/TradingCascadeManualCloseRuntime";
 import type { ReplayOptions, ReplayStatus } from "./ReplayAdminRoutes";
 import { handleBookAdminRoute } from "./BookAdminRoutes";
 import { handleCascadeAdminRoute } from "./CascadeAdminRoutes";
@@ -128,6 +139,7 @@ export interface EngineHttpRouteContextTarget {
   readonly latencyHistory: LatencyMetrics[];
   readonly processingLatencySamples: number[];
   readonly cachedConfig: EngineState["cachedConfig"];
+  readonly signals: readonly AgentSignal[];
   readonly cascadeBacktester: Backtester;
   readonly cascadeNewsCalendar: NewsCalendar;
   readonly replayJournal: { currentStatus(): Promise<ReplayStatus> };
@@ -156,15 +168,6 @@ export interface EngineHttpRouteContextTarget {
     dateTo: string | null,
     replayOptions: ReplayOptions
   ): Promise<ReplayResult>;
-  currentCascadeActiveSnapshot(): unknown;
-  currentCascadeSignalSnapshot(limit: number): unknown;
-  currentCascadePositionSnapshot(): unknown;
-  closeCascadePosition(
-    positionId: string,
-    actor: string,
-    reason: string
-  ): Promise<{ ok: boolean; [key: string]: unknown }>;
-  currentCascadeHeatSnapshot(): unknown;
   applyExecutionReport(report: ExecutionReport): Promise<void>;
   enqueueTick(tick: MarketTick, wakeUpTimeMs: number | null): Promise<TickIngestResult>;
   handleHyperliquidRaw(payload: unknown, wakeUpTimeMs: number | null): Promise<TickIngestResult>;
@@ -226,12 +229,25 @@ export function createTradingEngineHttpRouteContext(
     runHistoricalReplay: (limit, shadowBankroll, speedMultiplier, dateFrom, dateTo, options) =>
       target.runHistoricalReplay(limit, shadowBankroll, speedMultiplier, dateFrom, dateTo, options),
     currentReplayStatus: () => target.replayJournal.currentStatus(),
-    currentCascadeActiveSnapshot: () => target.currentCascadeActiveSnapshot(),
-    currentCascadeSignalSnapshot: (limit) => target.currentCascadeSignalSnapshot(limit),
-    currentCascadePositionSnapshot: () => target.currentCascadePositionSnapshot(),
+    currentCascadeActiveSnapshot: () =>
+      currentTradingCascadeActiveSnapshotForTarget(
+        target as unknown as TradingCascadeSnapshotTarget
+      ),
+    currentCascadeSignalSnapshot: (limit) =>
+      buildCurrentCascadeSignalSnapshot(target.signals, limit),
+    currentCascadePositionSnapshot: () =>
+      currentTradingCascadePositionSnapshotForTarget(
+        target as unknown as TradingCascadeSnapshotTarget
+      ),
     closeCascadePosition: (positionId, actor, reason) =>
-      target.closeCascadePosition(positionId, actor, reason),
-    currentCascadeHeatSnapshot: () => target.currentCascadeHeatSnapshot(),
+      Promise.resolve(
+        closeTradingEngineCascadePosition(
+          { positionId, actor, reason },
+          target as unknown as TradingCascadeManualCloseTarget
+        ) as unknown as { ok: boolean; [key: string]: unknown }
+      ),
+    currentCascadeHeatSnapshot: () =>
+      currentTradingCascadeHeatSnapshotForTarget(target as unknown as TradingCascadeSnapshotTarget),
     analyzeSentimentHeadline: (headline) =>
       target.sentimentAgent.analyzeHeadline(headline, target.env),
     applyExecutionReport: (report) => target.applyExecutionReport(report),

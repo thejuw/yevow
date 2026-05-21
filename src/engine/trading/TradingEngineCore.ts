@@ -138,13 +138,6 @@ import {
   type TradingEngineJanitorMaintenanceTarget
 } from "./janitor/TradingJanitorRuntime";
 import {
-  currentCascadeSignalSnapshot as buildCurrentCascadeSignalSnapshot,
-  currentTradingCascadeActiveSnapshotForTarget,
-  currentTradingCascadeHeatSnapshotForTarget,
-  currentTradingCascadePositionSnapshotForTarget,
-  type TradingCascadeSnapshotTarget
-} from "./cascade/CascadeSnapshots";
-import {
   recordTradingEngineCascadeLiquidations,
   type TradingCascadeLiquidationDetectionTarget
 } from "./cascade/CascadeLiquidationRuntime";
@@ -385,10 +378,6 @@ import {
   parseTickSizeMap,
   parsePositiveNumberMap
 } from "./book/BookRuntimeHelpers";
-import {
-  closeTradingEngineCascadePosition,
-  type TradingCascadeManualCloseTarget
-} from "./cascade/TradingCascadeManualCloseRuntime";
 import { normalizeNativeCoin, splitNativeInstrument } from "./helpers/NativeMarketIdentityRuntime";
 import { nativeBookSideLevels } from "./helpers/NativeHyperliquidRuntime";
 import {
@@ -742,39 +731,6 @@ export class TradingEngine {
       events,
       observedAt,
       this as unknown as TradingCascadeLiquidationDetectionTarget
-    );
-  }
-
-  private currentCascadeActiveSnapshot(): JsonRecord[] {
-    return currentTradingCascadeActiveSnapshotForTarget(
-      this as unknown as TradingCascadeSnapshotTarget
-    );
-  }
-
-  private currentCascadeSignalSnapshot(limit: number): JsonRecord[] {
-    return buildCurrentCascadeSignalSnapshot(this.signals, limit);
-  }
-
-  private currentCascadePositionSnapshot(): JsonRecord[] {
-    return currentTradingCascadePositionSnapshotForTarget(
-      this as unknown as TradingCascadeSnapshotTarget
-    );
-  }
-
-  private currentCascadeHeatSnapshot(): JsonRecord {
-    return currentTradingCascadeHeatSnapshotForTarget(
-      this as unknown as TradingCascadeSnapshotTarget
-    );
-  }
-
-  private async closeCascadePosition(
-    positionId: string,
-    actor: string,
-    reason: string
-  ): Promise<{ ok: boolean; error?: string; position?: JsonRecord; intents?: JsonRecord[] }> {
-    return closeTradingEngineCascadePosition(
-      { positionId, actor, reason },
-      this as unknown as TradingCascadeManualCloseTarget
     );
   }
 
