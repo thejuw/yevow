@@ -49,6 +49,15 @@ export interface CroupierQuoteActionSideEffectHandlers {
   readonly dispatchQuote: (quote: QuoteSignal) => Promise<void>;
 }
 
+export interface TradingCroupierQuoteActionTarget {
+  readonly state: {
+    waitUntil(work: Promise<void>): void;
+  };
+  publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
+  cancelAllQuotes(instrumentCode: string, reason: string): Promise<void>;
+  dispatchQuote(quote: QuoteSignal): Promise<void>;
+}
+
 export function buildCroupierQuoteAction(input: CroupierQuoteActionInput): CroupierQuoteAction {
   if (input.pullAllQuotes) {
     return {
@@ -113,4 +122,21 @@ export function dispatchCroupierQuoteActionSideEffects(
           .then(() => handlers.dispatchQuote(action.quote))
       : handlers.dispatchQuote(action.quote)
   );
+}
+
+export function dispatchTradingCroupierQuoteAction(
+  instrumentCode: string,
+  croupierQuoteAction: CroupierQuoteAction,
+  target: TradingCroupierQuoteActionTarget
+): void {
+  dispatchCroupierQuoteActionSideEffects(instrumentCode, croupierQuoteAction, {
+    publish: (type, payload, correlationId) => {
+      target.publish(type, payload, correlationId);
+    },
+    schedule: (work) => {
+      target.state.waitUntil(work);
+    },
+    cancelAllQuotes: (code, reason) => target.cancelAllQuotes(code, reason),
+    dispatchQuote: (quote) => target.dispatchQuote(quote)
+  });
 }

@@ -9,6 +9,10 @@ import {
   referencePriceForBaseAsset,
   resolveInventoryStateConfig
 } from "../../src/engine/trading/inventory/InventoryRuntime";
+import {
+  dispatchTradingEngineInventoryHedgeIfNeeded,
+  type TradingInventoryHedgeTarget
+} from "../../src/engine/trading/inventory/TradingInventoryHedgeRuntime";
 import type { InternalOrderBook, Position } from "../../src/types";
 
 const OBSERVED_AT = "2026-05-18T11:00:00.000Z";
@@ -277,6 +281,51 @@ describe("InventoryRuntime", () => {
       `execute:inventory-hedge:btc-usd:${Date.parse(OBSERVED_AT)}`,
       `remember:btc-usd:${Date.parse(OBSERVED_AT)}`
     ]);
+  });
+
+  it("dispatches inventory hedge through the trading engine target adapter", async () => {
+    const scheduled: Promise<void>[] = [];
+    const calls: string[] = [];
+    const target: TradingInventoryHedgeTarget = {
+      engineState: { engineId: "engine-1" },
+      cachedConfig: {
+        ...defaultConfig,
+        HEDGE_ENABLED: true,
+        MAX_INVENTORY_DELTA: 1,
+        HEDGE_TRIGGER_INVENTORY_PCT: 0.6,
+        HEDGE_COOLDOWN_MS: 30_000,
+        HEDGE_MAX_SLIPPAGE_BPS: 8,
+        EXCHANGE_FEE_BPS: 1
+      },
+      lastHedgeDispatchedAt: new Map(),
+      logger: {
+        warn(eventType, _message, metadata) {
+          calls.push(`log:${eventType}:${metadata?.intentId as string}`);
+        }
+      },
+      state: {
+        waitUntil(work) {
+          scheduled.push(work);
+        }
+      },
+      async dispatchExecution(intent) {
+        calls.push(`execute:${intent.intentId}`);
+      }
+    };
+
+    dispatchTradingEngineInventoryHedgeIfNeeded(
+      book({ bestBid: 99.5, bestAsk: 100.5, midPrice: 100, tickSize: 0.5 }),
+      inventory({ current_inventory_delta: 1.5, maxInventoryDelta: 2 }),
+      OBSERVED_AT,
+      false,
+      target
+    );
+
+    await Promise.all(scheduled);
+
+    const intentId = `inventory-hedge:btc-usd:${Date.parse(OBSERVED_AT)}`;
+    expect(target.lastHedgeDispatchedAt.get("btc-usd")).toBe(Date.parse(OBSERVED_AT));
+    expect(calls).toEqual([`log:INVENTORY_HEDGE_AUTHORIZED:${intentId}`, `execute:${intentId}`]);
   });
 
   it("rejects inventory hedge intents when gates are not satisfied", () => {

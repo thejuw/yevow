@@ -25,6 +25,19 @@ export interface TradingInventoryHedgeHandlers {
   readonly scheduleExecution: (intent: TradeIntent) => void;
 }
 
+export interface TradingInventoryHedgeTarget {
+  readonly engineState: Pick<EngineState, "engineId">;
+  readonly cachedConfig: GlobalRiskConfig;
+  readonly lastHedgeDispatchedAt: Map<string, number>;
+  readonly logger: {
+    warn(eventType: string, message: string, telemetry?: JsonRecord): void;
+  };
+  readonly state: {
+    waitUntil(work: Promise<void>): void;
+  };
+  dispatchExecution(intent: TradeIntent): Promise<void>;
+}
+
 export function dispatchTradingInventoryHedgeIfNeeded(
   input: TradingInventoryHedgeInput,
   handlers: TradingInventoryHedgeHandlers
@@ -47,5 +60,41 @@ export function dispatchTradingInventoryHedgeIfNeeded(
       suppressExecution: input.shadowReplay
     },
     handlers
+  );
+}
+
+export function dispatchTradingEngineInventoryHedgeIfNeeded(
+  book: InternalOrderBook,
+  inventory: InventoryState,
+  observedAt: string,
+  shadowReplay: boolean,
+  target: TradingInventoryHedgeTarget
+): void {
+  dispatchTradingInventoryHedgeIfNeeded(
+    {
+      book,
+      inventory,
+      observedAt,
+      shadowReplay,
+      engineId: target.engineState.engineId,
+      config: target.cachedConfig,
+      lastHedgeAtMs: target.lastHedgeDispatchedAt.get(book.instrumentCode) ?? 0,
+      fallbackNowMs: Date.now()
+    },
+    {
+      rememberDispatchedAt: (instrumentCode, dispatchedAtMs) => {
+        target.lastHedgeDispatchedAt.set(instrumentCode, dispatchedAtMs);
+      },
+      logAuthorized: (metadata) => {
+        target.logger.warn(
+          "INVENTORY_HEDGE_AUTHORIZED",
+          "Inventory hedge IOC path authorized",
+          metadata
+        );
+      },
+      scheduleExecution: (intent) => {
+        target.state.waitUntil(target.dispatchExecution(intent));
+      }
+    }
   );
 }

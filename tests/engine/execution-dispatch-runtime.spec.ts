@@ -9,7 +9,9 @@ import {
 import {
   buildExecutionPlanDispatchAction,
   dispatchExecutionPlanSideEffects,
+  dispatchTradingExecutionPlans,
   shadowTradeIntentAuthorizedLogMetadata,
+  type TradingExecutionPlanDispatchTarget,
   tradeIntentAuthorizedLogMetadata,
   tradeIntentDispatchBlockedLogMetadata
 } from "../../src/engine/trading/execution/ExecutionPlanDispatchRuntime";
@@ -369,6 +371,41 @@ describe("ExecutionDispatchRuntime", () => {
       intentId: "intent-1",
       timingJitterMs: 25
     });
+    expect(dispatched).toEqual(["intent-child-1:25", "intent-child-2:25"]);
+  });
+
+  it("dispatches execution plans through the trading engine target adapter", async () => {
+    const engineState = defaultEngineState("execution-target-adapter");
+    engineState.cachedConfig.TRADING_ENABLED = true;
+    const scheduled: Promise<void>[] = [];
+    const dispatched: string[] = [];
+    const logs: string[] = [];
+    const target: TradingExecutionPlanDispatchTarget = {
+      engineState,
+      cachedConfig: { TRADING_ENABLED: true },
+      logger: {
+        info(eventType, _message, telemetry) {
+          logs.push(`info:${eventType}:${String(telemetry?.intentId)}`);
+        },
+        warn(eventType, _message, telemetry) {
+          logs.push(`warn:${eventType}:${String(telemetry?.intentId)}`);
+        }
+      },
+      state: {
+        waitUntil(work) {
+          scheduled.push(work);
+        }
+      },
+      async dispatchExecution(intent, timingJitterMs) {
+        dispatched.push(`${intent.intentId}:${timingJitterMs}`);
+      }
+    };
+
+    dispatchTradingExecutionPlans([executionPlan()], false, target);
+
+    await Promise.all(scheduled);
+
+    expect(logs).toEqual(["info:TRADE_INTENT_AUTHORIZED:intent-1"]);
     expect(dispatched).toEqual(["intent-child-1:25", "intent-child-2:25"]);
   });
 

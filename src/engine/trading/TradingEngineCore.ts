@@ -50,7 +50,10 @@ import {
   type TradingAnomalyEmergencyTarget
 } from "./anomaly/TradingAnomalyEmergencyRuntime";
 import { updateLeadLagMetrics as updateLeadLagRuntimeMetrics } from "./leadlag/LeadLagRuntime";
-import { dispatchTradingInventoryHedgeIfNeeded } from "./inventory/TradingInventoryHedgeRuntime";
+import {
+  dispatchTradingEngineInventoryHedgeIfNeeded,
+  type TradingInventoryHedgeTarget
+} from "./inventory/TradingInventoryHedgeRuntime";
 import { calculateTradingInventoryState } from "./inventory/TradingInventoryStateRuntime";
 import { resolveMaxPositionPct } from "./risk/PortfolioRiskRuntime";
 import { updateTradingPortfolioRisk } from "./risk/TradingPortfolioRiskRuntime";
@@ -65,13 +68,16 @@ import {
   shouldThrottleTradingQuoteRefresh
 } from "./quotes/TradingQuoteRefreshRuntime";
 import {
-  dispatchCroupierQuoteActionSideEffects,
-  type CroupierQuoteAction
+  dispatchTradingCroupierQuoteAction,
+  type TradingCroupierQuoteActionTarget
 } from "./quotes/QuoteActionRuntime";
 import { cancelAllTradingQuotes } from "./quotes/QuoteCancelRuntime";
 import { type ApprovedExecutionPlan } from "./execution/ExecutionPlanRuntime";
 import { prepareTradingExecutionPlan } from "./execution/TradingExecutionPlanPreparationRuntime";
-import { dispatchExecutionPlanSideEffects } from "./execution/ExecutionPlanDispatchRuntime";
+import {
+  dispatchTradingExecutionPlans,
+  type TradingExecutionPlanDispatchTarget
+} from "./execution/ExecutionPlanDispatchRuntime";
 import { dispatchTradingExecutionIntent } from "./execution/TradingExecutionDispatchRuntime";
 import { applyTradingExecutionReport } from "./execution/TradingExecutionReportRuntime";
 import { type OracleTickResult } from "./agents/AgentEvaluationRuntime";
@@ -1705,67 +1711,6 @@ export class TradingEngine {
     );
   }
 
-  private handleCroupierQuoteAction(
-    instrumentCode: string,
-    croupierQuoteAction: CroupierQuoteAction
-  ): void {
-    dispatchCroupierQuoteActionSideEffects(instrumentCode, croupierQuoteAction, {
-      publish: (type, payload, correlationId) => this.publish(type, payload, correlationId),
-      schedule: (work) => this.state.waitUntil(work),
-      cancelAllQuotes: (code, reason) => this.cancelAllQuotes(code, reason),
-      dispatchQuote: (quote) => this.dispatchQuote(quote)
-    });
-  }
-
-  private dispatchExecutionPlans(
-    executionPlans: readonly ApprovedExecutionPlan[],
-    shadowReplay: boolean
-  ): void {
-    dispatchExecutionPlanSideEffects({
-      executionPlans,
-      riskState: this.engineState,
-      shadowReplay,
-      tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-      handlers: {
-        logger: this.logger,
-        schedule: (work) => this.state.waitUntil(work),
-        dispatchExecution: (intent, timingJitterMs) =>
-          this.dispatchExecution(intent, timingJitterMs)
-      }
-    });
-  }
-
-  private dispatchInventoryHedgeIfNeeded(
-    book: InternalOrderBook,
-    inventory: InventoryState,
-    observedAt: string,
-    shadowReplay: boolean
-  ): void {
-    dispatchTradingInventoryHedgeIfNeeded(
-      {
-        book,
-        inventory,
-        observedAt,
-        shadowReplay,
-        engineId: this.engineState.engineId,
-        config: this.cachedConfig,
-        lastHedgeAtMs: this.lastHedgeDispatchedAt.get(book.instrumentCode) ?? 0,
-        fallbackNowMs: Date.now()
-      },
-      {
-        rememberDispatchedAt: (instrumentCode, dispatchedAtMs) =>
-          this.lastHedgeDispatchedAt.set(instrumentCode, dispatchedAtMs),
-        logAuthorized: (metadata) =>
-          this.logger.warn(
-            "INVENTORY_HEDGE_AUTHORIZED",
-            "Inventory hedge IOC path authorized",
-            metadata
-          ),
-        scheduleExecution: (intent) => this.state.waitUntil(this.dispatchExecution(intent))
-      }
-    );
-  }
-
   private async handleProfilerSignal(
     instrumentCode: string,
     profilerResult: ProfilerEvaluation,
@@ -2255,11 +2200,25 @@ export class TradingEngine {
             sideEffects.oracleBayesianTrace
           ),
         handleCroupierQuoteAction: (instrumentCode, action) =>
-          this.handleCroupierQuoteAction(instrumentCode, action),
+          dispatchTradingCroupierQuoteAction(
+            instrumentCode,
+            action,
+            this as unknown as TradingCroupierQuoteActionTarget
+          ),
         dispatchExecutionPlans: (executionPlans, shadowReplay) =>
-          this.dispatchExecutionPlans(executionPlans, shadowReplay),
+          dispatchTradingExecutionPlans(
+            executionPlans,
+            shadowReplay,
+            this as unknown as TradingExecutionPlanDispatchTarget
+          ),
         dispatchInventoryHedgeIfNeeded: (book, inventory, observedAt, shadowReplay) =>
-          this.dispatchInventoryHedgeIfNeeded(book, inventory, observedAt, shadowReplay),
+          dispatchTradingEngineInventoryHedgeIfNeeded(
+            book,
+            inventory,
+            observedAt,
+            shadowReplay,
+            this as unknown as TradingInventoryHedgeTarget
+          ),
         handleProfilerSignal: (
           instrumentCode,
           profilerResult,

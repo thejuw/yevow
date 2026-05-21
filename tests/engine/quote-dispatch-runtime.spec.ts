@@ -11,7 +11,9 @@ import {
 } from "../../src/engine/trading/quotes/QuoteIntentRuntime";
 import {
   buildCroupierQuoteAction,
-  dispatchCroupierQuoteActionSideEffects
+  dispatchCroupierQuoteActionSideEffects,
+  dispatchTradingCroupierQuoteAction,
+  type TradingCroupierQuoteActionTarget
 } from "../../src/engine/trading/quotes/QuoteActionRuntime";
 import {
   applyQuoteRefreshThrottleSideEffects,
@@ -425,6 +427,48 @@ describe("QuoteDispatchRuntime", () => {
       { type: "POST_QUOTE", payload: { signalId: "quote-1" }, correlationId: "quote-1" }
     ]);
     expect(calls).toEqual(["cancel:btc-usd:CASCADE_SHIELD", "dispatch:quote-1"]);
+  });
+
+  it("dispatches croupier quote action through the trading engine target adapter", async () => {
+    const published: unknown[] = [];
+    const scheduled: Promise<void>[] = [];
+    const calls: string[] = [];
+    const quote = quoteSignal();
+    const target: TradingCroupierQuoteActionTarget = {
+      state: {
+        waitUntil(work) {
+          scheduled.push(work);
+        }
+      },
+      publish(type, payload, correlationId) {
+        published.push({ type, payload, correlationId });
+      },
+      async cancelAllQuotes(instrumentCode, reason) {
+        calls.push(`cancel:${instrumentCode}:${reason}`);
+      },
+      async dispatchQuote(dispatchedQuote) {
+        calls.push(`dispatch:${dispatchedQuote.signalId}`);
+      }
+    };
+
+    dispatchTradingCroupierQuoteAction(
+      "btc-usd",
+      {
+        kind: "POST_QUOTE",
+        quote,
+        publish: { type: "POST_QUOTE", payload: { signalId: "quote-1" }, correlationId: "quote-1" },
+        shouldDispatch: true,
+        cascadeShieldCancelReason: null
+      },
+      target
+    );
+
+    await Promise.all(scheduled);
+
+    expect(published).toEqual([
+      { type: "POST_QUOTE", payload: { signalId: "quote-1" }, correlationId: "quote-1" }
+    ]);
+    expect(calls).toEqual(["dispatch:quote-1"]);
   });
 
   it("evaluates quote refresh throttles from queue advice and log cadence", () => {

@@ -1,5 +1,5 @@
 import { evaluateIntentDispatchGate } from "../../IntentGeneration";
-import type { EngineState, JsonRecord, TradeIntent } from "../../../types";
+import type { EngineState, GlobalRiskConfig, JsonRecord, TradeIntent } from "../../../types";
 
 export interface ExecutionPlanDispatchLogInput {
   readonly intent: TradeIntent;
@@ -47,6 +47,16 @@ export interface ExecutionPlanDispatchSideEffectHandlers {
   readonly logger: ExecutionPlanDispatchLogger;
   readonly schedule: (work: Promise<void>) => void;
   readonly dispatchExecution: (intent: TradeIntent, timingJitterMs: number) => Promise<void>;
+}
+
+export interface TradingExecutionPlanDispatchTarget {
+  readonly engineState: Pick<EngineState, "mode" | "cachedConfig" | "citadel" | "quoteState">;
+  readonly cachedConfig: Pick<GlobalRiskConfig, "TRADING_ENABLED">;
+  readonly logger: ExecutionPlanDispatchLogger;
+  readonly state: {
+    waitUntil(work: Promise<void>): void;
+  };
+  dispatchExecution(intent: TradeIntent, timingJitterMs: number): Promise<void>;
 }
 
 export interface ExecutionPlanSideEffectsInput {
@@ -195,4 +205,25 @@ export function dispatchExecutionPlanSideEffects(input: ExecutionPlanSideEffects
       );
     }
   }
+}
+
+export function dispatchTradingExecutionPlans(
+  executionPlans: readonly ExecutionPlanDispatchRuntimePlan[],
+  shadowReplay: boolean,
+  target: TradingExecutionPlanDispatchTarget
+): void {
+  dispatchExecutionPlanSideEffects({
+    executionPlans,
+    riskState: target.engineState,
+    shadowReplay,
+    tradingEnabled: target.cachedConfig.TRADING_ENABLED,
+    handlers: {
+      logger: target.logger,
+      schedule: (work) => {
+        target.state.waitUntil(work);
+      },
+      dispatchExecution: (intent, timingJitterMs) =>
+        target.dispatchExecution(intent, timingJitterMs)
+    }
+  });
 }
