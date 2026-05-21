@@ -95,7 +95,7 @@ import {
   applyQuoteSuppressionSideEffects,
   quoteSuppressionPolicyProjection
 } from "./quotes/QuoteSuppressionRuntime";
-import { applyQuoteDispatchFlow } from "./quotes/QuoteIntentRuntime";
+import { dispatchTradingQuote } from "./quotes/TradingQuoteDispatchRuntime";
 import {
   applyQuoteRefreshThrottleSideEffects,
   buildQuoteRefreshRuntimeDecision,
@@ -3385,37 +3385,14 @@ export class TradingEngine {
   private async dispatchQuote(
     quote: NonNullable<EngineState["quoteState"]["lastQuote"]>
   ): Promise<void> {
-    const maxPositionPct = resolveMaxPositionPct(
-      this.cachedConfig,
-      this.env.MAX_POSITION_PCT,
-      DEFAULT_MAX_POSITION_PCT
-    );
-    const assetRuntimeState = this.engineState.assetMatrix?.[quote.instrumentCode];
-    const assetAllocation =
-      this.engineState.assetMatrix?.[quote.instrumentCode]?.capitalAllocationPct ?? 1;
-
-    await applyQuoteDispatchFlow(
+    await dispatchTradingQuote(
       {
         quote,
+        engineState: this.engineState,
+        cachedConfig: this.cachedConfig,
+        macroBias: this.macroBias,
         hasExecutioner: Boolean(this.env.EXECUTIONER),
-        tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-        instrumentSelected: isInstrumentSelectedByMoltworker(quote.instrumentCode, this.macroBias),
-        assetRuntimeState,
-        instrumentQuoteState: quoteStateForInstrumentState(
-          this.engineState.assetQuoteStates,
-          quote.instrumentCode,
-          this.engineState.quoteState
-        ),
-        engineId: this.engineState.engineId,
-        bankrollEquity: this.engineState.bankroll.equity,
-        bankrollCash: this.engineState.bankroll.cash,
-        maxPositionPct,
-        maxPositionSize: this.cachedConfig.MAX_POSITION_SIZE,
-        assetAllocationPct: assetAllocation,
-        positionSizeMultiplier: this.engineState.location.positionSizeMultiplier,
-        fallbackSourceExchange: this.engineState.microstructure.source_exchange,
-        spreadBps: this.engineState.microstructure.spreadBps,
-        toxicityScore: this.engineState.toxicityScore
+        maxPositionPctValue: this.env.MAX_POSITION_PCT
       },
       {
         logInfo: (event, message, metadata) => this.logger.info(event, message, metadata),
