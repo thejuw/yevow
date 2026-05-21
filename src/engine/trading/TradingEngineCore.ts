@@ -160,7 +160,7 @@ import {
   handleTradingEngineHttpRoute,
   type EngineHttpRouteContext
 } from "./routes/EngineHttpRoutes";
-import { buildTradingEngineFetchRequestContext } from "./routes/EngineFetchRuntime";
+import { handleTradingEngineFetchRuntime } from "./routes/EngineFetchRuntime";
 import {
   acceptMarketStream as acceptTradingMarketStream,
   acceptTelemetryStream as acceptTradingTelemetryStream
@@ -394,7 +394,7 @@ import {
   nativeNumber,
   nativeSide
 } from "./helpers/NativeValueRuntime";
-import { highResolutionNow, roundLatency } from "./helpers/RuntimeClock";
+import { highResolutionNow } from "./helpers/RuntimeClock";
 import { wait } from "./helpers/RuntimeMath";
 import {
   prometheusLabels,
@@ -410,8 +410,7 @@ import {
   finiteNumber,
   isPlainObject,
   readHyperliquidRawIngestPayload,
-  readJsonOrNull,
-  json
+  readJsonOrNull
 } from "./helpers/RuntimeParsing";
 import { resolveGhostBookConfig } from "./shadow/GhostBookConfigRuntime";
 import {
@@ -748,44 +747,34 @@ export class TradingEngine {
   }
 
   async fetch(request: Request): Promise<Response> {
-    const fetchStartedAt = highResolutionNow();
-    await this.initialized;
-    const wakeUpTimeMs = roundLatency(highResolutionNow() - fetchStartedAt);
-    this.latestWakeUpTimeMs = wakeUpTimeMs;
-
-    const routeContext = buildTradingEngineFetchRequestContext(request);
-    if (routeContext.isMarketDataRequest) {
-      this.observeTopology(routeContext.topology);
-      this.warmUpForTopology(routeContext.topology);
-    }
-
-    if (routeContext.webSocketRoute === "TELEMETRY_STREAM") {
-      return acceptTradingTelemetryStream(this.streamContext());
-    }
-
-    if (routeContext.webSocketRoute === "MARKET_STREAM") {
-      return acceptTradingMarketStream(this.streamContext());
-    }
-
-    try {
-      return await handleTradingEngineHttpRoute(
+    return handleTradingEngineFetchRuntime(
+      {
         request,
-        routeContext.url,
-        this.engineHttpRouteContext(wakeUpTimeMs)
-      );
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "UNKNOWN_ERROR";
-      const status = message.startsWith("INVALID_") ? 400 : 500;
-
-      this.logger.error(
-        "ENGINE_REQUEST_FAILED",
-        "Trading engine request failed",
-        { path: routeContext.url.pathname, message },
-        routeContext.requestId
-      );
-
-      return json({ ok: false, error: message, requestId: routeContext.requestId }, status);
-    }
+        initialized: this.initialized
+      },
+      {
+        rememberWakeUpTime: (wakeUpTimeMs) => {
+          this.latestWakeUpTimeMs = wakeUpTimeMs;
+        },
+        observeTopology: (topology) => this.observeTopology(topology),
+        warmUpForTopology: (topology) => this.warmUpForTopology(topology),
+        acceptTelemetryStream: () => acceptTradingTelemetryStream(this.streamContext()),
+        acceptMarketStream: () => acceptTradingMarketStream(this.streamContext()),
+        handleHttpRoute: (currentRequest, url, wakeUpTimeMs) =>
+          handleTradingEngineHttpRoute(
+            currentRequest,
+            url,
+            this.engineHttpRouteContext(wakeUpTimeMs)
+          ),
+        logRequestFailure: (failure) =>
+          this.logger.error(
+            "ENGINE_REQUEST_FAILED",
+            "Trading engine request failed",
+            { path: failure.pathname, message: failure.message },
+            failure.requestId
+          )
+      }
+    );
   }
 
   private engineHttpRouteContext(wakeUpTimeMs: number | null): EngineHttpRouteContext {

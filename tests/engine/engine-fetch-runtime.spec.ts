@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildTradingEngineFetchRequestContext,
   classifyTradingEngineWebSocketRoute,
+  handleTradingEngineFetchRuntime,
   isTradingEngineMarketDataRequest
 } from "../../src/engine/trading/routes/EngineFetchRuntime";
 
@@ -70,5 +71,98 @@ describe("EngineFetchRuntime", () => {
       placement: "remote-nrt",
       requestId: "ray-1"
     });
+  });
+
+  it("orchestrates market-data topology hooks before HTTP routing", async () => {
+    const calls: string[] = [];
+    const response = await handleTradingEngineFetchRuntime(
+      {
+        request: new Request("https://engine.internal/hyperliquid/raw", {
+          headers: {
+            "cf-ray": "ray-market",
+            "x-source": "sovereign-ingest-worker",
+            "x-sovereign-topology-colo": "NRT"
+          }
+        }),
+        initialized: Promise.resolve()
+      },
+      {
+        rememberWakeUpTime: (wakeUpTimeMs) => calls.push(`wake:${Number.isFinite(wakeUpTimeMs)}`),
+        observeTopology: (topology) => calls.push(`observe:${topology.colo}`),
+        warmUpForTopology: (topology) => calls.push(`warm:${topology.colo}`),
+        acceptTelemetryStream: () => new Response("telemetry"),
+        acceptMarketStream: () => new Response("market"),
+        handleHttpRoute: async (_request, url, wakeUpTimeMs) => {
+          calls.push(`http:${url.pathname}:${Number.isFinite(wakeUpTimeMs ?? Number.NaN)}`);
+          return new Response("ok");
+        },
+        logRequestFailure: (failure) => calls.push(`error:${failure.requestId}`)
+      }
+    );
+
+    await expect(response.text()).resolves.toBe("ok");
+    expect(calls).toEqual(["wake:true", "observe:NRT", "warm:NRT", "http:/hyperliquid/raw:true"]);
+  });
+
+  it("routes websocket upgrades before the HTTP router", async () => {
+    const calls: string[] = [];
+    const response = await handleTradingEngineFetchRuntime(
+      {
+        request: new Request("https://engine.internal/stream", {
+          headers: { upgrade: "websocket" }
+        }),
+        initialized: Promise.resolve()
+      },
+      {
+        rememberWakeUpTime: () => calls.push("wake"),
+        observeTopology: () => calls.push("observe"),
+        warmUpForTopology: () => calls.push("warm"),
+        acceptTelemetryStream: () => {
+          calls.push("telemetry");
+          return new Response("stream");
+        },
+        acceptMarketStream: () => new Response("market"),
+        handleHttpRoute: async () => {
+          calls.push("http");
+          return new Response("unexpected");
+        },
+        logRequestFailure: () => calls.push("error")
+      }
+    );
+
+    await expect(response.text()).resolves.toBe("stream");
+    expect(calls).toEqual(["wake", "telemetry"]);
+  });
+
+  it("normalizes HTTP route failures into JSON responses and audit hooks", async () => {
+    const calls: string[] = [];
+    const response = await handleTradingEngineFetchRuntime(
+      {
+        request: new Request("https://engine.internal/admin/config", {
+          headers: { "cf-ray": "ray-error" }
+        }),
+        initialized: Promise.resolve()
+      },
+      {
+        rememberWakeUpTime: () => calls.push("wake"),
+        observeTopology: () => calls.push("observe"),
+        warmUpForTopology: () => calls.push("warm"),
+        acceptTelemetryStream: () => new Response("telemetry"),
+        acceptMarketStream: () => new Response("market"),
+        handleHttpRoute: async () => {
+          throw new Error("INVALID_CONFIG");
+        },
+        logRequestFailure: (failure) =>
+          calls.push(`${failure.pathname}:${failure.requestId}:${failure.message}`)
+      }
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: "INVALID_CONFIG",
+      requestId: "ray-error"
+    });
+    expect(calls).toEqual(["wake", "/admin/config:ray-error:INVALID_CONFIG"]);
   });
 });
