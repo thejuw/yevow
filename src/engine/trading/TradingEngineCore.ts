@@ -145,7 +145,7 @@ import {
   applyLatencyBaselineResetSideEffects,
   latencyBaselineResetArtifacts
 } from "./performance/LatencyBaselineRuntime";
-import { applyPerformanceSpikeLogSideEffect } from "./performance/PerformanceSpikeRuntime";
+import { logTradingPerformanceSpike } from "./performance/TradingPerformanceSpikeRuntime";
 import { nextLatencyAverage } from "./performance/LatencyTickRuntime";
 import { prepareTradingTickLatency } from "./performance/TradingTickLatencyRuntime";
 import { applyCancelJanitorOrderSideEffects, cancelJanitorOrder } from "./janitor/JanitorRuntime";
@@ -4128,11 +4128,10 @@ export class TradingEngine {
   }
 
   private logPerformance(latencyMetrics: LatencyMetrics): void {
-    applyPerformanceSpikeLogSideEffect(
+    logTradingPerformanceSpike(
       {
         logAt: this.performanceSpikeLogAt,
-        latencyMetrics,
-        throttleMs: HOT_PATH_LOG_THROTTLE_MS
+        latencyMetrics
       },
       {
         logPerformance: (metrics) => this.logger.logPerformance(metrics)
