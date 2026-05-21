@@ -112,12 +112,9 @@ import {
   currentTradingCascadePositionSnapshot as buildCurrentCascadePositionSnapshot
 } from "./cascade/CascadeSnapshots";
 import {
-  buildCascadeDetectedArtifacts,
-  liquidationEventProcessingResult,
   persistCascadeLiquidationEventsSafely,
-  processLiquidationIngestRuntime,
-  recordCascadeLiquidationDetections,
-  resolveLiquidationEventContext
+  processTradingLiquidationIngestRuntime,
+  recordTradingCascadeLiquidationDetections
 } from "./cascade/CascadeLiquidationRuntime";
 import {
   buildCascadeEntryTradeIntent,
@@ -241,11 +238,7 @@ import {
   type MultiScaleVolatilitySnapshot
 } from "../MultiScaleVolatility";
 import { QueuePositionModel } from "../QueuePositionModel";
-import {
-  HeatmapAgent,
-  LIQUIDATION_HEATMAP_STORAGE_KEY,
-  defaultLiquidationHeatmapState
-} from "../../agents/HeatmapAgent";
+import { HeatmapAgent, defaultLiquidationHeatmapState } from "../../agents/HeatmapAgent";
 import { JanitorAgent } from "../../agents/JanitorAgent";
 import { OracleAgent, defaultOracleState } from "../../agents/OracleAgent";
 import { PitBossAgent } from "../../agents/PitBossAgent";
@@ -1142,16 +1135,14 @@ export class TradingEngine {
     raw: Record<string, unknown>,
     payload: HyperliquidRawIngestPayload
   ): Promise<TickIngestResult> {
-    const liquidationResult = processLiquidationIngestRuntime({
-      raw,
-      payload,
-      currentState: this.engineState,
-      currentInstrumentCode: this.engineState.microstructure.instrumentCode,
-      defaultAsset: this.env.HL_ASSET,
-      midPrice: this.engineState.microstructure.midPrice,
-      engineStateKey: ENGINE_STATE_KEY,
-      liquidationHeatmapKey: LIQUIDATION_HEATMAP_STORAGE_KEY,
-      handlers: {
+    return processTradingLiquidationIngestRuntime(
+      {
+        raw,
+        payload,
+        currentState: this.engineState,
+        defaultAsset: this.env.HL_ASSET
+      },
+      {
         recordHeatmap: (eventRaw, context) =>
           this.heatmapAgent.recordLiquidationEvent(eventRaw, {
             instrumentCode: context.instrumentCode,
@@ -1176,50 +1167,52 @@ export class TradingEngine {
           ),
         scheduleStorageWrites: (storageWrites) =>
           this.state.waitUntil(this.safeStoragePut(storageWrites, "LIQUIDATION_EVENT")),
-        publish: (type, publishPayload) => this.publish(type, publishPayload)
+        publish: (type, publishPayload) => this.publish(type, publishPayload),
+        applyState: (state) => {
+          this.engineState = state;
+        }
       }
-    });
-    this.engineState = liquidationResult.state;
-
-    return liquidationResult.ingestResult;
+    );
   }
 
   private recordCascadeLiquidations(
     events: LiquidationEvent[],
     observedAt: string
   ): CascadeEvent[] {
-    return recordCascadeLiquidationDetections(events, observedAt, {
-      configureAbsorptionAnalyzer: () =>
-        this.absorptionAnalyzer.configure(this.currentAbsorptionAnalyzerConfig()),
-      isInstrumentEnabled: (instrumentCode) =>
-        isCascadeInstrumentEnabledForConfig(this.cachedConfig.CASCADE_INSTRUMENTS, instrumentCode),
-      configureDetector: (instrumentCode) =>
-        this.cascadeDetector.configure(this.currentCascadeDetectorConfig(instrumentCode)),
-      observeCascade: (event, detectedAt) =>
-        this.cascadeDetector.observe(event, {
-          observedAt: detectedAt,
-          atr1h: resolveCascadeAtr1hFromConfig({
-            event,
-            midPrice: this.engineState.microstructure.midPrice,
-            fallbackUsdValue: this.env.CASCADE_ATR_FALLBACK_USD,
-            fallbackPctValue: this.env.CASCADE_ATR_FALLBACK_PCT
-          })
-        }),
-      rememberCascade: (cascade) => this.cascadeEventsById.set(cascade.cascadeId, cascade),
-      trackCascadeAbsorption: (cascade) => this.absorptionAnalyzer.trackCascade(cascade),
-      assetProfile: (instrumentCode) => this.cascadeAssetProfile(instrumentCode),
-      logDetected: (metadata) =>
-        this.logger.warn("CASCADE_DETECTED", "Liquidation cascade detected", metadata),
-      publishDetected: (payload) => this.publish("CASCADE_DETECTED", payload),
-      alertDetected: (cascade, metadata) =>
-        this.emitCascadeOperationalAlert(
-          "CASCADE_DETECTED",
-          "Cascade detected",
-          `${cascade.instrumentCode} ${cascade.direction} liquidation cascade detected.`,
-          metadata,
-          cascade.cascadeId
-        )
-    });
+    return recordTradingCascadeLiquidationDetections(
+      {
+        events,
+        observedAt,
+        config: this.cachedConfig,
+        midPrice: this.engineState.microstructure.midPrice,
+        env: this.env
+      },
+      {
+        configureAbsorptionAnalyzer: () =>
+          this.absorptionAnalyzer.configure(this.currentAbsorptionAnalyzerConfig()),
+        configureDetector: (instrumentCode) =>
+          this.cascadeDetector.configure(this.currentCascadeDetectorConfig(instrumentCode)),
+        observeCascade: (event, detectedAt, atr1h) =>
+          this.cascadeDetector.observe(event, {
+            observedAt: detectedAt,
+            atr1h
+          }),
+        rememberCascade: (cascade) => this.cascadeEventsById.set(cascade.cascadeId, cascade),
+        trackCascadeAbsorption: (cascade) => this.absorptionAnalyzer.trackCascade(cascade),
+        assetProfile: (instrumentCode) => this.cascadeAssetProfile(instrumentCode),
+        logDetected: (metadata) =>
+          this.logger.warn("CASCADE_DETECTED", "Liquidation cascade detected", metadata),
+        publishDetected: (payload) => this.publish("CASCADE_DETECTED", payload),
+        alertDetected: (cascade, metadata) =>
+          this.emitCascadeOperationalAlert(
+            "CASCADE_DETECTED",
+            "Cascade detected",
+            `${cascade.instrumentCode} ${cascade.direction} liquidation cascade detected.`,
+            metadata,
+            cascade.cascadeId
+          )
+      }
+    );
   }
 
   private currentCascadeActiveSnapshot(): JsonRecord[] {

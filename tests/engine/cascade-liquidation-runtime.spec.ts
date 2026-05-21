@@ -13,7 +13,9 @@ import {
   persistCascadeLiquidationEvents,
   persistCascadeLiquidationEventsSafely,
   processLiquidationIngestRuntime,
+  processTradingLiquidationIngestRuntime,
   recordCascadeLiquidationDetections,
+  recordTradingCascadeLiquidationDetections,
   resolveLiquidationEventContext,
   stateAfterLiquidationHeatmap
 } from "../../src/engine/trading/cascade/CascadeLiquidationRuntime";
@@ -293,6 +295,65 @@ describe("CascadeLiquidationRuntime", () => {
     });
   });
 
+  it("applies trading liquidation ingest state through the engine adapter", () => {
+    const currentState = defaultEngineState("liquidation-trading-ingest");
+    currentState.microstructure = {
+      ...currentState.microstructure,
+      instrumentCode: "btc-usd",
+      midPrice: 100
+    };
+    const heatmap = {
+      ...defaultLiquidationHeatmapState("btc-usd", "hyperliquid"),
+      updatedAt: OBSERVED_AT,
+      recentEvents: [liquidationEvent()]
+    };
+    const appliedStates: string[] = [];
+    const scheduledWrites: Record<string, unknown>[] = [];
+
+    const result = processTradingLiquidationIngestRuntime(
+      {
+        raw: { channel: "userEvents" },
+        payload: {
+          receivedAt: OBSERVED_AT,
+          instrumentCode: "BTC-USD",
+          source_exchange: "hyperliquid"
+        },
+        currentState,
+        defaultAsset: "BTC"
+      },
+      {
+        recordHeatmap() {
+          return heatmap;
+        },
+        ingestCascadeLiquidations() {
+          return [];
+        },
+        recordCascadeLiquidations() {
+          return [];
+        },
+        scheduleCascadeLiquidationJournal() {
+          throw new Error("journal should not run without liquidation events");
+        },
+        scheduleStorageWrites(storageWrites) {
+          scheduledWrites.push(storageWrites);
+        },
+        publish() {
+          // no-op
+        },
+        applyState(state) {
+          appliedStates.push(state.updatedAt);
+        }
+      }
+    );
+
+    expect(result).toMatchObject({ accepted: true, status: "FRESH", processedCount: 1 });
+    expect(appliedStates).toEqual([OBSERVED_AT]);
+    expect(scheduledWrites[0]).toMatchObject({
+      "engine:state": { engineId: "liquidation-trading-ingest" },
+      "agent:heatmap:liquidations": heatmap
+    });
+  });
+
   it("builds cascade detected log, telemetry, and alert payloads", () => {
     const cascade = cascadeEvent();
     const profile: CascadeAssetProfile = {
@@ -410,6 +471,76 @@ describe("CascadeLiquidationRuntime", () => {
       cascadeId: "cascade-1",
       metadata: { cascadeId: "cascade-1", instrumentCode: "btc-usd" }
     });
+  });
+
+  it("records trading cascade liquidations with config gating and ATR fallback", () => {
+    const event = liquidationEvent();
+    const cascade = cascadeEvent();
+    const calls: string[] = [];
+
+    const detected = recordTradingCascadeLiquidationDetections(
+      {
+        events: [event],
+        observedAt: OBSERVED_AT,
+        config: { CASCADE_INSTRUMENTS: "BTC" },
+        midPrice: 100,
+        env: {
+          CASCADE_ATR_FALLBACK_USD: "7.5",
+          CASCADE_ATR_FALLBACK_PCT: undefined
+        }
+      },
+      {
+        configureAbsorptionAnalyzer() {
+          calls.push("configure-absorption");
+        },
+        configureDetector(instrumentCode) {
+          calls.push(`configure-detector:${instrumentCode}`);
+        },
+        observeCascade(observedEvent, observedAt, atr1h) {
+          calls.push(`observe:${observedEvent.eventId}:${observedAt}:${String(atr1h)}`);
+          return cascade;
+        },
+        rememberCascade(observedCascade) {
+          calls.push(`remember:${observedCascade.cascadeId}`);
+        },
+        trackCascadeAbsorption(observedCascade) {
+          calls.push(`track:${observedCascade.cascadeId}`);
+        },
+        assetProfile() {
+          return {
+            asset: "BTC",
+            notionalThresholdUsd: 50_000_000,
+            zScoreThreshold: 3,
+            minPriceMoveAtr: 1.5,
+            maxPositionNotionalPct: 0.25,
+            assetLiquidityCapUsd: 25_000,
+            maxSlippageBps: 8,
+            rationale: "test profile"
+          };
+        },
+        logDetected(metadata) {
+          calls.push(`log:${metadata.cascadeId as string}`);
+        },
+        publishDetected(payload) {
+          calls.push(`publish:${payload.cascadeId as string}`);
+        },
+        alertDetected(observedCascade) {
+          calls.push(`alert:${observedCascade.cascadeId}`);
+        }
+      }
+    );
+
+    expect(detected).toEqual([cascade]);
+    expect(calls).toEqual([
+      "configure-absorption",
+      "configure-detector:btc-usd",
+      `observe:liq-1:${OBSERVED_AT}:7.5`,
+      "remember:cascade-1",
+      "track:cascade-1",
+      "log:cascade-1",
+      "publish:cascade-1",
+      "alert:cascade-1"
+    ]);
   });
 
   it("builds and persists cascade liquidation journal statements", async () => {

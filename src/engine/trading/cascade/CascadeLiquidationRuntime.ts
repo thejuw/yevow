@@ -1,10 +1,20 @@
+import { LIQUIDATION_HEATMAP_STORAGE_KEY } from "../../../agents/HeatmapAgent";
+import { ENGINE_STATE_KEY } from "../../../TradingEngineConstants";
 import { normalizeSourceExchange } from "../helpers/NativeMarketIdentityRuntime";
 import { nativeIso } from "../helpers/NativeValueRuntime";
-import type { EngineState, JsonRecord, LiquidationHeatmapState } from "../../../types";
+import type {
+  EngineState,
+  Env,
+  GlobalRiskConfig,
+  JsonRecord,
+  LiquidationHeatmapState
+} from "../../../types";
 import type { CascadeAssetProfile } from "../../../strategy/cascade/AssetProfiles";
 import type { CascadeEvent, LiquidationEvent } from "../../../strategy/cascade/types";
 import type { TickIngestResult } from "../TradingEngineRouteTypes";
+import { isCascadeInstrumentEnabledForConfig } from "./CascadeSelectionRuntime";
 import { buildCascadeDetectedArtifacts } from "./CascadeDetectedArtifactsRuntime";
+import { resolveCascadeAtr1h } from "./CascadeConfigRuntime";
 export {
   buildCascadeDetectedArtifacts,
   cascadeDetectedAlertMetadata,
@@ -123,6 +133,45 @@ export interface LiquidationIngestRuntimeInput {
 export interface LiquidationIngestRuntimeResult {
   readonly state: EngineState;
   readonly ingestResult: TickIngestResult;
+}
+
+export interface TradingLiquidationIngestInput {
+  readonly raw: Record<string, unknown>;
+  readonly payload: {
+    readonly receivedAt?: string;
+    readonly instrumentCode?: string;
+    readonly source_exchange?: string;
+  };
+  readonly currentState: EngineState;
+  readonly defaultAsset: string | undefined;
+}
+
+export interface TradingLiquidationIngestHandlers extends LiquidationIngestSideEffectHandlers {
+  readonly applyState: (state: EngineState) => void;
+}
+
+export interface TradingCascadeLiquidationDetectionInput {
+  readonly events: readonly LiquidationEvent[];
+  readonly observedAt: string;
+  readonly config: Pick<GlobalRiskConfig, "CASCADE_INSTRUMENTS">;
+  readonly midPrice: number | null;
+  readonly env: Pick<Env, "CASCADE_ATR_FALLBACK_USD" | "CASCADE_ATR_FALLBACK_PCT">;
+}
+
+export interface TradingCascadeLiquidationDetectionHandlers {
+  readonly configureAbsorptionAnalyzer: () => void;
+  readonly configureDetector: (instrumentCode: string) => void;
+  readonly observeCascade: (
+    event: LiquidationEvent,
+    observedAt: string,
+    atr1h: number | null
+  ) => CascadeEvent | null;
+  readonly rememberCascade: (cascade: CascadeEvent) => void;
+  readonly trackCascadeAbsorption: (cascade: CascadeEvent) => void;
+  readonly assetProfile: (instrumentCode: string) => CascadeAssetProfile;
+  readonly logDetected: (metadata: JsonRecord) => void;
+  readonly publishDetected: (payload: JsonRecord) => void;
+  readonly alertDetected: (cascade: CascadeEvent, metadata: JsonRecord) => void;
 }
 
 export interface CascadeLiquidationDetectionHandlers {
@@ -277,6 +326,55 @@ export function processLiquidationIngestRuntime(
     state: processed.state,
     ingestResult: processed.ingestResult
   };
+}
+
+export function processTradingLiquidationIngestRuntime(
+  input: TradingLiquidationIngestInput,
+  handlers: TradingLiquidationIngestHandlers
+): TickIngestResult {
+  const liquidationResult = processLiquidationIngestRuntime({
+    raw: input.raw,
+    payload: input.payload,
+    currentState: input.currentState,
+    currentInstrumentCode: input.currentState.microstructure.instrumentCode,
+    defaultAsset: input.defaultAsset,
+    midPrice: input.currentState.microstructure.midPrice,
+    engineStateKey: ENGINE_STATE_KEY,
+    liquidationHeatmapKey: LIQUIDATION_HEATMAP_STORAGE_KEY,
+    handlers
+  });
+
+  handlers.applyState(liquidationResult.state);
+  return liquidationResult.ingestResult;
+}
+
+export function recordTradingCascadeLiquidationDetections(
+  input: TradingCascadeLiquidationDetectionInput,
+  handlers: TradingCascadeLiquidationDetectionHandlers
+): CascadeEvent[] {
+  return recordCascadeLiquidationDetections(input.events, input.observedAt, {
+    configureAbsorptionAnalyzer: handlers.configureAbsorptionAnalyzer,
+    isInstrumentEnabled: (instrumentCode) =>
+      isCascadeInstrumentEnabledForConfig(input.config.CASCADE_INSTRUMENTS, instrumentCode),
+    configureDetector: handlers.configureDetector,
+    observeCascade: (event, detectedAt) =>
+      handlers.observeCascade(
+        event,
+        detectedAt,
+        resolveCascadeAtr1h({
+          event,
+          midPrice: input.midPrice,
+          fallbackUsdValue: input.env.CASCADE_ATR_FALLBACK_USD,
+          fallbackPctValue: input.env.CASCADE_ATR_FALLBACK_PCT
+        })
+      ),
+    rememberCascade: handlers.rememberCascade,
+    trackCascadeAbsorption: handlers.trackCascadeAbsorption,
+    assetProfile: handlers.assetProfile,
+    logDetected: handlers.logDetected,
+    publishDetected: handlers.publishDetected,
+    alertDetected: handlers.alertDetected
+  });
 }
 
 export function recordCascadeLiquidationDetections(
