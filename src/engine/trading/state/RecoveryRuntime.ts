@@ -3,41 +3,34 @@ import type {
   GlobalRiskConfig,
   JsonRecord,
   MacroBias,
-  OrderBookResetRequest,
   ShadowQueueState
 } from "../../../types";
 import { DEFAULT_PAPER_BANKROLL_USD } from "../../../TradingEngineConstants";
-import { normalizeSourceExchange } from "../helpers/NativeMarketIdentityRuntime";
 import { readPositiveNumber } from "../helpers/RuntimeParsing";
 import { aggregateQuoteState, defaultAssetQuoteStates } from "./AssetStateRuntime";
 import {
   defaultCitadelState,
   defaultInventoryState,
-  maintenanceRecoveryInstruments,
   defaultRiskMetrics
 } from "./EngineStateDefaults";
+import { adminRecoveryPlan, applyAdminRecoveryPlanSideEffects } from "./RecoveryPlanRuntime";
+import type {
+  AdminRecoveryPlan,
+  AdminRecoveryPlanSideEffectHandlers,
+  AdminRecoveryRuntimePayload
+} from "./RecoveryPlanRuntime";
 
-export interface AdminRecoveryRuntimePayload {
-  readonly reason?: string;
-  readonly resetInstruments?: string[] | string;
-  readonly instrumentCode?: string;
-  readonly source_exchange?: string;
-  readonly clearCitadel?: boolean;
-  readonly clearQuoteState?: boolean;
-  readonly clearLatency?: boolean;
-  readonly resetPaperPortfolio?: boolean;
-  readonly clearShadowQueue?: boolean;
-}
-
-export interface AdminRecoveryPlan {
-  readonly observedAt: string;
-  readonly reason: string;
-  readonly sourceExchange: string;
-  readonly resetInstruments: readonly string[];
-  readonly shouldClearLatency: boolean;
-  readonly shouldClearShadowQueue: boolean;
-  readonly shouldResetPaperPortfolio: boolean;
-}
+export {
+  adminRecoveryPlan,
+  applyAdminRecoveryPlanSideEffects,
+  dispatchAdminRecoveryOrderBookResets
+} from "./RecoveryPlanRuntime";
+export type {
+  AdminRecoveryOrderBookResetDispatcherInput,
+  AdminRecoveryPlan,
+  AdminRecoveryPlanSideEffectHandlers,
+  AdminRecoveryRuntimePayload
+} from "./RecoveryPlanRuntime";
 
 export interface AdminRecoveryStateInput {
   readonly currentState: EngineState;
@@ -128,20 +121,6 @@ export interface AdminRecoveryCompletionSideEffectHandlers {
   readonly publishRecovery: (payload: JsonRecord) => void;
 }
 
-export interface AdminRecoveryOrderBookResetDispatcherInput {
-  readonly resetInstruments: readonly string[];
-  readonly reason: string;
-  readonly sourceExchange: string;
-  readonly observedAt: string;
-  readonly resetOrderBook: (payload: Partial<OrderBookResetRequest>) => Promise<void>;
-}
-
-export interface AdminRecoveryPlanSideEffectHandlers {
-  readonly resetOrderBook: (payload: Partial<OrderBookResetRequest>) => Promise<void>;
-  readonly resetLatencyBaseline: (observedAt: string, reason: string) => void;
-  readonly clearShadowQueue: () => void;
-}
-
 export interface AdminRecoveryFlowHandlers
   extends AdminRecoveryPlanSideEffectHandlers, AdminRecoveryCompletionSideEffectHandlers {
   readonly deleteRetiredProfilerStorage: () => Promise<string[]>;
@@ -151,66 +130,6 @@ export interface AdminRecoveryFlowHandlers
 
 export function resolveAdminRecoveryPaperBankroll(envValue?: string): number {
   return readPositiveNumber(envValue, DEFAULT_PAPER_BANKROLL_USD);
-}
-
-export async function dispatchAdminRecoveryOrderBookResets(
-  input: AdminRecoveryOrderBookResetDispatcherInput
-): Promise<void> {
-  for (const instrumentCode of input.resetInstruments) {
-    await input.resetOrderBook({
-      source: "ADMIN",
-      reason: input.reason,
-      instrumentCode,
-      source_exchange: input.sourceExchange,
-      connectionId: null,
-      blackoutDurationMs: null,
-      recoveredAt: input.observedAt
-    });
-  }
-}
-
-export async function applyAdminRecoveryPlanSideEffects(
-  plan: AdminRecoveryPlan,
-  handlers: AdminRecoveryPlanSideEffectHandlers
-): Promise<void> {
-  await dispatchAdminRecoveryOrderBookResets({
-    resetInstruments: plan.resetInstruments,
-    reason: plan.reason,
-    sourceExchange: plan.sourceExchange,
-    observedAt: plan.observedAt,
-    resetOrderBook: handlers.resetOrderBook
-  });
-
-  if (plan.shouldClearLatency) {
-    handlers.resetLatencyBaseline(plan.observedAt, plan.reason);
-  }
-
-  if (plan.shouldClearShadowQueue) {
-    handlers.clearShadowQueue();
-  }
-}
-
-export function adminRecoveryPlan(
-  payload: AdminRecoveryRuntimePayload,
-  observedAt = new Date().toISOString()
-): AdminRecoveryPlan {
-  const reason =
-    typeof payload.reason === "string" && payload.reason.length > 0
-      ? payload.reason
-      : "ADMIN_CONTROLLED_RECOVERY";
-  const sourceExchange = payload.source_exchange
-    ? normalizeSourceExchange(payload.source_exchange)
-    : "hyperliquid";
-
-  return {
-    observedAt,
-    reason,
-    sourceExchange,
-    resetInstruments: maintenanceRecoveryInstruments(payload),
-    shouldClearLatency: payload.clearLatency !== false,
-    shouldClearShadowQueue: payload.clearShadowQueue !== false,
-    shouldResetPaperPortfolio: payload.resetPaperPortfolio === true
-  };
 }
 
 export function stateAfterAdminControlledRecovery(
