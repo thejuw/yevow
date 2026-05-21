@@ -67,7 +67,10 @@ import {
   type TradingPortfolioRiskTarget
 } from "./risk/TradingPortfolioRiskRuntime";
 import { stateAfterFundingTick } from "./funding/FundingRuntime";
-import { resumeTradingQuotesIfExpired } from "./quotes/TradingQuoteStateRuntime";
+import {
+  runTradingAlarmForTarget,
+  type TradingAlarmRuntimeTarget
+} from "./alarm/TradingAlarmRuntime";
 import {
   dispatchTradingQuoteForTarget,
   rememberTradingDispatchedQuoteForTarget,
@@ -755,24 +758,7 @@ export class TradingEngine {
   }
 
   async alarm(): Promise<void> {
-    await this.initialized;
-    await this.refreshConfig("ALARM");
-    await this.drainExecutionQueue();
-    await this.runJanitor("ALARM");
-    const observedAt = new Date().toISOString();
-    resumeTradingQuotesIfExpired(
-      {
-        engineState: this.engineState,
-        observedAt
-      },
-      {
-        applyState: (state) => {
-          this.engineState = state;
-        },
-        publishResume: (payload) => this.publish("RESUME_QUOTES", payload)
-      }
-    );
-    await this.scheduleConfigRefresh();
+    await runTradingAlarmForTarget(this as unknown as TradingAlarmRuntimeTarget);
   }
 
   async fetch(request: Request): Promise<Response> {
