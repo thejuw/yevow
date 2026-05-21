@@ -159,10 +159,7 @@ import {
   acceptTelemetryStream as acceptTradingTelemetryStream
 } from "./routes/EngineWebSocketStreams";
 import type { TradingTelemetryBus } from "./telemetry/TelemetryBus";
-import {
-  agentSignalStorageKey,
-  applyAcceptedAgentSignalSideEffects
-} from "./telemetry/AgentSignalRuntime";
+import { acceptTradingAgentSignal, agentSignalStorageKey } from "./telemetry/AgentSignalRuntime";
 import { maybePublishTradingAgentSnapshot } from "./telemetry/TradingAgentSnapshotRuntime";
 import {
   buildCascadeOperationalAlertTelemetry,
@@ -3556,15 +3553,13 @@ export class TradingEngine {
   }
 
   private async acceptAgentSignal(signal: AgentSignal, latencyMs: number): Promise<void> {
-    await applyAcceptedAgentSignalSideEffects(
+    await acceptTradingAgentSignal(
       {
         signals: this.signals,
         latestAgentSignals: this.latestAgentSignals,
         engineState: this.engineState,
         signal,
         latencyMs,
-        signalBufferLimit: SIGNAL_BUFFER_LIMIT,
-        engineStateKey: ENGINE_STATE_KEY,
         tradingEnabled: this.cachedConfig.TRADING_ENABLED
       },
       {

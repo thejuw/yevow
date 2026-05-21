@@ -1,5 +1,6 @@
 import { aggregateQuoteState, suspendAssetQuoteStates } from "../state/AssetStateRuntime";
 import { hawkesEvacuationSignal, inferSignalBias } from "../state/AgentStateDefaults";
+import { ENGINE_STATE_KEY, SIGNAL_BUFFER_LIMIT } from "../../../TradingEngineConstants";
 import type { AgentHealth, AgentName, AgentSignal, EngineState } from "../../../types";
 
 export interface AcceptedAgentSignalInput {
@@ -49,6 +50,15 @@ export interface AcceptedAgentSignalSideEffectsInput {
   readonly latencyMs: number;
   readonly signalBufferLimit: number;
   readonly engineStateKey: string;
+  readonly tradingEnabled: boolean;
+}
+
+export interface TradingAcceptedAgentSignalInput {
+  readonly signals: AgentSignal[];
+  readonly latestAgentSignals: Map<AgentName, AgentSignal>;
+  readonly engineState: EngineState;
+  readonly signal: AgentSignal;
+  readonly latencyMs: number;
   readonly tradingEnabled: boolean;
 }
 
@@ -218,4 +228,23 @@ export async function applyAcceptedAgentSignalSideEffects(
   }
 
   return acceptedSignal;
+}
+
+export function acceptTradingAgentSignal(
+  input: TradingAcceptedAgentSignalInput,
+  handlers: AcceptedAgentSignalSideEffectHandlers
+): Promise<AcceptedAgentSignalResult> {
+  return applyAcceptedAgentSignalSideEffects(
+    {
+      signals: input.signals,
+      latestAgentSignals: input.latestAgentSignals,
+      engineState: input.engineState,
+      signal: input.signal,
+      latencyMs: input.latencyMs,
+      signalBufferLimit: SIGNAL_BUFFER_LIMIT,
+      engineStateKey: ENGINE_STATE_KEY,
+      tradingEnabled: input.tradingEnabled
+    },
+    handlers
+  );
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   acceptedAgentSignalStorageEntries,
+  acceptTradingAgentSignal,
   agentSignalStorageKey,
   applyAcceptedAgentSignalSideEffects,
   buildHawkesEvacuationDispatch,
@@ -169,6 +170,41 @@ describe("AgentSignalRuntime", () => {
       "publish:AGENT_SIGNAL:signal-1",
       "publish:SUSPEND_QUOTES:signal-1",
       "cancel:btc-usd:HAWKES_FLOW_CLUSTER"
+    ]);
+  });
+
+  it("accepts trading agent signals with runtime storage defaults", async () => {
+    const state = defaultEngineState("trading-agent-signal-side-effects");
+    const signals = Array.from({ length: 500 }, (_, index) =>
+      signal({
+        signalId: `existing-${index}`,
+        sourceAgent: index % 2 === 0 ? "ORACLE" : "PROFILER"
+      })
+    );
+    const latestAgentSignals = new Map<AgentName, AgentSignal>();
+    const sideEffects = acceptedSignalSideEffectSpy();
+
+    await acceptTradingAgentSignal(
+      {
+        signals,
+        latestAgentSignals,
+        engineState: state,
+        signal: signal({ signalId: "new-trading-signal", sourceAgent: "CROUPIER" }),
+        latencyMs: 8,
+        tradingEnabled: false
+      },
+      sideEffects.handlers
+    );
+
+    expect(signals).toHaveLength(500);
+    expect(signals[0].signalId).toBe("existing-1");
+    expect(signals[signals.length - 1]?.signalId).toBe("new-trading-signal");
+    expect(latestAgentSignals.get("CROUPIER")?.signalId).toBe("new-trading-signal");
+    expect(sideEffects.events).toEqual([
+      "state:1",
+      "persist:engine:state,signal:new-trading-signal",
+      "log:new-trading-signal:8",
+      "publish:AGENT_SIGNAL:new-trading-signal"
     ]);
   });
 });
