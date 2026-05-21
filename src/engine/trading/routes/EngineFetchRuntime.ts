@@ -2,6 +2,12 @@ import type { EdgeTopology } from "../../../types";
 import { json } from "../helpers/RuntimeParsing";
 import { highResolutionNow, roundLatency } from "../helpers/RuntimeClock";
 import { readTopologyHeaders } from "../helpers/PlacementResolver";
+import { handleTradingEngineHttpRoute, type EngineHttpRouteContext } from "./EngineHttpRoutes";
+import {
+  acceptMarketStream,
+  acceptTelemetryStream,
+  type EngineStreamContext
+} from "./EngineWebSocketStreams";
 
 export type TradingEngineWebSocketRoute = "TELEMETRY_STREAM" | "MARKET_STREAM";
 
@@ -44,6 +50,23 @@ export interface TradingEngineFetchRuntimeHandlers {
     readonly requestId: string;
     readonly message: string;
   }) => void;
+}
+
+export interface TradingEngineFetchTarget {
+  readonly initialized: Promise<void>;
+  latestWakeUpTimeMs: number | null;
+  readonly logger: {
+    error(
+      eventType: string,
+      message: string,
+      telemetry?: Record<string, unknown>,
+      correlationId?: string
+    ): void;
+  };
+  observeTopology(topology: EdgeTopology): void;
+  warmUpForTopology(topology: EdgeTopology): void;
+  streamContext(): EngineStreamContext;
+  engineHttpRouteContext(wakeUpTimeMs: number | null): EngineHttpRouteContext;
 }
 
 const MARKET_DATA_PATHS = new Set([
@@ -127,4 +150,43 @@ export async function handleTradingEngineFetchRuntime(
 
     return json({ ok: false, error: message, requestId: routeContext.requestId }, status);
   }
+}
+
+export function handleTradingEngineFetchForTarget(
+  request: Request,
+  target: TradingEngineFetchTarget
+): Promise<Response> {
+  return handleTradingEngineFetchRuntime(
+    {
+      request,
+      initialized: target.initialized
+    },
+    {
+      rememberWakeUpTime: (wakeUpTimeMs) => {
+        target.latestWakeUpTimeMs = wakeUpTimeMs;
+      },
+      observeTopology: (topology) => {
+        target.observeTopology(topology);
+      },
+      warmUpForTopology: (topology) => {
+        target.warmUpForTopology(topology);
+      },
+      acceptTelemetryStream: () => acceptTelemetryStream(target.streamContext()),
+      acceptMarketStream: () => acceptMarketStream(target.streamContext()),
+      handleHttpRoute: (currentRequest, url, wakeUpTimeMs) =>
+        handleTradingEngineHttpRoute(
+          currentRequest,
+          url,
+          target.engineHttpRouteContext(wakeUpTimeMs)
+        ),
+      logRequestFailure: (failure) => {
+        target.logger.error(
+          "ENGINE_REQUEST_FAILED",
+          "Trading engine request failed",
+          { path: failure.pathname, message: failure.message },
+          failure.requestId
+        );
+      }
+    }
+  );
 }

@@ -196,14 +196,14 @@ import {
 import { handleGrpcFatalDropForTarget, type GrpcFatalDropTarget } from "./ingest/GrpcDropRuntime";
 import {
   createTradingEngineHttpRouteContext,
-  handleTradingEngineHttpRoute,
   type EngineHttpRouteContext,
   type EngineHttpRouteContextTarget
 } from "./routes/EngineHttpRoutes";
-import { handleTradingEngineFetchRuntime } from "./routes/EngineFetchRuntime";
 import {
-  acceptMarketStream as acceptTradingMarketStream,
-  acceptTelemetryStream as acceptTradingTelemetryStream,
+  handleTradingEngineFetchForTarget,
+  type TradingEngineFetchTarget
+} from "./routes/EngineFetchRuntime";
+import {
   createTradingEngineStreamContext,
   type EngineStreamContextTarget
 } from "./routes/EngineWebSocketStreams";
@@ -761,34 +761,7 @@ export class TradingEngine {
   }
 
   async fetch(request: Request): Promise<Response> {
-    return handleTradingEngineFetchRuntime(
-      {
-        request,
-        initialized: this.initialized
-      },
-      {
-        rememberWakeUpTime: (wakeUpTimeMs) => {
-          this.latestWakeUpTimeMs = wakeUpTimeMs;
-        },
-        observeTopology: (topology) => this.observeTopology(topology),
-        warmUpForTopology: (topology) => this.warmUpForTopology(topology),
-        acceptTelemetryStream: () => acceptTradingTelemetryStream(this.streamContext()),
-        acceptMarketStream: () => acceptTradingMarketStream(this.streamContext()),
-        handleHttpRoute: (currentRequest, url, wakeUpTimeMs) =>
-          handleTradingEngineHttpRoute(
-            currentRequest,
-            url,
-            this.engineHttpRouteContext(wakeUpTimeMs)
-          ),
-        logRequestFailure: (failure) =>
-          this.logger.error(
-            "ENGINE_REQUEST_FAILED",
-            "Trading engine request failed",
-            { path: failure.pathname, message: failure.message },
-            failure.requestId
-          )
-      }
-    );
+    return handleTradingEngineFetchForTarget(request, this as unknown as TradingEngineFetchTarget);
   }
 
   private engineHttpRouteContext(wakeUpTimeMs: number | null): EngineHttpRouteContext {
