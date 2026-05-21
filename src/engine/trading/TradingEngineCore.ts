@@ -114,10 +114,7 @@ import {
   type ApprovedExecutionPlan
 } from "./execution/ExecutionPlanRuntime";
 import { dispatchExecutionPlanSideEffects } from "./execution/ExecutionPlanDispatchRuntime";
-import {
-  dispatchTradeIntentSideEffects,
-  dispatchTradeIntentToExecutioner
-} from "./execution/TradeIntentDispatchRuntime";
+import { dispatchTradingExecutionIntent } from "./execution/TradingExecutionDispatchRuntime";
 import { applyExecutionReportFlow } from "./execution/ExecutionReportRuntime";
 import {
   evaluateCroupierRuntime,
@@ -326,7 +323,6 @@ import {
   type MultiScaleVolatilitySnapshot
 } from "../MultiScaleVolatility";
 import { QueuePositionModel } from "../QueuePositionModel";
-import { isInventoryHedgeIntent } from "../../execution/RiskGuards";
 import {
   HeatmapAgent,
   LIQUIDATION_HEATMAP_STORAGE_KEY,
@@ -3485,21 +3481,16 @@ export class TradingEngine {
     intent: NonNullable<EngineState["lastTradeIntent"]>,
     initialDelayMs = 0
   ): Promise<void> {
-    const inventoryHedge = isInventoryHedgeIntent(intent);
-    const executioner = this.env.EXECUTIONER;
-    await dispatchTradeIntentSideEffects(
+    await dispatchTradingExecutionIntent(
       {
         intent,
-        hasExecutioner: Boolean(executioner),
-        tradingEnabled: this.cachedConfig.TRADING_ENABLED,
-        hedgeEnabled: this.cachedConfig.HEDGE_ENABLED,
-        inventoryHedge,
-        instrumentSelected: isInstrumentSelectedByMoltworker(intent.instrumentCode, this.macroBias),
-        selectedInstruments: [...selectedMoltworkerInstruments(this.macroBias)],
-        initialDelayMs
+        initialDelayMs,
+        executioner: this.env.EXECUTIONER,
+        cachedConfig: this.cachedConfig,
+        macroBias: this.macroBias,
+        logger: this.logger
       },
       {
-        logger: this.logger,
         reservePaperExecutionBudget: (tradeIntent) => this.reservePaperExecutionBudget(tradeIntent),
         wait,
         reserveExecutionCapacity: (exchangeKey, priority) =>
@@ -3511,17 +3502,7 @@ export class TradingEngine {
             "EXECUTION_RATE_LIMIT"
           ),
         enqueueExecutionIntent: (tradeIntent, priority, waitMs) =>
-          this.enqueueExecutionIntent(tradeIntent, priority, waitMs),
-        dispatchTradeIntent: (tradeIntent) => {
-          if (!executioner) {
-            return Promise.resolve();
-          }
-          return dispatchTradeIntentToExecutioner({
-            executioner,
-            logger: this.logger,
-            intent: tradeIntent
-          });
-        }
+          this.enqueueExecutionIntent(tradeIntent, priority, waitMs)
       }
     );
   }
