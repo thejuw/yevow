@@ -15,8 +15,6 @@ import { CroupierAgent, type CroupierDecision } from "../../agents/CroupierAgent
 import { AdverseSelectionModel } from "../AdverseSelectionModel";
 import {
   applyTradingLocationLatencyForTarget,
-  observeTradingTopologyForTarget,
-  warmUpTradingTopologyForTarget,
   type TradingTopologyTarget
 } from "./helpers/TradingTopologyRuntime";
 import { priceKey, SortedBookSide } from "./book/SortedBookSide";
@@ -160,11 +158,7 @@ import {
   type TradingOrderBookStoresTarget
 } from "./book/OrderBookReconstructorFactory";
 import type { AppliedBookUpdate, BookDeltaWithTicker, BookSyncState } from "./book/BookTypes";
-import {
-  registerHyperliquidIngestConnectionForTarget,
-  type HyperliquidIngestConnectionTarget,
-  type HyperliquidRawIngestPayload
-} from "./ingest/HyperliquidRawRouting";
+import { type HyperliquidRawIngestPayload } from "./ingest/HyperliquidRawRouting";
 import {
   handleTradingHyperliquidRawForTarget,
   type TradingHyperliquidRawEngineTarget
@@ -186,7 +180,6 @@ import {
   type TradingSignalBusTarget
 } from "./telemetry/TradingSignalBusRuntime";
 import {
-  buildTradingPerformanceMetricsResponseForTarget,
   logTradingPerformanceForTarget,
   observeTradingExecutionProfileForTarget,
   publishTradingTickTelemetryForTarget,
@@ -271,7 +264,6 @@ import type {
   AdminConfigUpdate,
   AnomalyDetectorState,
   DomAnalysisSnapshot,
-  EdgeTopology,
   EngineLocation,
   EngineStabilityStatus,
   AgentName,
@@ -723,21 +715,6 @@ export class TradingEngine {
         observedAt
       },
       this as unknown as TradingNativeHyperliquidLatencyPullTarget
-    );
-  }
-
-  private enqueueOrderBookReset(payload: Partial<OrderBookResetRequest>): Promise<void> {
-    return enqueueTradingIngestJob(this as unknown as TradingIngestQueueTarget, () =>
-      this.resetOrderBook(payload)
-    );
-  }
-
-  private registerIngestConnection(
-    payload: Partial<OrderBookResetRequest>
-  ): Record<string, unknown> {
-    return registerHyperliquidIngestConnectionForTarget(
-      payload,
-      this as unknown as HyperliquidIngestConnectionTarget
     );
   }
 
@@ -1354,12 +1331,6 @@ export class TradingEngine {
     );
   }
 
-  private performanceMetricsResponse(): Response {
-    return buildTradingPerformanceMetricsResponseForTarget(
-      this as unknown as TradingHotPathTelemetryTarget
-    );
-  }
-
   private publishTickTelemetry(
     tick: MarketTick,
     metrics: LatencyMetrics,
@@ -1386,20 +1357,12 @@ export class TradingEngine {
     this.telemetryBus.publish(type, payload, correlationId);
   }
 
-  private observeTopology(topology: EdgeTopology): void {
-    observeTradingTopologyForTarget(topology, this as unknown as TradingTopologyTarget);
-  }
-
   private applyLocationLatency(totalLatencyMs: number, observedAt: string): void {
     applyTradingLocationLatencyForTarget(
       totalLatencyMs,
       observedAt,
       this as unknown as TradingTopologyTarget
     );
-  }
-
-  private warmUpForTopology(topology: EdgeTopology): void {
-    warmUpTradingTopologyForTarget(topology, this as unknown as TradingTopologyTarget);
   }
 
   private async refreshConfig(

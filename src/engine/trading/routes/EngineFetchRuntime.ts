@@ -3,6 +3,11 @@ import { json } from "../helpers/RuntimeParsing";
 import { highResolutionNow, roundLatency } from "../helpers/RuntimeClock";
 import { readTopologyHeaders } from "../helpers/PlacementResolver";
 import {
+  observeTradingTopologyForTarget,
+  warmUpTradingTopologyForTarget,
+  type TradingTopologyTarget
+} from "../helpers/TradingTopologyRuntime";
+import {
   createTradingEngineHttpRouteContext,
   handleTradingEngineHttpRoute,
   type EngineHttpRouteContextTarget
@@ -68,8 +73,6 @@ export interface TradingEngineFetchTarget {
       correlationId?: string
     ): void;
   };
-  observeTopology(topology: EdgeTopology): void;
-  warmUpForTopology(topology: EdgeTopology): void;
 }
 
 const MARKET_DATA_PATHS = new Set([
@@ -169,10 +172,10 @@ export function handleTradingEngineFetchForTarget(
         target.latestWakeUpTimeMs = wakeUpTimeMs;
       },
       observeTopology: (topology) => {
-        target.observeTopology(topology);
+        observeTradingTopologyForTarget(topology, target as unknown as TradingTopologyTarget);
       },
       warmUpForTopology: (topology) => {
-        target.warmUpForTopology(topology);
+        warmUpTradingTopologyForTarget(topology, target as unknown as TradingTopologyTarget);
       },
       acceptTelemetryStream: () =>
         acceptTelemetryStream(

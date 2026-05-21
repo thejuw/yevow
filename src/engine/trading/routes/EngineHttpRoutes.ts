@@ -3,10 +3,23 @@ import type { Backtester } from "../../../strategy/cascade/Backtester";
 import type { NewsCalendar } from "../../../strategy/cascade/NewsCalendar";
 import type { AppliedBookUpdate } from "../book/BookTypes";
 import {
+  resetTradingOrderBookForTarget,
+  type TradingOrderBookResetTarget
+} from "../book/OrderBookResetRuntime";
+import {
   currentTradingBookSnapshotForTarget,
   currentTradingDomHeatmapForTarget,
   type TradingBookViewTarget
 } from "../book/TradingBookViewRuntime";
+import {
+  registerHyperliquidIngestConnectionForTarget,
+  type HyperliquidIngestConnectionTarget
+} from "../ingest/HyperliquidRawRouting";
+import {
+  enqueueTradingIngestJob,
+  type TradingIngestQueueTarget
+} from "../ingest/IngestQueueRuntime";
+import { buildTradingPerformanceMetricsResponseForTarget } from "../telemetry/TradingHotPathTelemetryRuntime";
 import {
   buildTradingEngineDiagnosticsForTarget,
   buildTradingHealthReportForTarget,
@@ -147,7 +160,6 @@ export interface EngineHttpRouteContextTarget {
     analyzeHeadline(headline: string, env: Env): Promise<EngineState["sentiment"]>;
   };
   refreshConfigIfDue(source: "ALARM" | "ADMIN_SIGNAL"): Promise<void>;
-  performanceMetricsResponse(): Response;
   resetLatencyBaseline(observedAt: string, reason: string): void;
   publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
   safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void>;
@@ -158,8 +170,6 @@ export interface EngineHttpRouteContextTarget {
   pruneOperationalLogs(): Promise<LogPruneReport>;
   applySnapshot(snapshot: OrderBookSnapshot): Promise<unknown>;
   applyDelta(delta: OrderBookDelta, observedAt: string): Promise<AppliedBookUpdate>;
-  enqueueOrderBookReset(payload: Partial<OrderBookResetRequest>): Promise<unknown>;
-  registerIngestConnection(payload: Partial<OrderBookResetRequest>): unknown;
   runHistoricalReplay(
     limit: number,
     shadowBankroll: number,
@@ -203,7 +213,7 @@ export function createTradingEngineHttpRouteContext(
     syncStateMicrostructureFromBook: () => {
       syncTradingStateMicrostructureForTarget(target as unknown as TradingEngineDiagnosticsTarget);
     },
-    performanceMetricsResponse: () => target.performanceMetricsResponse(),
+    performanceMetricsResponse: () => buildTradingPerformanceMetricsResponseForTarget(target),
     resetLatencyBaseline: (observedAt, reason) => {
       target.resetLatencyBaseline(observedAt, reason);
     },
@@ -224,8 +234,15 @@ export function createTradingEngineHttpRouteContext(
       currentTradingDomHeatmapForTarget(target as unknown as TradingBookViewTarget, instrumentCode),
     applySnapshot: (snapshot) => target.applySnapshot(snapshot),
     applyDelta: (delta, observedAt) => target.applyDelta(delta, observedAt),
-    enqueueOrderBookReset: (payload) => target.enqueueOrderBookReset(payload),
-    registerIngestConnection: (payload) => target.registerIngestConnection(payload),
+    enqueueOrderBookReset: (payload) =>
+      enqueueTradingIngestJob(target as unknown as TradingIngestQueueTarget, () =>
+        resetTradingOrderBookForTarget(payload, target as unknown as TradingOrderBookResetTarget)
+      ),
+    registerIngestConnection: (payload) =>
+      registerHyperliquidIngestConnectionForTarget(
+        payload,
+        target as unknown as HyperliquidIngestConnectionTarget
+      ),
     runHistoricalReplay: (limit, shadowBankroll, speedMultiplier, dateFrom, dateTo, options) =>
       target.runHistoricalReplay(limit, shadowBankroll, speedMultiplier, dateFrom, dateTo, options),
     currentReplayStatus: () => target.replayJournal.currentStatus(),
