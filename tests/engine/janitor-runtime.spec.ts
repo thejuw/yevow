@@ -19,6 +19,7 @@ import {
 } from "../../src/engine/trading/janitor/JanitorRuntime";
 import {
   cancelTradingJanitorOrder,
+  cancelTradingJanitorOrderForTarget,
   pruneTradingOperationalLogs,
   runTradingEngineJanitorMaintenance,
   runTradingEngineJanitorMaintenanceForTarget,
@@ -363,6 +364,47 @@ describe("JanitorRuntime", () => {
     );
 
     expect(sideEffects.events).toEqual(["reserve:CANCEL", "persist", "wait:125"]);
+    expect(transportEvents).toEqual(["POST:/cancel"]);
+  });
+
+  it("wraps trading janitor cancel dispatch from a runtime target", async () => {
+    const transportEvents: string[] = [];
+    const storageEvents: string[] = [];
+    const { logger } = loggerSpy();
+
+    await cancelTradingJanitorOrderForTarget(
+      "orphan-2",
+      "JANITOR_ORPHAN_EXCHANGE_ORDER",
+      "btc-usd",
+      {
+        env: {
+          EXECUTIONER: {
+            fetch(request) {
+              transportEvents.push(`${request.method}:${new URL(request.url).pathname}`);
+              return Promise.resolve(new Response(null, { status: 200 }));
+            }
+          }
+        },
+        logger,
+        rateLimiter: {
+          reserve(bucket, priority) {
+            storageEvents.push(`reserve:${bucket}:${priority}`);
+            return { allowed: true, waitMs: 0 };
+          },
+          exportState() {
+            return { default: { tokens: 1 } };
+          }
+        },
+        waitUntilStoragePut(key, value, reason) {
+          storageEvents.push(`${reason}:${key}:${JSON.stringify(value)}`);
+        }
+      }
+    );
+
+    expect(storageEvents).toEqual([
+      "reserve:default:CANCEL",
+      'JANITOR_CANCEL_RATE_LIMIT:execution:rate-limits:{"default":{"tokens":1}}'
+    ]);
     expect(transportEvents).toEqual(["POST:/cancel"]);
   });
 

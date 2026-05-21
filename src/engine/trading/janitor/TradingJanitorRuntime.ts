@@ -1,4 +1,8 @@
-import { DEFAULT_ORDER_ACK_TIMEOUT_MS, ENGINE_STATE_KEY } from "../../../TradingEngineConstants";
+import {
+  DEFAULT_ORDER_ACK_TIMEOUT_MS,
+  ENGINE_STATE_KEY,
+  RATE_LIMIT_STATE_KEY
+} from "../../../TradingEngineConstants";
 import type { RateLimitPriority } from "../../../utils/RateLimiter";
 import type { EngineState, ExchangeOpenOrder, JanitorState, JsonRecord } from "../../../types";
 import {
@@ -103,6 +107,18 @@ export interface TradingJanitorCancelHandlers {
   readonly reserveCancelCapacity: (priority: RateLimitPriority) => JanitorCancelReservation;
   readonly persistRateLimitState: () => void;
   readonly wait?: (ms: number) => Promise<void>;
+}
+
+export interface TradingJanitorCancelTarget {
+  readonly env: {
+    readonly EXECUTIONER?: JanitorExecutionerFetcher;
+  };
+  readonly logger: TradingJanitorLogger;
+  readonly rateLimiter: {
+    reserve(bucket: string, priority: RateLimitPriority): JanitorCancelReservation;
+    exportState(): unknown;
+  };
+  waitUntilStoragePut(key: string, value: unknown, reason: string): void;
 }
 
 export interface TradingOperationalLogPruneInput {
@@ -222,6 +238,33 @@ export async function cancelTradingJanitorOrder(
           reason,
           instrumentCode
         })
+    }
+  );
+}
+
+export async function cancelTradingJanitorOrderForTarget(
+  orderId: string,
+  reason: string,
+  instrumentCode: string | undefined,
+  target: TradingJanitorCancelTarget
+): Promise<void> {
+  await cancelTradingJanitorOrder(
+    {
+      executioner: target.env.EXECUTIONER,
+      logger: target.logger,
+      orderId,
+      reason,
+      instrumentCode
+    },
+    {
+      reserveCancelCapacity: (priority) => target.rateLimiter.reserve("default", priority),
+      persistRateLimitState: () => {
+        target.waitUntilStoragePut(
+          RATE_LIMIT_STATE_KEY,
+          target.rateLimiter.exportState(),
+          "JANITOR_CANCEL_RATE_LIMIT"
+        );
+      }
     }
   );
 }

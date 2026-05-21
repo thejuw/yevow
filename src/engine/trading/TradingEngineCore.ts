@@ -137,9 +137,10 @@ import {
   type TradingLatencyStateTarget
 } from "./performance/TradingLatencyStateRuntime";
 import {
-  cancelTradingJanitorOrder,
+  cancelTradingJanitorOrderForTarget,
   pruneTradingOperationalLogs,
   runTradingEngineJanitorMaintenanceForTarget,
+  type TradingJanitorCancelTarget,
   type TradingEngineJanitorMaintenanceTarget
 } from "./janitor/TradingJanitorRuntime";
 import {
@@ -356,7 +357,6 @@ import {
   ADMIN_STREAM_PULSE_INTERVAL_MS,
   STORAGE_WRITE_BACKOFF_MS,
   PROCESSING_LATENCY_SAMPLES_KEY,
-  RATE_LIMIT_STATE_KEY,
   HOT_PATH_LOG_THROTTLE_MS,
   DEFAULT_JITTER_SAMPLE_WINDOW,
   DEFAULT_JITTER_COMPUTE_INTERVAL_TICKS,
@@ -1582,23 +1582,11 @@ export class TradingEngine {
     reason: string,
     instrumentCode?: string
   ): Promise<void> {
-    await cancelTradingJanitorOrder(
-      {
-        executioner: this.env.EXECUTIONER,
-        logger: this.logger,
-        orderId,
-        reason,
-        instrumentCode
-      },
-      {
-        reserveCancelCapacity: (priority) => this.rateLimiter.reserve("default", priority),
-        persistRateLimitState: () =>
-          this.waitUntilStoragePut(
-            RATE_LIMIT_STATE_KEY,
-            this.rateLimiter.exportState(),
-            "JANITOR_CANCEL_RATE_LIMIT"
-          )
-      }
+    await cancelTradingJanitorOrderForTarget(
+      orderId,
+      reason,
+      instrumentCode,
+      this as unknown as TradingJanitorCancelTarget
     );
   }
 
