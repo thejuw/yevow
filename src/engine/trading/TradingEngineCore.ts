@@ -177,10 +177,11 @@ import { type ReplayJournal } from "./replay/ReplayJournal";
 import { runTradingHistoricalReplay } from "./replay/TradingReplayRunRuntime";
 import {
   applyTradingReplaySnapshotToTarget,
-  captureTradingReplaySnapshot,
+  captureTradingReplaySnapshotFromSource,
   prepareTradingShadowReplayState,
   restoreTradingReplaySnapshot,
   type EngineReplaySnapshot,
+  type TradingReplaySnapshotSource,
   type TradingReplaySnapshotTarget
 } from "./replay/TradingReplayStateRuntime";
 import type { GrpcFatalDropPayload, TickIngestResult } from "./TradingEngineRouteTypes";
@@ -3214,28 +3215,7 @@ export class TradingEngine {
   }
 
   private captureReplaySnapshot(): EngineReplaySnapshot {
-    return captureTradingReplaySnapshot({
-      engineState: this.engineState,
-      orderBooks: this.orderBook.values(),
-      latencyHistory: this.latencyHistory,
-      processingLatencySamples: this.processingLatencySamples,
-      domWallHistory: this.domWallHistory,
-      leadLagSamples: this.leadLagSamples.entries(),
-      cachedConfig: this.cachedConfig,
-      maxLatencyMs: this.maxLatencyMs,
-      lastTickTimestamp: this.lastTickTimestamp,
-      profilerState: this.profilerAgent.snapshot(),
-      profilerStates: [...this.profilerRegistry.entries()].map(([instrumentCode, agent]) => [
-        instrumentCode,
-        agent.snapshot()
-      ]),
-      anomalyState: this.anomalyDetector.snapshot(),
-      oracleState: this.oracleAgent.snapshot(),
-      sentimentState: this.sentimentAgent.snapshot(),
-      rateLimits: this.rateLimiter.exportState(),
-      signals: this.signals,
-      latestAgentSignals: this.latestAgentSignals.entries()
-    });
+    return captureTradingReplaySnapshotFromSource(this as unknown as TradingReplaySnapshotSource);
   }
 
   private async restoreReplaySnapshot(snapshot: EngineReplaySnapshot): Promise<void> {

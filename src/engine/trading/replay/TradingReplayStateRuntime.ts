@@ -56,6 +56,28 @@ export interface TradingReplaySnapshotTarget {
   rebindOrderBookReconstructor(): void;
 }
 
+export interface TradingReplaySnapshotSource {
+  readonly engineState: EngineState;
+  readonly orderBook: HydratedReplayOrderBooks["snapshots"];
+  readonly latencyHistory: readonly LatencyMetrics[];
+  readonly processingLatencySamples: readonly number[];
+  readonly domWallHistory: readonly LiquidityWall[];
+  readonly leadLagSamples: Map<string, { price: number; observedAt: string }[]>;
+  readonly cachedConfig: GlobalRiskConfig;
+  readonly maxLatencyMs: number;
+  readonly lastTickTimestamp: string | null;
+  readonly profilerAgent: { snapshot(): EngineReplaySnapshot["profilerState"] };
+  readonly profilerRegistry: {
+    entries(): Iterable<[string, { snapshot(): EngineReplaySnapshot["profilerState"] }]>;
+  };
+  readonly anomalyDetector: { snapshot(): EngineReplaySnapshot["anomalyState"] };
+  readonly oracleAgent: { snapshot(): EngineReplaySnapshot["oracleState"] };
+  readonly sentimentAgent: { snapshot(): EngineReplaySnapshot["sentimentState"] };
+  readonly rateLimiter: { exportState(): Record<string, RateLimitBucketSnapshot> };
+  readonly signals: readonly AgentSignal[];
+  readonly latestAgentSignals: Map<AgentName, AgentSignal>;
+}
+
 export interface TradingShadowReplayStateInput {
   readonly currentConfig: GlobalRiskConfig;
   readonly liveState: EngineState;
@@ -93,6 +115,33 @@ export function captureTradingReplaySnapshot(
   input: CaptureEngineReplaySnapshotInput
 ): EngineReplaySnapshot {
   return captureEngineReplaySnapshot(input);
+}
+
+export function captureTradingReplaySnapshotFromSource(
+  source: TradingReplaySnapshotSource
+): EngineReplaySnapshot {
+  return captureTradingReplaySnapshot({
+    engineState: source.engineState,
+    orderBooks: source.orderBook.values(),
+    latencyHistory: source.latencyHistory,
+    processingLatencySamples: source.processingLatencySamples,
+    domWallHistory: source.domWallHistory,
+    leadLagSamples: source.leadLagSamples.entries(),
+    cachedConfig: source.cachedConfig,
+    maxLatencyMs: source.maxLatencyMs,
+    lastTickTimestamp: source.lastTickTimestamp,
+    profilerState: source.profilerAgent.snapshot(),
+    profilerStates: [...source.profilerRegistry.entries()].map(([instrumentCode, agent]) => [
+      instrumentCode,
+      agent.snapshot()
+    ]),
+    anomalyState: source.anomalyDetector.snapshot(),
+    oracleState: source.oracleAgent.snapshot(),
+    sentimentState: source.sentimentAgent.snapshot(),
+    rateLimits: source.rateLimiter.exportState(),
+    signals: source.signals,
+    latestAgentSignals: source.latestAgentSignals.entries()
+  });
 }
 
 export function restoreTradingReplaySnapshot(

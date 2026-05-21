@@ -8,6 +8,8 @@ import {
 } from "../../src/engine/trading/replay/ReplaySnapshotRuntime";
 import {
   applyTradingReplaySnapshotToTarget,
+  captureTradingReplaySnapshotFromSource,
+  type TradingReplaySnapshotSource,
   type TradingReplaySnapshotTarget
 } from "../../src/engine/trading/replay/TradingReplayStateRuntime";
 import {
@@ -196,6 +198,27 @@ describe("ReplaySnapshotRuntime", () => {
       "rate-limits:0"
     ]);
   });
+
+  it("captures replay snapshots from a mutable trading runtime source", () => {
+    const source = replaySnapshotSource();
+
+    const snapshot = captureTradingReplaySnapshotFromSource(source);
+
+    expect(snapshot.engineState.engineId).toBe("source-replay-target");
+    expect(snapshot.orderBooks[0]?.marketKey).toBe("hyperliquid:btc-usd");
+    expect(snapshot.latencyHistory[0]?.totalLatencyMs).toBe(2);
+    expect(snapshot.leadLagSamples).toEqual([
+      ["btc-usd", [{ price: 100, observedAt: OBSERVED_AT }]]
+    ]);
+    expect(snapshot.maxLatencyMs).toBe(175);
+    expect(snapshot.lastTickTimestamp).toBe(OBSERVED_AT);
+    expect(snapshot.profilerState).toEqual({ label: "legacy" });
+    expect(snapshot.profilerStates).toEqual([["btc-usd", { label: "btc" }]]);
+    expect(snapshot.anomalyState).toEqual({ label: "anomaly" });
+    expect(snapshot.oracleState).toEqual({ label: "oracle" });
+    expect(snapshot.sentimentState).toEqual({ label: "sentiment" });
+    expect(snapshot.rateLimits).toEqual({ default: { available: 1 } });
+  });
 });
 
 function replaySnapshot(): EngineReplaySnapshot {
@@ -332,5 +355,49 @@ function replaySnapshotTarget(calls: string[]): TradingReplaySnapshotTarget {
     rebindOrderBookReconstructor() {
       calls.push("rebind");
     }
+  };
+}
+
+function replaySnapshotSource(): TradingReplaySnapshotSource {
+  const engineState = defaultEngineState("source-replay-target");
+
+  return {
+    engineState,
+    orderBook: new Map([["hyperliquid:btc-usd", book()]]),
+    latencyHistory: [latencyMetrics()],
+    processingLatencySamples: [1],
+    domWallHistory: [],
+    leadLagSamples: new Map([["btc-usd", [{ price: 100, observedAt: OBSERVED_AT }]]]),
+    cachedConfig: engineState.cachedConfig,
+    maxLatencyMs: 175,
+    lastTickTimestamp: OBSERVED_AT,
+    profilerAgent: {
+      snapshot: () => ({ label: "legacy" }) as never
+    },
+    profilerRegistry: {
+      entries: () =>
+        new Map([
+          [
+            "btc-usd",
+            {
+              snapshot: () => ({ label: "btc" }) as never
+            }
+          ]
+        ]).entries()
+    },
+    anomalyDetector: {
+      snapshot: () => ({ label: "anomaly" }) as never
+    },
+    oracleAgent: {
+      snapshot: () => ({ label: "oracle" }) as never
+    },
+    sentimentAgent: {
+      snapshot: () => ({ label: "sentiment" }) as never
+    },
+    rateLimiter: {
+      exportState: () => ({ default: { available: 1 } }) as never
+    },
+    signals: [],
+    latestAgentSignals: new Map()
   };
 }
