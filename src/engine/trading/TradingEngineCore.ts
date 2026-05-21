@@ -151,10 +151,6 @@ import {
   cascadeDetectorConfigFromRuntime
 } from "./cascade/CascadeConfigRuntime";
 import { ensureCascadePaperModeArmedRuntime } from "./cascade/CascadePaperModeRuntime";
-import {
-  evaluateTradingCascadeStrategy,
-  type TradingCascadeStrategyTarget
-} from "./cascade/CascadeStrategyRuntime";
 import { OrderBookReconstructor, type OrderBookStores } from "./book/OrderBookReconstructor";
 import {
   buildOrderBookStores,
@@ -461,7 +457,10 @@ import {
   prepareAcceptedExecutionContextForTarget,
   type AcceptedExecutionContextTarget
 } from "./pipelines/AcceptedExecutionContextRuntime";
-import { prepareTradingPostBookTickRuntime } from "./pipelines/PostBookTickRuntime";
+import {
+  prepareTradingPostBookTickRuntimeForTarget,
+  type TradingPostBookTickRuntimeTarget
+} from "./pipelines/PostBookTickRuntime";
 import { handleTickRuntime } from "./pipelines/TickHandlingRuntime";
 import type {
   AcceptedDecisionPipelineInput,
@@ -1473,37 +1472,14 @@ export class TradingEngine {
     observedAt: string,
     options: TickHandlingOptions
   ): Promise<PostBookTickContext> {
-    return prepareTradingPostBookTickRuntime(
+    return prepareTradingPostBookTickRuntimeForTarget(
       {
         tick,
         book,
         observedAt,
-        options,
-        config: this.cachedConfig,
-        env: this.env,
-        lastHypeCancelAtMs: this.crossAssetCancelLogAt.get("hype-usd") ?? 0,
-        fallbackNowMs: Date.now()
+        options
       },
-      {
-        evaluateCascadeStrategy: (currentTick, currentObservedAt) =>
-          evaluateTradingCascadeStrategy(
-            currentTick,
-            currentObservedAt,
-            this as unknown as TradingCascadeStrategyTarget
-          ).then(() => undefined),
-        updateVolatility: (instrumentCode, midPrice, currentObservedAt) =>
-          this.multiScaleVolatility.update(instrumentCode, midPrice, currentObservedAt),
-        markHypeCancelCooldown: (instrumentCode, nowMs) =>
-          this.crossAssetCancelLogAt.set(instrumentCode, nowMs),
-        warn: (eventType, message, metadata) => this.logger.warn(eventType, message, metadata),
-        publishSuspend: (payload) => this.publish("SUSPEND_QUOTES", payload),
-        schedule: (work) => this.state.waitUntil(work),
-        cancelAllQuotes: (instrumentCode, reason) => this.cancelAllQuotes(instrumentCode, reason),
-        processShadowQueueTick: (currentTick, currentBook, currentObservedAt, tickOptions) =>
-          this.processShadowQueueTick(currentTick, currentBook, currentObservedAt, tickOptions),
-        getLiquidityWalls: (instrumentCode, currentObservedAt, currentTick) =>
-          this.getLiquidityWalls(instrumentCode, currentObservedAt, currentTick)
-      }
+      this as unknown as TradingPostBookTickRuntimeTarget
     );
   }
 

@@ -8,6 +8,10 @@ import type {
   MarketTick,
   ShadowQueueState
 } from "../../../types";
+import {
+  evaluateTradingCascadeStrategy,
+  type TradingCascadeStrategyTarget
+} from "../cascade/CascadeStrategyRuntime";
 import { cancelLaggingHypeQuotesForTrading } from "../leadlag/TradingCrossAssetCancelRuntime";
 import type { PostBookTickContext, TickHandlingOptions } from "./TickPipelineTypes";
 
@@ -49,6 +53,38 @@ export interface TradingPostBookTickRuntimeInput extends PostBookTickRuntimeInpu
   readonly env: Pick<Env, "CROSS_ASSET_CANCEL_LEAD_BPS" | "CROSS_ASSET_CANCEL_COOLDOWN_MS">;
   readonly lastHypeCancelAtMs: number;
   readonly fallbackNowMs: number;
+}
+
+export interface TradingPostBookTickRuntimeTarget {
+  readonly cachedConfig: GlobalRiskConfig;
+  readonly env: Pick<Env, "CROSS_ASSET_CANCEL_LEAD_BPS" | "CROSS_ASSET_CANCEL_COOLDOWN_MS">;
+  readonly crossAssetCancelLogAt: Map<string, number>;
+  readonly multiScaleVolatility: {
+    update(
+      instrumentCode: string,
+      midPrice: number | null,
+      observedAt: string
+    ): MultiScaleVolatilitySnapshot | null;
+  };
+  readonly logger: {
+    warn(eventType: string, message: string, metadata: JsonRecord): void;
+  };
+  readonly state: {
+    waitUntil(work: Promise<unknown>): void;
+  };
+  publish(type: "SUSPEND_QUOTES", payload: JsonRecord): void;
+  cancelAllQuotes(instrumentCode: "hype-usd", reason: "BTC_LEAD_MOVE"): Promise<unknown>;
+  processShadowQueueTick(
+    tick: MarketTick,
+    book: InternalOrderBook,
+    observedAt: string,
+    options: TickHandlingOptions
+  ): ShadowQueueState;
+  getLiquidityWalls(
+    instrumentCode?: string,
+    observedAt?: string,
+    tick?: MarketTick
+  ): DomAnalysisSnapshot;
 }
 
 export interface TradingPostBookTickRuntimeHandlers extends Omit<
@@ -133,4 +169,46 @@ export async function prepareTradingPostBookTickRuntime(
     processShadowQueueTick: handlers.processShadowQueueTick,
     getLiquidityWalls: handlers.getLiquidityWalls
   });
+}
+
+export function prepareTradingPostBookTickRuntimeForTarget(
+  input: PostBookTickRuntimeInput,
+  target: TradingPostBookTickRuntimeTarget
+): Promise<PostBookTickContext> {
+  return prepareTradingPostBookTickRuntime(
+    {
+      ...input,
+      config: target.cachedConfig,
+      env: target.env,
+      lastHypeCancelAtMs: target.crossAssetCancelLogAt.get("hype-usd") ?? 0,
+      fallbackNowMs: Date.now()
+    },
+    {
+      evaluateCascadeStrategy: (tick, observedAt) =>
+        evaluateTradingCascadeStrategy(
+          tick,
+          observedAt,
+          target as unknown as TradingCascadeStrategyTarget
+        ).then(() => undefined),
+      updateVolatility: (instrumentCode, midPrice, observedAt) =>
+        target.multiScaleVolatility.update(instrumentCode, midPrice, observedAt),
+      markHypeCancelCooldown: (instrumentCode, nowMs) => {
+        target.crossAssetCancelLogAt.set(instrumentCode, nowMs);
+      },
+      warn: (eventType, message, metadata) => {
+        target.logger.warn(eventType, message, metadata);
+      },
+      publishSuspend: (payload) => {
+        target.publish("SUSPEND_QUOTES", payload);
+      },
+      schedule: (work) => {
+        target.state.waitUntil(work);
+      },
+      cancelAllQuotes: (instrumentCode, reason) => target.cancelAllQuotes(instrumentCode, reason),
+      processShadowQueueTick: (tick, book, observedAt, options) =>
+        target.processShadowQueueTick(tick, book, observedAt, options),
+      getLiquidityWalls: (instrumentCode, observedAt, tick) =>
+        target.getLiquidityWalls(instrumentCode, observedAt, tick)
+    }
+  );
 }

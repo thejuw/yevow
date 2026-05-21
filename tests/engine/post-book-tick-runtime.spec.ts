@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { defaultConfig } from "../../src/ConfigManager";
 import {
   preparePostBookTickRuntime,
+  prepareTradingPostBookTickRuntimeForTarget,
   prepareTradingPostBookTickRuntime
 } from "../../src/engine/trading/pipelines/PostBookTickRuntime";
 import type { MultiScaleVolatilitySnapshot } from "../../src/engine/MultiScaleVolatility";
@@ -146,6 +148,86 @@ describe("PostBookTickRuntime", () => {
       "schedule",
       "shadow",
       "dom"
+    ]);
+  });
+
+  it("adapts a trading engine target into post-book handlers", async () => {
+    const events: string[] = [];
+    const volatility = {
+      ...volatilitySnapshot(),
+      ret: 0,
+      jumpZScore: 0
+    } as unknown as MultiScaleVolatilitySnapshot;
+    const shadowQueueState = { lastDecision: { decisionId: "decision-2" } } as ShadowQueueState;
+    const domSnapshot = { instrumentCode: "eth-usd", walls: [] } as unknown as DomAnalysisSnapshot;
+    const cooldowns = new Map<string, number>();
+
+    const context = await prepareTradingPostBookTickRuntimeForTarget(
+      {
+        tick: marketTick({ instrumentCode: "eth-usd" }),
+        book: orderBook(),
+        observedAt: OBSERVED_AT,
+        options: { shadowReplay: true }
+      },
+      {
+        cachedConfig: {
+          ...defaultConfig,
+          STRATEGY_MODE: "OFF",
+          TRADING_ENABLED: true
+        },
+        env: {
+          CROSS_ASSET_CANCEL_LEAD_BPS: "5",
+          CROSS_ASSET_CANCEL_COOLDOWN_MS: "1000"
+        },
+        crossAssetCancelLogAt: cooldowns,
+        multiScaleVolatility: {
+          update(instrumentCode, midPrice, observedAt) {
+            events.push(`volatility:${instrumentCode}:${midPrice}:${observedAt}`);
+            return volatility;
+          }
+        },
+        logger: {
+          warn(eventType) {
+            events.push(`warn:${eventType}`);
+          }
+        },
+        state: {
+          waitUntil(work) {
+            events.push("schedule");
+            void work;
+          }
+        },
+        publish(type, payload) {
+          events.push(`publish:${type}:${payload.instrumentCode as string}`);
+        },
+        cancelAllQuotes(instrumentCode, reason) {
+          events.push(`cancel:${instrumentCode}:${reason}`);
+          return Promise.resolve();
+        },
+        processShadowQueueTick(currentTick, currentBook, observedAt, options) {
+          events.push(
+            `shadow:${currentTick.instrumentCode}:${currentBook.midPrice}:${observedAt}:${options.shadowReplay}`
+          );
+          return shadowQueueState;
+        },
+        getLiquidityWalls(instrumentCode, observedAt, currentTick) {
+          events.push(
+            `dom:${instrumentCode ?? ""}:${currentTick?.instrumentCode ?? ""}:${observedAt}`
+          );
+          return domSnapshot;
+        }
+      }
+    );
+
+    expect(context).toEqual({
+      volatilitySnapshot: volatility,
+      shadowQueueState,
+      domSnapshot
+    });
+    expect(events).toEqual([
+      `volatility:eth-usd:100:${OBSERVED_AT}`,
+      `shadow:eth-usd:100:${OBSERVED_AT}:true`,
+      `dom:eth-usd:eth-usd:${OBSERVED_AT}`
     ]);
   });
 });
