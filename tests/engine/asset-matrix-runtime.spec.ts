@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { calculateAssetMatrix } from "../../src/engine/trading/state/AssetMatrixRuntime";
+import {
+  calculateTradingAssetMatrixForTarget,
+  type TradingAssetMatrixTarget
+} from "../../src/engine/trading/state/TradingAssetMatrixRuntime";
+import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type {
   EngineState,
   InternalOrderBook,
@@ -113,6 +118,55 @@ describe("AssetMatrixRuntime", () => {
       maxNotional: 200
     });
     expect(matrix["hype-usd"].isSynced).toBe(false);
+  });
+
+  it("calculates asset matrix through the trading target adapter", () => {
+    const state = defaultEngineState("asset-matrix-target");
+    state.bankroll.equity = 10_000;
+    state.quoteState = quoteState();
+    state.assetQuoteStates = { "btc-usd": quoteState() };
+    const target: TradingAssetMatrixTarget = {
+      engineState: state,
+      macroBias: macroBias({ instruments: ["btc-usd"] }),
+      cachedConfig: {
+        ...state.cachedConfig,
+        MAX_POSITION_PCT: 0.05
+      },
+      env: {
+        MAX_POSITION_PCT: "0.1"
+      },
+      orderBook: new Map([["hyperliquid:btc-usd", book("btc-usd", 100_000)]]),
+      profilerRegistry: {
+        forInstrument() {
+          return {
+            snapshot: () => profiler("NORMAL", 0.33, 0.2)
+          };
+        }
+      }
+    };
+
+    const matrix = calculateTradingAssetMatrixForTarget(
+      {
+        observedAt: OBSERVED_AT,
+        latestOracle: oracle(),
+        profilerStates: {}
+      },
+      target
+    );
+
+    expect(matrix["btc-usd"]).toMatchObject({
+      selectedByMoltworker: true,
+      active: true,
+      quoteEligible: true,
+      maxNotional: 500,
+      amVpin: 0.33,
+      obi: 0.2
+    });
+    expect(matrix["hype-usd"]).toMatchObject({
+      selectedByMoltworker: false,
+      active: false,
+      maxNotional: 0
+    });
   });
 });
 

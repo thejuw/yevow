@@ -1,7 +1,7 @@
-import type { ProfilerRegistry } from "../../../agents/ProfilerRegistry";
 import { DEFAULT_MAX_POSITION_PCT } from "../../../TradingEngineConstants";
 import type {
   AssetRuntimeState,
+  Env,
   EngineState,
   GlobalRiskConfig,
   InternalOrderBook,
@@ -23,7 +23,25 @@ export interface TradingAssetMatrixInput {
   readonly config: GlobalRiskConfig;
   readonly envMaxPositionPct?: string;
   readonly orderBook: Map<string, InternalOrderBook>;
-  readonly profilerRegistry: ProfilerRegistry;
+  readonly profilerRegistry: ProfilerStateSource;
+}
+
+export interface ProfilerStateSource {
+  forInstrument(instrumentCode: string): {
+    snapshot(): ProfilerState;
+  };
+}
+
+export interface TradingAssetMatrixTarget {
+  readonly engineState: Pick<
+    EngineState,
+    "oracle" | "assetQuoteStates" | "quoteState" | "bankroll"
+  >;
+  readonly macroBias: MacroBias;
+  readonly cachedConfig: GlobalRiskConfig;
+  readonly env: Pick<Env, "MAX_POSITION_PCT">;
+  readonly orderBook: Map<string, InternalOrderBook>;
+  readonly profilerRegistry: ProfilerStateSource;
 }
 
 export function calculateTradingAssetMatrix(
@@ -45,5 +63,29 @@ export function calculateTradingAssetMatrix(
     findBestAssetBook: (instrumentCode) => findBestAssetBook(input.orderBook, instrumentCode),
     profilerStateForInstrument: (instrumentCode) =>
       input.profilerRegistry.forInstrument(instrumentCode).snapshot()
+  });
+}
+
+export function calculateTradingAssetMatrixForTarget(
+  input: {
+    readonly observedAt: string;
+    readonly latestOracle: EngineState["oracle"];
+    readonly profilerStates: Record<string, ProfilerState>;
+    readonly assetQuoteStates?: EngineState["assetQuoteStates"];
+  },
+  target: TradingAssetMatrixTarget
+): Record<string, AssetRuntimeState> {
+  return calculateTradingAssetMatrix({
+    observedAt: input.observedAt,
+    latestOracle: input.latestOracle,
+    profilerStates: input.profilerStates,
+    assetQuoteStates: input.assetQuoteStates ?? target.engineState.assetQuoteStates,
+    fallbackQuoteState: target.engineState.quoteState,
+    macroBias: target.macroBias,
+    equity: target.engineState.bankroll.equity,
+    config: target.cachedConfig,
+    envMaxPositionPct: target.env.MAX_POSITION_PCT,
+    orderBook: target.orderBook,
+    profilerRegistry: target.profilerRegistry
   });
 }

@@ -99,7 +99,10 @@ import {
   type QueuedExecutionIntent,
   type TradingExecutionQueueTarget
 } from "./execution/ExecutionQueueRuntime";
-import { calculateTradingAssetMatrix } from "./state/TradingAssetMatrixRuntime";
+import {
+  calculateTradingAssetMatrixForTarget,
+  type TradingAssetMatrixTarget
+} from "./state/TradingAssetMatrixRuntime";
 import { type ExecutionTraceInput } from "./performance/LatencyRuntime";
 import { applyTradingNativeHyperliquidLatencyPull } from "./performance/StaleLatencyGuardRuntime";
 import {
@@ -854,24 +857,20 @@ export class TradingEngine {
 
   private calculateAssetMatrix(
     observedAt: string,
-    latestInstrumentCode: string | undefined,
+    _latestInstrumentCode: string | undefined,
     latestOracle: EngineState["oracle"],
     profilerStates: Record<string, ProfilerState>,
     assetQuoteStates: EngineState["assetQuoteStates"] = this.engineState.assetQuoteStates
   ): Record<string, AssetRuntimeState> {
-    return calculateTradingAssetMatrix({
-      observedAt,
-      latestOracle,
-      profilerStates,
-      assetQuoteStates,
-      fallbackQuoteState: this.engineState.quoteState,
-      macroBias: this.macroBias,
-      equity: this.engineState.bankroll.equity,
-      config: this.cachedConfig,
-      envMaxPositionPct: this.env.MAX_POSITION_PCT,
-      orderBook: this.orderBook,
-      profilerRegistry: this.profilerRegistry
-    });
+    return calculateTradingAssetMatrixForTarget(
+      {
+        observedAt,
+        latestOracle,
+        profilerStates,
+        assetQuoteStates
+      },
+      this as unknown as TradingAssetMatrixTarget
+    );
   }
 
   private async safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
