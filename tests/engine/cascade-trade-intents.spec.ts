@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   buildCascadeEntryTradeIntent,
-  buildCascadeExitTradeIntent
+  buildCascadeEntryTradeIntentForTarget,
+  buildCascadeExitTradeIntent,
+  buildCascadeExitTradeIntentForTarget
 } from "../../src/engine/trading/cascade/CascadeTradeIntents";
+import { defaultConfig } from "../../src/ConfigManager";
 import type {
   CascadePositionIntent,
   CascadeRecoverySignal
@@ -73,6 +76,37 @@ describe("CascadeTradeIntents", () => {
     expect(stop).toMatchObject({
       orderType: "MARKET",
       rationale: "cascade STOP_LOSS stop_loss reduce-only"
+    });
+  });
+
+  it("builds cascade intents from a trading runtime target", () => {
+    const target = {
+      engineState: { engineId: "engine-target" },
+      cachedConfig: {
+        ...defaultConfig,
+        EXCHANGE_FEE_BPS: 6,
+        SLICE_NOTIONAL_THRESHOLD_USD: 500
+      }
+    };
+
+    expect(
+      buildCascadeEntryTradeIntentForTarget(
+        target,
+        signal({ signalId: "target-entry", entryPrice: 100 }),
+        2,
+        OBSERVED_AT
+      )
+    ).toMatchObject({
+      intentId: "cascade-entry-target-entry",
+      traceId: "engine-target:cascade-entry:target-entry",
+      executionCosts: 0.0006
+    });
+    expect(
+      buildCascadeExitTradeIntentForTarget(target, positionIntent(), OBSERVED_AT)
+    ).toMatchObject({
+      intentId: "cascade-exit-position-intent-1",
+      traceId: "engine-target:cascade-exit:position-1",
+      executionCosts: 0.0006
     });
   });
 });

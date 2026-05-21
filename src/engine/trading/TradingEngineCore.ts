@@ -154,8 +154,9 @@ import {
   type TradingCascadeLiquidationDetectionTarget
 } from "./cascade/CascadeLiquidationRuntime";
 import {
-  buildCascadeEntryTradeIntent,
-  buildCascadeExitTradeIntent
+  buildCascadeEntryTradeIntentForTarget,
+  buildCascadeExitTradeIntentForTarget,
+  type TradingCascadeTradeIntentTarget
 } from "./cascade/CascadeTradeIntents";
 import {
   observeTradingEngineCascadeAbsorption,
@@ -978,28 +979,23 @@ export class TradingEngine {
     size: number,
     observedAt: string
   ): TradeIntent {
-    return buildCascadeEntryTradeIntent({
+    return buildCascadeEntryTradeIntentForTarget(
+      this as unknown as TradingCascadeTradeIntentTarget,
       signal,
       size,
-      observedAt,
-      engineId: this.engineState.engineId,
-      exchangeFeeBps: this.cachedConfig.EXCHANGE_FEE_BPS,
-      sliceNotionalThresholdUsd: this.cachedConfig.SLICE_NOTIONAL_THRESHOLD_USD,
-      maxSlippageBps: this.cascadeAssetProfile(signal.instrumentCode).maxSlippageBps
-    });
+      observedAt
+    );
   }
 
   private tradeIntentFromCascadePositionIntent(
     intent: CascadePositionIntent,
     observedAt: string
   ): TradeIntent {
-    return buildCascadeExitTradeIntent({
+    return buildCascadeExitTradeIntentForTarget(
+      this as unknown as TradingCascadeTradeIntentTarget,
       intent,
-      observedAt,
-      engineId: this.engineState.engineId,
-      exchangeFeeBps: this.cachedConfig.EXCHANGE_FEE_BPS,
-      maxSlippageBps: this.cascadeAssetProfile(intent.instrumentCode).maxSlippageBps
-    });
+      observedAt
+    );
   }
 
   private async handleGrpcFatalDrop(

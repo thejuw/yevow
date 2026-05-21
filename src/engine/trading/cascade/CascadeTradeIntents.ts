@@ -1,5 +1,6 @@
-import type { TradeIntent } from "../../../types";
+import type { EngineState, GlobalRiskConfig, TradeIntent } from "../../../types";
 import type { CascadePositionIntent, CascadeRecoverySignal } from "../../../strategy/cascade/types";
+import { cascadeAssetProfileFromConfig } from "./CascadeConfigRuntime";
 
 export interface CascadeEntryTradeIntentInput {
   readonly signal: CascadeRecoverySignal;
@@ -50,6 +51,29 @@ export function buildCascadeEntryTradeIntent(input: CascadeEntryTradeIntentInput
   };
 }
 
+export interface TradingCascadeTradeIntentTarget {
+  readonly engineState: Pick<EngineState, "engineId">;
+  readonly cachedConfig: GlobalRiskConfig;
+}
+
+export function buildCascadeEntryTradeIntentForTarget(
+  target: TradingCascadeTradeIntentTarget,
+  signal: CascadeRecoverySignal,
+  size: number,
+  observedAt: string
+): TradeIntent {
+  return buildCascadeEntryTradeIntent({
+    signal,
+    size,
+    observedAt,
+    engineId: target.engineState.engineId,
+    exchangeFeeBps: target.cachedConfig.EXCHANGE_FEE_BPS,
+    sliceNotionalThresholdUsd: target.cachedConfig.SLICE_NOTIONAL_THRESHOLD_USD,
+    maxSlippageBps: cascadeAssetProfileFromConfig(signal.instrumentCode, target.cachedConfig)
+      .maxSlippageBps
+  });
+}
+
 export interface CascadeExitTradeIntentInput {
   readonly intent: CascadePositionIntent;
   readonly observedAt: string;
@@ -93,4 +117,19 @@ export function buildCascadeExitTradeIntent(input: CascadeExitTradeIntentInput):
     } reduce-only`,
     createdAt: input.observedAt
   };
+}
+
+export function buildCascadeExitTradeIntentForTarget(
+  target: TradingCascadeTradeIntentTarget,
+  intent: CascadePositionIntent,
+  observedAt: string
+): TradeIntent {
+  return buildCascadeExitTradeIntent({
+    intent,
+    observedAt,
+    engineId: target.engineState.engineId,
+    exchangeFeeBps: target.cachedConfig.EXCHANGE_FEE_BPS,
+    maxSlippageBps: cascadeAssetProfileFromConfig(intent.instrumentCode, target.cachedConfig)
+      .maxSlippageBps
+  });
 }
