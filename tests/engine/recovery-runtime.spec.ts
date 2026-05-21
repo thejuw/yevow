@@ -10,6 +10,7 @@ import {
   applyAdminRecoveryCompletionSideEffects,
   applyAdminRecoveryFlow,
   applyAdminRecoveryPlanSideEffects,
+  applyTradingAdminRecoveryFlow,
   dispatchAdminRecoveryOrderBookResets,
   resolveAdminRecoveryPaperBankroll,
   stateAfterAdminControlledRecovery
@@ -513,6 +514,81 @@ describe("RecoveryRuntime", () => {
         `paper-session:${OBSERVED_AT}`,
         "log:old-profiler",
         "publish:1"
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("wraps admin recovery with trading storage keys and paper-bankroll defaults", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(OBSERVED_AT));
+    const state = defaultEngineState("trading-recovery-flow");
+    const calls: string[] = [];
+
+    try {
+      const response = await applyTradingAdminRecoveryFlow(
+        {
+          currentState: state,
+          payload: {
+            instrumentCode: "hype-usd",
+            resetPaperPortfolio: true
+          },
+          cachedConfig: defaultConfig,
+          macroBias: neutralMacroBias(),
+          shadowMode: true,
+          paperBankrollUsd: "750",
+          latencyHistory: [{ totalLatencyMs: 12 }],
+          processingLatencySamples: [3, 4]
+        },
+        {
+          async resetOrderBook(payload) {
+            calls.push(`reset-book:${payload.instrumentCode}:${payload.reason}`);
+          },
+          resetLatencyBaseline(observedAt, reason) {
+            calls.push(`latency:${observedAt}:${reason}`);
+          },
+          clearShadowQueue() {
+            calls.push("shadow-clear");
+          },
+          async deleteRetiredProfilerStorage() {
+            return [];
+          },
+          shadowQueueSnapshot() {
+            return state.shadowQueue;
+          },
+          applyState(nextState) {
+            calls.push(`state:${nextState.bankroll.equity}`);
+          },
+          async persistStorageEntries(entries) {
+            calls.push(`persist:${Object.keys(entries).join(",")}`);
+          },
+          putPaperSessionStartedAt(observedAt) {
+            calls.push(`paper-session:${observedAt}`);
+          },
+          logRecovery(metadata) {
+            calls.push(`log:${metadata.reason as string}`);
+          },
+          publishRecovery(payload) {
+            calls.push(`publish:${payload.reason as string}`);
+          }
+        }
+      );
+
+      expect(response).toMatchObject({
+        ok: true,
+        resetInstruments: ["hype-usd"],
+        source_exchange: "hyperliquid"
+      });
+      expect(calls).toEqual([
+        "reset-book:hype-usd:ADMIN_CONTROLLED_RECOVERY",
+        `latency:${OBSERVED_AT}:ADMIN_CONTROLLED_RECOVERY`,
+        "shadow-clear",
+        "state:750",
+        "persist:engine:state,performance:latency-history,performance:processing-latency-samples",
+        `paper-session:${OBSERVED_AT}`,
+        "log:ADMIN_CONTROLLED_RECOVERY",
+        "publish:ADMIN_CONTROLLED_RECOVERY"
       ]);
     } finally {
       vi.useRealTimers();

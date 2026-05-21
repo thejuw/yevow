@@ -5,7 +5,12 @@ import type {
   MacroBias,
   ShadowQueueState
 } from "../../../types";
-import { DEFAULT_PAPER_BANKROLL_USD } from "../../../TradingEngineConstants";
+import {
+  DEFAULT_PAPER_BANKROLL_USD,
+  ENGINE_STATE_KEY,
+  PERFORMANCE_HISTORY_KEY,
+  PROCESSING_LATENCY_SAMPLES_KEY
+} from "../../../TradingEngineConstants";
 import { readPositiveNumber } from "../helpers/RuntimeParsing";
 import { aggregateQuoteState, defaultAssetQuoteStates } from "./AssetStateRuntime";
 import {
@@ -112,6 +117,17 @@ export interface AdminRecoveryFlowInput extends Omit<
   "plan" | "prunedProfilerStorageKeys" | "shadowQueue"
 > {
   readonly payload: AdminRecoveryRuntimePayload;
+}
+
+export interface TradingAdminRecoveryFlowInput {
+  readonly currentState: EngineState;
+  readonly payload: AdminRecoveryRuntimePayload;
+  readonly cachedConfig: GlobalRiskConfig;
+  readonly macroBias: MacroBias;
+  readonly shadowMode: boolean;
+  readonly paperBankrollUsd?: string;
+  readonly latencyHistory: readonly unknown[];
+  readonly processingLatencySamples: readonly number[];
 }
 
 export interface AdminRecoveryCompletionSideEffectHandlers {
@@ -347,4 +363,26 @@ export async function applyAdminRecoveryFlow(
   await applyAdminRecoveryCompletionSideEffects(artifacts.completion, handlers);
 
   return artifacts.completion.response;
+}
+
+export function applyTradingAdminRecoveryFlow(
+  input: TradingAdminRecoveryFlowInput,
+  handlers: AdminRecoveryFlowHandlers
+): Promise<JsonRecord> {
+  return applyAdminRecoveryFlow(
+    {
+      currentState: input.currentState,
+      payload: input.payload,
+      cachedConfig: input.cachedConfig,
+      macroBias: input.macroBias,
+      shadowMode: input.shadowMode,
+      paperBankroll: resolveAdminRecoveryPaperBankroll(input.paperBankrollUsd),
+      engineStateKey: ENGINE_STATE_KEY,
+      performanceHistoryKey: PERFORMANCE_HISTORY_KEY,
+      latencyHistory: input.latencyHistory,
+      processingLatencySamplesKey: PROCESSING_LATENCY_SAMPLES_KEY,
+      processingLatencySamples: input.processingLatencySamples
+    },
+    handlers
+  );
 }

@@ -213,7 +213,7 @@ import {
   recordTradingAcceptedTickJournal,
   scheduleTradingAcceptedTickSnapshot
 } from "./state/TradingTickPersistenceRuntime";
-import { applyAdminRecoveryFlow, resolveAdminRecoveryPaperBankroll } from "./state/RecoveryRuntime";
+import { applyTradingAdminRecoveryFlow } from "./state/RecoveryRuntime";
 import {
   applyHotStorageSnapshotSideEffects,
   resolveHotStorageSnapshotIntervalMs,
@@ -1628,18 +1628,15 @@ export class TradingEngine {
     resetPaperPortfolio?: boolean;
     clearShadowQueue?: boolean;
   }): Promise<JsonRecord> {
-    return applyAdminRecoveryFlow(
+    return applyTradingAdminRecoveryFlow(
       {
         currentState: this.engineState,
         payload,
         cachedConfig: this.cachedConfig,
         macroBias: this.macroBias,
         shadowMode: isShadowMode(this.env),
-        paperBankroll: resolveAdminRecoveryPaperBankroll(this.env.PAPER_BANKROLL_USD),
-        engineStateKey: ENGINE_STATE_KEY,
-        performanceHistoryKey: PERFORMANCE_HISTORY_KEY,
+        paperBankrollUsd: this.env.PAPER_BANKROLL_USD,
         latencyHistory: this.latencyHistory,
-        processingLatencySamplesKey: PROCESSING_LATENCY_SAMPLES_KEY,
         processingLatencySamples: this.processingLatencySamples
       },
       {
