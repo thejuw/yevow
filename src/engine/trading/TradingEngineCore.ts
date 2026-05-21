@@ -235,7 +235,10 @@ import {
 import { maybeResumeTradingShadowMode } from "./state/TradingShadowModeAutoResumeRuntime";
 import { resolveTradingTickAvailability } from "./state/TradingAvailabilityRuntime";
 import { stateAfterAcceptedTick } from "./state/TickStateRuntime";
-import { applyTradingAdminRecoveryFlow } from "./state/RecoveryRuntime";
+import {
+  recoverTradingEngineStateForTarget,
+  type TradingAdminRecoveryTarget
+} from "./state/RecoveryRuntime";
 import {
   applyHotStorageSnapshotSideEffects,
   resolveHotStorageSnapshotIntervalMs,
@@ -333,7 +336,6 @@ import {
   DEFAULT_SOURCE_WEIGHT,
   PROCESSING_LATENCY_SAMPLES_KEY,
   RATE_LIMIT_STATE_KEY,
-  PAPER_SESSION_STARTED_AT_KEY,
   HOT_PATH_LOG_THROTTLE_MS,
   DEFAULT_JITTER_SAMPLE_WINDOW,
   DEFAULT_JITTER_COMPUTE_INTERVAL_TICKS,
@@ -1177,11 +1179,6 @@ export class TradingEngine {
     await resetTradingOrderBookForTarget(payload, this as unknown as TradingOrderBookResetTarget);
   }
 
-  private clearRecoveryShadowQueue(): void {
-    this.ghostBook.reset();
-    this.shadowQueueNoEdgeLogAt.clear();
-  }
-
   private async recoverEngineState(payload: {
     reason?: string;
     resetInstruments?: string[] | string;
@@ -1193,37 +1190,9 @@ export class TradingEngine {
     resetPaperPortfolio?: boolean;
     clearShadowQueue?: boolean;
   }): Promise<JsonRecord> {
-    return applyTradingAdminRecoveryFlow(
-      {
-        currentState: this.engineState,
-        payload,
-        cachedConfig: this.cachedConfig,
-        macroBias: this.macroBias,
-        shadowMode: isShadowMode(this.env),
-        paperBankrollUsd: this.env.PAPER_BANKROLL_USD,
-        latencyHistory: this.latencyHistory,
-        processingLatencySamples: this.processingLatencySamples
-      },
-      {
-        resetOrderBook: (resetPayload) => this.resetOrderBook(resetPayload),
-        resetLatencyBaseline: (observedAt, reason) => this.resetLatencyBaseline(observedAt, reason),
-        clearShadowQueue: () => this.clearRecoveryShadowQueue(),
-        deleteRetiredProfilerStorage: () => this.deleteRetiredProfilerStorage(),
-        shadowQueueSnapshot: (observedAt) => this.ghostBook.snapshot(observedAt),
-        applyState: (state) => {
-          this.engineState = state;
-        },
-        persistStorageEntries: (entries) =>
-          this.safeStoragePut(entries, "ADMIN_CONTROLLED_RECOVERY"),
-        putPaperSessionStartedAt: (observedAt) =>
-          this.state.waitUntil(this.env.CONFIG_STORE.put(PAPER_SESSION_STARTED_AT_KEY, observedAt)),
-        logRecovery: (metadata) =>
-          this.logger.warn("ADMIN_CONTROLLED_RECOVERY", "Admin controlled recovery applied", {
-            ...metadata
-          }),
-        publishRecovery: (publishPayload) =>
-          this.publish("ADMIN_CONTROLLED_RECOVERY", publishPayload)
-      }
+    return recoverTradingEngineStateForTarget(
+      payload,
+      this as unknown as TradingAdminRecoveryTarget
     );
   }
 

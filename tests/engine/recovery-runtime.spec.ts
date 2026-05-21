@@ -12,8 +12,10 @@ import {
   applyAdminRecoveryPlanSideEffects,
   applyTradingAdminRecoveryFlow,
   dispatchAdminRecoveryOrderBookResets,
+  recoverTradingEngineStateForTarget,
   resolveAdminRecoveryPaperBankroll,
-  stateAfterAdminControlledRecovery
+  stateAfterAdminControlledRecovery,
+  type TradingAdminRecoveryTarget
 } from "../../src/engine/trading/state/RecoveryRuntime";
 import {
   defaultEngineState,
@@ -589,6 +591,106 @@ describe("RecoveryRuntime", () => {
         `paper-session:${OBSERVED_AT}`,
         "log:ADMIN_CONTROLLED_RECOVERY",
         "publish:ADMIN_CONTROLLED_RECOVERY"
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("recovers engine state through a trading target adapter", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(OBSERVED_AT));
+    const state = defaultEngineState("trading-recovery-target");
+    const calls: string[] = [];
+    const scheduled: Promise<unknown>[] = [];
+
+    try {
+      const target = {
+        engineState: state,
+        cachedConfig: defaultConfig,
+        macroBias: neutralMacroBias(),
+        env: {
+          SHADOW_MODE: "true",
+          PAPER_BANKROLL_USD: "650",
+          CONFIG_STORE: {
+            put(key: string, value: string) {
+              calls.push(`config-put:${key}:${value}`);
+              return Promise.resolve();
+            }
+          }
+        },
+        latencyHistory: [{ totalLatencyMs: 12 }],
+        processingLatencySamples: [3, 4],
+        ghostBook: {
+          reset() {
+            calls.push("ghost-reset");
+          },
+          snapshot(observedAt: string) {
+            calls.push(`shadow-snapshot:${observedAt}`);
+            return state.shadowQueue;
+          }
+        },
+        shadowQueueNoEdgeLogAt: {
+          clear() {
+            calls.push("noedge-clear");
+          }
+        },
+        state: {
+          waitUntil(work: Promise<unknown>) {
+            calls.push("wait");
+            scheduled.push(work);
+          }
+        },
+        logger: {
+          warn(eventType: string, _message: string, metadata: Record<string, unknown>) {
+            calls.push(`log:${eventType}:${metadata.reason as string}`);
+          }
+        },
+        async resetOrderBook(payload: { instrumentCode?: string; reason?: string }) {
+          calls.push(`reset-book:${payload.instrumentCode}:${payload.reason}`);
+        },
+        resetLatencyBaseline(observedAt: string, reason: string) {
+          calls.push(`latency:${observedAt}:${reason}`);
+        },
+        async deleteRetiredProfilerStorage() {
+          calls.push("prune-profilers");
+          return ["profiler:legacy"];
+        },
+        async safeStoragePut(entries: Record<string, unknown>, reason: string) {
+          calls.push(`safe-persist:${reason}:${Object.keys(entries).join(",")}`);
+        },
+        publish(type: string, payload: Record<string, unknown>) {
+          calls.push(`publish:${type}:${String(payload.prunedProfilerStorageKeyCount)}`);
+        }
+      } as unknown as TradingAdminRecoveryTarget;
+
+      const response = await recoverTradingEngineStateForTarget(
+        {
+          instrumentCode: "btc-usd",
+          resetPaperPortfolio: true
+        },
+        target
+      );
+      await Promise.all(scheduled);
+
+      expect(response).toMatchObject({
+        ok: true,
+        resetInstruments: ["btc-usd"],
+        source_exchange: "hyperliquid"
+      });
+      expect(target.engineState.bankroll.equity).toBe(650);
+      expect(calls).toEqual([
+        "reset-book:btc-usd:ADMIN_CONTROLLED_RECOVERY",
+        `latency:${OBSERVED_AT}:ADMIN_CONTROLLED_RECOVERY`,
+        "ghost-reset",
+        "noedge-clear",
+        "prune-profilers",
+        `shadow-snapshot:${OBSERVED_AT}`,
+        "safe-persist:ADMIN_CONTROLLED_RECOVERY:engine:state,performance:latency-history,performance:processing-latency-samples",
+        `config-put:paper:session_started_at:${OBSERVED_AT}`,
+        "wait",
+        "log:ADMIN_CONTROLLED_RECOVERY:ADMIN_CONTROLLED_RECOVERY",
+        "publish:ADMIN_CONTROLLED_RECOVERY:1"
       ]);
     } finally {
       vi.useRealTimers();

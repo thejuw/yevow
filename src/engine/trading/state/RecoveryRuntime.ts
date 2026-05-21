@@ -1,16 +1,20 @@
 import type {
   EngineState,
+  Env,
   GlobalRiskConfig,
   JsonRecord,
   MacroBias,
+  OrderBookResetRequest,
   ShadowQueueState
 } from "../../../types";
 import {
   DEFAULT_PAPER_BANKROLL_USD,
   ENGINE_STATE_KEY,
+  PAPER_SESSION_STARTED_AT_KEY,
   PERFORMANCE_HISTORY_KEY,
   PROCESSING_LATENCY_SAMPLES_KEY
 } from "../../../TradingEngineConstants";
+import { isShadowMode } from "../../../utils/CitadelProtocol";
 import { readPositiveNumber } from "../helpers/RuntimeParsing";
 import { aggregateQuoteState, defaultAssetQuoteStates } from "./AssetStateRuntime";
 import {
@@ -128,6 +132,33 @@ export interface TradingAdminRecoveryFlowInput {
   readonly paperBankrollUsd?: string;
   readonly latencyHistory: readonly unknown[];
   readonly processingLatencySamples: readonly number[];
+}
+
+export interface TradingAdminRecoveryTarget {
+  engineState: EngineState;
+  readonly cachedConfig: GlobalRiskConfig;
+  readonly macroBias: MacroBias;
+  readonly env: Pick<Env, "CONFIG_STORE" | "PAPER_BANKROLL_USD" | "SHADOW_MODE">;
+  readonly latencyHistory: readonly unknown[];
+  readonly processingLatencySamples: readonly number[];
+  readonly ghostBook: {
+    reset(): void;
+    snapshot(observedAt: string): ShadowQueueState;
+  };
+  readonly shadowQueueNoEdgeLogAt: {
+    clear(): void;
+  };
+  readonly state: {
+    waitUntil(work: Promise<unknown>): void;
+  };
+  readonly logger: {
+    warn(eventType: string, message: string, metadata: JsonRecord): void;
+  };
+  resetOrderBook(payload: Partial<OrderBookResetRequest>): Promise<void>;
+  resetLatencyBaseline(observedAt: string, reason: string): void;
+  deleteRetiredProfilerStorage(): Promise<string[]>;
+  safeStoragePut(entries: Record<string, unknown>, reason: string): Promise<void>;
+  publish(type: string, payload: Record<string, unknown>, correlationId?: string): void;
 }
 
 export interface AdminRecoveryCompletionSideEffectHandlers {
@@ -384,5 +415,53 @@ export function applyTradingAdminRecoveryFlow(
       processingLatencySamples: input.processingLatencySamples
     },
     handlers
+  );
+}
+
+export async function recoverTradingEngineStateForTarget(
+  payload: AdminRecoveryRuntimePayload,
+  target: TradingAdminRecoveryTarget
+): Promise<JsonRecord> {
+  return applyTradingAdminRecoveryFlow(
+    {
+      currentState: target.engineState,
+      payload,
+      cachedConfig: target.cachedConfig,
+      macroBias: target.macroBias,
+      shadowMode: isShadowMode(target.env),
+      paperBankrollUsd: target.env.PAPER_BANKROLL_USD,
+      latencyHistory: target.latencyHistory,
+      processingLatencySamples: target.processingLatencySamples
+    },
+    {
+      resetOrderBook: (resetPayload) => target.resetOrderBook(resetPayload),
+      resetLatencyBaseline: (observedAt, reason) => {
+        target.resetLatencyBaseline(observedAt, reason);
+      },
+      clearShadowQueue: () => {
+        target.ghostBook.reset();
+        target.shadowQueueNoEdgeLogAt.clear();
+      },
+      deleteRetiredProfilerStorage: () => target.deleteRetiredProfilerStorage(),
+      shadowQueueSnapshot: (observedAt) => target.ghostBook.snapshot(observedAt),
+      applyState: (state) => {
+        target.engineState = state;
+      },
+      persistStorageEntries: (entries) =>
+        target.safeStoragePut(entries, "ADMIN_CONTROLLED_RECOVERY"),
+      putPaperSessionStartedAt: (observedAt) => {
+        target.state.waitUntil(
+          target.env.CONFIG_STORE.put(PAPER_SESSION_STARTED_AT_KEY, observedAt)
+        );
+      },
+      logRecovery: (metadata) => {
+        target.logger.warn("ADMIN_CONTROLLED_RECOVERY", "Admin controlled recovery applied", {
+          ...metadata
+        });
+      },
+      publishRecovery: (publishPayload) => {
+        target.publish("ADMIN_CONTROLLED_RECOVERY", publishPayload);
+      }
+    }
   );
 }
