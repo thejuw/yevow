@@ -104,22 +104,21 @@ import { calculateTradingAssetMatrix } from "./state/TradingAssetMatrixRuntime";
 import { type ExecutionTraceInput } from "./performance/LatencyRuntime";
 import { buildTradingPerformanceMetricsResponse } from "./performance/TradingPerformanceMetricsResponseRuntime";
 import { observeTradingExecutionProfile } from "./performance/TradingExecutionProfileRuntime";
-import {
-  applyTradingNativeHyperliquidLatencyPull,
-  latencySnapshotStorageWrites
-} from "./performance/StaleLatencyGuardRuntime";
+import { applyTradingNativeHyperliquidLatencyPull } from "./performance/StaleLatencyGuardRuntime";
 import {
   handleTradingHardStaleTickDrop,
   handleTradingSoftStaleTick,
   type TradingStaleLatencyTarget
 } from "./performance/TradingStaleLatencyRuntime";
-import {
-  applyLatencyBaselineResetSideEffects,
-  latencyBaselineResetArtifacts
-} from "./performance/LatencyBaselineRuntime";
 import { logTradingPerformanceSpike } from "./performance/TradingPerformanceSpikeRuntime";
-import { nextLatencyAverage } from "./performance/LatencyTickRuntime";
 import { prepareTradingTickLatency } from "./performance/TradingTickLatencyRuntime";
+import {
+  resetTradingLatencyBaselineForTarget,
+  tradingLatencyStorageWritesForState,
+  tradingLatencyStorageWritesForTarget,
+  updateTradingLatencyAverageForTarget,
+  type TradingLatencyStateTarget
+} from "./performance/TradingLatencyStateRuntime";
 import {
   cancelTradingJanitorOrder,
   pruneTradingOperationalLogs,
@@ -2487,56 +2486,34 @@ export class TradingEngine {
   }
 
   private updateLatencyAverage(totalLatencyMs: number): void {
-    const next = nextLatencyAverage(
-      {
-        averageLatency: this.engineState.averageLatency,
-        latencySampleCount: this.engineState.latencySampleCount
-      },
-      totalLatencyMs
+    updateTradingLatencyAverageForTarget(
+      totalLatencyMs,
+      this as unknown as TradingLatencyStateTarget
     );
-
-    this.engineState = {
-      ...this.engineState,
-      averageLatency: next.averageLatency,
-      latencySampleCount: next.latencySampleCount
-    };
   }
 
   private resetLatencyBaseline(observedAt: string, reason: string): void {
-    const artifacts = latencyBaselineResetArtifacts({
-      currentState: this.engineState,
+    resetTradingLatencyBaselineForTarget(
       observedAt,
-      reason
-    });
-    applyLatencyBaselineResetSideEffects(artifacts, {
-      replaceLatencyHistory: (history) => {
-        this.latencyHistory = [...history];
-      },
-      replaceProcessingLatencySamples: (samples) => {
-        this.processingLatencySamples = [...samples];
-      },
-      applyState: (state) => {
-        this.engineState = state;
-      },
-      logReset: (metadata) =>
-        this.logger.info("LATENCY_BASELINE_RESET", "Reset stale latency baseline", metadata)
-    });
+      reason,
+      this as unknown as TradingLatencyStateTarget
+    );
   }
 
   private latencyStorageWrites(extra?: Record<string, unknown>): Record<string, unknown> {
-    return this.latencyStorageWritesForState(this.engineState, extra);
+    return tradingLatencyStorageWritesForTarget(
+      this as unknown as TradingLatencyStateTarget,
+      extra
+    );
   }
 
   private latencyStorageWritesForState(
     state: EngineState,
     extra?: Record<string, unknown>
   ): Record<string, unknown> {
-    return latencySnapshotStorageWrites({
-      engineStateKey: ENGINE_STATE_KEY,
+    return tradingLatencyStorageWritesForState({
       state,
-      performanceHistoryKey: PERFORMANCE_HISTORY_KEY,
       latencyHistory: this.latencyHistory,
-      processingLatencySamplesKey: PROCESSING_LATENCY_SAMPLES_KEY,
       processingLatencySamples: this.processingLatencySamples,
       extra
     });

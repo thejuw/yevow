@@ -62,6 +62,13 @@ import {
   prepareTickLatencyRuntime,
   resolveNativeHyperliquidMaxLatencyMs
 } from "../../src/engine/trading/performance/LatencyTickRuntime";
+import {
+  resetTradingLatencyBaselineForTarget,
+  tradingLatencyStorageWritesForState,
+  tradingLatencyStorageWritesForTarget,
+  updateTradingLatencyAverageForTarget,
+  type TradingLatencyStateTarget
+} from "../../src/engine/trading/performance/TradingLatencyStateRuntime";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
 import type { EngineState, ExecutionProfile, LatencyMetrics, MarketTick } from "../../src/types";
 
@@ -212,6 +219,51 @@ describe("LatencyRuntime", () => {
     const samples = [1, 2];
     expect(recordProcessingLatencySample(samples, 3.1234, 2)).toBe(3.123);
     expect(samples).toEqual([2, 3.123]);
+  });
+
+  it("updates latency state and storage writes through the trading target adapter", () => {
+    const events: string[] = [];
+    const target: TradingLatencyStateTarget = {
+      engineState: defaultEngineState("latency-target"),
+      latencyHistory: [latencyMetrics({ totalLatencyMs: 20 })],
+      processingLatencySamples: [1, 2],
+      logger: {
+        info(eventType, _message, telemetry) {
+          events.push(`info:${eventType}:${String(telemetry?.reason ?? "none")}`);
+        }
+      }
+    };
+
+    updateTradingLatencyAverageForTarget(40, target);
+
+    expect(target.engineState.averageLatency).toBe(40);
+    expect(target.engineState.latencySampleCount).toBe(1);
+
+    const beforeResetWrites = tradingLatencyStorageWritesForTarget(target, { extra: true });
+    expect(beforeResetWrites["engine:state"]).toBe(target.engineState);
+    expect(beforeResetWrites["performance:latency-history"]).toHaveLength(1);
+    expect(beforeResetWrites["performance:processing-latency-samples"]).toEqual([1, 2]);
+    expect(beforeResetWrites.extra).toBe(true);
+
+    resetTradingLatencyBaselineForTarget("2026-05-18T15:01:00.000Z", "TEST_RESET", target);
+
+    expect(target.engineState.averageLatency).toBe(0);
+    expect(target.engineState.latencySampleCount).toBe(0);
+    expect(target.latencyHistory).toEqual([]);
+    expect(target.processingLatencySamples).toEqual([]);
+    expect(events).toEqual(["info:LATENCY_BASELINE_RESET:TEST_RESET"]);
+
+    const explicitState = {
+      ...target.engineState,
+      engineId: "latency-explicit"
+    };
+    const explicitWrites = tradingLatencyStorageWritesForState({
+      state: explicitState,
+      latencyHistory: target.latencyHistory,
+      processingLatencySamples: target.processingLatencySamples
+    });
+
+    expect(explicitWrites["engine:state"]).toBe(explicitState);
   });
 
   it("hydrates latency metrics from engine state and appends bounded history", () => {
