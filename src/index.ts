@@ -14,7 +14,7 @@ import {
 } from "./strategy/cascade/OperationalSafeguards";
 import { StrategyVault } from "./StrategyVault";
 import { TradingEngine } from "./TradingEngine";
-import { Notifier, type AlertPriority } from "./utils/Notifier";
+import { Notifier } from "./utils/Notifier";
 import { SignatureEngine } from "./utils/SignatureEngine";
 import { getTradingEngineStub } from "./utils/TradingEngineStub";
 import {
@@ -23,6 +23,28 @@ import {
   subjectRateLimitKey
 } from "./gateway/middleware/RateLimitMiddleware";
 import { adminUiResponse } from "./gateway/AdminUi";
+import type {
+  AgentTraceRow,
+  AlertTestRequest,
+  AttributionRow,
+  AuthenticatedAdmin,
+  CostBudgetSettings,
+  CountRow,
+  DateRangeFilter,
+  ExecutionQualityAggregateRow,
+  ExecutionQualityAssetRow,
+  LiveReadinessCheck,
+  LiveReadinessReport,
+  LoginRequest,
+  LogRow,
+  NotificationSettingsRequest,
+  PaperLedgerFillRow,
+  PaperPnlAggregateRow,
+  TradeHistoryRow,
+  TradeStatusBreakdownRow,
+  TraceTelemetryRow,
+  VaultUpdateRequest
+} from "./gateway/AdminModels";
 import { gatewayRuntime, type GatewayHono } from "./gateway/GatewayRuntime";
 import { gatewayCatalogResponse } from "./gateway/RouteCatalog";
 import {
@@ -35,7 +57,7 @@ import {
 } from "./gateway/AdminValidation";
 import { corsPreflight, json, readJsonBody, withCors } from "./gateway/ResponseHelpers";
 import { placementColo, topologyTelemetry, withTopologyHeaders } from "./gateway/Topology";
-import type { AdminScope, AuthClaims } from "./AuthManager";
+import type { AdminScope } from "./AuthManager";
 import type {
   AdminConfigUpdate,
   EdgeTopology,
@@ -84,181 +106,6 @@ const TRADE_STATUSES = [
   "CANCELLED",
   "GHOST_FILL"
 ] as const;
-
-interface LoginRequest {
-  password?: string;
-  subject?: string;
-  scopes?: AdminScope[] | string;
-}
-
-interface AuthenticatedAdmin {
-  claims: AuthClaims;
-  subject: string;
-}
-
-interface LogRow {
-  id: number;
-  level: string;
-  event_type: string;
-  source: string;
-  message: string;
-  correlation_id: string | null;
-  telemetry_json: string | null;
-  created_at: string;
-}
-
-interface TradeHistoryRow {
-  trade_id: string;
-  order_id: string;
-  signal_id: string | null;
-  venue: string;
-  asset: string;
-  side: string;
-  order_type: string;
-  price: number;
-  size: number;
-  notional: number;
-  ev_at_execution: number;
-  slippage_bps: number;
-  resulting_pnl?: number | null;
-  primary_driver?: string | null;
-  fees: number;
-  status: string;
-  exchange_trade_id: string | null;
-  raw_execution_json: string | null;
-  executed_at: string;
-  created_at: string;
-  agent_name: string | null;
-  trace_id: string | null;
-}
-
-interface PaperPnlAggregateRow {
-  asset: string;
-  trade_count: number;
-  buy_count: number;
-  sell_count: number;
-  buy_size: number | null;
-  sell_size: number | null;
-  buy_notional: number | null;
-  sell_notional: number | null;
-  total_ev: number | null;
-  total_fees: number | null;
-  realized_pnl: number | null;
-  first_seen: string | null;
-  last_seen: string | null;
-}
-
-interface TradeStatusBreakdownRow {
-  status: string;
-  count: number;
-  latest_executed_at: string | null;
-}
-
-interface PaperLedgerFillRow extends TradeHistoryRow {
-  status: "GHOST_FILL";
-}
-
-interface ExecutionQualityAggregateRow {
-  sample_count: number;
-  average_slippage_bps: number | null;
-  adverse_selection_bps: number | null;
-  average_shortfall: number | null;
-  average_latency_ms: number | null;
-  total_fees: number | null;
-}
-
-interface ExecutionQualityAssetRow extends ExecutionQualityAggregateRow {
-  instrument_code: string;
-}
-
-interface CountRow {
-  count: number;
-}
-
-interface CostBudgetSettings {
-  schemaVersion: "cost-budgets.v1";
-  dailyBudgetUsd: number;
-  workersAiDailyBudgetUsd: number;
-  durableObjectDailyBudgetUsd: number;
-  d1DailyBudgetUsd: number;
-  workersAiCostPerCallUsd: number;
-  durableObjectCostPerMsUsd: number;
-  d1ReadCostPerQueryUsd: number;
-  d1WriteCostPerRowUsd: number;
-  enforcement: "WARN" | "BLOCK_LIVE" | "BLOCK_ALL";
-  updatedAt: string;
-  updatedBy: string;
-}
-
-interface LiveReadinessCheck {
-  id: string;
-  label: string;
-  ok: boolean;
-  detail: string;
-  metadata?: JsonRecord;
-}
-
-interface LiveReadinessReport {
-  ok: boolean;
-  generatedAt: string;
-  checks: LiveReadinessCheck[];
-}
-
-interface AgentTraceRow {
-  decision_id: string;
-  signal_id: string;
-  trace_id: string;
-  agent_name: string;
-  target_agent: string | null;
-  instrument_code: string;
-  action: string;
-  confidence: number;
-  expected_value: number | null;
-  rationale: string;
-  feature_vector_json: string | null;
-  risk_snapshot_json: string | null;
-  raw_signal_json: string | null;
-  latency_ms: number | null;
-  created_at: string;
-}
-
-interface TraceTelemetryRow {
-  id: number;
-  event_type: string;
-  source: string;
-  message: string;
-  telemetry_json: string | null;
-  created_at: string;
-}
-
-interface AttributionRow extends TradeHistoryRow {
-  rationale: string | null;
-  confidence: number | null;
-}
-
-interface VaultUpdateRequest {
-  keyName?: string;
-  secret?: string;
-  metadata?: JsonRecord;
-  rotationReason?: string;
-}
-
-interface AlertTestRequest {
-  priority?: AlertPriority;
-  title?: string;
-  message?: string;
-  dedupeKey?: string;
-  metadata?: JsonRecord;
-}
-
-interface NotificationSettingsRequest {
-  notifications?: NotificationSettingsUpdate;
-}
-
-interface DateRangeFilter {
-  from: string | null;
-  to: string | null;
-}
 
 const gatewayRouter = new Hono<GatewayHono>();
 
