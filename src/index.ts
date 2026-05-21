@@ -23,6 +23,26 @@ import {
   subjectRateLimitKey
 } from "./gateway/middleware/RateLimitMiddleware";
 import { adminUiResponse } from "./gateway/AdminUi";
+import {
+  ACTIVE_TOKEN_PREFIX,
+  AGENT_NAMES,
+  CASCADE_CONFIG_FREEZE_HOURS,
+  CASCADE_LAST_BACKTEST_REPORT_KEY,
+  CASCADE_LAST_CONFIG_CHANGE_AT_KEY,
+  CASCADE_PAPER_ARMED_AT_KEY,
+  CASCADE_TWO_PERSON_APPROVAL_WINDOW_MS,
+  CASCADE_TWO_PERSON_READ_APPROVAL_KEY,
+  COST_BUDGET_SETTINGS_KEY,
+  DEFAULT_ADMIN_PAGE_SIZE,
+  DEFAULT_MOLTWORKER_HEARTBEAT_MAX_AGE_MS,
+  ENGINE_HEALTH_TIMEOUT_MS,
+  JWT_REVOCATION_PREFIX,
+  LOG_LEVELS,
+  MAX_ADMIN_PAGE_SIZE,
+  MOLTWORKER_HEARTBEAT_KEY,
+  PAPER_SESSION_STARTED_AT_KEY,
+  TRADE_STATUSES
+} from "./gateway/GatewayConstants";
 import type {
   AgentTraceRow,
   AlertTestRequest,
@@ -69,43 +89,6 @@ import type {
 } from "./types";
 
 export { TradingEngine };
-
-const DEFAULT_ADMIN_PAGE_SIZE = 100;
-const MAX_ADMIN_PAGE_SIZE = 500;
-const ENGINE_HEALTH_TIMEOUT_MS = 1_500;
-const MOLTWORKER_HEARTBEAT_KEY = "moltworker:heartbeat";
-const DEFAULT_MOLTWORKER_HEARTBEAT_MAX_AGE_MS = 300_000;
-const PAPER_SESSION_STARTED_AT_KEY = "paper:session_started_at";
-const CASCADE_PAPER_ARMED_AT_KEY = "cascade:paper_armed_at";
-const CASCADE_LAST_CONFIG_CHANGE_AT_KEY = "cascade:last_config_change_at";
-const CASCADE_LAST_BACKTEST_REPORT_KEY = "cascade:last_backtest_report";
-const CASCADE_TWO_PERSON_READ_APPROVAL_KEY = "cascade:two_person:read_approval";
-const CASCADE_TWO_PERSON_APPROVAL_WINDOW_MS = 5 * 60_000;
-const CASCADE_CONFIG_FREEZE_HOURS = 72;
-const COST_BUDGET_SETTINGS_KEY = "cost_budget_settings";
-const JWT_REVOCATION_PREFIX = "auth:jti:revoked:";
-const ACTIVE_TOKEN_PREFIX = "auth:active:";
-const LOG_LEVELS = ["DEBUG", "INFO", "WARN", "ERROR", "CRITICAL"] as const;
-const AGENT_NAMES = [
-  "ORACLE",
-  "SENTIMENT",
-  "PROFILER",
-  "CROUPIER",
-  "PIT_BOSS",
-  "JANITOR",
-  "EXECUTIONER",
-  "MOLTWORKER",
-  "RISK",
-  "SYSTEM"
-] as const;
-const TRADE_STATUSES = [
-  "ACCEPTED",
-  "FILLED",
-  "PARTIAL",
-  "REJECTED",
-  "CANCELLED",
-  "GHOST_FILL"
-] as const;
 
 const gatewayRouter = new Hono<GatewayHono>();
 
