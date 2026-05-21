@@ -7,6 +7,7 @@ import {
   buildCascadeAbsorptionObservation,
   cascadeAbsorptionSignedNotional,
   nextCascadeCvd,
+  observeTradingCascadeAbsorption,
   type CascadeAbsorptionConfirmedSideEffectHandlers
 } from "../../src/engine/trading/cascade/CascadeAbsorptionRuntime";
 import type { AbsorptionConfirmed } from "../../src/strategy/cascade/types";
@@ -81,6 +82,77 @@ describe("CascadeAbsorptionRuntime", () => {
       "publish:ABSORPTION_CONFIRMED:cascade-1",
       "alert:CASCADE_ABSORPTION_CONFIRMED:cascade-1:cascade-1"
     ]);
+  });
+
+  it("observes trading cascade absorption with CVD accounting and analyzer side effects", () => {
+    const sideEffects = absorptionConfirmedSideEffectSpy();
+    const events: string[] = [];
+    const cvd = new Map<string, number>([["btc", 50]]);
+    const confirmed = absorptionConfirmed();
+
+    const result = observeTradingCascadeAbsorption(
+      {
+        tick: tick({
+          instrumentCode: "BTC-PERP",
+          side: "buy",
+          price: 100,
+          size: 2,
+          raw: { eventType: "trade" }
+        }),
+        cascadeInstruments: "btc"
+      },
+      {
+        ...sideEffects.handlers,
+        readCumulativeVolumeDelta: (instrumentCode) => {
+          events.push(`read:${instrumentCode}`);
+          return cvd.get(instrumentCode);
+        },
+        writeCumulativeVolumeDelta: (instrumentCode, cumulativeVolumeDelta) => {
+          events.push(`write:${instrumentCode}:${cumulativeVolumeDelta}`);
+          cvd.set(instrumentCode, cumulativeVolumeDelta);
+        },
+        configureAnalyzer: () => events.push("configure"),
+        observeAbsorption: (observation) => {
+          events.push(`observe:${observation.instrumentCode}:${observation.cumulativeVolumeDelta}`);
+          return confirmed;
+        }
+      }
+    );
+
+    expect(result).toBe(confirmed);
+    expect(events).toEqual(["read:btc", "write:btc:250", "configure", "observe:btc:250"]);
+    expect(sideEffects.events).toEqual([
+      "record:cascade-1",
+      "log:ABSORPTION_CONFIRMED:cascade-1",
+      "publish:ABSORPTION_CONFIRMED:cascade-1",
+      "alert:CASCADE_ABSORPTION_CONFIRMED:cascade-1:cascade-1"
+    ]);
+  });
+
+  it("skips cascade absorption for non-trades, bad prices, or disabled instruments", () => {
+    const result = observeTradingCascadeAbsorption(
+      {
+        tick: tick({ sourceChannel: "l2Book", price: 0 }),
+        cascadeInstruments: "eth-usd"
+      },
+      {
+        ...absorptionConfirmedSideEffectSpy().handlers,
+        readCumulativeVolumeDelta: () => {
+          throw new Error("unexpected read");
+        },
+        writeCumulativeVolumeDelta: () => {
+          throw new Error("unexpected write");
+        },
+        configureAnalyzer: () => {
+          throw new Error("unexpected configure");
+        },
+        observeAbsorption: () => {
+          throw new Error("unexpected observe");
+        }
+      }
+    );
+
+    expect(result).toBeNull();
   });
 });
 

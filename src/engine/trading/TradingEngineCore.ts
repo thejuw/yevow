@@ -114,11 +114,7 @@ import {
   buildCascadeEntryTradeIntent,
   buildCascadeExitTradeIntent
 } from "./cascade/CascadeTradeIntents";
-import {
-  applyCascadeAbsorptionConfirmedSideEffects,
-  buildCascadeAbsorptionObservation,
-  nextCascadeCvd
-} from "./cascade/CascadeAbsorptionRuntime";
+import { observeTradingCascadeAbsorption } from "./cascade/CascadeAbsorptionRuntime";
 import {
   applyTradingConfigUpdate,
   refreshTradingConfig
@@ -382,7 +378,6 @@ import {
 import { closeTradingCascadePosition } from "./cascade/TradingCascadeManualCloseRuntime";
 import {
   normalizeNativeCoin,
-  normalizeNativeInstrumentCode,
   splitNativeInstrument,
   baseAssetFromInstrument
 } from "./helpers/NativeMarketIdentityRuntime";
@@ -444,7 +439,6 @@ import {
   mergeRiskLimits,
   resolveMaxLatencyMs
 } from "./state/EngineStateDefaults";
-import { isTradeTick } from "./state/TickClassification";
 import { applyAcceptedDecisionPipelineFlow } from "./pipelines/AcceptedTickLifecycleRuntime";
 import { buildTickDecisionContextFlow } from "./pipelines/TickDecisionContextRuntime";
 import { buildAcceptedTickStateTransition } from "./pipelines/AcceptedTickStateTransitionRuntime";
@@ -1302,44 +1296,27 @@ export class TradingEngine {
   }
 
   private observeCascadeAbsorption(tick: MarketTick): void {
-    if (!isTradeTick(tick) || !Number.isFinite(tick.price) || tick.price <= 0) {
-      return;
-    }
-
-    const instrumentCode = normalizeNativeInstrumentCode(tick.instrumentCode);
-    if (
-      !isCascadeInstrumentEnabledForConfig(this.cachedConfig.CASCADE_INSTRUMENTS, instrumentCode)
-    ) {
-      return;
-    }
-
-    const cumulativeVolumeDelta = nextCascadeCvd(
-      this.cascadeCvdByInstrument.get(instrumentCode) ?? 0,
-      tick
-    );
-    this.cascadeCvdByInstrument.set(instrumentCode, cumulativeVolumeDelta);
-
-    this.absorptionAnalyzer.configure(this.currentAbsorptionAnalyzerConfig());
-    const confirmed = this.absorptionAnalyzer.observe(
-      buildCascadeAbsorptionObservation({
+    observeTradingCascadeAbsorption(
+      {
         tick,
-        instrumentCode,
-        cumulativeVolumeDelta
-      })
+        cascadeInstruments: this.cachedConfig.CASCADE_INSTRUMENTS
+      },
+      {
+        readCumulativeVolumeDelta: (instrumentCode) =>
+          this.cascadeCvdByInstrument.get(instrumentCode),
+        writeCumulativeVolumeDelta: (instrumentCode, cumulativeVolumeDelta) =>
+          this.cascadeCvdByInstrument.set(instrumentCode, cumulativeVolumeDelta),
+        configureAnalyzer: () =>
+          this.absorptionAnalyzer.configure(this.currentAbsorptionAnalyzerConfig()),
+        observeAbsorption: (observation) => this.absorptionAnalyzer.observe(observation),
+        recordAbsorption: (confirmedAbsorption) =>
+          this.cascadeAbsorptionsById.set(confirmedAbsorption.cascadeId, confirmedAbsorption),
+        logInfo: (event, message, metadata) => this.logger.info(event, message, metadata),
+        publish: (telemetryType, payload) => this.publish(telemetryType, payload),
+        emitOperationalAlert: (eventType, title, message, metadata, dedupeKey) =>
+          this.emitCascadeOperationalAlert(eventType, title, message, metadata, dedupeKey)
+      }
     );
-
-    if (!confirmed) {
-      return;
-    }
-
-    applyCascadeAbsorptionConfirmedSideEffects(confirmed, {
-      recordAbsorption: (confirmedAbsorption) =>
-        this.cascadeAbsorptionsById.set(confirmedAbsorption.cascadeId, confirmedAbsorption),
-      logInfo: (event, message, metadata) => this.logger.info(event, message, metadata),
-      publish: (telemetryType, payload) => this.publish(telemetryType, payload),
-      emitOperationalAlert: (eventType, title, message, metadata, dedupeKey) =>
-        this.emitCascadeOperationalAlert(eventType, title, message, metadata, dedupeKey)
-    });
   }
 
   private recordRejectedCascadeSignal(

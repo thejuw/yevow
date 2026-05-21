@@ -1,5 +1,8 @@
 import type { JsonRecord, MarketTick } from "../../../types";
 import type { AbsorptionConfirmed, AbsorptionObservation } from "../../../strategy/cascade/types";
+import { normalizeNativeInstrumentCode } from "../helpers/NativeMarketIdentityRuntime";
+import { isTradeTick } from "../state/TickClassification";
+import { isCascadeInstrumentEnabledForConfig } from "./CascadeSelectionRuntime";
 
 export interface CascadeAbsorptionObservationInput {
   readonly tick: Pick<MarketTick, "side" | "price" | "size" | "receivedAt" | "openInterest">;
@@ -18,6 +21,21 @@ export interface CascadeAbsorptionConfirmedSideEffectHandlers {
     metadata: JsonRecord,
     dedupeKey: string
   ) => void;
+}
+
+export interface TradingCascadeAbsorptionInput {
+  readonly tick: MarketTick;
+  readonly cascadeInstruments: string;
+}
+
+export interface TradingCascadeAbsorptionHandlers extends CascadeAbsorptionConfirmedSideEffectHandlers {
+  readonly readCumulativeVolumeDelta: (instrumentCode: string) => number | undefined;
+  readonly writeCumulativeVolumeDelta: (
+    instrumentCode: string,
+    cumulativeVolumeDelta: number
+  ) => void;
+  readonly configureAnalyzer: () => void;
+  readonly observeAbsorption: (observation: AbsorptionObservation) => AbsorptionConfirmed | null;
 }
 
 export function cascadeAbsorptionSignedNotional(
@@ -117,4 +135,40 @@ export function applyCascadeAbsorptionConfirmedSideEffects(
     absorptionConfirmedAlertMetadata(confirmed),
     confirmed.cascadeId
   );
+}
+
+export function observeTradingCascadeAbsorption(
+  input: TradingCascadeAbsorptionInput,
+  handlers: TradingCascadeAbsorptionHandlers
+): AbsorptionConfirmed | null {
+  if (!isTradeTick(input.tick) || !Number.isFinite(input.tick.price) || input.tick.price <= 0) {
+    return null;
+  }
+
+  const instrumentCode = normalizeNativeInstrumentCode(input.tick.instrumentCode);
+  if (!isCascadeInstrumentEnabledForConfig(input.cascadeInstruments, instrumentCode)) {
+    return null;
+  }
+
+  const cumulativeVolumeDelta = nextCascadeCvd(
+    handlers.readCumulativeVolumeDelta(instrumentCode) ?? 0,
+    input.tick
+  );
+  handlers.writeCumulativeVolumeDelta(instrumentCode, cumulativeVolumeDelta);
+
+  handlers.configureAnalyzer();
+  const confirmed = handlers.observeAbsorption(
+    buildCascadeAbsorptionObservation({
+      tick: input.tick,
+      instrumentCode,
+      cumulativeVolumeDelta
+    })
+  );
+
+  if (!confirmed) {
+    return null;
+  }
+
+  applyCascadeAbsorptionConfirmedSideEffects(confirmed, handlers);
+  return confirmed;
 }
