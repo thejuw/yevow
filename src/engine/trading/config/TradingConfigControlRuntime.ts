@@ -9,6 +9,10 @@ import type {
 } from "../../../types";
 import { CONFIG_ALARM_INTERVAL_MS, ENGINE_STATE_KEY } from "../../../TradingEngineConstants";
 import {
+  calculateTradingAssetMatrixForTarget,
+  type TradingAssetMatrixTarget
+} from "../state/TradingAssetMatrixRuntime";
+import {
   applyAdminConfigUpdateFlow,
   applyConfigRefreshFlow,
   applyConfigRefreshSideEffects,
@@ -97,8 +101,12 @@ export interface TradingEngineConfigControlTarget {
   engineState: EngineState;
   readonly env: Pick<
     Env,
-    "PLACEMENT_TARGET_COLO" | "GOLDEN_COLOS" | "HIGH_LATENCY_COLO_RISK_MULTIPLIER"
+    | "PLACEMENT_TARGET_COLO"
+    | "GOLDEN_COLOS"
+    | "HIGH_LATENCY_COLO_RISK_MULTIPLIER"
+    | "MAX_POSITION_PCT"
   >;
+  readonly orderBook: TradingAssetMatrixTarget["orderBook"];
   readonly configManager: {
     fetchConfig(): Promise<GlobalRiskConfig>;
   };
@@ -108,17 +116,10 @@ export interface TradingEngineConfigControlTarget {
   readonly profilerRegistry: {
     snapshot(): EngineState["profilerStates"];
     configure(config: GlobalRiskConfig): void;
-  };
+  } & TradingAssetMatrixTarget["profilerRegistry"];
   readonly logger: {
     warn(eventType: string, message: string, telemetry?: JsonRecord): void;
   };
-  calculateAssetMatrix(
-    observedAt: string,
-    latestInstrumentCode: string | undefined,
-    latestOracle: EngineState["oracle"],
-    profilerStates: EngineState["profilerStates"],
-    assetQuoteStates: EngineState["assetQuoteStates"]
-  ): EngineState["assetMatrix"];
   safeStoragePut(key: string, value: unknown, reason: string): Promise<void>;
   safeSetAlarm(timestamp: number, reason: string): Promise<void>;
 }
@@ -226,17 +227,19 @@ export function refreshTradingEngineConfigForTarget(
       snapshotProfilers: () => target.profilerRegistry.snapshot(),
       calculateAssetMatrix: (
         observedAt,
-        latestInstrumentCode,
+        _latestInstrumentCode,
         latestOracle,
         profilerStates,
         assetQuoteStates
       ) =>
-        target.calculateAssetMatrix(
-          observedAt,
-          latestInstrumentCode,
-          latestOracle,
-          profilerStates,
-          assetQuoteStates
+        calculateTradingAssetMatrixForTarget(
+          {
+            observedAt,
+            latestOracle,
+            profilerStates,
+            assetQuoteStates
+          },
+          target
         ),
       applyConfigCache: (config, macroBias, temporaryOverride) => {
         target.cachedConfig = config;

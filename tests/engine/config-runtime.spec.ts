@@ -32,7 +32,7 @@ import {
 } from "../../src/engine/trading/config/TradingConfigControlRuntime";
 import { CONFIG_ALARM_INTERVAL_MS } from "../../src/TradingEngineConstants";
 import { defaultEngineState } from "../../src/engine/trading/state/EngineStateDefaults";
-import type { AdminConfigUpdate, EngineState } from "../../src/types";
+import type { AdminConfigUpdate, EngineState, ProfilerState } from "../../src/types";
 
 describe("ConfigRuntime", () => {
   it("applies runtime admin updates while preserving config and governance context", () => {
@@ -539,7 +539,6 @@ describe("ConfigRuntime", () => {
     expect(target.events).toEqual([
       "effective:config-target",
       "snapshot-profilers",
-      "matrix",
       "configure:config-target-effective",
       "persist:CONFIG_REFRESH",
       "warn:CONFIG_REFRESHED:config-target-effective"
@@ -743,7 +742,6 @@ describe("ConfigRuntime", () => {
     expect(target.events).toEqual([
       "effective:config-refresh",
       "snapshot-profilers",
-      "matrix",
       "configure:config-refresh-effective",
       "persist:CONFIG_REFRESH",
       "warn:CONFIG_REFRESHED:config-refresh-effective",
@@ -946,8 +944,10 @@ function tradingConfigControlTargetSpy(
     env: {
       PLACEMENT_TARGET_COLO: "NRT",
       GOLDEN_COLOS: "NRT,HND",
-      HIGH_LATENCY_COLO_RISK_MULTIPLIER: "0.25"
+      HIGH_LATENCY_COLO_RISK_MULTIPLIER: "0.25",
+      MAX_POSITION_PCT: "0.05"
     },
+    orderBook: new Map(),
     configManager: {
       fetchConfig() {
         events.push("fetch");
@@ -977,6 +977,20 @@ function tradingConfigControlTargetSpy(
       },
       configure(config) {
         events.push(`configure:${config.version}`);
+      },
+      forInstrument(instrumentCode) {
+        return {
+          snapshot() {
+            return (
+              currentState.profilerStates[instrumentCode] ??
+              ({
+                toxicityState: "NORMAL",
+                amVpinScore: 0,
+                obi: null
+              } as ProfilerState)
+            );
+          }
+        };
       }
     },
     logger: {
@@ -985,10 +999,6 @@ function tradingConfigControlTargetSpy(
           `warn:${eventType}:${String(metadata?.configVersion ?? metadata?.riskConfigVersion)}`
         );
       }
-    },
-    calculateAssetMatrix() {
-      events.push("matrix");
-      return {};
     },
     safeStoragePut(_key, _value, reason) {
       events.push(`persist:${reason}`);
