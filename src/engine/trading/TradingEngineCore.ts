@@ -53,10 +53,7 @@ import { applyAnomalyEmergencyPauseFlow } from "./anomaly/AnomalyRuntime";
 import { emitTradingAnomalyEmergencyPause } from "./anomaly/TradingAnomalyEmergencyRuntime";
 import { updateLeadLagMetrics as updateLeadLagRuntimeMetrics } from "./leadlag/LeadLagRuntime";
 import { cancelLaggingHypeQuotesForTrading } from "./leadlag/TradingCrossAssetCancelRuntime";
-import {
-  applyInventoryHedgeSideEffects,
-  buildInventoryHedgeIntent
-} from "./inventory/InventoryRuntime";
+import { dispatchTradingInventoryHedgeIfNeeded } from "./inventory/TradingInventoryHedgeRuntime";
 import { calculateTradingInventoryState } from "./inventory/TradingInventoryStateRuntime";
 import { resolveMaxPositionPct } from "./risk/PortfolioRiskRuntime";
 import { updateTradingPortfolioRisk } from "./risk/TradingPortfolioRiskRuntime";
@@ -2257,21 +2254,16 @@ export class TradingEngine {
     observedAt: string,
     shadowReplay: boolean
   ): void {
-    const hedge = buildInventoryHedgeIntent({
-      book,
-      inventory,
-      observedAt,
-      engineId: this.engineState.engineId,
-      config: this.cachedConfig,
-      lastHedgeAtMs: this.lastHedgeDispatchedAt.get(book.instrumentCode) ?? 0,
-      fallbackNowMs: Date.now()
-    });
-    applyInventoryHedgeSideEffects(
+    dispatchTradingInventoryHedgeIfNeeded(
       {
-        hedge,
+        book,
         inventory,
-        triggerPct: this.cachedConfig.HEDGE_TRIGGER_INVENTORY_PCT,
-        suppressExecution: shadowReplay
+        observedAt,
+        shadowReplay,
+        engineId: this.engineState.engineId,
+        config: this.cachedConfig,
+        lastHedgeAtMs: this.lastHedgeDispatchedAt.get(book.instrumentCode) ?? 0,
+        fallbackNowMs: Date.now()
       },
       {
         rememberDispatchedAt: (instrumentCode, dispatchedAtMs) =>
