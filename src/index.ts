@@ -13,7 +13,6 @@ import {
 import { StrategyVault } from "./StrategyVault";
 import { TradingEngine } from "./TradingEngine";
 import { Notifier } from "./utils/Notifier";
-import { getTradingEngineStub } from "./utils/TradingEngineStub";
 import { evaluateRateLimit, ipRateLimitKey } from "./gateway/middleware/RateLimitMiddleware";
 import { adminUiResponse } from "./gateway/AdminUi";
 import {
@@ -61,6 +60,11 @@ import {
   revokeAdminToken,
   revokeAllTokensForSubject
 } from "./gateway/GatewayAuth";
+import {
+  gatewayHealthFallback,
+  remapRequestPath,
+  routeToEngine
+} from "./gateway/GatewayEngineRouter";
 import { evaluateHyperliquidSecrets } from "./gateway/HyperliquidSecretDiagnostics";
 import {
   evaluateMoltworkerHeartbeat,
@@ -91,9 +95,9 @@ import {
   safeResponseJson,
   sanitizeReason
 } from "./gateway/AdminValidation";
-import { corsPreflight, json, readJsonBody, withCors } from "./gateway/ResponseHelpers";
+import { corsPreflight, json, readJsonBody } from "./gateway/ResponseHelpers";
 import { logSecurityEvent, maskTokenId, sourceIp } from "./gateway/SecurityAudit";
-import { placementColo, topologyTelemetry, withTopologyHeaders } from "./gateway/Topology";
+import { placementColo, topologyTelemetry } from "./gateway/Topology";
 import {
   clampInteger,
   finiteNumber,
@@ -1936,45 +1940,6 @@ async function sendTestAlert(
   );
 }
 
-async function routeToEngine(
-  request: Request,
-  env: Env,
-  topology: EdgeTopology,
-  options: {
-    timeoutMs?: number;
-    timeoutResponse?: Response;
-  } = {}
-): Promise<Response> {
-  const engine = getTradingEngineStub(env);
-  const controller = options.timeoutMs ? new AbortController() : null;
-  const timeout =
-    controller && options.timeoutMs
-      ? setTimeout(() => controller.abort("ENGINE_TIMEOUT"), options.timeoutMs)
-      : null;
-
-  try {
-    const response = await engine.fetch(withTopologyHeaders(request, topology, controller?.signal));
-
-    return response.status === 101 ? response : withCors(response);
-  } catch (error) {
-    if (controller?.signal.aborted && options.timeoutResponse) {
-      return withCors(options.timeoutResponse);
-    }
-
-    throw error;
-  } finally {
-    if (timeout !== null) {
-      clearTimeout(timeout);
-    }
-  }
-}
-
-function remapRequestPath(request: Request, pathname: string): Request {
-  const url = new URL(request.url);
-  url.pathname = pathname;
-  return new Request(url, request);
-}
-
 async function readAgentTrace(env: Env, url: URL): Promise<Response> {
   const limit = clampInteger(url.searchParams.get("limit"), 50, 1, 200);
   const agent = normalizeEnum(url.searchParams.get("agent"), AGENT_NAMES);
@@ -2575,21 +2540,6 @@ function backendSettings(env: Env): JsonRecord {
       newsFeeds: parseJsonValue(env.NEWS_FEEDS)
     }
   };
-}
-
-function gatewayHealthFallback(topology: EdgeTopology): Response {
-  return json(
-    {
-      ok: false,
-      status: "ENGINE_HEALTH_TIMEOUT",
-      service: "sovereign-sigma-core",
-      message: "Trading engine health did not respond within the gateway timeout",
-      timeoutMs: ENGINE_HEALTH_TIMEOUT_MS,
-      topology,
-      observedAt: new Date().toISOString()
-    },
-    503
-  );
 }
 
 function diagnosticCheck(
