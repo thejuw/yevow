@@ -76,6 +76,7 @@ import {
   sanitizeReason
 } from "./gateway/AdminValidation";
 import { corsPreflight, json, readJsonBody, withCors } from "./gateway/ResponseHelpers";
+import { logSecurityEvent, sourceIp } from "./gateway/SecurityAudit";
 import { placementColo, topologyTelemetry, withTopologyHeaders } from "./gateway/Topology";
 import type { AdminScope } from "./AuthManager";
 import type {
@@ -4002,37 +4003,6 @@ function nullableRound(value: number | null | undefined, decimalPlaces: number):
 
 function isJsonRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function logSecurityEvent(
-  logger: Logger,
-  eventType: string,
-  message: string,
-  request: Request,
-  url: URL,
-  topology: EdgeTopology,
-  extra: JsonRecord = {}
-): void {
-  logger.warn(eventType, message, {
-    ...extra,
-    sourceIp: sourceIp(request),
-    endpoint: url.pathname,
-    method: request.method,
-    colo: topology.colo,
-    placement: topology.placement,
-    requestId: topology.requestId
-  });
-}
-
-function sourceIp(request: Request): string | null {
-  const forwardedFor = request.headers.get("x-forwarded-for");
-
-  return (
-    request.headers.get("cf-connecting-ip") ??
-    request.headers.get("x-real-ip") ??
-    forwardedFor?.split(",")[0]?.trim() ??
-    null
-  );
 }
 
 function clampInteger(
