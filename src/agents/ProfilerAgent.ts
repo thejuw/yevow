@@ -3,16 +3,31 @@ import type {
   GlobalRiskConfig,
   JsonRecord,
   LiquidationCascadeCluster,
-  LiquidationHeatmapState,
-  LiquidityWall,
   MarketTick,
-  PriceLevel,
   ProfilerState,
-  ProfilerVolumeBucket,
-  ToxicityPressureSide,
-  ToxicityState
+  ProfilerVolumeBucket
 } from "../types";
 import { classifyLearnedToxicity } from "../engine/ToxicityClassifier";
+import {
+  DEFAULT_ALERT_THRESHOLD,
+  DEFAULT_BUCKET_SIZE,
+  DEFAULT_CONTESTED_SPREAD_MULTIPLIER,
+  DEFAULT_CRITICAL_HALT_MS,
+  DEFAULT_CRITICAL_OBI,
+  DEFAULT_CRITICAL_THRESHOLD,
+  DEFAULT_DIRECTIONAL_DECAY,
+  DEFAULT_NORMAL_THRESHOLD,
+  DEFAULT_OBI_DEPTH,
+  DEFAULT_QUOTE_HIBERNATE_MS,
+  DEFAULT_ROLLING_WINDOW,
+  DEFAULT_TOXIC_SPREAD_MULTIPLIER,
+  DEFAULT_TOXIC_THRESHOLD,
+  DEFAULT_WHALE_Z_THRESHOLD,
+  VOLUME_EPSILON,
+  type ProfilerAgentConfig,
+  type ProfilerContext,
+  type ProfilerEvaluation
+} from "./ProfilerAgentTypes";
 import {
   aggressorSign,
   boundedInteger,
@@ -45,63 +60,11 @@ import {
 export const PROFILER_STATE_STORAGE_KEY = "agent:profiler:state";
 export const PROFILER_STATE_STORAGE_PREFIX = `${PROFILER_STATE_STORAGE_KEY}:`;
 
-const DEFAULT_BUCKET_SIZE = 10;
-const DEFAULT_ROLLING_WINDOW = 50;
-const DEFAULT_ALERT_THRESHOLD = 0.7;
-const DEFAULT_WHALE_Z_THRESHOLD = 5;
-const DEFAULT_QUOTE_HIBERNATE_MS = 3_000;
-const DEFAULT_DIRECTIONAL_DECAY = 0.3;
-const DEFAULT_OBI_DEPTH = 5;
-const DEFAULT_NORMAL_THRESHOLD = 0.65;
-const DEFAULT_TOXIC_THRESHOLD = 0.75;
-const DEFAULT_CRITICAL_THRESHOLD = 0.85;
-const DEFAULT_CRITICAL_OBI = 0.8;
-const DEFAULT_CRITICAL_HALT_MS = 60_000;
-const DEFAULT_CONTESTED_SPREAD_MULTIPLIER = 1.5;
-const DEFAULT_TOXIC_SPREAD_MULTIPLIER = 3;
-const VOLUME_EPSILON = 0.00000001;
-
-export interface ProfilerAgentConfig {
-  bucketSize?: number;
-  rollingWindow?: number;
-  alertThreshold?: number;
-  whalePrintZThreshold?: number;
-  quoteHibernateMs?: number;
-  directionalDecay?: number;
-  obiDepth?: number;
-  normalThreshold?: number;
-  toxicThreshold?: number;
-  criticalThreshold?: number;
-  criticalObi?: number;
-  criticalHaltMs?: number;
-  contestedSpreadMultiplier?: number;
-  toxicSpreadMultiplier?: number;
-  toxicityClassifierEnabled?: boolean;
-  toxicityClassifierThreshold?: number;
-}
-
-export interface ProfilerContext {
-  engineId: string;
-  observedAt: string;
-  midPrice: number | null;
-  spreadBps: number | null;
-  weightedImbalance: number | null;
-  orderBookBids?: PriceLevel[];
-  orderBookAsks?: PriceLevel[];
-  liquidityWalls?: LiquidityWall[];
-  spoofingAlerts?: LiquidityWall[];
-  liquidationHeatmap?: LiquidationHeatmapState | null;
-  jumpDetected?: boolean;
-}
-
-export interface ProfilerEvaluation {
-  processed: boolean;
-  skippedReason: string | null;
-  closedBuckets: number;
-  toxicityScore: number;
-  state: ProfilerState;
-  signal: AgentSignal | null;
-}
+export type {
+  ProfilerAgentConfig,
+  ProfilerContext,
+  ProfilerEvaluation
+} from "./ProfilerAgentTypes";
 
 export class ProfilerAgent {
   private bucketSize: number;
