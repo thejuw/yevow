@@ -21,6 +21,10 @@ export function logSecurityEvent(
   });
 }
 
+export function maskTokenId(value: string): string {
+  return value.length > 12 ? `${value.slice(0, 6)}...${value.slice(-4)}` : "configured";
+}
+
 export function sourceIp(request: Request): string | null {
   const forwardedFor = request.headers.get("x-forwarded-for");
 
