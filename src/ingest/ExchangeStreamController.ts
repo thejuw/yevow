@@ -20,6 +20,7 @@ import {
   type HawkesFlowObservation,
   type HawkesFlowSide
 } from "./HawkesFlowTracker";
+import { buildExchangeStreamHealth } from "./ExchangeStreamHealth";
 import { ClockSyncTracker, ClusterPool } from "./StreamRuntime";
 import {
   DEFAULT_AUTH_HEADER,
@@ -62,7 +63,6 @@ import {
   formatPriceKey,
   hawkesTradeSide,
   heartbeatPayload,
-  hostnameOf,
   hyperliquidInstrumentCode,
   hasEndpointPath,
   isDwellirGrpcConfig,
@@ -198,19 +198,10 @@ export class ExchangeStreamController {
   }
 
   snapshot(): ExchangeStreamHealth {
-    return {
-      ok: this.status === "CONNECTED",
-      streamId: this.config.id,
-      source: this.config.source,
-      source_exchange: this.config.source_exchange,
-      transport: this.config.transport,
-      streamHost: hostnameOf(this.clusterPool.activeUrl()),
-      activeClusterUrl: redactEndpoint(this.clusterPool.activeUrl()),
-      subscriptionProfile: this.config.subscriptionProfile,
-      heartbeatLatencyMs: this.clusterPool.activeHeartbeatLatencyMs(),
-      packetLossPct: this.packetLossPct(),
-      sourceWeight: this.config.weight,
-      clockOffsetMs: this.clockSync.currentOffsetMs(),
+    return buildExchangeStreamHealth({
+      config: this.config,
+      clusterPool: this.clusterPool,
+      clockSync: this.clockSync,
       status: this.status,
       connectionId: this.connectionId,
       attempts: this.attempts,
@@ -226,12 +217,7 @@ export class ExchangeStreamController {
       lastRecoveryDurationMs: this.lastRecoveryDurationMs,
       lastError: this.lastError,
       lastFatalDropAt: this.lastFatalDropAt
-    };
-  }
-
-  private packetLossPct(): number {
-    const totalPackets = this.messagesReceived + this.ticksDropped;
-    return totalPackets > 0 ? Math.round((this.ticksDropped / totalPackets) * 10_000) / 100 : 0;
+    });
   }
 
   stop(reason: string): void {
