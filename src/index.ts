@@ -78,6 +78,25 @@ import {
 import { corsPreflight, json, readJsonBody, withCors } from "./gateway/ResponseHelpers";
 import { logSecurityEvent, sourceIp } from "./gateway/SecurityAudit";
 import { placementColo, topologyTelemetry, withTopologyHeaders } from "./gateway/Topology";
+import {
+  clampInteger,
+  finiteNumber,
+  isJsonRecord,
+  normalizeAsset,
+  normalizeEngineMode,
+  normalizeEnum,
+  nullableRound,
+  numberOption,
+  pagination,
+  parseDateRange,
+  parseJsonRecord,
+  parseJsonValue,
+  positiveNumber,
+  readNumberField,
+  readString,
+  round,
+  stringNumber
+} from "./gateway/ValueCodecs";
 import type { AdminScope } from "./AuthManager";
 import type {
   AdminConfigUpdate,
@@ -85,7 +104,6 @@ import type {
   Env,
   GlobalRiskConfig,
   JsonRecord,
-  JsonValue,
   NotificationSettingsUpdate
 } from "./types";
 
@@ -3870,154 +3888,6 @@ function formatPaperLedgerFill(row: PaperLedgerFillRow): PaperLedgerFillInput {
     executedAt: row.executed_at,
     createdAt: row.created_at
   };
-}
-
-function pagination(page: number, limit: number, total: number): JsonRecord {
-  const pageCount = Math.ceil(total / limit);
-
-  return {
-    page,
-    limit,
-    total,
-    pageCount,
-    hasNextPage: page < pageCount,
-    hasPreviousPage: page > 1
-  };
-}
-
-function normalizeEnum<T extends string>(value: string | null, allowed: readonly T[]): T | null {
-  if (!value) {
-    return null;
-  }
-
-  const normalized = value.trim().toUpperCase();
-  return allowed.includes(normalized as T) ? (normalized as T) : null;
-}
-
-function normalizeEngineMode(value: unknown): "PAPER" | "LIVE" | "HALTED" | null {
-  if (value !== "PAPER" && value !== "LIVE" && value !== "HALTED") {
-    return null;
-  }
-
-  return value;
-}
-
-function normalizeAsset(value: string | null): string | null {
-  if (!value) {
-    return null;
-  }
-
-  const normalized = value.trim().toLowerCase();
-  return /^[a-z0-9._:-]{1,64}$/.test(normalized) ? normalized : null;
-}
-
-function parseDateRange(url: URL): DateRangeFilter {
-  const compactRange = url.searchParams.get("date_range") ?? url.searchParams.get("dateRange");
-  const [rangeFrom, rangeTo] = compactRange?.split(/[|,]/, 2) ?? [];
-  const from =
-    normalizeIsoDate(url.searchParams.get("from")) ??
-    normalizeIsoDate(url.searchParams.get("start")) ??
-    normalizeIsoDate(url.searchParams.get("date_from")) ??
-    normalizeIsoDate(rangeFrom);
-  const to =
-    normalizeIsoDate(url.searchParams.get("to")) ??
-    normalizeIsoDate(url.searchParams.get("end")) ??
-    normalizeIsoDate(url.searchParams.get("date_to")) ??
-    normalizeIsoDate(rangeTo);
-
-  return { from, to };
-}
-
-function normalizeIsoDate(value: string | null | undefined): string | null {
-  if (!value) {
-    return null;
-  }
-
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
-}
-
-function parseJsonRecord(value: string | null): JsonRecord | null {
-  if (!value) {
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return isJsonRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function parseJsonValue(value: string | undefined): JsonValue | null {
-  if (!value) {
-    return null;
-  }
-
-  try {
-    return JSON.parse(value) as JsonValue;
-  } catch {
-    return value;
-  }
-}
-
-function stringNumber(value: string | undefined): number | null {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function positiveNumber(value: string | undefined, fallback: number): number {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function readString(record: JsonRecord | null, key: string): string | null {
-  const value = record?.[key];
-  return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-function readNumberField(record: JsonRecord | null, key: string): number | null {
-  const value = record?.[key];
-  return typeof value === "number" ? value : null;
-}
-
-function finiteNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function numberOption(bodyValue: unknown, queryValue: string | null): number | undefined {
-  const candidate = bodyValue ?? queryValue;
-  const parsed = Number(candidate);
-  return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-function round(value: number, decimalPlaces: number): number {
-  const scale = 10 ** decimalPlaces;
-  return Math.round(value * scale) / scale;
-}
-
-function nullableRound(value: number | null | undefined, decimalPlaces: number): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? round(value, decimalPlaces) : null;
-}
-
-function isJsonRecord(value: unknown): value is JsonRecord {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function clampInteger(
-  value: string | null,
-  fallback: number,
-  minimum: number,
-  maximum: number
-): number {
-  const parsed = Number(value);
-
-  if (!Number.isFinite(parsed)) {
-    return fallback;
-  }
-
-  return Math.min(maximum, Math.max(minimum, Math.round(parsed)));
 }
 
 function gatewayHealthFallback(topology: EdgeTopology): Response {
