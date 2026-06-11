@@ -21,6 +21,12 @@ import {
   type HawkesFlowSide
 } from "./HawkesFlowTracker";
 import { buildExchangeStreamHealth } from "./ExchangeStreamHealth";
+import {
+  currentBlackoutDurationMs,
+  isNormalProviderRecycle,
+  shouldResetBookOnConnect,
+  shouldThrottleNormalRecycleLog
+} from "./ExchangeStreamLifecycle";
 import { ClockSyncTracker, ClusterPool } from "./StreamRuntime";
 import {
   DEFAULT_AUTH_HEADER,
@@ -122,8 +128,6 @@ const DEFAULT_CLOCK_SYNC_ALPHA = 0.1;
 const DEFAULT_CLOCK_SYNC_MAX_OFFSET_MS = 10_000;
 const DEFAULT_STALE_TICK_DROP_MS = 1_000;
 const PRE_SNAPSHOT_BUFFER_LIMIT = 1_000;
-const NORMAL_RECYCLE_LOG_THROTTLE_MS = 60_000;
-
 interface EngineTickResponse {
   accepted?: boolean;
   acceptedCount?: number;
@@ -1942,26 +1946,17 @@ export class ExchangeStreamController {
     blackoutDurationMs: number,
     previousDisconnectReason: string | null
   ): boolean {
-    if (!this.hasConnectedOnce) {
-      return true;
-    }
-    if (!this.isNormalProviderRecycle(previousDisconnectReason)) {
-      return true;
-    }
-
-    return (
-      blackoutDurationMs >
-      Math.max(1_000, readNumber(this.env.DWELLIR_GRPC_FATAL_DROP_MS, DEFAULT_GRPC_FATAL_DROP_MS))
-    );
+    return shouldResetBookOnConnect({
+      hasConnectedOnce: this.hasConnectedOnce,
+      previousDisconnectReason,
+      config: this.config,
+      blackoutDurationMs,
+      fatalDropMs: readNumber(this.env.DWELLIR_GRPC_FATAL_DROP_MS, DEFAULT_GRPC_FATAL_DROP_MS)
+    });
   }
 
   private isNormalProviderRecycle(reason = this.lastError): boolean {
-    return (
-      this.config.source === "HYPERLIQUID" &&
-      this.config.transport === "websocket" &&
-      this.config.id.startsWith("dwellir-hyperliquid-orderbook") &&
-      reason === "CLOSE_1000"
-    );
+    return isNormalProviderRecycle(this.config, reason);
   }
 
   private logNormalProviderRecycle(
@@ -1972,7 +1967,7 @@ export class ExchangeStreamController {
     const now = Date.now();
     const previous = this.normalRecycleLogAt.get(eventType) ?? 0;
 
-    if (now - previous < NORMAL_RECYCLE_LOG_THROTTLE_MS) {
+    if (shouldThrottleNormalRecycleLog(previous, now)) {
       return;
     }
 
@@ -1989,10 +1984,6 @@ export class ExchangeStreamController {
   }
 
   private currentBlackoutDurationMs(at: string = new Date().toISOString()): number {
-    if (!this.blackoutStartedAt) {
-      return 0;
-    }
-
-    return Math.max(0, Date.parse(at) - Date.parse(this.blackoutStartedAt));
+    return currentBlackoutDurationMs(this.blackoutStartedAt, at);
   }
 }
