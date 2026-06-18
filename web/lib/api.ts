@@ -13,6 +13,13 @@ import type {
   CostBudgetSettings,
   CostDashboardResponse,
   CascadeBacktestResponse,
+  CongressPnlRefreshResponse,
+  CongressPeriod,
+  CongressRunsResponse,
+  CongressRunTriggerResponse,
+  CongressStatusResponse,
+  CongressTickerHierarchyResponse,
+  CongressTransactionsResponse,
   DiagnosticsResponse,
   ExecutionQualityResponse,
   GlobalRiskConfig,
@@ -94,6 +101,82 @@ export async function readTradeHistory(
   token: string
 ): Promise<TradeHistoryResponse> {
   return apiFetch<TradeHistoryResponse>(apiBase, "/admin/history?status=ALL&limit=250", token);
+}
+
+export async function readCongressStatus(
+  apiBase: string,
+  token: string
+): Promise<CongressStatusResponse> {
+  return apiFetch<CongressStatusResponse>(apiBase, "/admin/congress/status", token, {
+    allowErrorBody: true
+  });
+}
+
+export async function readCongressRuns(
+  apiBase: string,
+  token: string,
+  limit = 10
+): Promise<CongressRunsResponse> {
+  return apiFetch<CongressRunsResponse>(
+    apiBase,
+    `/admin/congress/runs?limit=${limit}`,
+    token,
+    {
+      allowErrorBody: true
+    }
+  );
+}
+
+export async function readCongressTransactions(
+  apiBase: string,
+  token: string,
+  limit = 100
+): Promise<CongressTransactionsResponse> {
+  return apiFetch<CongressTransactionsResponse>(
+    apiBase,
+    `/admin/congress/transactions?limit=${limit}`,
+    token,
+    {
+      allowErrorBody: true
+    }
+  );
+}
+
+export async function readCongressTickerHierarchy(
+  apiBase: string,
+  token: string,
+  period: CongressPeriod = "24h"
+): Promise<CongressTickerHierarchyResponse> {
+  return apiFetch<CongressTickerHierarchyResponse>(
+    apiBase,
+    `/admin/congress/tickers?period=${encodeURIComponent(period)}&basis=created_at`,
+    token,
+    {
+      allowErrorBody: true
+    }
+  );
+}
+
+export async function triggerCongressRun(
+  apiBase: string,
+  token: string,
+  source: "all" | "house" | "senate" = "all"
+): Promise<CongressRunTriggerResponse> {
+  return apiFetch<CongressRunTriggerResponse>(apiBase, "/admin/congress/run", token, {
+    method: "POST",
+    body: JSON.stringify({ source, reason: "command-center-manual-run" })
+  });
+}
+
+export async function refreshCongressPnl(
+  apiBase: string,
+  token: string,
+  limit = 100
+): Promise<CongressPnlRefreshResponse> {
+  return apiFetch<CongressPnlRefreshResponse>(apiBase, "/admin/congress/pnl/refresh", token, {
+    method: "POST",
+    body: JSON.stringify({ limit })
+  });
 }
 
 export async function readCascadeActive(

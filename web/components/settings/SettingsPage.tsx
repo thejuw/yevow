@@ -79,7 +79,9 @@ const VAULT_KEYS: VaultKeyName[] = [
   "EXCHANGE_API_KEY",
   "EXCHANGE_API_SECRET",
   "EXCHANGE_HMAC_SECRET",
-  "EXCHANGE_ED25519_PRIVATE_KEY"
+  "EXCHANGE_ED25519_PRIVATE_KEY",
+  "CONGRESS_RUNNER_URL",
+  "CONGRESS_RUNNER_TOKEN"
 ];
 
 const RETIRED_STATE_TOKENS = [
@@ -618,6 +620,10 @@ export default function SettingsPage() {
         </div>
         <div className="settings-nav">
           <a href="/">Command Center</a>
+          <a href="/congress">
+            <DatabaseZap size={16} />
+            Congress
+          </a>
           <button onClick={() => void refresh()}>
             <RadioTower size={16} />
             Refresh

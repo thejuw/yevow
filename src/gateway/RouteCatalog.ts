@@ -62,7 +62,15 @@ export const ROUTE_CATALOG = [
   "GET /admin/dom/heatmap",
   "GET /admin/liquidations/heatmap",
   "GET /admin/stream",
-  "GET /admin/logs"
+  "GET /admin/logs",
+  "GET /admin/congress/status",
+  "GET /admin/congress/runs",
+  "POST /admin/congress/run",
+  "POST /admin/congress/ingest",
+  "GET /admin/congress/filings",
+  "GET /admin/congress/tickers",
+  "GET /admin/congress/transactions",
+  "POST /admin/congress/pnl/refresh"
 ] as const;
 
 export function gatewayCatalogResponse(env: Env, topology: EdgeTopology): Response {

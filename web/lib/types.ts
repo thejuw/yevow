@@ -926,7 +926,9 @@ export type VaultKeyName =
   | "DISCORD_WEBHOOK_URL"
   | "TELEGRAM_BOT_TOKEN"
   | "TELEGRAM_CHAT_ID"
-  | "ALERT_WEBHOOK_URL";
+  | "ALERT_WEBHOOK_URL"
+  | "CONGRESS_RUNNER_URL"
+  | "CONGRESS_RUNNER_TOKEN";
 
 export interface VaultEntry {
   envConfigured: boolean;
@@ -1004,4 +1006,144 @@ export interface CascadeLiveApprovalResponse {
 export interface VaultStatusResponse {
   ok: boolean;
   vault: VaultStatus;
+}
+
+export interface CongressRun {
+  run_id: string;
+  status: string;
+  trigger_source: string;
+  source: string;
+  scheduled_for: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  error_message: string | null;
+  stats_json: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CongressTransaction {
+  transaction_id: string;
+  filing_id: string | null;
+  chamber: string;
+  member_name: string | null;
+  owner: string | null;
+  symbol: string | null;
+  asset_name: string | null;
+  transaction_type: string;
+  transaction_date: string | null;
+  notification_date: string | null;
+  amount_min: number | null;
+  amount_max: number | null;
+  amount_mid: number | null;
+  transaction_price: number | null;
+  transaction_price_as_of: string | null;
+  current_price: number | null;
+  current_price_as_of: string | null;
+  pnl_estimate: number | null;
+  return_pct: number | null;
+  price_provider: string | null;
+  confidence: number | null;
+  raw_text: string | null;
+  source_url: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CongressStatusResponse {
+  ok: boolean;
+  tracker: {
+    enabled: boolean;
+    schedulerTimezone: string;
+    runnerConfigured: boolean;
+    runnerKind?: string;
+    priceProvider: string;
+    rawArchiveConfigured: boolean;
+  };
+  latestRun: CongressRun | null;
+  counts: {
+    runs: number;
+    filings: number;
+    transactions: number;
+    openIssues: number;
+    markedTransactions: number;
+  };
+  pnl: {
+    totalEstimate: number;
+    averageReturnPct: number | null;
+  };
+}
+
+export interface CongressRunsResponse {
+  ok: boolean;
+  runs: CongressRun[];
+  limit: number;
+  offset: number;
+}
+
+export interface CongressRunTriggerResponse {
+  ok: boolean;
+  runId: string;
+  status: string;
+  runnerConfigured: boolean;
+  message: string;
+  error?: string;
+}
+
+export interface CongressTransactionsResponse {
+  ok: boolean;
+  transactions: CongressTransaction[];
+  limit: number;
+  offset: number;
+  pnlMethod: string;
+}
+
+export type CongressPeriod = "24h" | "7d" | "30d" | "90d" | "ytd" | "all";
+
+export interface CongressTickerAssetBreakdown {
+  assetName: string;
+  transactionCount: number;
+  totalAmountMid: number;
+  memberCount: number;
+}
+
+export interface CongressTickerHierarchyItem {
+  rank: number;
+  ticker: string;
+  displayName: string;
+  weightPct: number;
+  transactionCount: number;
+  purchaseCount: number;
+  saleCount: number;
+  exchangeCount: number;
+  totalAmountMid: number;
+  purchaseAmountMid: number;
+  saleAmountMid: number;
+  netDirectionalAmountMid: number;
+  markedCount: number;
+  pnlEstimate: number;
+  lastSeenAt: string | null;
+  topAssets: CongressTickerAssetBreakdown[];
+  transactions: CongressTransaction[];
+}
+
+export interface CongressTickerHierarchyResponse {
+  ok: boolean;
+  period: CongressPeriod;
+  basis: "created_at" | "transaction_date";
+  windowStart: string | null;
+  windowEnd: string;
+  totalAmountMid: number;
+  totalTransactions: number;
+  tickers: CongressTickerHierarchyItem[];
+  note: string;
+}
+
+export interface CongressPnlRefreshResponse {
+  ok: boolean;
+  refreshed: number;
+  failed: number;
+  marks: JsonRecord[];
+  failures: JsonRecord[];
 }

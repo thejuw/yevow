@@ -13,7 +13,9 @@ export function normalizeVaultKey(value: string | undefined): string | null {
     "DISCORD_WEBHOOK_URL",
     "TELEGRAM_BOT_TOKEN",
     "TELEGRAM_CHAT_ID",
-    "ALERT_WEBHOOK_URL"
+    "ALERT_WEBHOOK_URL",
+    "CONGRESS_RUNNER_URL",
+    "CONGRESS_RUNNER_TOKEN"
   ]);
 
   return normalized && allowed.has(normalized) ? normalized : null;

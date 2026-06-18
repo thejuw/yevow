@@ -2,9 +2,11 @@ export interface Env {
   TRADING_ENGINE: DurableObjectNamespace;
   INGEST_COORDINATOR?: DurableObjectNamespace;
   TRADING_DB: D1Database;
+  CONGRESS_DB?: D1Database;
   CONFIG_STORE: KVNamespace;
   AUTH_STORE?: KVNamespace;
   RISK_VAULT: KVNamespace;
+  CONGRESS_RAW?: R2Bucket;
   SECRET_VAULT?: KVNamespace;
   AI?: Ai;
   WORKERS_AI_SENTIMENT_COST_USD?: string;
@@ -261,4 +263,12 @@ export interface Env {
   SHADOW_VLO_LATENCY_BUDGET_MS?: string;
   SHADOW_VLO_MIN_SIZE?: string;
   SHADOW_QUEUE_NO_EDGE_LOG_INTERVAL_MS?: string;
+  CONGRESS_TRACKER_ENABLED?: string;
+  CONGRESS_SCHEDULER_TIMEZONE?: string;
+  CONGRESS_PRICE_PROVIDER?: string;
+  CONGRESS_RUNNER_KIND?: string;
+  CONGRESS_RUNNER_GITHUB_REF?: string;
+  CONGRESS_RUNNER_URL?: string;
+  CONGRESS_RUNNER_TOKEN?: string;
+  CONGRESS_MAX_DAILY_DOWNLOADS?: string;
 }

@@ -182,6 +182,15 @@ function backendSettings(env: Env): JsonRecord {
       anomalyTopOfBookWindowMs: stringNumber(env.ANOMALY_TOP_OF_BOOK_WINDOW_MS)
     },
     operations: {
+      congressTracker: {
+        enabled: env.CONGRESS_TRACKER_ENABLED ?? "true",
+        schedulerTimezone: env.CONGRESS_SCHEDULER_TIMEZONE ?? "America/Chicago",
+        runnerKind: env.CONGRESS_RUNNER_KIND ?? "generic_webhook",
+        runnerGithubRef: env.CONGRESS_RUNNER_GITHUB_REF ?? "main",
+        rawArchiveBindingConfigured: Boolean(env.CONGRESS_RAW),
+        maxDailyDownloads: stringNumber(env.CONGRESS_MAX_DAILY_DOWNLOADS),
+        priceProvider: env.CONGRESS_PRICE_PROVIDER ?? "yahoo-chart"
+      },
       notifierDebounceMs: stringNumber(env.NOTIFIER_DEBOUNCE_MS),
       janitorIntervalMs: stringNumber(env.JANITOR_INTERVAL_MS),
       janitorLogRetentionDays: stringNumber(env.JANITOR_LOG_RETENTION_DAYS),
@@ -230,7 +239,9 @@ export async function vaultStatus(env: Env): Promise<JsonRecord> {
     "DISCORD_WEBHOOK_URL",
     "TELEGRAM_BOT_TOKEN",
     "TELEGRAM_CHAT_ID",
-    "ALERT_WEBHOOK_URL"
+    "ALERT_WEBHOOK_URL",
+    "CONGRESS_RUNNER_URL",
+    "CONGRESS_RUNNER_TOKEN"
   ];
   const entries: JsonRecord = {};
 

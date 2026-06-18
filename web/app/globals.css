@@ -589,6 +589,23 @@ output {
   font-size: 11px;
 }
 
+.panel-link {
+  margin-left: auto;
+  min-height: 26px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(215, 196, 139, 0.24);
+  border-radius: 7px;
+  padding: 4px 8px;
+  color: var(--gold);
+  background: rgba(215, 196, 139, 0.07);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  text-decoration: none;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
 .bridge-panel {
   order: 1;
   grid-column: span 4;
@@ -601,6 +618,38 @@ output {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
+}
+
+.congress-brief-panel {
+  order: 3;
+  grid-column: 1 / -1;
+}
+
+.congress-brief-list {
+  display: grid;
+  gap: 6px;
+}
+
+.congress-brief-row {
+  min-height: 34px;
+  display: grid;
+  grid-template-columns: minmax(110px, 0.7fr) 86px minmax(120px, 0.65fr);
+  gap: 8px;
+  align-items: center;
+  border: 1px solid rgba(150, 165, 188, 0.12);
+  border-radius: 7px;
+  padding: 7px 9px;
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.025);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  text-decoration: none;
+}
+
+.congress-brief-row span,
+.congress-brief-row code {
+  color: var(--muted);
+  text-align: right;
 }
 
 .shadow-queue-panel {
@@ -1812,6 +1861,531 @@ output {
   margin-top: 12px;
 }
 
+.congress-shell {
+  gap: 12px;
+}
+
+.congress-warning {
+  border: 1px solid rgba(215, 196, 139, 0.22);
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+}
+
+.congress-warning strong {
+  color: var(--gold);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.congress-warning span {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.congress-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.congress-metric {
+  border: 1px solid var(--line-cold);
+  border-radius: 8px;
+  display: grid;
+  gap: 5px;
+  min-height: 128px;
+  padding: 13px;
+}
+
+.congress-metric div {
+  color: var(--gold);
+}
+
+.congress-metric span,
+.congress-metric small {
+  color: var(--muted);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.congress-metric strong {
+  color: var(--text);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 24px;
+}
+
+.congress-hierarchy-panel {
+  grid-column: 1 / -1;
+  width: 100%;
+}
+
+.congress-ledger-panel {
+  grid-column: 1 / -1;
+  width: 100%;
+}
+
+.congress-ledger-cards {
+  display: grid;
+  gap: 7px;
+  margin-bottom: 10px;
+}
+
+.congress-member-stack {
+  display: grid;
+  gap: 8px;
+}
+
+.congress-member-batch {
+  border: 1px solid rgba(150, 165, 188, 0.14);
+  border-radius: 8px;
+  background: rgba(6, 8, 11, 0.42);
+  overflow: hidden;
+}
+
+.congress-member-summary {
+  min-height: 46px;
+  display: grid;
+  grid-template-columns:
+    20px
+    minmax(170px, 1fr)
+    82px
+    82px
+    132px
+    minmax(142px, 0.7fr)
+    102px;
+  gap: 10px;
+  align-items: center;
+  padding: 9px 10px;
+  cursor: pointer;
+  color: var(--muted);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  list-style: none;
+}
+
+.congress-member-summary::-webkit-details-marker {
+  display: none;
+}
+
+.congress-member-summary::before {
+  content: "+";
+  color: var(--gold);
+}
+
+.congress-member-batch[open] .congress-member-summary::before {
+  content: "-";
+}
+
+.congress-member-summary strong {
+  color: var(--text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.congress-member-summary code {
+  color: var(--text);
+  text-align: right;
+}
+
+.member-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+  padding: 0 10px 8px;
+}
+
+.member-filing-links {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 0 10px 8px;
+}
+
+.member-filing-links a {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(215, 196, 139, 0.22);
+  border-radius: 7px;
+  padding: 5px 8px;
+  color: var(--gold);
+  background: rgba(215, 196, 139, 0.06);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  text-decoration: none;
+}
+
+.member-transaction-list {
+  display: grid;
+  gap: 6px;
+  padding: 0 10px 10px;
+}
+
+.congress-transaction-card {
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: minmax(220px, 1.25fr) 76px 88px 94px minmax(150px, 0.8fr) 104px;
+  gap: 9px;
+  align-items: center;
+  border: 1px solid rgba(150, 165, 188, 0.12);
+  border-radius: 7px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.025);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+}
+
+.congress-transaction-card div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.congress-transaction-card strong {
+  color: var(--text);
+}
+
+.congress-transaction-card div strong,
+.congress-transaction-card div span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.congress-transaction-card span,
+.congress-transaction-card code {
+  color: var(--muted);
+}
+
+.congress-transaction-card > span,
+.congress-transaction-card > strong,
+.congress-transaction-card > code {
+  text-align: right;
+}
+
+.congress-period-select {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line-cold);
+  border-radius: 7px;
+  padding: 0 8px 0 10px;
+  color: var(--muted);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.congress-period-select select {
+  min-height: 28px;
+  border: 0;
+  padding: 0 4px;
+  color: var(--text);
+  background: transparent;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+}
+
+.ticker-hierarchy-stack {
+  display: grid;
+  gap: 7px;
+}
+
+.ticker-hierarchy-note,
+.ticker-hierarchy-empty {
+  border: 1px solid rgba(150, 165, 188, 0.12);
+  border-radius: 7px;
+  padding: 8px 10px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.025);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+}
+
+.ticker-hierarchy-row {
+  border: 1px solid rgba(150, 165, 188, 0.14);
+  border-radius: 8px;
+  background: rgba(6, 8, 11, 0.42);
+  overflow: hidden;
+}
+
+.ticker-hierarchy-row.unresolved {
+  border-color: rgba(233, 196, 106, 0.22);
+}
+
+.ticker-hierarchy-summary {
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: 20px 46px 92px minmax(180px, 1fr) minmax(110px, 0.42fr) 72px 136px;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  cursor: pointer;
+  color: var(--text);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  list-style: none;
+}
+
+.ticker-hierarchy-summary::-webkit-details-marker {
+  display: none;
+}
+
+.ticker-hierarchy-summary::before {
+  content: "+";
+  color: var(--gold);
+}
+
+.ticker-hierarchy-row[open] .ticker-hierarchy-summary::before {
+  content: "-";
+}
+
+.ticker-rank,
+.ticker-display-name,
+.ticker-hierarchy-summary span,
+.ticker-hierarchy-summary code {
+  color: var(--muted);
+  min-width: 0;
+}
+
+.ticker-hierarchy-summary strong {
+  color: var(--gold);
+}
+
+.ticker-display-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ticker-weight {
+  height: 7px;
+  border: 1px solid rgba(215, 196, 139, 0.2);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  overflow: hidden;
+}
+
+.ticker-weight i {
+  height: 100%;
+  display: block;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(102, 227, 161, 0.8), rgba(215, 196, 139, 0.82));
+}
+
+.ticker-hierarchy-summary code {
+  color: var(--text);
+  text-align: right;
+}
+
+.ticker-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 0 10px 8px;
+}
+
+.ticker-detail-card {
+  display: grid;
+  gap: 4px;
+  border: 1px solid rgba(150, 165, 188, 0.12);
+  border-radius: 7px;
+  padding: 9px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.ticker-detail-card span,
+.ticker-detail-card small {
+  color: var(--muted);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.ticker-detail-card strong {
+  color: var(--text);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 14px;
+}
+
+.ticker-asset-stack,
+.ticker-transaction-list {
+  display: grid;
+  gap: 5px;
+  padding: 0 10px 10px;
+}
+
+.ticker-asset-row,
+.ticker-transaction-row {
+  min-height: 30px;
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 118px 160px;
+  gap: 8px;
+  align-items: center;
+  border-bottom: 1px solid rgba(150, 165, 188, 0.09);
+  color: var(--muted);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+}
+
+.ticker-transaction-row {
+  grid-template-columns: minmax(170px, 1fr) 94px 90px 150px;
+}
+
+.ticker-asset-row strong,
+.ticker-transaction-row strong {
+  color: var(--text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ticker-asset-row span,
+.ticker-asset-row code,
+.ticker-transaction-row span,
+.ticker-transaction-row code {
+  color: var(--muted);
+  text-align: right;
+}
+
+.congress-actions {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 12px;
+}
+
+.congress-run-list {
+  display: grid;
+  gap: 8px;
+}
+
+.congress-run-row {
+  align-items: center;
+  border: 1px solid var(--line-cold);
+  border-radius: 7px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 1fr 78px 160px;
+  padding: 9px;
+}
+
+.congress-run-row small {
+  grid-column: 1 / -1;
+  color: var(--red);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.congress-run-row strong,
+.congress-run-row span {
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+}
+
+.congress-run-row strong {
+  color: var(--gold);
+}
+
+.congress-run-row span {
+  color: var(--muted);
+}
+
+.congress-table-header {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.congress-search {
+  align-items: center;
+  border: 1px solid var(--line-cold);
+  border-radius: 7px;
+  display: flex;
+  gap: 8px;
+  max-width: 360px;
+  padding: 0 10px;
+  width: 100%;
+}
+
+.congress-search input {
+  border: 0;
+  min-height: 34px;
+  padding: 0;
+}
+
+.congress-table-wrap {
+  overflow-x: auto;
+}
+
+.congress-table {
+  border-collapse: collapse;
+  min-width: 1120px;
+  width: 100%;
+}
+
+.congress-table th,
+.congress-table td {
+  border-bottom: 1px solid rgba(161, 176, 194, 0.12);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  padding: 9px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.congress-table th {
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.congress-table td {
+  color: var(--text);
+}
+
+.congress-table a {
+  color: var(--text);
+  display: block;
+  text-decoration: none;
+}
+
+.congress-table small {
+  color: var(--muted);
+  display: block;
+  font-size: 10px;
+  margin-top: 3px;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.positive {
+  color: var(--green) !important;
+}
+
+.negative {
+  color: var(--red) !important;
+}
+
 @media (max-width: 1180px) {
   .command-rail {
     align-items: stretch;
@@ -1854,6 +2428,10 @@ output {
   .cascade-ops-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
+
+  .congress-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 760px) {
@@ -1878,6 +2456,7 @@ output {
   }
 
   .market-strip,
+  .congress-brief-row,
   .readiness-strip,
   .shadow-queue-panel,
   .hunt-grid,
@@ -1894,8 +2473,14 @@ output {
   .shadow-queue-readout,
   .readiness-checks,
   .alert-summary,
+  .congress-member-summary,
+  .member-detail-grid,
   .settings-form.two-col,
   .settings-metrics,
+  .ticker-detail-grid,
+  .ticker-hierarchy-summary,
+  .ticker-asset-row,
+  .ticker-transaction-row,
   .param-grid,
   .strategy-knob-grid,
   .heatmap-row,
@@ -1910,5 +2495,29 @@ output {
   .settings-hero {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .congress-grid,
+  .congress-actions,
+  .congress-run-row,
+  .congress-transaction-card {
+    grid-template-columns: 1fr;
+  }
+
+  .congress-member-summary code,
+  .congress-transaction-card > span,
+  .congress-transaction-card > strong,
+  .congress-transaction-card > code {
+    text-align: left;
+  }
+
+  .congress-table-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .congress-period-select {
+    justify-content: space-between;
+    width: 100%;
   }
 }

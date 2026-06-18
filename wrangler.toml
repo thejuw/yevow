@@ -21,6 +21,16 @@ database_id = "64fc2511-fd03-4c76-afd8-2fa671049c10"
 preview_database_id = "4c6c2cf3-e6e3-410a-afe1-b4e611a0e34f"
 migrations_dir = "migrations"
 
+[[d1_databases]]
+binding = "CONGRESS_DB"
+database_name = "CONGRESS_DB"
+database_id = "b971dedc-7665-4867-a54c-e776945621d3"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "CONGRESS_RAW"
+bucket_name = "yevow-congress-raw"
+
 [[kv_namespaces]]
 binding = "CONFIG_STORE"
 id = "49fe0b24ba1d40209e5d4fa849144dd2"
@@ -45,10 +55,22 @@ service = "sovereign-sigma-executioner"
 # AWS Tokyo rather than hard-pinning a specific colo.
 region = "aws:ap-northeast-1"
 
+[triggers]
+# Cloudflare cron is UTC. These two ticks cover US Central midnight across
+# daylight/standard time; the Worker still gates execution by local midnight
+# and an idempotency key so only one daily Congressional Tracker run is accepted.
+crons = ["0 5 * * *", "0 6 * * *"]
+
 [vars]
 ENGINE_OBJECT_NAME = "sovereign-sigma:singleton:trading-engine:v3:apac-tokyo"
 ENGINE_LOCATION_HINT = "apac"
 PLACEMENT_TARGET_COLO = "NRT"
+CONGRESS_TRACKER_ENABLED = "true"
+CONGRESS_SCHEDULER_TIMEZONE = "America/Chicago"
+CONGRESS_PRICE_PROVIDER = "yahoo-chart"
+CONGRESS_MAX_DAILY_DOWNLOADS = "100"
+CONGRESS_RUNNER_KIND = "github_actions"
+CONGRESS_RUNNER_GITHUB_REF = "main"
 INGEST_TRANSPORT = "grpc"
 DWELLIR_GRPC_ENDPOINT = "https://api-hyperliquid-mainnet-grpc.n.dwellir.com"
 DWELLIR_GRPC_STREAMS = "FILLS"
@@ -258,3 +280,7 @@ COST_BUDGET_ENFORCEMENT = "BLOCK_LIVE"
 #   wrangler secret put TELEGRAM_CHAT_ID
 #   wrangler secret put ALERT_WEBHOOK_URL
 #   wrangler secret put LOG_SINK_TOKEN
+#   wrangler secret put CONGRESS_RUNNER_URL
+#     value: https://api.github.com/repos/thejuw/yevow/actions/workflows/congress-tracker.yml/dispatches
+#   wrangler secret put CONGRESS_RUNNER_TOKEN
+#     value: GitHub fine-grained PAT with Actions: write on thejuw/yevow

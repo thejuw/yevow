@@ -31,6 +31,8 @@ import {
   readCascadeSignals,
   readConfig,
   readCostDashboard,
+  readCongressStatus,
+  readCongressTickerHierarchy,
   readDiagnostics,
   readExecutionQuality,
   readLiveReadiness,
@@ -55,6 +57,8 @@ import type {
   CascadeActiveItem,
   CascadeHeatResponse,
   CascadePositionItem,
+  CongressStatusResponse,
+  CongressTickerHierarchyResponse,
   DashboardPulse,
   DiagnosticsResponse,
   DraftTransportSettings,
@@ -143,6 +147,9 @@ export default function CommandCenterPage() {
   const [settings, setSettings] = useState<AdminSettingsResponse | null>(null);
   const [executionQuality, setExecutionQuality] = useState<ExecutionQualityResponse | null>(null);
   const [costDashboard, setCostDashboard] = useState<CostDashboardResponse | null>(null);
+  const [congressStatus, setCongressStatus] = useState<CongressStatusResponse | null>(null);
+  const [congressTickerHierarchy, setCongressTickerHierarchy] =
+    useState<CongressTickerHierarchyResponse | null>(null);
   const [cascadeActive, setCascadeActive] = useState<CascadeActiveItem[]>([]);
   const [cascadePositions, setCascadePositions] = useState<CascadePositionItem[]>([]);
   const [cascadeSignals, setCascadeSignals] = useState<JsonRecord[]>([]);
@@ -195,7 +202,9 @@ export default function CommandCenterPage() {
       cascadeActiveResult,
       cascadePositionsResult,
       cascadeSignalsResult,
-      cascadeHeatResult
+      cascadeHeatResult,
+      congressStatusResult,
+      congressTickerResult
     ] = await Promise.all([
       readState(apiBase, token),
       readConfig(apiBase, token),
@@ -210,7 +219,9 @@ export default function CommandCenterPage() {
       readCascadeActive(apiBase, token),
       readCascadePositions(apiBase, token),
       readCascadeSignals(apiBase, token, 50),
-      readCascadeHeat(apiBase, token)
+      readCascadeHeat(apiBase, token),
+      readCongressStatus(apiBase, token).catch(() => null),
+      readCongressTickerHierarchy(apiBase, token, "24h").catch(() => null)
     ]);
 
     setEngineState(stateResult.state);
@@ -228,6 +239,8 @@ export default function CommandCenterPage() {
     setCascadePositions(cascadePositionsResult.positions ?? []);
     setCascadeSignals(cascadeSignalsResult.signals ?? []);
     setCascadeHeat(cascadeHeatResult.heat ?? null);
+    setCongressStatus(congressStatusResult?.ok ? congressStatusResult : null);
+    setCongressTickerHierarchy(congressTickerResult?.ok ? congressTickerResult : null);
   }, [apiBase, token]);
 
   const connectStream = useCallback(() => {
@@ -398,6 +411,7 @@ export default function CommandCenterPage() {
   const activeCascadeAssets = parseCascadeAssets(
     config?.CASCADE_INSTRUMENTS ?? engineState?.cachedConfig.CASCADE_INSTRUMENTS ?? "BTC,HYPE"
   );
+  const topCongressTickers = congressTickerHierarchy?.tickers.slice(0, 5) ?? [];
   const isCascadeStrategyMode =
     activeStrategyMode === "CASCADE_RECOVERY" ||
     activeStrategyMode === "BOTH_SHADOW" ||
@@ -442,6 +456,8 @@ export default function CommandCenterPage() {
     setAttribution(null);
     setTradeHistory(null);
     setSettings(null);
+    setCongressStatus(null);
+    setCongressTickerHierarchy(null);
     setCascadeActive([]);
     setCascadePositions([]);
     setCascadeSignals([]);
@@ -887,6 +903,10 @@ export default function CommandCenterPage() {
             <Settings size={16} />
             Settings
           </a>
+          <a className="compact-action settings-link" href="/congress">
+            <DatabaseZap size={16} />
+            Congress
+          </a>
           <a className="compact-action settings-link" href="#paper-ledger">
             <ReceiptText size={16} />
             Ledger
@@ -1078,6 +1098,49 @@ export default function CommandCenterPage() {
             value={`${compact.format(pulse?.jitter_ms ?? engineState?.executionProfile.jitterMs ?? 0)}ms`}
           />
           <Metric label="Quotes" value={engineState?.quoteState.status ?? "n/a"} />
+        </section>
+
+        <section className="congress-brief-panel glass">
+          <div className="panel-title">
+            <DatabaseZap size={17} />
+            <span>Congress 24h Tape</span>
+            <a className="panel-link" href="/congress">
+              Open Tracker
+            </a>
+          </div>
+          <div className="trade-summary compact-summary">
+            <Metric
+              label="Filings"
+              value={compact.format(congressStatus?.counts.filings ?? 0)}
+            />
+            <Metric
+              label="Transactions"
+              value={compact.format(congressStatus?.counts.transactions ?? 0)}
+            />
+            <Metric
+              label="Marked"
+              value={compact.format(congressStatus?.counts.markedTransactions ?? 0)}
+            />
+            <Metric
+              label="24h Notional"
+              value={currency.format(congressTickerHierarchy?.totalAmountMid ?? 0)}
+            />
+          </div>
+          <div className="congress-brief-list">
+            {topCongressTickers.length === 0 ? (
+              <span className="muted">No Congressional ticker flow loaded for the last 24h.</span>
+            ) : (
+              topCongressTickers.map((item) => (
+                <a className="congress-brief-row" href="/congress" key={item.ticker}>
+                  <strong>
+                    #{item.rank} {item.ticker}
+                  </strong>
+                  <span>{compact.format(item.weightPct)}%</span>
+                  <code>{currency.format(item.totalAmountMid)}</code>
+                </a>
+              ))
+            )}
+          </div>
         </section>
 
         <section className="strategy-mode-panel glass">

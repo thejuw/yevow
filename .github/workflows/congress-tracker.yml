@@ -1,0 +1,82 @@
+name: Congressional Tracker Runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Sovereign-Sigma congress_scrape_runs.run_id
+        required: true
+      source:
+        description: Source to scrape
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - house
+          - senate
+      trigger_source:
+        description: Gateway trigger source
+        required: false
+        default: manual
+      scheduled_for:
+        description: Gateway scheduled timestamp
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: congress-tracker-${{ inputs.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  run:
+    name: Scrape, OCR, normalize, and ingest disclosures
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      SOVEREIGN_API_BASE: https://api.yevow.co
+      SOVEREIGN_ADMIN_PASSWORD: ${{ secrets.SOVEREIGN_ADMIN_PASSWORD }}
+      CONGRESS_RUN_ID: ${{ inputs.run_id }}
+      CONGRESS_MAX_DAILY_DOWNLOADS: "100"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: congress_tracker/requirements.txt
+
+      - name: Install native OCR dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tesseract-ocr
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r congress_tracker/requirements.txt
+
+      - name: Install Playwright browser
+        run: python -m playwright install --with-deps chromium
+
+      - name: Run Congressional Tracker pipeline
+        run: >
+          python -m congress_tracker.pipeline
+          --run-id "${{ inputs.run_id }}"
+          --source "${{ inputs.source }}"
+          --download-dir "data/raw_disclosures"
+
+      - name: Upload raw disclosure artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: congress-raw-disclosures-${{ inputs.run_id }}
+          path: data/raw_disclosures
+          if-no-files-found: ignore
+          retention-days: 14

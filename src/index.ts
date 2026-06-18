@@ -56,6 +56,17 @@ import {
   readStrategyVault
 } from "./gateway/StrategyVaultGateway";
 import { placementColo, topologyTelemetry } from "./gateway/Topology";
+import {
+  handleCongressScheduled,
+  ingestCongressPayload,
+  readCongressFilings,
+  readCongressRuns,
+  readCongressStatus,
+  readCongressTickerHierarchy,
+  readCongressTransactions,
+  refreshCongressPnl,
+  triggerCongressRun
+} from "./gateway/CongressTrackerGateway";
 import type { EdgeTopology, Env } from "./types";
 
 export { TradingEngine };
@@ -158,6 +169,21 @@ gatewayRouter.notFound((c) => {
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     return gatewayRouter.fetch(request, env, ctx);
+  },
+
+  async scheduled(
+    controller: ScheduledController,
+    env: Env,
+    ctx: ExecutionContext
+  ): Promise<void> {
+    const topology = scheduledTopology(controller);
+    const logger = new Logger(
+      env.TRADING_DB,
+      (promise) => ctx.waitUntil(promise),
+      "gateway-scheduler"
+    );
+
+    await handleCongressScheduled(controller, env, ctx, logger, topology);
   }
 } satisfies ExportedHandler<Env>;
 
@@ -398,7 +424,15 @@ async function handleAdminRequest(
         "GET /admin/dom/heatmap",
         "GET /admin/liquidations/heatmap",
         "GET /admin/stream",
-        "GET /admin/logs"
+        "GET /admin/logs",
+        "GET /admin/congress/status",
+        "GET /admin/congress/runs",
+        "POST /admin/congress/run",
+        "POST /admin/congress/ingest",
+        "GET /admin/congress/filings",
+        "GET /admin/congress/tickers",
+        "GET /admin/congress/transactions",
+        "POST /admin/congress/pnl/refresh"
       ]
     });
   }
@@ -791,9 +825,82 @@ async function handleAdminRequest(
     return readAdminLogs(env, url);
   }
 
+  if (url.pathname === "/admin/congress/status") {
+    if (request.method !== "GET") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+    return readCongressStatus(env);
+  }
+
+  if (url.pathname === "/admin/congress/runs") {
+    if (request.method !== "GET") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+    return readCongressRuns(env, url);
+  }
+
+  if (url.pathname === "/admin/congress/run") {
+    if (request.method !== "POST") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+    return triggerCongressRun(request, env, logger, topology, auth);
+  }
+
+  if (url.pathname === "/admin/congress/ingest") {
+    if (request.method !== "POST") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+    return ingestCongressPayload(request, env, logger, topology, auth);
+  }
+
+  if (url.pathname === "/admin/congress/filings") {
+    if (request.method !== "GET") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+    return readCongressFilings(env, url);
+  }
+
+  if (url.pathname === "/admin/congress/transactions") {
+    if (request.method !== "GET") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+    return readCongressTransactions(env, url);
+  }
+
+  if (url.pathname === "/admin/congress/tickers") {
+    if (request.method !== "GET") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+    return readCongressTickerHierarchy(env, url);
+  }
+
+  if (url.pathname === "/admin/congress/pnl/refresh") {
+    if (request.method !== "POST") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+    return refreshCongressPnl(request, env, logger, topology, auth);
+  }
+
   return json({ ok: false, error: "Not found" }, 404);
 }
 
 export const __test__ = {
   requestsCascadeLivePromotion
 };
+
+function scheduledTopology(controller: ScheduledController): EdgeTopology {
+  const observedAt = new Date(controller.scheduledTime).toISOString();
+
+  return {
+    colo: null,
+    placement: "scheduled",
+    country: null,
+    city: null,
+    region: null,
+    timezone: null,
+    latitude: null,
+    longitude: null,
+    requestId: `scheduled:${controller.cron}:${controller.scheduledTime}`,
+    observedAt
+  };
+}

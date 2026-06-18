@@ -1,8 +1,10 @@
 node_modules/
 .wrangler/
 .codex_tools/
+.venv-congress/
 __pycache__/
 *.pyc
+data/
 dist/
 coverage/
 *.log
