@@ -1128,6 +1128,7 @@ function githubActionsDispatchRequest(
     accept: "application/vnd.github+json",
     authorization: `Bearer ${runnerToken}`,
     "content-type": "application/json",
+    "user-agent": "Sovereign-Sigma-Congress-Tracker/1.0",
     "x-github-api-version": "2022-11-28"
   });
 
