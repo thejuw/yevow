@@ -126,11 +126,12 @@ export async function readCongressRuns(
 export async function readCongressTransactions(
   apiBase: string,
   token: string,
-  limit = 100
+  limit = 100,
+  offset = 0
 ): Promise<CongressTransactionsResponse> {
   return apiFetch<CongressTransactionsResponse>(
     apiBase,
-    `/admin/congress/transactions?limit=${limit}`,
+    `/admin/congress/transactions?limit=${limit}&offset=${offset}`,
     token,
     {
       allowErrorBody: true

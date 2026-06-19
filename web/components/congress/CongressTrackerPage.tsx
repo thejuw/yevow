@@ -99,6 +99,8 @@ const compact = new Intl.NumberFormat("en-US", {
 });
 
 const PERIOD_OPTIONS: CongressPeriod[] = ["24h", "7d", "30d", "90d", "ytd", "all"];
+const TRANSACTION_PAGE_SIZE = 250;
+const TRANSACTION_LOAD_LIMIT = 2_000;
 const COPY_PORTFOLIO_PERIODS: Array<{ label: string; value: CopyPortfolioPeriod }> = [
   { label: "30D", value: "30d" },
   { label: "90D", value: "90d" },
@@ -196,7 +198,7 @@ export default function CongressTrackerPage() {
         await Promise.all([
           readCongressStatus(apiBase, token),
           readCongressRuns(apiBase, token, 8),
-          readCongressTransactions(apiBase, token, 250),
+          readCongressTransactions(apiBase, token, TRANSACTION_PAGE_SIZE),
           readCongressTickerHierarchy(apiBase, token, tickerPeriod),
           readCongressMacroHeatmap(apiBase, token, 14)
         ]);
@@ -209,11 +211,11 @@ export default function CongressTrackerPage() {
 
       setTracker(statusResult);
       setRuns(runsResult.ok ? runsResult.runs : []);
-      setTransactions(
+      const loadedTransactions =
         (transactionsResult as CongressTransactionsResponse).ok
-          ? transactionsResult.transactions
-          : []
-      );
+          ? await loadCongressTransactionPages(apiBase, token, transactionsResult)
+          : [];
+      setTransactions(loadedTransactions);
       setTickerHierarchy(tickerResult.ok ? tickerResult : null);
       setMacroHeatmap(macroResult.ok ? macroResult : null);
       setStatus("AUTHENTICATED");
@@ -558,6 +560,36 @@ export default function CongressTrackerPage() {
       </section>
     </main>
   );
+}
+
+async function loadCongressTransactionPages(
+  apiBase: string,
+  token: string,
+  firstPage: CongressTransactionsResponse
+): Promise<CongressTransaction[]> {
+  const transactions = [...firstPage.transactions];
+  let offset = firstPage.offset + firstPage.transactions.length;
+
+  while (
+    firstPage.ok &&
+    firstPage.transactions.length === firstPage.limit &&
+    transactions.length < TRANSACTION_LOAD_LIMIT
+  ) {
+    const nextPage = await readCongressTransactions(apiBase, token, TRANSACTION_PAGE_SIZE, offset);
+
+    if (!nextPage.ok || nextPage.transactions.length === 0) {
+      break;
+    }
+
+    transactions.push(...nextPage.transactions);
+    offset += nextPage.transactions.length;
+
+    if (nextPage.transactions.length < nextPage.limit) {
+      break;
+    }
+  }
+
+  return transactions.slice(0, TRANSACTION_LOAD_LIMIT);
 }
 
 function MemberLedger({ batches }: { batches: MemberTransactionBatch[] }) {
