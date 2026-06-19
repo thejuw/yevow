@@ -286,7 +286,7 @@ class CongressETLPipeline:
                 failed,
             )
 
-            if refreshed == 0 and failed == 0:
+            if refreshed == 0:
                 break
 
         return totals
