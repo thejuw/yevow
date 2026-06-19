@@ -28,6 +28,7 @@ import type {
   LoginResponse,
   MacroBiasDirection,
   NotificationSettingsUpdate,
+  PrivateEquityDealsResponse,
   ReplayResponse,
   ReplayStatusResponse,
   StrategyVaultResponse,
@@ -77,6 +78,12 @@ export async function login(apiBase: string, password: string): Promise<LoginRes
 
 export async function readState(apiBase: string, token: string): Promise<AdminStateResponse> {
   return apiFetch<AdminStateResponse>(apiBase, "/admin/state", token);
+}
+
+export async function readPrivateEquityDeals(
+  apiBase = DEFAULT_API_BASE
+): Promise<PrivateEquityDealsResponse> {
+  return apiFetch<PrivateEquityDealsResponse>(apiBase, "/api/equity-deals", "");
 }
 
 export async function readConfig(

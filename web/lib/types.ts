@@ -1226,3 +1226,21 @@ export interface CongressPnlRefreshResponse {
   marks: JsonRecord[];
   failures: JsonRecord[];
 }
+
+export interface PrivateEquityDeal {
+  id: string;
+  published_date: string;
+  buyer: string;
+  target_company: string;
+  deal_size: number | null;
+  sector: string | null;
+  source_url: string;
+  created_at: string;
+}
+
+export interface PrivateEquityDealsResponse {
+  ok: boolean;
+  count: number;
+  deals: PrivateEquityDeal[];
+  error?: string;
+}

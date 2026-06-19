@@ -3434,3 +3434,5 @@ output {
     grid-column: auto;
   }
 }
+
+@tailwind utilities;
