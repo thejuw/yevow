@@ -3,6 +3,7 @@ export interface Env {
   INGEST_COORDINATOR?: DurableObjectNamespace;
   TRADING_DB: D1Database;
   CONGRESS_DB?: D1Database;
+  EQUITY_DB?: D1Database;
   CONFIG_STORE: KVNamespace;
   AUTH_STORE?: KVNamespace;
   RISK_VAULT: KVNamespace;
@@ -271,4 +272,10 @@ export interface Env {
   CONGRESS_RUNNER_URL?: string;
   CONGRESS_RUNNER_TOKEN?: string;
   CONGRESS_MAX_DAILY_DOWNLOADS?: string;
+  PE_DEALS_ENABLED?: string;
+  PE_DEALS_SCHEDULER_TIMEZONE?: string;
+  PE_DEALS_FEEDS?: string;
+  PE_DEALS_KEYWORDS?: string;
+  PE_DEALS_AI_MODEL?: string;
+  PE_DEALS_MAX_ITEMS_PER_FEED?: string;
 }

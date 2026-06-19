@@ -14,6 +14,9 @@ CREATE TABLE IF NOT EXISTS pe_deals (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_pe_deals_source_target_date
   ON pe_deals (source_url, target_company, published_date);
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pe_deals_source_url
+  ON pe_deals (source_url);
+
 CREATE INDEX IF NOT EXISTS idx_pe_deals_published_date
   ON pe_deals (published_date DESC);
 

@@ -68,6 +68,7 @@ import {
   refreshCongressPnl,
   triggerCongressRun
 } from "./gateway/CongressTrackerGateway";
+import { handlePrivateEquityScheduled } from "./gateway/PrivateEquityDealsGateway";
 import type { EdgeTopology, Env } from "./types";
 
 export { TradingEngine };
@@ -181,6 +182,7 @@ export default {
     );
 
     await handleCongressScheduled(controller, env, ctx, logger, topology);
+    await handlePrivateEquityScheduled(controller, env, ctx, logger, topology);
   }
 } satisfies ExportedHandler<Env>;
 
