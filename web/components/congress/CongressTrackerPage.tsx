@@ -466,8 +466,8 @@ function MemberLedger({ batches }: { batches: MemberTransactionBatch[] }) {
 
   return (
     <div className="congress-member-stack">
-      {batches.map((batch, index) => (
-        <MemberBatchRow batch={batch} defaultOpen={index === 0} key={batch.key} />
+      {batches.map((batch) => (
+        <MemberBatchRow batch={batch} defaultOpen={false} key={batch.key} />
       ))}
     </div>
   );
