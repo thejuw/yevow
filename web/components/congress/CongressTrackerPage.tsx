@@ -298,6 +298,28 @@ export default function CongressTrackerPage() {
     }
   }
 
+  async function submitYearToDateBackfill() {
+    const filingYear = new Date().getUTCFullYear();
+    setError(null);
+    setCommandStatus(`Requesting ${filingYear} year-to-date disclosure backfill...`);
+
+    try {
+      const response = await triggerCongressRun(apiBase, token, "all", {
+        filingYear,
+        maxDownloadsPerSource: 1000,
+        reason: "command-center-ytd-backfill"
+      });
+      await refresh();
+      setCommandStatus(response.message);
+      if (response.status === "RUNNER_NOTIFY_FAILED") {
+        setError(response.error ?? response.message);
+      }
+    } catch (caught: unknown) {
+      setError(errorMessage(caught));
+      setCommandStatus("YTD backfill request failed.");
+    }
+  }
+
   async function submitPnlRefresh() {
     setError(null);
     setCommandStatus("Refreshing Congressional transaction price marks...");
@@ -498,6 +520,7 @@ export default function CongressTrackerPage() {
             <button onClick={() => void submitRun("all")}>Run All</button>
             <button onClick={() => void submitRun("house")}>House</button>
             <button onClick={() => void submitRun("senate")}>Senate</button>
+            <button onClick={() => void submitYearToDateBackfill()}>Backfill YTD</button>
             <button className="primary-action" onClick={() => void submitPnlRefresh()}>
               Refresh PnL
             </button>

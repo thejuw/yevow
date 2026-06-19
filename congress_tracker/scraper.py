@@ -116,7 +116,7 @@ class CongressionalPTRScraper:
         self.logger = logging.getLogger(self.__class__.__name__)
         self.manifest = self._load_manifest()
 
-    async def run(self) -> list[FilingArtifact]:
+    async def run(self, source: Literal["all", "house", "senate"] = "all") -> list[FilingArtifact]:
         self.download_dir.mkdir(parents=True, exist_ok=True)
         self.manifest_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -139,8 +139,10 @@ class CongressionalPTRScraper:
 
             try:
                 downloaded: list[FilingArtifact] = []
-                downloaded.extend(await self.scrape_house(context))
-                downloaded.extend(await self.scrape_senate(context))
+                if source in {"all", "house"}:
+                    downloaded.extend(await self.scrape_house(context))
+                if source in {"all", "senate"}:
+                    downloaded.extend(await self.scrape_senate(context))
                 self._save_manifest()
                 return downloaded
             finally:
@@ -602,7 +604,7 @@ async def scrape_once(args: argparse.Namespace) -> list[FilingArtifact]:
         max_downloads_per_source=args.max_downloads_per_source,
         filing_year=args.year,
     )
-    return await scraper.run()
+    return await scraper.run(source=args.source)
 
 
 def configure_logging(verbose: bool) -> None:
@@ -618,6 +620,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--download-dir", default=str(DEFAULT_DOWNLOAD_DIR))
     parser.add_argument("--manifest-path", default=str(DEFAULT_MANIFEST_PATH))
     parser.add_argument("--year", type=int, default=datetime.now(timezone.utc).year)
+    parser.add_argument("--source", choices=("all", "house", "senate"), default="all")
     parser.add_argument("--timeout-ms", type=int, default=DEFAULT_TIMEOUT_MS)
     parser.add_argument("--max-downloads-per-source", type=int, default=DEFAULT_MAX_DOWNLOADS_PER_SOURCE)
     parser.add_argument("--headful", action="store_true", help="Run Chromium with a visible window.")

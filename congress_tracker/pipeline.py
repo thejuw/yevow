@@ -15,6 +15,7 @@ import logging
 import os
 import re
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -46,6 +47,8 @@ class CongressETLPipeline:
         download_dir: Path = Path("data/raw_disclosures"),
         source: str = "all",
         headless: bool = True,
+        filing_year: int | None = None,
+        max_downloads_per_source: int | None = None,
     ) -> None:
         self.api_base = (api_base or os.getenv("SOVEREIGN_API_BASE") or "").rstrip("/")
         self.admin_token = admin_token or os.getenv("SOVEREIGN_ADMIN_TOKEN")
@@ -54,6 +57,12 @@ class CongressETLPipeline:
         self.download_dir = download_dir
         self.source = source
         self.headless = headless
+        self.filing_year = filing_year or int(
+            os.getenv("CONGRESS_FILING_YEAR", str(datetime.now(timezone.utc).year))
+        )
+        self.max_downloads_per_source = max_downloads_per_source or int(
+            os.getenv("CONGRESS_MAX_DAILY_DOWNLOADS", "100")
+        )
         self.logger = logging.getLogger(self.__class__.__name__)
 
     async def run(self) -> dict[str, Any]:
@@ -76,9 +85,10 @@ class CongressETLPipeline:
         scraper = CongressionalPTRScraper(
             download_dir=self.download_dir,
             headless=self.headless,
-            max_downloads_per_source=int(os.getenv("CONGRESS_MAX_DAILY_DOWNLOADS", "100")),
+            max_downloads_per_source=self.max_downloads_per_source,
+            filing_year=self.filing_year,
         )
-        return await scraper.run()
+        return await scraper.run(source=self.source)
 
     def _build_payload(self, artifacts: list[FilingArtifact]) -> dict[str, Any]:
         filings: list[dict[str, Any]] = []
@@ -168,6 +178,8 @@ class CongressETLPipeline:
                 "issues": len(issues),
                 "committeeAssignments": len(committee_assignments),
                 "memberProfiles": len(member_profiles),
+                "filingYear": self.filing_year,
+                "maxDownloadsPerSource": self.max_downloads_per_source,
             },
         }
 
@@ -288,6 +300,16 @@ def main() -> None:
     parser.add_argument("--admin-token", default=os.getenv("SOVEREIGN_ADMIN_TOKEN"))
     parser.add_argument("--run-id", default=os.getenv("CONGRESS_RUN_ID"))
     parser.add_argument("--source", choices=("all", "house", "senate"), default="all")
+    parser.add_argument(
+        "--year",
+        type=int,
+        default=int(os.getenv("CONGRESS_FILING_YEAR", str(datetime.now(timezone.utc).year))),
+    )
+    parser.add_argument(
+        "--max-downloads-per-source",
+        type=int,
+        default=int(os.getenv("CONGRESS_MAX_DAILY_DOWNLOADS", "100")),
+    )
     parser.add_argument("--headed", action="store_true", help="Run browser with a visible window.")
     parser.add_argument("--download-dir", default="data/raw_disclosures")
     args = parser.parse_args()
@@ -300,6 +322,8 @@ def main() -> None:
         source=args.source,
         headless=not args.headed,
         download_dir=Path(args.download_dir),
+        filing_year=args.year,
+        max_downloads_per_source=args.max_downloads_per_source,
     )
     payload = asyncio.run(pipeline.run())
     print(json.dumps(payload["stats"], indent=2))

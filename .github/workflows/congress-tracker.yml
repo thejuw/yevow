@@ -22,6 +22,14 @@ on:
       scheduled_for:
         description: Gateway scheduled timestamp
         required: false
+      filing_year:
+        description: Filing year to scrape
+        required: false
+        default: "2026"
+      max_downloads_per_source:
+        description: Max PTR artifacts to download per source
+        required: false
+        default: "100"
 
 permissions:
   contents: read
@@ -34,12 +42,13 @@ jobs:
   run:
     name: Scrape, OCR, normalize, and ingest disclosures
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 180
     env:
       SOVEREIGN_API_BASE: https://api.yevow.co
       SOVEREIGN_ADMIN_PASSWORD: ${{ secrets.SOVEREIGN_ADMIN_PASSWORD }}
       CONGRESS_RUN_ID: ${{ inputs.run_id }}
-      CONGRESS_MAX_DAILY_DOWNLOADS: "100"
+      CONGRESS_FILING_YEAR: ${{ inputs.filing_year || '2026' }}
+      CONGRESS_MAX_DAILY_DOWNLOADS: ${{ inputs.max_downloads_per_source || '100' }}
 
     steps:
       - name: Checkout
@@ -70,6 +79,8 @@ jobs:
           python -m congress_tracker.pipeline
           --run-id "${{ inputs.run_id }}"
           --source "${{ inputs.source }}"
+          --year "${{ inputs.filing_year || '2026' }}"
+          --max-downloads-per-source "${{ inputs.max_downloads_per_source || '100' }}"
           --download-dir "data/raw_disclosures"
 
       - name: Upload raw disclosure artifacts

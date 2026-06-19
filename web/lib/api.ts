@@ -171,11 +171,17 @@ export async function readCongressMacroHeatmap(
 export async function triggerCongressRun(
   apiBase: string,
   token: string,
-  source: "all" | "house" | "senate" = "all"
+  source: "all" | "house" | "senate" = "all",
+  options: { filingYear?: number; maxDownloadsPerSource?: number; reason?: string } = {}
 ): Promise<CongressRunTriggerResponse> {
   return apiFetch<CongressRunTriggerResponse>(apiBase, "/admin/congress/run", token, {
     method: "POST",
-    body: JSON.stringify({ source, reason: "command-center-manual-run" })
+    body: JSON.stringify({
+      source,
+      filingYear: options.filingYear,
+      maxDownloadsPerSource: options.maxDownloadsPerSource,
+      reason: options.reason ?? "command-center-manual-run"
+    })
   });
 }
 

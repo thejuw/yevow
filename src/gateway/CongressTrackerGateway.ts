@@ -187,7 +187,14 @@ interface CongressTickerFlowRow extends CongressSectorFlowRow {
 
 interface CongressRunRequest {
   source?: string;
+  filingYear?: number;
+  maxDownloadsPerSource?: number;
   reason?: string;
+}
+
+interface CongressRunOptions {
+  filingYear?: number;
+  maxDownloadsPerSource?: number;
 }
 
 interface RunnerNotificationResult {
@@ -643,6 +650,7 @@ export async function triggerCongressRun(
 ): Promise<Response> {
   const body = await readJsonBody<CongressRunRequest>(request);
   const source = normalizeSource(body?.source);
+  const options = normalizeCongressRunOptions(body);
   const run = await createCongressRun(
     env,
     logger,
@@ -650,12 +658,15 @@ export async function triggerCongressRun(
     "manual",
     source,
     auth.subject,
-    new Date().toISOString()
+    new Date().toISOString(),
+    options
   );
 
   logger.info("CONGRESS_RUN_REQUESTED", "Congress tracker run requested", {
     runId: run.runId,
     source,
+    filingYear: options.filingYear ?? null,
+    maxDownloadsPerSource: options.maxDownloadsPerSource ?? null,
     actor: auth.subject,
     reason: body?.reason ?? null,
     sourceIp: sourceIp(request),
@@ -1267,7 +1278,8 @@ async function createCongressRun(
   triggerSource: "manual" | "scheduled",
   source: string,
   actor: string,
-  scheduledFor: string
+  scheduledFor: string,
+  options: CongressRunOptions = {}
 ): Promise<{
   ok: true;
   runId: string;
@@ -1300,6 +1312,8 @@ async function createCongressRun(
       stringifyJson({
         runnerConfigured: runnable,
         runnerKind,
+        filingYear: options.filingYear ?? null,
+        maxDownloadsPerSource: options.maxDownloadsPerSource ?? null,
         missingRunnerToken: runnerKind === "github_actions" && !runnerToken
       }),
       actor,
@@ -1321,6 +1335,7 @@ async function createCongressRun(
       source,
       triggerSource,
       scheduledFor,
+      options,
       logger,
       topology
     );
@@ -1339,6 +1354,8 @@ async function createCongressRun(
         runId,
         source,
         triggerSource,
+        filingYear: options.filingYear ?? null,
+        maxDownloadsPerSource: options.maxDownloadsPerSource ?? null,
         runnerKind,
         missingRunnerToken: runnerKind === "github_actions" && !runnerToken,
         colo: topology.colo,
@@ -1372,14 +1389,23 @@ async function notifyExternalRunner(
   source: string,
   triggerSource: string,
   scheduledFor: string,
+  options: CongressRunOptions,
   logger: Logger,
   topology: EdgeTopology
 ): Promise<RunnerNotificationResult> {
   try {
     const requestInit =
       runnerKind === "github_actions"
-        ? githubActionsDispatchRequest(env, runnerToken, runId, source, triggerSource, scheduledFor)
-        : genericRunnerRequest(runnerToken, runId, source, triggerSource, scheduledFor);
+        ? githubActionsDispatchRequest(
+            env,
+            runnerToken,
+            runId,
+            source,
+            triggerSource,
+            scheduledFor,
+            options
+          )
+        : genericRunnerRequest(runnerToken, runId, source, triggerSource, scheduledFor, options);
 
     const response = await fetch(runnerUrl, {
       method: "POST",
@@ -1393,6 +1419,8 @@ async function notifyExternalRunner(
     logger.info("CONGRESS_RUNNER_NOTIFIED", "Congress external runner accepted run", {
       runId,
       source,
+      filingYear: options.filingYear ?? null,
+      maxDownloadsPerSource: options.maxDownloadsPerSource ?? null,
       runnerKind,
       colo: topology.colo,
       placement: topology.placement
@@ -1466,7 +1494,8 @@ function genericRunnerRequest(
   runId: string,
   source: string,
   triggerSource: string,
-  scheduledFor: string
+  scheduledFor: string,
+  options: CongressRunOptions
 ): RequestInit {
   const headers = new Headers({
     "content-type": "application/json"
@@ -1482,7 +1511,9 @@ function genericRunnerRequest(
       runId,
       source,
       triggerSource,
-      scheduledFor
+      scheduledFor,
+      filingYear: options.filingYear,
+      maxDownloadsPerSource: options.maxDownloadsPerSource
     })
   };
 }
@@ -1493,7 +1524,8 @@ function githubActionsDispatchRequest(
   runId: string,
   source: string,
   triggerSource: string,
-  scheduledFor: string
+  scheduledFor: string,
+  options: CongressRunOptions
 ): RequestInit {
   if (!runnerToken) {
     throw new Error("CONGRESS_RUNNER_TOKEN is required for GitHub Actions runner dispatch");
@@ -1515,7 +1547,9 @@ function githubActionsDispatchRequest(
         run_id: runId,
         source,
         trigger_source: triggerSource,
-        scheduled_for: scheduledFor
+        scheduled_for: scheduledFor,
+        filing_year: String(options.filingYear ?? new Date().getUTCFullYear()),
+        max_downloads_per_source: String(options.maxDownloadsPerSource ?? 100)
       }
     })
   };
@@ -1921,6 +1955,23 @@ function normalizeSource(value: unknown): string {
 
   const normalized = value.trim().toLowerCase();
   return ["house", "senate", "all"].includes(normalized) ? normalized : "all";
+}
+
+function normalizeCongressRunOptions(input: CongressRunRequest | null): CongressRunOptions {
+  const currentYear = new Date().getUTCFullYear();
+  const rawYear = Number(input?.filingYear);
+  const rawMaxDownloads = Number(input?.maxDownloadsPerSource);
+  const options: CongressRunOptions = {};
+
+  if (Number.isFinite(rawYear)) {
+    options.filingYear = Math.min(currentYear, Math.max(2008, Math.floor(rawYear)));
+  }
+
+  if (Number.isFinite(rawMaxDownloads)) {
+    options.maxDownloadsPerSource = Math.min(2_000, Math.max(1, Math.floor(rawMaxDownloads)));
+  }
+
+  return options;
 }
 
 function normalizeChamber(value: unknown): string {
