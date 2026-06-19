@@ -30,6 +30,18 @@ on:
         description: Max PTR artifacts to download per source
         required: false
         default: "100"
+      skip_scrape:
+        description: Skip official-source scraping and run post-ingest tasks only
+        required: false
+        default: "false"
+      pnl_refresh_batches:
+        description: Number of price-mark refresh batches to run after ingest
+        required: false
+        default: "0"
+      pnl_refresh_limit:
+        description: Price-mark refresh rows per batch
+        required: false
+        default: "250"
 
 permissions:
   contents: read
@@ -49,6 +61,8 @@ jobs:
       CONGRESS_RUN_ID: ${{ inputs.run_id }}
       CONGRESS_FILING_YEAR: ${{ inputs.filing_year || '2026' }}
       CONGRESS_MAX_DAILY_DOWNLOADS: ${{ inputs.max_downloads_per_source || '100' }}
+      CONGRESS_PNL_REFRESH_BATCHES: ${{ inputs.pnl_refresh_batches || '0' }}
+      CONGRESS_PNL_REFRESH_LIMIT: ${{ inputs.pnl_refresh_limit || '250' }}
 
     steps:
       - name: Checkout
@@ -81,6 +95,9 @@ jobs:
           --source "${{ inputs.source }}"
           --year "${{ inputs.filing_year || '2026' }}"
           --max-downloads-per-source "${{ inputs.max_downloads_per_source || '100' }}"
+          ${{ inputs.skip_scrape == 'true' && '--skip-scrape' || '' }}
+          --pnl-refresh-batches "${{ inputs.pnl_refresh_batches || '0' }}"
+          --pnl-refresh-limit "${{ inputs.pnl_refresh_limit || '250' }}"
           --download-dir "data/raw_disclosures"
 
       - name: Upload raw disclosure artifacts

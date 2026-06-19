@@ -49,6 +49,9 @@ class CongressETLPipeline:
         headless: bool = True,
         filing_year: int | None = None,
         max_downloads_per_source: int | None = None,
+        skip_scrape: bool = False,
+        pnl_refresh_batches: int = 0,
+        pnl_refresh_limit: int = 250,
     ) -> None:
         self.api_base = (api_base or os.getenv("SOVEREIGN_API_BASE") or "").rstrip("/")
         self.admin_token = admin_token or os.getenv("SOVEREIGN_ADMIN_TOKEN")
@@ -63,10 +66,13 @@ class CongressETLPipeline:
         self.max_downloads_per_source = max_downloads_per_source or int(
             os.getenv("CONGRESS_MAX_DAILY_DOWNLOADS", "100")
         )
+        self.skip_scrape = skip_scrape
+        self.pnl_refresh_batches = max(0, pnl_refresh_batches)
+        self.pnl_refresh_limit = max(1, min(250, pnl_refresh_limit))
         self.logger = logging.getLogger(self.__class__.__name__)
 
     async def run(self) -> dict[str, Any]:
-        artifacts = await self._scrape()
+        artifacts = [] if self.skip_scrape else await self._scrape()
         payload = self._build_payload(artifacts)
 
         if not self.admin_token and self.api_base and self.admin_password:
@@ -74,6 +80,8 @@ class CongressETLPipeline:
 
         if self.api_base and self.admin_token:
             self._post_payload(payload)
+            if self.pnl_refresh_batches > 0:
+                payload["pnlRefresh"] = self._refresh_pnl_batches()
         else:
             self.logger.warning(
                 "SOVEREIGN_API_BASE or SOVEREIGN_ADMIN_TOKEN not configured; payload not posted."
@@ -237,6 +245,52 @@ class CongressETLPipeline:
         except URLError as exc:
             raise RuntimeError(f"Worker ingest failed: {exc}") from exc
 
+    def _refresh_pnl_batches(self) -> dict[str, Any]:
+        totals: dict[str, Any] = {"refreshed": 0, "failed": 0, "batches": []}
+
+        for batch_index in range(self.pnl_refresh_batches):
+            request = Request(
+                f"{self.api_base}/admin/congress/pnl/refresh",
+                data=json.dumps({"limit": self.pnl_refresh_limit}).encode("utf-8"),
+                method="POST",
+                headers={
+                    "Authorization": f"Bearer {self.admin_token}",
+                    "Content-Type": "application/json",
+                    "User-Agent": "Sovereign-Sigma-Congress-Runner/1.0",
+                },
+            )
+
+            try:
+                with urlopen(request, timeout=120) as response:
+                    body = json.loads(response.read().decode("utf-8"))
+            except HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="replace")
+                raise RuntimeError(
+                    f"Worker PnL refresh failed with HTTP {exc.code}: {detail}"
+                ) from exc
+            except URLError as exc:
+                raise RuntimeError(f"Worker PnL refresh failed: {exc}") from exc
+
+            refreshed = int(body.get("refreshed") or 0)
+            failed = int(body.get("failed") or 0)
+            totals["refreshed"] += refreshed
+            totals["failed"] += failed
+            totals["batches"].append(
+                {"batch": batch_index + 1, "refreshed": refreshed, "failed": failed}
+            )
+            self.logger.info(
+                "Worker PnL refresh batch %s/%s: %s refreshed, %s failed",
+                batch_index + 1,
+                self.pnl_refresh_batches,
+                refreshed,
+                failed,
+            )
+
+            if refreshed == 0 and failed == 0:
+                break
+
+        return totals
+
 
 def _extract_candidate_rows(text: str) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
@@ -310,6 +364,17 @@ def main() -> None:
         type=int,
         default=int(os.getenv("CONGRESS_MAX_DAILY_DOWNLOADS", "100")),
     )
+    parser.add_argument("--skip-scrape", action="store_true")
+    parser.add_argument(
+        "--pnl-refresh-batches",
+        type=int,
+        default=int(os.getenv("CONGRESS_PNL_REFRESH_BATCHES", "0")),
+    )
+    parser.add_argument(
+        "--pnl-refresh-limit",
+        type=int,
+        default=int(os.getenv("CONGRESS_PNL_REFRESH_LIMIT", "250")),
+    )
     parser.add_argument("--headed", action="store_true", help="Run browser with a visible window.")
     parser.add_argument("--download-dir", default="data/raw_disclosures")
     args = parser.parse_args()
@@ -324,6 +389,9 @@ def main() -> None:
         download_dir=Path(args.download_dir),
         filing_year=args.year,
         max_downloads_per_source=args.max_downloads_per_source,
+        skip_scrape=args.skip_scrape,
+        pnl_refresh_batches=args.pnl_refresh_batches,
+        pnl_refresh_limit=args.pnl_refresh_limit,
     )
     payload = asyncio.run(pipeline.run())
     print(json.dumps(payload["stats"], indent=2))
