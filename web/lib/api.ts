@@ -588,6 +588,10 @@ async function apiFetch<T>(
   const text = await response.text();
   const body = text ? JSON.parse(text) : null;
 
+  if (!response.ok && (response.status === 401 || response.status === 403)) {
+    throw new SovereignApiError(body?.error ?? `HTTP_${response.status}`, response.status);
+  }
+
   if (!response.ok && !allowErrorBody) {
     throw new SovereignApiError(body?.error ?? `HTTP_${response.status}`, response.status);
   }

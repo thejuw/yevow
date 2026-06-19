@@ -16,6 +16,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import {
   DEFAULT_API_BASE,
+  SovereignApiError,
   login,
   readCongressMacroHeatmap,
   readCongressRuns,
@@ -134,7 +135,9 @@ export default function CongressTrackerPage() {
         ]);
 
       if (!statusResult.ok) {
-        throw new Error("Congress tracker schema is not available yet.");
+        throw new Error(
+          readApiError(statusResult) ?? "Congress tracker schema is not available yet."
+        );
       }
 
       setTracker(statusResult);
@@ -148,6 +151,11 @@ export default function CongressTrackerPage() {
       setMacroHeatmap(macroResult.ok ? macroResult : null);
       setStatus("AUTHENTICATED");
     } catch (caught: unknown) {
+      if (caught instanceof SovereignApiError && [401, 403].includes(caught.status)) {
+        expireSession("Session expired. Unlock the tracker again.");
+        return;
+      }
+
       setError(errorMessage(caught));
       setStatus("ERROR");
     }
@@ -191,6 +199,10 @@ export default function CongressTrackerPage() {
   }
 
   function handleLogout() {
+    expireSession(null);
+  }
+
+  function expireSession(message: string | null) {
     localStorage.removeItem("sovereign.jwt");
     setToken("");
     setStatus("LOCKED");
@@ -198,6 +210,8 @@ export default function CongressTrackerPage() {
     setTransactions([]);
     setRuns([]);
     setTickerHierarchy(null);
+    setMacroHeatmap(null);
+    setError(message);
   }
 
   async function submitRun(source: "all" | "house" | "senate") {
@@ -1021,4 +1035,19 @@ function formatDateTime(value: string | null): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function readApiError(response: unknown): string | null {
+  if (!response || typeof response !== "object") {
+    return null;
+  }
+
+  const candidate = response as { detail?: unknown; error?: unknown };
+  if (typeof candidate.error !== "string") {
+    return null;
+  }
+
+  return typeof candidate.detail === "string"
+    ? `${candidate.error}: ${candidate.detail}`
+    : candidate.error;
 }
