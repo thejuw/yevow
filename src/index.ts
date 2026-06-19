@@ -68,7 +68,10 @@ import {
   refreshCongressPnl,
   triggerCongressRun
 } from "./gateway/CongressTrackerGateway";
-import { handlePrivateEquityScheduled } from "./gateway/PrivateEquityDealsGateway";
+import {
+  handlePrivateEquityScheduled,
+  readPrivateEquityDeals
+} from "./gateway/PrivateEquityDealsGateway";
 import type { EdgeTopology, Env } from "./types";
 
 export { TradingEngine };
@@ -76,6 +79,8 @@ export { TradingEngine };
 const gatewayRouter = new Hono<GatewayHono>();
 
 gatewayRouter.options("*", () => corsPreflight());
+
+gatewayRouter.get("/api/equity-deals", async (c) => readPrivateEquityDeals(c.env));
 
 gatewayRouter.get("/health", async (c) => {
   const runtime = gatewayRuntime(c);

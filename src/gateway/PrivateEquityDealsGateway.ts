@@ -1,5 +1,6 @@
 import type { Logger } from "../Logger";
 import type { EdgeTopology, Env, JsonRecord } from "../types";
+import { json } from "./ResponseHelpers";
 
 interface PeFeedConfig {
   url: string;
@@ -24,6 +25,17 @@ interface ExtractedDeal {
 interface WorkersAiTextResult {
   response?: string;
   text?: string;
+}
+
+interface PeDealRow {
+  id: string;
+  published_date: string;
+  buyer: string;
+  target_company: string;
+  deal_size: number | null;
+  sector: string | null;
+  source_url: string;
+  created_at: string;
 }
 
 export interface PrivateEquityIngestResult {
@@ -63,6 +75,37 @@ const DEFAULT_KEYWORDS = [
   "merger",
   "recapitalization"
 ];
+
+export async function readPrivateEquityDeals(env: Env): Promise<Response> {
+  const db = equityDb(env);
+
+  if (!db) {
+    return json({ ok: false, error: "EQUITY_DB binding is not configured" }, 503);
+  }
+
+  const result = await db
+    .prepare(
+      `SELECT
+          id,
+          published_date,
+          buyer,
+          target_company,
+          deal_size,
+          sector,
+          source_url,
+          created_at
+       FROM pe_deals
+       ORDER BY published_date DESC
+       LIMIT 50`
+    )
+    .all<PeDealRow>();
+
+  return json({
+    ok: true,
+    count: result.results.length,
+    deals: result.results
+  });
+}
 
 export async function handlePrivateEquityScheduled(
   controller: ScheduledController,
