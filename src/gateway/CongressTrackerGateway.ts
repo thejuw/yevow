@@ -14,6 +14,7 @@ import {
   type NormalizedMemberProfile,
   type NormalizedCommitteeAssignment
 } from "./CongressConflictEngine";
+import { decodeCongressOptionTrade } from "./CongressOptionDecoder";
 import { fetchCongressPriceMark, normalizeTickerSymbol } from "./CongressPriceProvider";
 import { json, readJsonBody } from "./ResponseHelpers";
 import { sourceIp } from "./SecurityAudit";
@@ -84,6 +85,7 @@ interface CongressTransactionRow {
   conflict_flag_count?: number;
   conflict_highest_severity?: string | null;
   conflict_flags?: JsonRecord[];
+  option_decoder?: JsonRecord | null;
 }
 
 interface CongressTickerAggregateRow {
@@ -1655,7 +1657,14 @@ async function attachConflictFlags(
       ...row,
       conflict_flag_count: flags.length,
       conflict_highest_severity: flags[0]?.severity ?? null,
-      conflict_flags: summarizeConflictFlags(flags)
+      conflict_flags: summarizeConflictFlags(flags),
+      option_decoder: decodeCongressOptionTrade({
+        symbol: row.symbol,
+        assetName: row.asset_name,
+        rawText: row.raw_text,
+        transactionType: row.transaction_type,
+        transactionDate: row.transaction_date
+      })
     };
   });
 }

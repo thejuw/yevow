@@ -2134,6 +2134,63 @@ output {
   background: rgba(255, 92, 92, 0.08);
 }
 
+.option-decoder-strip {
+  grid-column: 1 / -1;
+  display: grid !important;
+  grid-template-columns: 118px 180px minmax(0, 1fr);
+  gap: 7px !important;
+  align-items: center;
+  border: 1px solid rgba(216, 198, 143, 0.24);
+  border-radius: 7px;
+  padding: 8px 9px;
+  background: rgba(216, 198, 143, 0.06);
+}
+
+.option-decoder-strip span,
+.option-decoder-strip strong,
+.option-decoder-strip small,
+.option-decoder-strip em {
+  font-family: "SFMono-Regular", Consolas, monospace;
+}
+
+.option-decoder-strip span {
+  color: var(--gold);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.option-decoder-strip strong {
+  color: var(--text);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.option-decoder-strip small {
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.option-decoder-strip em {
+  grid-column: 3 / -1;
+  color: var(--muted);
+  font-size: 10px;
+  font-style: normal;
+  line-height: 1.35;
+}
+
+.option-decoder-strip.bullish {
+  border-color: rgba(102, 227, 161, 0.24);
+  background: rgba(102, 227, 161, 0.055);
+}
+
+.option-decoder-strip.bearish,
+.option-decoder-strip.hedge_or_protection {
+  border-color: rgba(255, 92, 92, 0.22);
+  background: rgba(255, 92, 92, 0.045);
+}
+
 .congress-period-select {
   min-height: 34px;
   display: inline-flex;
@@ -2743,6 +2800,7 @@ output {
   .driver-row,
   .trade-row,
   .state-row,
+  .option-decoder-strip,
   .vault-row {
     grid-template-columns: 1fr;
   }
@@ -2764,6 +2822,10 @@ output {
   .congress-transaction-card > strong,
   .congress-transaction-card > code {
     text-align: left;
+  }
+
+  .option-decoder-strip em {
+    grid-column: auto;
   }
 
   .congress-table-header {

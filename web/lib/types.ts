@@ -1055,6 +1055,26 @@ export interface CongressTransaction {
   conflict_flag_count?: number;
   conflict_highest_severity?: string | null;
   conflict_flags?: CongressConflictFlag[];
+  option_decoder?: CongressOptionDecoder | null;
+}
+
+export interface CongressOptionDecoder {
+  isOption: true;
+  underlying: string;
+  underlyingLabel: string;
+  optionType: "CALL" | "PUT";
+  strike: number;
+  strikeLabel: string;
+  expirationDate: string;
+  expirationLabel: string;
+  expirationStatus: "FUTURE" | "EXPIRED";
+  tenorDays: number | null;
+  isLeap: boolean;
+  exposure: "BULLISH" | "BEARISH" | "INCOME_OR_CLOSING" | "HEDGE_OR_PROTECTION";
+  intensity: "HIGH" | "MEDIUM" | "LOW";
+  shortLabel: string;
+  plainEnglish: string;
+  caveat: string;
 }
 
 export interface CongressConflictFlag {

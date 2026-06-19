@@ -540,6 +540,7 @@ function TransactionCard({ row }: { row: CongressTransaction }) {
   const positive = pnl >= 0;
   const conflictFlags = row.conflict_flags ?? [];
   const hasConflict = conflictFlags.length > 0;
+  const optionDecoder = row.option_decoder ?? null;
 
   return (
     <article
@@ -561,13 +562,24 @@ function TransactionCard({ row }: { row: CongressTransaction }) {
         </strong>
         <span>{row.asset_name ?? "Unlabeled asset"}</span>
       </div>
-      <code>{displayInstrument(row)}</code>
+      <code>{optionDecoder?.shortLabel ?? displayInstrument(row)}</code>
       <span>{row.transaction_type}</span>
       <span>{formatDate(row.transaction_date)}</span>
       <span>{formatAmountBand(row)}</span>
       <strong className={positive ? "positive" : "negative"}>
         {moneyOrDash(row.pnl_estimate)}
       </strong>
+      {optionDecoder ? (
+        <div className={`option-decoder-strip ${optionDecoder.exposure.toLowerCase()}`}>
+          <span>Option Decoder</span>
+          <strong>
+            {optionDecoder.isLeap ? "LEAPS · " : ""}
+            {optionDecoder.optionType} · {optionDecoder.exposure.replaceAll("_", " ")}
+          </strong>
+          <small>{optionDecoder.plainEnglish}</small>
+          <em>{optionDecoder.caveat}</em>
+        </div>
+      ) : null}
       {hasConflict ? (
         <div className="conflict-detail-strip">
           {conflictFlags.slice(0, 2).map((flag) => (
