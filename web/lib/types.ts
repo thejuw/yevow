@@ -1049,6 +1049,21 @@ export interface CongressTransaction {
   source_url: string | null;
   created_at: string;
   updated_at: string;
+  conflict_flag_count?: number;
+  conflict_highest_severity?: string | null;
+  conflict_flags?: CongressConflictFlag[];
+}
+
+export interface CongressConflictFlag {
+  flagId: string;
+  severity: string;
+  sector: string;
+  committeeCode: string;
+  committeeName: string;
+  committeeRole: string | null;
+  reason: string;
+  source: string;
+  createdAt: string;
 }
 
 export interface CongressStatusResponse {
@@ -1068,6 +1083,9 @@ export interface CongressStatusResponse {
     transactions: number;
     openIssues: number;
     markedTransactions: number;
+    conflictFlags?: number;
+    flaggedTransactions?: number;
+    highConflictFlags?: number;
   };
   pnl: {
     totalEstimate: number;

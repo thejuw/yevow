@@ -1957,6 +1957,7 @@ output {
     82px
     82px
     132px
+    70px
     minmax(142px, 0.7fr)
     102px;
   gap: 10px;
@@ -2043,10 +2044,21 @@ output {
   font-size: 11px;
 }
 
+.congress-transaction-card.conflict-flagged {
+  border-color: rgba(255, 92, 92, 0.34);
+  background: rgba(255, 92, 92, 0.055);
+}
+
 .congress-transaction-card div {
   min-width: 0;
   display: grid;
   gap: 3px;
+}
+
+.congress-transaction-card div strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .congress-transaction-card strong {
@@ -2069,6 +2081,57 @@ output {
 .congress-transaction-card > strong,
 .congress-transaction-card > code {
   text-align: right;
+}
+
+.conflict-icon,
+.conflict-summary-pill,
+.ticker-conflict-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 1px solid rgba(255, 92, 92, 0.42);
+  border-radius: 999px;
+  color: #ff8a8a;
+  background: rgba(255, 92, 92, 0.12);
+  font-family: "SFMono-Regular", Consolas, monospace;
+}
+
+.conflict-icon {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+}
+
+.conflict-icon.high {
+  border-color: rgba(255, 92, 92, 0.72);
+  color: #ff6262;
+  box-shadow: 0 0 18px rgba(255, 92, 92, 0.22);
+}
+
+.conflict-summary-pill,
+.ticker-conflict-pill {
+  min-height: 22px;
+  padding: 0 7px;
+  font-size: 10px;
+}
+
+.conflict-detail-strip {
+  grid-column: 1 / -1;
+  display: flex !important;
+  flex-wrap: wrap;
+  gap: 6px !important;
+}
+
+.conflict-detail-strip span {
+  display: inline-flex;
+  min-height: 22px;
+  align-items: center;
+  border: 1px solid rgba(255, 92, 92, 0.24);
+  border-radius: 999px;
+  padding: 0 8px;
+  color: #ffb3b3;
+  background: rgba(255, 92, 92, 0.08);
 }
 
 .congress-period-select {
@@ -2240,7 +2303,7 @@ output {
 }
 
 .ticker-transaction-row {
-  grid-template-columns: minmax(170px, 1fr) 94px 90px 150px;
+  grid-template-columns: minmax(170px, 1fr) 68px 94px 90px 150px;
 }
 
 .ticker-asset-row strong,

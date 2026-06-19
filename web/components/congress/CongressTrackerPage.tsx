@@ -8,6 +8,7 @@ import {
   RadioTower,
   RefreshCcw,
   Search,
+  ShieldAlert,
   TrendingUp
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -44,6 +45,7 @@ interface MemberTransactionBatch {
   exchangeCount: number;
   totalAmountMid: number;
   pnlEstimate: number;
+  conflictFlagCount: number;
   latestTransactionDate: string | null;
   sourceUrls: string[];
   transactions: CongressTransaction[];
@@ -92,7 +94,8 @@ export default function CongressTrackerPage() {
         displayInstrument(row),
         row.asset_name,
         row.transaction_type,
-        row.chamber
+        row.chamber,
+        ...(row.conflict_flags ?? []).map((flag) => `${flag.sector} ${flag.committeeName}`)
       ]
         .filter(Boolean)
         .join(" ")
@@ -179,12 +182,12 @@ export default function CongressTrackerPage() {
 
   function handleLogout() {
     localStorage.removeItem("sovereign.jwt");
-      setToken("");
-      setStatus("LOCKED");
-      setTracker(null);
-      setTransactions([]);
-      setRuns([]);
-      setTickerHierarchy(null);
+    setToken("");
+    setStatus("LOCKED");
+    setTracker(null);
+    setTransactions([]);
+    setRuns([]);
+    setTickerHierarchy(null);
   }
 
   async function submitRun(source: "all" | "house" | "senate") {
@@ -327,9 +330,11 @@ export default function CongressTrackerPage() {
         />
         <MetricCard
           icon={<Search size={18} />}
-          label="Cleaning Issues"
-          value={compact.format(tracker?.counts.openIssues ?? 0)}
-          hint="Errors and critical OCR/parser issues"
+          label="Conflict Flags"
+          value={compact.format(tracker?.counts.flaggedTransactions ?? 0)}
+          hint={`${compact.format(tracker?.counts.highConflictFlags ?? 0)} high severity · ${compact.format(
+            tracker?.counts.conflictFlags ?? 0
+          )} total flags`}
         />
       </section>
 
@@ -424,7 +429,6 @@ export default function CongressTrackerPage() {
           </div>
         </section>
       </section>
-
     </main>
   );
 }
@@ -459,6 +463,12 @@ function MemberBatchRow({
         <span>{batch.chamber.toUpperCase()}</span>
         <code>{compact.format(batch.transactionCount)} txns</code>
         <code>{currency.format(batch.totalAmountMid)}</code>
+        {batch.conflictFlagCount > 0 ? (
+          <span className="conflict-summary-pill">
+            <ShieldAlert size={13} />
+            {compact.format(batch.conflictFlagCount)}
+          </span>
+        ) : null}
         <span>
           {compact.format(batch.purchaseCount)} buys · {compact.format(batch.saleCount)} sells
         </span>
@@ -472,8 +482,13 @@ function MemberBatchRow({
         <SmallMetric label="Disclosed Midpoint" value={currency.format(batch.totalAmountMid)} />
         <SmallMetric
           label="Estimated PnL"
-          value={positive ? currency.format(batch.pnlEstimate) : `-${currency.format(Math.abs(batch.pnlEstimate))}`}
+          value={
+            positive
+              ? currency.format(batch.pnlEstimate)
+              : `-${currency.format(Math.abs(batch.pnlEstimate))}`
+          }
         />
+        <SmallMetric label="Conflict Flags" value={compact.format(batch.conflictFlagCount)} />
         <SmallMetric label="Latest Txn" value={formatDate(batch.latestTransactionDate)} />
       </div>
 
@@ -497,18 +512,45 @@ function MemberBatchRow({
 function TransactionCard({ row }: { row: CongressTransaction }) {
   const pnl = row.pnl_estimate ?? 0;
   const positive = pnl >= 0;
+  const conflictFlags = row.conflict_flags ?? [];
+  const hasConflict = conflictFlags.length > 0;
 
   return (
-    <article className="congress-transaction-card">
+    <article
+      className={
+        hasConflict ? "congress-transaction-card conflict-flagged" : "congress-transaction-card"
+      }
+    >
       <div>
-        <strong>{row.member_name ?? "Unknown"}</strong>
+        <strong>
+          {hasConflict ? (
+            <span
+              className={`conflict-icon ${String(row.conflict_highest_severity ?? "LOW").toLowerCase()}`}
+              title={conflictFlags.map((flag) => flag.reason).join("\n")}
+            >
+              <ShieldAlert size={14} />
+            </span>
+          ) : null}
+          {row.member_name ?? "Unknown"}
+        </strong>
         <span>{row.asset_name ?? "Unlabeled asset"}</span>
       </div>
       <code>{displayInstrument(row)}</code>
       <span>{row.transaction_type}</span>
       <span>{formatDate(row.transaction_date)}</span>
       <span>{formatAmountBand(row)}</span>
-      <strong className={positive ? "positive" : "negative"}>{moneyOrDash(row.pnl_estimate)}</strong>
+      <strong className={positive ? "positive" : "negative"}>
+        {moneyOrDash(row.pnl_estimate)}
+      </strong>
+      {hasConflict ? (
+        <div className="conflict-detail-strip">
+          {conflictFlags.slice(0, 2).map((flag) => (
+            <span key={flag.flagId}>
+              {flag.severity} · {flag.sector} · {flag.committeeName}
+            </span>
+          ))}
+        </div>
+      ) : null}
     </article>
   );
 }
@@ -590,8 +632,8 @@ function TickerHierarchyRow({ item }: { item: CongressTickerHierarchyItem }) {
               <strong>{asset.assetName}</strong>
               <span>{currency.format(asset.totalAmountMid)}</span>
               <code>
-                {compact.format(asset.transactionCount)} txns ·{" "}
-                {compact.format(asset.memberCount)} members
+                {compact.format(asset.transactionCount)} txns · {compact.format(asset.memberCount)}{" "}
+                members
               </code>
             </div>
           ))
@@ -602,6 +644,12 @@ function TickerHierarchyRow({ item }: { item: CongressTickerHierarchyItem }) {
         {item.transactions.map((row) => (
           <div className="ticker-transaction-row" key={row.transaction_id}>
             <strong>{row.member_name ?? "Unknown"}</strong>
+            {(row.conflict_flag_count ?? 0) > 0 ? (
+              <span className="ticker-conflict-pill">
+                <ShieldAlert size={12} />
+                {compact.format(row.conflict_flag_count ?? 0)}
+              </span>
+            ) : null}
             <span>{row.transaction_type}</span>
             <span>{formatDate(row.transaction_date)}</span>
             <code>{formatAmountBand(row)}</code>
@@ -659,6 +707,7 @@ function buildMemberBatches(rows: CongressTransaction[]): MemberTransactionBatch
         exchangeCount: 0,
         totalAmountMid: 0,
         pnlEstimate: 0,
+        conflictFlagCount: 0,
         latestTransactionDate: null,
         sourceUrls: [],
         transactions: []
@@ -667,6 +716,7 @@ function buildMemberBatches(rows: CongressTransaction[]): MemberTransactionBatch
     existing.transactionCount += 1;
     existing.totalAmountMid += row.amount_mid ?? 0;
     existing.pnlEstimate += row.pnl_estimate ?? 0;
+    existing.conflictFlagCount += row.conflict_flag_count ?? 0;
     existing.transactions.push(row);
 
     if (row.transaction_type === "PURCHASE") {

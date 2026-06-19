@@ -1,6 +1,14 @@
 import { Logger } from "../Logger";
 import { exchangeSecret } from "../execution/SecretResolver";
 import type { AuthenticatedAdmin } from "./AdminModels";
+import {
+  evaluateCongressConflicts,
+  normalizeCommitteeAssignment,
+  summarizeConflictFlags,
+  type CongressCommitteeAssignmentInput,
+  type CongressConflictFlagRow,
+  type NormalizedCommitteeAssignment
+} from "./CongressConflictEngine";
 import { fetchCongressPriceMark, normalizeTickerSymbol } from "./CongressPriceProvider";
 import { json, readJsonBody } from "./ResponseHelpers";
 import { sourceIp } from "./SecurityAudit";
@@ -62,6 +70,9 @@ interface CongressTransactionRow {
   source_url: string | null;
   created_at: string;
   updated_at: string;
+  conflict_flag_count?: number;
+  conflict_highest_severity?: string | null;
+  conflict_flags?: JsonRecord[];
 }
 
 interface CongressTickerAggregateRow {
@@ -132,6 +143,7 @@ interface CongressIngestPayload {
   filings?: CongressFilingInput[];
   transactions?: CongressTransactionInput[];
   cleaningIssues?: CongressCleaningIssueInput[];
+  committeeAssignments?: CongressCommitteeAssignmentInput[];
   completed?: boolean;
   errorMessage?: string;
   stats?: JsonRecord;
@@ -149,34 +161,44 @@ interface RunnerNotificationResult {
 
 export async function readCongressStatus(env: Env): Promise<Response> {
   try {
-    const [latestRun, runs, filings, transactions, openIssues, pnl] = await Promise.all([
-      congressDb(env)
-        .prepare(`SELECT * FROM congress_scrape_runs ORDER BY created_at DESC LIMIT 1`)
-        .first<CongressRunRow>(),
-      count(env, "congress_scrape_runs"),
-      count(env, "congress_filings"),
-      count(env, "congress_transactions"),
-      congressDb(env)
-        .prepare(
-          `SELECT COUNT(*) AS count
+    const [latestRun, runs, filings, transactions, openIssues, conflictStats, pnl] =
+      await Promise.all([
+        congressDb(env)
+          .prepare(`SELECT * FROM congress_scrape_runs ORDER BY created_at DESC LIMIT 1`)
+          .first<CongressRunRow>(),
+        count(env, "congress_scrape_runs"),
+        count(env, "congress_filings"),
+        count(env, "congress_transactions"),
+        congressDb(env)
+          .prepare(
+            `SELECT COUNT(*) AS count
            FROM congress_cleaning_issues
           WHERE severity IN ('ERROR', 'CRITICAL')`
-        )
-        .first<CountRow>(),
-      congressDb(env)
-        .prepare(
-          `SELECT
+          )
+          .first<CountRow>(),
+        congressDb(env)
+          .prepare(
+            `SELECT
+             COUNT(*) AS flags,
+             COUNT(DISTINCT transaction_id) AS flagged_transactions,
+             SUM(CASE WHEN severity = 'HIGH' THEN 1 ELSE 0 END) AS high_flags
+           FROM congress_conflict_flags`
+          )
+          .first<{ flags: number; flagged_transactions: number; high_flags: number }>(),
+        congressDb(env)
+          .prepare(
+            `SELECT
            COALESCE(SUM(pnl_estimate), 0) AS total_pnl,
            AVG(return_pct) AS average_return_pct,
            COUNT(CASE WHEN pnl_estimate IS NOT NULL THEN 1 END) AS marked_transactions
          FROM congress_transactions`
-        )
-        .first<{
-          total_pnl: number;
-          average_return_pct: number | null;
-          marked_transactions: number;
-        }>()
-    ]);
+          )
+          .first<{
+            total_pnl: number;
+            average_return_pct: number | null;
+            marked_transactions: number;
+          }>()
+      ]);
 
     return json({
       ok: true,
@@ -197,7 +219,10 @@ export async function readCongressStatus(env: Env): Promise<Response> {
         filings: filings.count,
         transactions: transactions.count,
         openIssues: openIssues?.count ?? 0,
-        markedTransactions: pnl?.marked_transactions ?? 0
+        markedTransactions: pnl?.marked_transactions ?? 0,
+        conflictFlags: conflictStats?.flags ?? 0,
+        flaggedTransactions: conflictStats?.flagged_transactions ?? 0,
+        highConflictFlags: conflictStats?.high_flags ?? 0
       },
       pnl: {
         totalEstimate: pnl?.total_pnl ?? 0,
@@ -284,10 +309,11 @@ export async function readCongressTransactions(env: Env, url: URL): Promise<Resp
       )
       .bind(...params, limit, offset)
       .all<CongressTransactionRow>();
+    const transactions = await attachConflictFlags(env, rows.results ?? []);
 
     return json({
       ok: true,
-      transactions: rows.results ?? [],
+      transactions,
       limit,
       offset,
       pnlMethod:
@@ -350,7 +376,7 @@ export async function readCongressTickerHierarchy(env: Env, url: URL): Promise<R
     ]);
 
     const aggregates = aggregateResult.results ?? [];
-    const details = detailResult.results ?? [];
+    const details = await attachConflictFlags(env, detailResult.results ?? []);
     const totalAmount = aggregates.reduce(
       (sum, row) => sum + nonNegativeNumber(row.total_amount_mid),
       0
@@ -393,8 +419,7 @@ export async function readCongressTickerHierarchy(env: Env, url: URL): Promise<R
       totalAmountMid: totalAmount,
       totalTransactions: tickers.reduce((sum, row) => sum + row.transactionCount, 0),
       tickers,
-      note:
-        "Hierarchy is ranked by disclosed amount midpoint within the selected ingestion/transaction window. Rows without a confident public ticker are grouped as UNRESOLVED instead of being price-marked."
+      note: "Hierarchy is ranked by disclosed amount midpoint within the selected ingestion/transaction window. Rows without a confident public ticker are grouped as UNRESOLVED instead of being price-marked."
     });
   } catch (error) {
     return schemaUnavailable(error);
@@ -452,6 +477,8 @@ export async function ingestCongressPayload(
   const filings = Array.isArray(payload.filings) ? payload.filings : [];
   const transactions = Array.isArray(payload.transactions) ? payload.transactions : [];
   const issues = Array.isArray(payload.cleaningIssues) ? payload.cleaningIssues : [];
+  const committeeAssignments = normalizeCommitteeAssignments(payload.committeeAssignments);
+  const assignmentsByMember = committeeAssignmentsByMember(committeeAssignments);
 
   statements.push(
     congressDb(env)
@@ -523,6 +550,39 @@ export async function ingestCongressPayload(
     );
   }
 
+  for (const assignment of committeeAssignments) {
+    statements.push(
+      congressDb(env)
+        .prepare(
+          `INSERT INTO congress_committee_assignments
+          (
+            member_key, member_name, chamber, committee_code, committee_name, committee_role,
+            source, source_updated_at, created_at, updated_at
+          )
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(member_key, chamber, committee_code) DO UPDATE SET
+           member_name = excluded.member_name,
+           committee_name = excluded.committee_name,
+           committee_role = excluded.committee_role,
+           source = excluded.source,
+           source_updated_at = excluded.source_updated_at,
+           updated_at = excluded.updated_at`
+        )
+        .bind(
+          assignment.memberKey,
+          assignment.memberName,
+          assignment.chamber,
+          assignment.committeeCode,
+          assignment.committeeName,
+          assignment.committeeRole,
+          assignment.source,
+          assignment.sourceUpdatedAt,
+          now,
+          now
+        )
+    );
+  }
+
   for (const transaction of transactions) {
     const normalizedSymbol = normalizeTickerSymbol(transaction.symbol ?? "") ?? null;
     const transactionId = transaction.transactionId ?? (await stableId("transaction", transaction));
@@ -580,6 +640,59 @@ export async function ingestCongressPayload(
           now
         )
     );
+
+    statements.push(
+      congressDb(env)
+        .prepare(`DELETE FROM congress_conflict_flags WHERE transaction_id = ?`)
+        .bind(transactionId)
+    );
+
+    const conflictFlags = evaluateCongressConflicts(assignmentsByMember, {
+      transactionId,
+      chamber: normalizeChamber(transaction.chamber),
+      memberName: nullableString(transaction.memberName),
+      symbol: normalizedSymbol,
+      assetName: nullableString(transaction.assetName),
+      transactionType: normalizeTransactionType(transaction.transactionType)
+    });
+
+    for (const flag of conflictFlags) {
+      statements.push(
+        congressDb(env)
+          .prepare(
+            `INSERT INTO congress_conflict_flags
+            (
+              flag_id, transaction_id, member_name, chamber, symbol, asset_name,
+              transaction_type, sector, committee_code, committee_name, committee_role,
+              severity, reason, source, created_at, updated_at
+            )
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(flag_id) DO UPDATE SET
+             severity = excluded.severity,
+             reason = excluded.reason,
+             source = excluded.source,
+             updated_at = excluded.updated_at`
+          )
+          .bind(
+            flag.flagId,
+            flag.transactionId,
+            flag.memberName,
+            flag.chamber,
+            flag.symbol,
+            flag.assetName,
+            flag.transactionType,
+            flag.sector,
+            flag.committeeCode,
+            flag.committeeName,
+            flag.committeeRole,
+            flag.severity,
+            flag.reason,
+            flag.source,
+            now,
+            now
+          )
+      );
+    }
   }
 
   for (const issue of issues) {
@@ -639,6 +752,7 @@ export async function ingestCongressPayload(
     runId,
     filings: filings.length,
     transactions: transactions.length,
+    committeeAssignments: committeeAssignments.length,
     issues: issues.length,
     completed: payload.completed === true,
     actor: auth.subject,
@@ -980,10 +1094,10 @@ async function createCongressRun(
     message: runnerError
       ? `Run recorded, but external runner dispatch failed: ${runnerError}`
       : runnable
-      ? "Run queued with configured external scraper/OCR runner."
-      : runnerKind === "github_actions" && runnerUrl
-        ? "Run recorded. Configure CONGRESS_RUNNER_TOKEN before GitHub Actions dispatch can start automatically."
-        : "Run recorded. Configure CONGRESS_RUNNER_URL to start the Playwright/OCR worker automatically.",
+        ? "Run queued with configured external scraper/OCR runner."
+        : runnerKind === "github_actions" && runnerUrl
+          ? "Run recorded. Configure CONGRESS_RUNNER_TOKEN before GitHub Actions dispatch can start automatically."
+          : "Run recorded. Configure CONGRESS_RUNNER_URL to start the Playwright/OCR worker automatically.",
     ...(runnerError ? { error: runnerError } : {})
   };
 }
@@ -1159,6 +1273,93 @@ function groupTransactionsByTicker(
   }
 
   return grouped;
+}
+
+function normalizeCommitteeAssignments(
+  assignments: CongressCommitteeAssignmentInput[] | undefined
+): NormalizedCommitteeAssignment[] {
+  if (!Array.isArray(assignments)) {
+    return [];
+  }
+
+  const normalized: NormalizedCommitteeAssignment[] = [];
+  const seen = new Set<string>();
+
+  for (const assignment of assignments) {
+    const candidate = normalizeCommitteeAssignment(assignment);
+    if (!candidate) {
+      continue;
+    }
+
+    const key = `${candidate.memberKey}:${candidate.chamber}:${candidate.committeeCode}`;
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    normalized.push(candidate);
+  }
+
+  return normalized;
+}
+
+function committeeAssignmentsByMember(
+  assignments: NormalizedCommitteeAssignment[]
+): Map<string, NormalizedCommitteeAssignment[]> {
+  const grouped = new Map<string, NormalizedCommitteeAssignment[]>();
+
+  for (const assignment of assignments) {
+    const existing = grouped.get(assignment.memberKey) ?? [];
+    existing.push(assignment);
+    grouped.set(assignment.memberKey, existing);
+  }
+
+  return grouped;
+}
+
+async function attachConflictFlags(
+  env: Env,
+  rows: CongressTransactionRow[]
+): Promise<CongressTransactionRow[]> {
+  if (rows.length === 0) {
+    return rows;
+  }
+
+  const ids = rows.map((row) => row.transaction_id);
+  const placeholders = ids.map(() => "?").join(",");
+  const flagResult = await congressDb(env)
+    .prepare(
+      `SELECT *
+       FROM congress_conflict_flags
+       WHERE transaction_id IN (${placeholders})
+       ORDER BY
+         CASE severity
+           WHEN 'HIGH' THEN 3
+           WHEN 'MEDIUM' THEN 2
+           WHEN 'LOW' THEN 1
+           ELSE 0
+         END DESC,
+         created_at DESC`
+    )
+    .bind(...ids)
+    .all<CongressConflictFlagRow>();
+  const flagsByTransaction = new Map<string, CongressConflictFlagRow[]>();
+
+  for (const flag of flagResult.results ?? []) {
+    const existing = flagsByTransaction.get(flag.transaction_id) ?? [];
+    existing.push(flag);
+    flagsByTransaction.set(flag.transaction_id, existing);
+  }
+
+  return rows.map((row) => {
+    const flags = flagsByTransaction.get(row.transaction_id) ?? [];
+    return {
+      ...row,
+      conflict_flag_count: flags.length,
+      conflict_highest_severity: flags[0]?.severity ?? null,
+      conflict_flags: summarizeConflictFlags(flags)
+    };
+  });
 }
 
 function topAssetBreakdown(rows: CongressTransactionRow[]): JsonRecord[] {
