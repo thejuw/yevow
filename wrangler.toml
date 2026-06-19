@@ -27,6 +27,12 @@ database_name = "CONGRESS_DB"
 database_id = "b971dedc-7665-4867-a54c-e776945621d3"
 migrations_dir = "migrations"
 
+[[d1_databases]]
+binding = "EQUITY_DB"
+database_name = "EQUITY_DB"
+database_id = "417477a0-1188-4b05-8444-aa9fcbb403eb"
+migrations_dir = "migrations/equity"
+
 [[r2_buckets]]
 binding = "CONGRESS_RAW"
 bucket_name = "yevow-congress-raw"
