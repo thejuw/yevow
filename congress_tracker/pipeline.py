@@ -20,7 +20,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from .conflicts import fetch_committee_assignments
+from .conflicts import fetch_committee_assignments, fetch_member_profiles
 from .ocr_pipeline import extract_text_from_pdf
 from .scraper import CongressionalPTRScraper, FilingArtifact
 from .standardize import CleaningIssue, standardize_transaction_row
@@ -85,6 +85,7 @@ class CongressETLPipeline:
         transactions: list[dict[str, Any]] = []
         issues: list[dict[str, Any]] = []
         committee_assignments = fetch_committee_assignments(self.logger)
+        member_profiles = fetch_member_profiles(self.logger)
 
         for artifact in artifacts:
             filing_id = artifact.filing_id
@@ -158,6 +159,7 @@ class CongressETLPipeline:
             "transactions": transactions,
             "cleaningIssues": issues,
             "committeeAssignments": committee_assignments,
+            "memberProfiles": member_profiles,
             "completed": True,
             "stats": {
                 "artifacts": len(artifacts),
@@ -165,6 +167,7 @@ class CongressETLPipeline:
                 "transactions": len(transactions),
                 "issues": len(issues),
                 "committeeAssignments": len(committee_assignments),
+                "memberProfiles": len(member_profiles),
             },
         }
 

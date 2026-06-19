@@ -4,9 +4,14 @@ import type { AuthenticatedAdmin } from "./AdminModels";
 import {
   evaluateCongressConflicts,
   normalizeCommitteeAssignment,
+  normalizeCongressMemberKey,
+  normalizeMemberProfile,
+  resolveSecuritySector,
   summarizeConflictFlags,
   type CongressCommitteeAssignmentInput,
   type CongressConflictFlagRow,
+  type CongressMemberProfileInput,
+  type NormalizedMemberProfile,
   type NormalizedCommitteeAssignment
 } from "./CongressConflictEngine";
 import { fetchCongressPriceMark, normalizeTickerSymbol } from "./CongressPriceProvider";
@@ -20,6 +25,8 @@ const PRICE_REFRESH_LIMIT = 100;
 const DEFAULT_GITHUB_RUNNER_REF = "main";
 const TICKER_HIERARCHY_LIMIT = 40;
 const TICKER_DETAIL_LIMIT = 240;
+const MACRO_HEATMAP_WINDOWS = [30, 60, 90] as const;
+const MACRO_HEATMAP_LIMIT = 14;
 
 type CongressRunnerKind = "generic_webhook" | "github_actions";
 type CongressPeriod = "24h" | "7d" | "30d" | "90d" | "ytd" | "all";
@@ -68,6 +75,9 @@ interface CongressTransactionRow {
   confidence: number | null;
   raw_text: string | null;
   source_url: string | null;
+  member_key: string | null;
+  member_party: string | null;
+  security_sector: string | null;
   created_at: string;
   updated_at: string;
   conflict_flag_count?: number;
@@ -144,9 +154,32 @@ interface CongressIngestPayload {
   transactions?: CongressTransactionInput[];
   cleaningIssues?: CongressCleaningIssueInput[];
   committeeAssignments?: CongressCommitteeAssignmentInput[];
+  memberProfiles?: CongressMemberProfileInput[];
   completed?: boolean;
   errorMessage?: string;
   stats?: JsonRecord;
+}
+
+interface CongressSectorFlowRow {
+  sector: string | null;
+  transaction_count: number;
+  purchase_count: number;
+  sale_count: number;
+  total_amount_mid: number | null;
+  purchase_amount_mid: number | null;
+  sale_amount_mid: number | null;
+  net_amount_mid: number | null;
+  democratic_purchase_amount_mid: number | null;
+  republican_purchase_amount_mid: number | null;
+}
+
+interface CongressTickerFlowRow extends CongressSectorFlowRow {
+  ticker: string;
+  democratic_purchase_count: number;
+  republican_purchase_count: number;
+  democratic_member_count: number;
+  republican_member_count: number;
+  bipartisan_buy_amount_mid: number | null;
 }
 
 interface CongressRunRequest {
@@ -426,6 +459,178 @@ export async function readCongressTickerHierarchy(env: Env, url: URL): Promise<R
   }
 }
 
+export async function readCongressMacroHeatmap(env: Env, url: URL): Promise<Response> {
+  try {
+    const limit = clampLimit(url.searchParams.get("limit"), MACRO_HEATMAP_LIMIT);
+    const windows = [];
+
+    for (const days of MACRO_HEATMAP_WINDOWS) {
+      const windowStart = rollingWindowStart(days);
+      const [sectorResult, tickerResult] = await Promise.all([
+        congressDb(env)
+          .prepare(
+            `SELECT
+               COALESCE(security_sector, 'UNRESOLVED') AS sector,
+               COUNT(*) AS transaction_count,
+               SUM(CASE WHEN transaction_type = 'PURCHASE' THEN 1 ELSE 0 END) AS purchase_count,
+               SUM(CASE WHEN transaction_type = 'SALE' THEN 1 ELSE 0 END) AS sale_count,
+               SUM(COALESCE(amount_mid, 0)) AS total_amount_mid,
+               SUM(CASE WHEN transaction_type = 'PURCHASE' THEN COALESCE(amount_mid, 0) ELSE 0 END)
+                 AS purchase_amount_mid,
+               SUM(CASE WHEN transaction_type = 'SALE' THEN COALESCE(amount_mid, 0) ELSE 0 END)
+                 AS sale_amount_mid,
+               SUM(CASE
+                    WHEN transaction_type = 'PURCHASE' THEN COALESCE(amount_mid, 0)
+                    WHEN transaction_type = 'SALE' THEN -COALESCE(amount_mid, 0)
+                    ELSE 0
+                   END) AS net_amount_mid,
+               SUM(CASE
+                    WHEN transaction_type = 'PURCHASE' AND member_party = 'D'
+                      THEN COALESCE(amount_mid, 0)
+                    ELSE 0
+                   END) AS democratic_purchase_amount_mid,
+               SUM(CASE
+                    WHEN transaction_type = 'PURCHASE' AND member_party = 'R'
+                      THEN COALESCE(amount_mid, 0)
+                    ELSE 0
+                   END) AS republican_purchase_amount_mid
+             FROM congress_transactions
+             WHERE datetime(COALESCE(transaction_date, created_at)) >= datetime(?)
+             GROUP BY sector
+             ORDER BY ABS(net_amount_mid) DESC, total_amount_mid DESC
+             LIMIT ?`
+          )
+          .bind(windowStart, limit)
+          .all<CongressSectorFlowRow>(),
+        congressDb(env)
+          .prepare(
+            `SELECT
+               COALESCE(NULLIF(UPPER(symbol), ''), 'UNRESOLVED') AS ticker,
+               COALESCE(security_sector, 'UNRESOLVED') AS sector,
+               COUNT(*) AS transaction_count,
+               SUM(CASE WHEN transaction_type = 'PURCHASE' THEN 1 ELSE 0 END) AS purchase_count,
+               SUM(CASE WHEN transaction_type = 'SALE' THEN 1 ELSE 0 END) AS sale_count,
+               SUM(COALESCE(amount_mid, 0)) AS total_amount_mid,
+               SUM(CASE WHEN transaction_type = 'PURCHASE' THEN COALESCE(amount_mid, 0) ELSE 0 END)
+                 AS purchase_amount_mid,
+               SUM(CASE WHEN transaction_type = 'SALE' THEN COALESCE(amount_mid, 0) ELSE 0 END)
+                 AS sale_amount_mid,
+               SUM(CASE
+                    WHEN transaction_type = 'PURCHASE' THEN COALESCE(amount_mid, 0)
+                    WHEN transaction_type = 'SALE' THEN -COALESCE(amount_mid, 0)
+                    ELSE 0
+                   END) AS net_amount_mid,
+               SUM(CASE
+                    WHEN transaction_type = 'PURCHASE' AND member_party = 'D'
+                      THEN COALESCE(amount_mid, 0)
+                    ELSE 0
+                   END) AS democratic_purchase_amount_mid,
+               SUM(CASE
+                    WHEN transaction_type = 'PURCHASE' AND member_party = 'R'
+                      THEN COALESCE(amount_mid, 0)
+                    ELSE 0
+                   END) AS republican_purchase_amount_mid,
+               SUM(CASE WHEN transaction_type = 'PURCHASE' AND member_party = 'D' THEN 1 ELSE 0 END)
+                 AS democratic_purchase_count,
+               SUM(CASE WHEN transaction_type = 'PURCHASE' AND member_party = 'R' THEN 1 ELSE 0 END)
+                 AS republican_purchase_count,
+               COUNT(DISTINCT CASE WHEN member_party = 'D' THEN member_key END)
+                 AS democratic_member_count,
+               COUNT(DISTINCT CASE WHEN member_party = 'R' THEN member_key END)
+                 AS republican_member_count,
+               SUM(CASE
+                    WHEN transaction_type = 'PURCHASE' AND member_party IN ('D', 'R')
+                      THEN COALESCE(amount_mid, 0)
+                    ELSE 0
+                   END) AS bipartisan_buy_amount_mid
+             FROM congress_transactions
+             WHERE datetime(COALESCE(transaction_date, created_at)) >= datetime(?)
+             GROUP BY ticker, sector
+             ORDER BY ABS(net_amount_mid) DESC, total_amount_mid DESC
+             LIMIT ?`
+          )
+          .bind(windowStart, limit)
+          .all<CongressTickerFlowRow>()
+      ]);
+
+      windows.push({
+        days,
+        windowStart,
+        sectors: (sectorResult.results ?? []).map(formatSectorFlow),
+        tickers: (tickerResult.results ?? []).map(formatTickerFlow)
+      });
+    }
+
+    const bipartisanWindowStart = rollingWindowStart(90);
+    const bipartisan = await congressDb(env)
+      .prepare(
+        `SELECT
+           COALESCE(NULLIF(UPPER(symbol), ''), 'UNRESOLVED') AS ticker,
+           COALESCE(security_sector, 'UNRESOLVED') AS sector,
+           COUNT(*) AS transaction_count,
+           SUM(CASE WHEN transaction_type = 'PURCHASE' THEN 1 ELSE 0 END) AS purchase_count,
+           SUM(CASE WHEN transaction_type = 'SALE' THEN 1 ELSE 0 END) AS sale_count,
+           SUM(COALESCE(amount_mid, 0)) AS total_amount_mid,
+           SUM(CASE WHEN transaction_type = 'PURCHASE' THEN COALESCE(amount_mid, 0) ELSE 0 END)
+             AS purchase_amount_mid,
+           SUM(CASE WHEN transaction_type = 'SALE' THEN COALESCE(amount_mid, 0) ELSE 0 END)
+             AS sale_amount_mid,
+           SUM(CASE
+                WHEN transaction_type = 'PURCHASE' THEN COALESCE(amount_mid, 0)
+                WHEN transaction_type = 'SALE' THEN -COALESCE(amount_mid, 0)
+                ELSE 0
+               END) AS net_amount_mid,
+           SUM(CASE
+                WHEN transaction_type = 'PURCHASE' AND member_party = 'D'
+                  THEN COALESCE(amount_mid, 0)
+                ELSE 0
+               END) AS democratic_purchase_amount_mid,
+           SUM(CASE
+                WHEN transaction_type = 'PURCHASE' AND member_party = 'R'
+                  THEN COALESCE(amount_mid, 0)
+                ELSE 0
+               END) AS republican_purchase_amount_mid,
+           SUM(CASE WHEN transaction_type = 'PURCHASE' AND member_party = 'D' THEN 1 ELSE 0 END)
+             AS democratic_purchase_count,
+           SUM(CASE WHEN transaction_type = 'PURCHASE' AND member_party = 'R' THEN 1 ELSE 0 END)
+             AS republican_purchase_count,
+           COUNT(DISTINCT CASE WHEN member_party = 'D' THEN member_key END)
+             AS democratic_member_count,
+           COUNT(DISTINCT CASE WHEN member_party = 'R' THEN member_key END)
+             AS republican_member_count,
+           SUM(CASE
+                WHEN transaction_type = 'PURCHASE' AND member_party IN ('D', 'R')
+                  THEN COALESCE(amount_mid, 0)
+                ELSE 0
+               END) AS bipartisan_buy_amount_mid
+         FROM congress_transactions
+         WHERE datetime(COALESCE(transaction_date, created_at)) >= datetime(?)
+           AND symbol IS NOT NULL
+         GROUP BY ticker, sector
+         HAVING democratic_purchase_amount_mid > 0
+            AND republican_purchase_amount_mid > 0
+         ORDER BY bipartisan_buy_amount_mid DESC, purchase_count DESC
+         LIMIT ?`
+      )
+      .bind(bipartisanWindowStart, limit)
+      .all<CongressTickerFlowRow>();
+
+    return json({
+      ok: true,
+      generatedAt: new Date().toISOString(),
+      windows,
+      bipartisanConsensus: {
+        days: 90,
+        windowStart: bipartisanWindowStart,
+        tickers: (bipartisan.results ?? []).map(formatTickerFlow)
+      },
+      note: "Macro heatmaps aggregate public PTR rows by transaction date over rolling 30/60/90-day windows. Party labels come from current public congressional metadata and are unavailable until runner enrichment has ingested member profiles."
+    });
+  } catch (error) {
+    return schemaUnavailable(error);
+  }
+}
+
 export async function triggerCongressRun(
   request: Request,
   env: Env,
@@ -479,6 +684,8 @@ export async function ingestCongressPayload(
   const issues = Array.isArray(payload.cleaningIssues) ? payload.cleaningIssues : [];
   const committeeAssignments = normalizeCommitteeAssignments(payload.committeeAssignments);
   const assignmentsByMember = committeeAssignmentsByMember(committeeAssignments);
+  const memberProfiles = normalizeMemberProfiles(payload.memberProfiles);
+  const profilesByMember = memberProfilesByMember(memberProfiles);
 
   statements.push(
     congressDb(env)
@@ -583,9 +790,53 @@ export async function ingestCongressPayload(
     );
   }
 
+  for (const profile of memberProfiles) {
+    statements.push(
+      congressDb(env)
+        .prepare(
+          `INSERT INTO congress_member_profiles
+          (
+            member_key, member_name, chamber, party, state, district, bioguide_id,
+            source, source_updated_at, created_at, updated_at
+          )
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(member_key) DO UPDATE SET
+           member_name = excluded.member_name,
+           chamber = excluded.chamber,
+           party = excluded.party,
+           state = excluded.state,
+           district = excluded.district,
+           bioguide_id = excluded.bioguide_id,
+           source = excluded.source,
+           source_updated_at = excluded.source_updated_at,
+           updated_at = excluded.updated_at`
+        )
+        .bind(
+          profile.memberKey,
+          profile.memberName,
+          profile.chamber,
+          profile.party,
+          profile.state,
+          profile.district,
+          profile.bioguideId,
+          profile.source,
+          profile.sourceUpdatedAt,
+          now,
+          now
+        )
+    );
+  }
+
   for (const transaction of transactions) {
     const normalizedSymbol = normalizeTickerSymbol(transaction.symbol ?? "") ?? null;
     const transactionId = transaction.transactionId ?? (await stableId("transaction", transaction));
+    const memberName = nullableString(transaction.memberName);
+    const memberKey = normalizeCongressMemberKey(memberName) || null;
+    const memberProfile = memberKey ? profilesByMember.get(memberKey) : undefined;
+    const securitySector = resolveSecuritySector(
+      normalizedSymbol,
+      nullableString(transaction.assetName)
+    );
     statements.push(
       congressDb(env)
         .prepare(
@@ -594,9 +845,9 @@ export async function ingestCongressPayload(
             transaction_id, filing_id, chamber, member_name, owner, symbol, asset_name,
             transaction_type, transaction_date, notification_date, amount_min, amount_max,
             amount_mid, transaction_price, transaction_price_as_of, confidence, raw_text,
-            source_url, created_at, updated_at
+            source_url, member_key, member_party, security_sector, created_at, updated_at
           )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(transaction_id) DO UPDATE SET
            filing_id = excluded.filing_id,
            chamber = excluded.chamber,
@@ -615,13 +866,16 @@ export async function ingestCongressPayload(
            confidence = excluded.confidence,
            raw_text = excluded.raw_text,
            source_url = excluded.source_url,
+           member_key = excluded.member_key,
+           member_party = excluded.member_party,
+           security_sector = excluded.security_sector,
            updated_at = excluded.updated_at`
         )
         .bind(
           transactionId,
           nullableString(transaction.filingId),
           normalizeChamber(transaction.chamber),
-          nullableString(transaction.memberName),
+          memberName,
           nullableString(transaction.owner),
           normalizedSymbol,
           nullableString(transaction.assetName),
@@ -636,6 +890,9 @@ export async function ingestCongressPayload(
           nullableNumber(transaction.confidence),
           nullableString(transaction.rawText),
           nullableString(transaction.sourceUrl),
+          memberKey,
+          memberProfile?.party ?? null,
+          securitySector,
           now,
           now
         )
@@ -650,7 +907,7 @@ export async function ingestCongressPayload(
     const conflictFlags = evaluateCongressConflicts(assignmentsByMember, {
       transactionId,
       chamber: normalizeChamber(transaction.chamber),
-      memberName: nullableString(transaction.memberName),
+      memberName,
       symbol: normalizedSymbol,
       assetName: nullableString(transaction.assetName),
       transactionType: normalizeTransactionType(transaction.transactionType)
@@ -753,6 +1010,7 @@ export async function ingestCongressPayload(
     filings: filings.length,
     transactions: transactions.length,
     committeeAssignments: committeeAssignments.length,
+    memberProfiles: memberProfiles.length,
     issues: issues.length,
     completed: payload.completed === true,
     actor: auth.subject,
@@ -1317,6 +1575,41 @@ function committeeAssignmentsByMember(
   return grouped;
 }
 
+function normalizeMemberProfiles(
+  profiles: CongressMemberProfileInput[] | undefined
+): NormalizedMemberProfile[] {
+  if (!Array.isArray(profiles)) {
+    return [];
+  }
+
+  const normalized: NormalizedMemberProfile[] = [];
+  const seen = new Set<string>();
+
+  for (const profile of profiles) {
+    const candidate = normalizeMemberProfile(profile);
+    if (!candidate || seen.has(candidate.memberKey)) {
+      continue;
+    }
+
+    seen.add(candidate.memberKey);
+    normalized.push(candidate);
+  }
+
+  return normalized;
+}
+
+function memberProfilesByMember(
+  profiles: NormalizedMemberProfile[]
+): Map<string, NormalizedMemberProfile> {
+  const grouped = new Map<string, NormalizedMemberProfile>();
+
+  for (const profile of profiles) {
+    grouped.set(profile.memberKey, profile);
+  }
+
+  return grouped;
+}
+
 async function attachConflictFlags(
   env: Env,
   rows: CongressTransactionRow[]
@@ -1387,6 +1680,45 @@ function topAssetBreakdown(rows: CongressTransactionRow[]): JsonRecord[] {
       totalAmountMid: roundNumber(summary.amount, 2),
       memberCount: summary.members.size
     }));
+}
+
+function formatSectorFlow(row: CongressSectorFlowRow): JsonRecord {
+  return {
+    sector: row.sector ?? "UNRESOLVED",
+    transactionCount: Number(row.transaction_count ?? 0),
+    purchaseCount: Number(row.purchase_count ?? 0),
+    saleCount: Number(row.sale_count ?? 0),
+    totalAmountMid: roundNumber(nonNegativeNumber(row.total_amount_mid), 2),
+    purchaseAmountMid: roundNumber(nonNegativeNumber(row.purchase_amount_mid), 2),
+    saleAmountMid: roundNumber(nonNegativeNumber(row.sale_amount_mid), 2),
+    netAmountMid: roundNumber(Number(row.net_amount_mid ?? 0), 2),
+    democraticPurchaseAmountMid: roundNumber(
+      nonNegativeNumber(row.democratic_purchase_amount_mid),
+      2
+    ),
+    republicanPurchaseAmountMid: roundNumber(
+      nonNegativeNumber(row.republican_purchase_amount_mid),
+      2
+    )
+  };
+}
+
+function formatTickerFlow(row: CongressTickerFlowRow): JsonRecord {
+  return {
+    ...formatSectorFlow(row),
+    ticker: row.ticker,
+    democraticPurchaseCount: Number(row.democratic_purchase_count ?? 0),
+    republicanPurchaseCount: Number(row.republican_purchase_count ?? 0),
+    democraticMemberCount: Number(row.democratic_member_count ?? 0),
+    republicanMemberCount: Number(row.republican_member_count ?? 0),
+    bipartisanBuyAmountMid: roundNumber(nonNegativeNumber(row.bipartisan_buy_amount_mid), 2)
+  };
+}
+
+function rollingWindowStart(days: number): string {
+  const start = new Date();
+  start.setUTCDate(start.getUTCDate() - days);
+  return start.toISOString();
 }
 
 function normalizePeriod(value: string | null): CongressPeriod {

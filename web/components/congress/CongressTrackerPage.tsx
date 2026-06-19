@@ -2,6 +2,7 @@
 
 import {
   DatabaseZap,
+  Flame,
   KeyRound,
   Landmark,
   Lock,
@@ -16,6 +17,7 @@ import type { ReactNode } from "react";
 import {
   DEFAULT_API_BASE,
   login,
+  readCongressMacroHeatmap,
   readCongressRuns,
   readCongressStatus,
   readCongressTickerHierarchy,
@@ -25,6 +27,8 @@ import {
 } from "@/lib/api";
 import type {
   CongressPeriod,
+  CongressMacroFlow,
+  CongressMacroHeatmapResponse,
   CongressRun,
   CongressStatusResponse,
   CongressTickerHierarchyItem,
@@ -73,6 +77,7 @@ export default function CongressTrackerPage() {
   const [tracker, setTracker] = useState<CongressStatusResponse | null>(null);
   const [runs, setRuns] = useState<CongressRun[]>([]);
   const [transactions, setTransactions] = useState<CongressTransaction[]>([]);
+  const [macroHeatmap, setMacroHeatmap] = useState<CongressMacroHeatmapResponse | null>(null);
   const [tickerHierarchy, setTickerHierarchy] = useState<CongressTickerHierarchyResponse | null>(
     null
   );
@@ -95,6 +100,8 @@ export default function CongressTrackerPage() {
         row.asset_name,
         row.transaction_type,
         row.chamber,
+        row.member_party,
+        row.security_sector,
         ...(row.conflict_flags ?? []).map((flag) => `${flag.sector} ${flag.committeeName}`)
       ]
         .filter(Boolean)
@@ -117,12 +124,14 @@ export default function CongressTrackerPage() {
     setError(null);
 
     try {
-      const [statusResult, runsResult, transactionsResult, tickerResult] = await Promise.all([
-        readCongressStatus(apiBase, token),
-        readCongressRuns(apiBase, token, 8),
-        readCongressTransactions(apiBase, token, 150),
-        readCongressTickerHierarchy(apiBase, token, tickerPeriod)
-      ]);
+      const [statusResult, runsResult, transactionsResult, tickerResult, macroResult] =
+        await Promise.all([
+          readCongressStatus(apiBase, token),
+          readCongressRuns(apiBase, token, 8),
+          readCongressTransactions(apiBase, token, 150),
+          readCongressTickerHierarchy(apiBase, token, tickerPeriod),
+          readCongressMacroHeatmap(apiBase, token, 14)
+        ]);
 
       if (!statusResult.ok) {
         throw new Error("Congress tracker schema is not available yet.");
@@ -136,6 +145,7 @@ export default function CongressTrackerPage() {
           : []
       );
       setTickerHierarchy(tickerResult.ok ? tickerResult : null);
+      setMacroHeatmap(macroResult.ok ? macroResult : null);
       setStatus("AUTHENTICATED");
     } catch (caught: unknown) {
       setError(errorMessage(caught));
@@ -337,6 +347,8 @@ export default function CongressTrackerPage() {
           )} total flags`}
         />
       </section>
+
+      <MacroHeatmapPanel heatmap={macroHeatmap} />
 
       <section className="settings-panel settings-panel-wide glass congress-ledger-panel">
         <div className="congress-table-header">
@@ -552,6 +564,131 @@ function TransactionCard({ row }: { row: CongressTransaction }) {
         </div>
       ) : null}
     </article>
+  );
+}
+
+function MacroHeatmapPanel({ heatmap }: { heatmap: CongressMacroHeatmapResponse | null }) {
+  const selectedWindow =
+    heatmap?.windows.find((window) => window.days === 30) ?? heatmap?.windows[0];
+  const sectors = selectedWindow?.sectors ?? [];
+  const consensus = heatmap?.bipartisanConsensus.tickers ?? [];
+
+  return (
+    <section className="settings-panel settings-panel-wide glass macro-heatmap-panel">
+      <div className="congress-table-header">
+        <div className="panel-title">
+          <Flame size={17} />
+          <span>Macro Heatmaps</span>
+          <strong className="panel-pill">Follow the Money</strong>
+        </div>
+        <span className="macro-generated">
+          {heatmap ? `Updated ${formatDateTime(heatmap.generatedAt)}` : "Waiting for macro data"}
+        </span>
+      </div>
+
+      <div className="macro-heatmap-grid">
+        <section className="macro-card consensus-card">
+          <div className="macro-card-header">
+            <span>Bipartisan Consensus Picks</span>
+            <code>90D</code>
+          </div>
+          {consensus.length === 0 ? (
+            <div className="ticker-hierarchy-empty">
+              No bipartisan purchase consensus yet. Run the Congress tracker again to ingest party
+              metadata.
+            </div>
+          ) : (
+            <div className="consensus-stack">
+              {consensus.slice(0, 8).map((item) => (
+                <MacroTickerRow item={item} key={`${item.ticker}-${item.sector}`} />
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className="macro-card">
+          <div className="macro-card-header">
+            <span>Sector Rotation</span>
+            <code>{selectedWindow ? `${selectedWindow.days}D` : "30D"}</code>
+          </div>
+          {sectors.length === 0 ? (
+            <div className="ticker-hierarchy-empty">No sector flow loaded for this window.</div>
+          ) : (
+            <div className="sector-heatmap-stack">
+              {sectors.slice(0, 10).map((sector) => (
+                <SectorHeatRow sector={sector} key={sector.sector} />
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
+
+      <div className="macro-window-strip">
+        {(heatmap?.windows ?? []).map((window) => {
+          const topSector = window.sectors[0];
+          return (
+            <div className="macro-window-card" key={window.days}>
+              <span>{window.days}D</span>
+              <strong>{topSector?.sector ?? "NO DATA"}</strong>
+              <code>{moneyOrDash(topSector?.netAmountMid ?? null)} net</code>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function MacroTickerRow({ item }: { item: CongressMacroFlow }) {
+  const total = Math.max(
+    1,
+    (item.democraticPurchaseAmountMid ?? 0) + (item.republicanPurchaseAmountMid ?? 0)
+  );
+  const democraticPct = ((item.democraticPurchaseAmountMid ?? 0) / total) * 100;
+  const republicanPct = ((item.republicanPurchaseAmountMid ?? 0) / total) * 100;
+
+  return (
+    <div className="macro-ticker-row">
+      <strong>{item.ticker ?? "UNRESOLVED"}</strong>
+      <span>{item.sector}</span>
+      <div className="party-flow-bar" aria-label="Party purchase split">
+        <i className="democratic" style={{ width: `${Math.max(2, democraticPct)}%` }} />
+        <i className="republican" style={{ width: `${Math.max(2, republicanPct)}%` }} />
+      </div>
+      <code>{currency.format(item.bipartisanBuyAmountMid ?? item.purchaseAmountMid)}</code>
+      <small>
+        D {currency.format(item.democraticPurchaseAmountMid)} · R{" "}
+        {currency.format(item.republicanPurchaseAmountMid)}
+      </small>
+    </div>
+  );
+}
+
+function SectorHeatRow({ sector }: { sector: CongressMacroFlow }) {
+  const net = sector.netAmountMid;
+  const positive = net >= 0;
+  const maxSide = Math.max(1, sector.purchaseAmountMid, sector.saleAmountMid);
+
+  return (
+    <div className={positive ? "sector-heat-row buying" : "sector-heat-row selling"}>
+      <div>
+        <strong>{sector.sector}</strong>
+        <span>
+          {compact.format(sector.purchaseCount)} buys · {compact.format(sector.saleCount)} sells
+        </span>
+      </div>
+      <div className="sector-flow-bars">
+        <i
+          className="buy"
+          style={{ width: `${Math.max(2, (sector.purchaseAmountMid / maxSide) * 100)}%` }}
+        />
+        <i
+          className="sell"
+          style={{ width: `${Math.max(2, (sector.saleAmountMid / maxSide) * 100)}%` }}
+        />
+      </div>
+      <code>{positive ? currency.format(net) : `-${currency.format(Math.abs(net))}`}</code>
+    </div>
   );
 }
 

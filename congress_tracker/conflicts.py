@@ -24,6 +24,10 @@ COMMITTEES_URL = (
     "https://raw.githubusercontent.com/unitedstates/congress-legislators/main/"
     "committees-current.yaml"
 )
+LEGISLATORS_URL = (
+    "https://raw.githubusercontent.com/unitedstates/congress-legislators/main/"
+    "legislators-current.yaml"
+)
 USER_AGENT = "Sovereign-Sigma-Congress-Runner/1.0"
 
 RELEVANT_COMMITTEE_RE = re.compile(
@@ -84,12 +88,83 @@ def fetch_committee_assignments(logger: logging.Logger | None = None) -> list[di
     return assignments
 
 
+def fetch_member_profiles(logger: logging.Logger | None = None) -> list[dict[str, Any]]:
+    logger = logger or logging.getLogger(__name__)
+
+    try:
+        legislators_raw, source_updated_at = _fetch_yaml(LEGISLATORS_URL)
+    except (HTTPError, URLError, TimeoutError, OSError, yaml.YAMLError) as exc:
+        logger.warning("Member profile fetch failed; bipartisan heatmap party labels disabled: %s", exc)
+        return []
+
+    profiles: list[dict[str, Any]] = []
+    if not isinstance(legislators_raw, list):
+        return profiles
+
+    for legislator in legislators_raw:
+        if not isinstance(legislator, dict):
+            continue
+
+        name = legislator.get("name")
+        ids = legislator.get("id")
+        terms = legislator.get("terms")
+
+        if not isinstance(name, dict) or not isinstance(ids, dict) or not isinstance(terms, list):
+            continue
+
+        current_term = _current_term(terms)
+        if not current_term:
+            continue
+
+        profiles.append(
+            {
+                "memberName": _member_display_name(name),
+                "chamber": _profile_chamber(current_term.get("type")),
+                "party": _clean_text(current_term.get("party")),
+                "state": _clean_text(current_term.get("state")),
+                "district": _district_value(current_term.get("district")),
+                "bioguideId": _clean_text(ids.get("bioguide")),
+                "source": "unitedstates/congress-legislators",
+                "sourceUpdatedAt": source_updated_at,
+            }
+        )
+
+    return [profile for profile in profiles if profile.get("memberName")]
+
+
 def _fetch_yaml(url: str) -> tuple[Any, str | None]:
     request = Request(url, headers={"User-Agent": USER_AGENT})
     with urlopen(request, timeout=30) as response:
         raw = response.read().decode("utf-8")
         updated_at = response.headers.get("Last-Modified")
     return yaml.safe_load(raw), updated_at
+
+
+def _current_term(terms: list[Any]) -> dict[str, Any] | None:
+    candidates = [term for term in terms if isinstance(term, dict)]
+    if not candidates:
+        return None
+    return candidates[-1]
+
+
+def _member_display_name(name: dict[str, Any]) -> str | None:
+    official = _clean_text(name.get("official_full"))
+    if official:
+        return official
+
+    parts = [
+        _clean_text(name.get("first")),
+        _clean_text(name.get("middle")),
+        _clean_text(name.get("last")),
+        _clean_text(name.get("suffix")),
+    ]
+    return " ".join(part for part in parts if part) or None
+
+
+def _district_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)
 
 
 def _committee_name_map(committees_raw: Any) -> dict[str, str]:
@@ -131,6 +206,15 @@ def _committee_chamber(committee_code: str) -> str:
     if committee_code.startswith("SS"):
         return "senate"
     return "joint"
+
+
+def _profile_chamber(value: Any) -> str:
+    cleaned = _clean_text(value)
+    if cleaned == "sen":
+        return "senate"
+    if cleaned == "rep":
+        return "house"
+    return cleaned or "unknown"
 
 
 def _clean_text(value: Any) -> str | None:

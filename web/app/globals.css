@@ -2159,6 +2159,191 @@ output {
   font-size: 12px;
 }
 
+.macro-heatmap-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.macro-generated {
+  color: var(--muted);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+}
+
+.macro-heatmap-grid {
+  display: grid;
+  grid-template-columns: 1.05fr 0.95fr;
+  gap: 10px;
+}
+
+.macro-card {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  border: 1px solid rgba(150, 165, 188, 0.12);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(6, 8, 11, 0.35);
+}
+
+.macro-card-header,
+.macro-window-card,
+.macro-ticker-row,
+.sector-heat-row {
+  font-family: "SFMono-Regular", Consolas, monospace;
+}
+
+.macro-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.macro-card-header code {
+  color: var(--gold);
+}
+
+.consensus-stack,
+.sector-heatmap-stack,
+.macro-window-strip {
+  display: grid;
+  gap: 7px;
+}
+
+.macro-ticker-row {
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: 54px 112px minmax(120px, 1fr) 120px;
+  gap: 8px;
+  align-items: center;
+  border-bottom: 1px solid rgba(150, 165, 188, 0.08);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.macro-ticker-row strong {
+  color: var(--gold);
+}
+
+.macro-ticker-row code {
+  color: var(--text);
+  text-align: right;
+}
+
+.macro-ticker-row small {
+  grid-column: 3 / -1;
+  color: var(--muted);
+}
+
+.party-flow-bar,
+.sector-flow-bars {
+  overflow: hidden;
+  border: 1px solid rgba(150, 165, 188, 0.14);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.party-flow-bar {
+  height: 8px;
+  display: flex;
+}
+
+.party-flow-bar i,
+.sector-flow-bars i {
+  display: block;
+  height: 100%;
+}
+
+.party-flow-bar .democratic {
+  background: rgba(93, 173, 226, 0.9);
+}
+
+.party-flow-bar .republican {
+  background: rgba(255, 92, 92, 0.82);
+}
+
+.sector-heat-row {
+  min-height: 48px;
+  display: grid;
+  grid-template-columns: minmax(124px, 0.72fr) minmax(160px, 1fr) 118px;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid rgba(150, 165, 188, 0.1);
+  border-radius: 7px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.022);
+  font-size: 11px;
+}
+
+.sector-heat-row strong {
+  color: var(--text);
+}
+
+.sector-heat-row span {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+}
+
+.sector-heat-row code {
+  color: var(--text);
+  text-align: right;
+}
+
+.sector-heat-row.selling code {
+  color: var(--red);
+}
+
+.sector-heat-row.buying code {
+  color: var(--green);
+}
+
+.sector-flow-bars {
+  height: 16px;
+  display: grid;
+  gap: 3px;
+  border-radius: 6px;
+  padding: 2px;
+}
+
+.sector-flow-bars .buy {
+  background: rgba(102, 227, 161, 0.8);
+}
+
+.sector-flow-bars .sell {
+  background: rgba(255, 92, 92, 0.72);
+}
+
+.macro-window-strip {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.macro-window-card {
+  display: grid;
+  gap: 4px;
+  border: 1px solid rgba(150, 165, 188, 0.12);
+  border-radius: 7px;
+  padding: 9px;
+  background: rgba(255, 255, 255, 0.024);
+}
+
+.macro-window-card span {
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.macro-window-card strong,
+.macro-window-card code {
+  color: var(--text);
+}
+
 .ticker-hierarchy-stack {
   display: grid;
   gap: 7px;
@@ -2495,6 +2680,10 @@ output {
   .congress-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .macro-heatmap-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 760px) {
@@ -2540,6 +2729,9 @@ output {
   .member-detail-grid,
   .settings-form.two-col,
   .settings-metrics,
+  .macro-window-strip,
+  .macro-ticker-row,
+  .sector-heat-row,
   .ticker-detail-grid,
   .ticker-hierarchy-summary,
   .ticker-asset-row,
@@ -2582,5 +2774,14 @@ output {
   .congress-period-select {
     justify-content: space-between;
     width: 100%;
+  }
+
+  .macro-ticker-row code,
+  .sector-heat-row code {
+    text-align: left;
+  }
+
+  .macro-ticker-row small {
+    grid-column: auto;
   }
 }

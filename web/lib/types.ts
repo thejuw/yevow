@@ -1047,6 +1047,9 @@ export interface CongressTransaction {
   confidence: number | null;
   raw_text: string | null;
   source_url: string | null;
+  member_key: string | null;
+  member_party: string | null;
+  security_sector: string | null;
   created_at: string;
   updated_at: string;
   conflict_flag_count?: number;
@@ -1155,6 +1158,44 @@ export interface CongressTickerHierarchyResponse {
   totalAmountMid: number;
   totalTransactions: number;
   tickers: CongressTickerHierarchyItem[];
+  note: string;
+}
+
+export interface CongressMacroFlow {
+  sector: string;
+  ticker?: string;
+  transactionCount: number;
+  purchaseCount: number;
+  saleCount: number;
+  totalAmountMid: number;
+  purchaseAmountMid: number;
+  saleAmountMid: number;
+  netAmountMid: number;
+  democraticPurchaseAmountMid: number;
+  republicanPurchaseAmountMid: number;
+  democraticPurchaseCount?: number;
+  republicanPurchaseCount?: number;
+  democraticMemberCount?: number;
+  republicanMemberCount?: number;
+  bipartisanBuyAmountMid?: number;
+}
+
+export interface CongressMacroWindow {
+  days: number;
+  windowStart: string;
+  sectors: CongressMacroFlow[];
+  tickers: CongressMacroFlow[];
+}
+
+export interface CongressMacroHeatmapResponse {
+  ok: boolean;
+  generatedAt: string;
+  windows: CongressMacroWindow[];
+  bipartisanConsensus: {
+    days: number;
+    windowStart: string;
+    tickers: CongressMacroFlow[];
+  };
   note: string;
 }
 

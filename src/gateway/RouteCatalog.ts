@@ -69,6 +69,7 @@ export const ROUTE_CATALOG = [
   "POST /admin/congress/ingest",
   "GET /admin/congress/filings",
   "GET /admin/congress/tickers",
+  "GET /admin/congress/macro",
   "GET /admin/congress/transactions",
   "POST /admin/congress/pnl/refresh"
 ] as const;

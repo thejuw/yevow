@@ -60,6 +60,7 @@ import {
   handleCongressScheduled,
   ingestCongressPayload,
   readCongressFilings,
+  readCongressMacroHeatmap,
   readCongressRuns,
   readCongressStatus,
   readCongressTickerHierarchy,
@@ -171,11 +172,7 @@ export default {
     return gatewayRouter.fetch(request, env, ctx);
   },
 
-  async scheduled(
-    controller: ScheduledController,
-    env: Env,
-    ctx: ExecutionContext
-  ): Promise<void> {
+  async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     const topology = scheduledTopology(controller);
     const logger = new Logger(
       env.TRADING_DB,
@@ -431,6 +428,7 @@ async function handleAdminRequest(
         "POST /admin/congress/ingest",
         "GET /admin/congress/filings",
         "GET /admin/congress/tickers",
+        "GET /admin/congress/macro",
         "GET /admin/congress/transactions",
         "POST /admin/congress/pnl/refresh"
       ]
@@ -872,6 +870,13 @@ async function handleAdminRequest(
       return json({ ok: false, error: "Method not allowed" }, 405);
     }
     return readCongressTickerHierarchy(env, url);
+  }
+
+  if (url.pathname === "/admin/congress/macro") {
+    if (request.method !== "GET") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+    return readCongressMacroHeatmap(env, url);
   }
 
   if (url.pathname === "/admin/congress/pnl/refresh") {

@@ -10,6 +10,17 @@ export interface CongressCommitteeAssignmentInput {
   sourceUpdatedAt?: string;
 }
 
+export interface CongressMemberProfileInput {
+  memberName?: string;
+  chamber?: string;
+  party?: string;
+  state?: string;
+  district?: string;
+  bioguideId?: string;
+  source?: string;
+  sourceUpdatedAt?: string;
+}
+
 export interface CongressConflictCandidate {
   transactionId: string;
   chamber: string;
@@ -62,6 +73,18 @@ export interface NormalizedCommitteeAssignment {
   committeeCode: string;
   committeeName: string;
   committeeRole: string | null;
+  source: string;
+  sourceUpdatedAt: string | null;
+}
+
+export interface NormalizedMemberProfile {
+  memberKey: string;
+  memberName: string;
+  chamber: string;
+  party: "D" | "R" | "I" | "OTHER" | null;
+  state: string | null;
+  district: string | null;
+  bioguideId: string | null;
   source: string;
   sourceUpdatedAt: string | null;
 }
@@ -175,6 +198,28 @@ export function normalizeCommitteeAssignment(
     committeeCode,
     committeeName,
     committeeRole: cleanText(input.committeeRole),
+    source: cleanText(input.source) ?? "unitedstates/congress-legislators",
+    sourceUpdatedAt: cleanText(input.sourceUpdatedAt)
+  };
+}
+
+export function normalizeMemberProfile(
+  input: CongressMemberProfileInput
+): NormalizedMemberProfile | null {
+  const memberName = cleanText(input.memberName);
+
+  if (!memberName) {
+    return null;
+  }
+
+  return {
+    memberKey: normalizeCongressMemberKey(memberName),
+    memberName,
+    chamber: normalizeChamber(input.chamber),
+    party: normalizeParty(input.party),
+    state: cleanText(input.state)?.toUpperCase() ?? null,
+    district: cleanText(input.district),
+    bioguideId: cleanText(input.bioguideId),
     source: cleanText(input.source) ?? "unitedstates/congress-legislators",
     sourceUpdatedAt: cleanText(input.sourceUpdatedAt)
   };
@@ -344,9 +389,37 @@ function normalizeChamber(value: unknown): string {
   }
 
   const normalized = value.trim().toLowerCase();
+  if (normalized === "rep" || normalized === "representative") {
+    return "house";
+  }
+  if (normalized === "sen" || normalized === "senator") {
+    return "senate";
+  }
   return normalized === "house" || normalized === "senate" || normalized === "joint"
     ? normalized
     : "unknown";
+}
+
+function normalizeParty(value: unknown): "D" | "R" | "I" | "OTHER" | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.trim().toUpperCase();
+
+  if (normalized === "D" || normalized === "DEMOCRAT" || normalized === "DEMOCRATIC") {
+    return "D";
+  }
+
+  if (normalized === "R" || normalized === "REPUBLICAN") {
+    return "R";
+  }
+
+  if (normalized === "I" || normalized === "INDEPENDENT") {
+    return "I";
+  }
+
+  return normalized ? "OTHER" : null;
 }
 
 function cleanText(value: unknown): string | null {

@@ -14,6 +14,7 @@ import type {
   CostDashboardResponse,
   CascadeBacktestResponse,
   CongressPnlRefreshResponse,
+  CongressMacroHeatmapResponse,
   CongressPeriod,
   CongressRunsResponse,
   CongressRunTriggerResponse,
@@ -117,14 +118,9 @@ export async function readCongressRuns(
   token: string,
   limit = 10
 ): Promise<CongressRunsResponse> {
-  return apiFetch<CongressRunsResponse>(
-    apiBase,
-    `/admin/congress/runs?limit=${limit}`,
-    token,
-    {
-      allowErrorBody: true
-    }
-  );
+  return apiFetch<CongressRunsResponse>(apiBase, `/admin/congress/runs?limit=${limit}`, token, {
+    allowErrorBody: true
+  });
 }
 
 export async function readCongressTransactions(
@@ -150,6 +146,21 @@ export async function readCongressTickerHierarchy(
   return apiFetch<CongressTickerHierarchyResponse>(
     apiBase,
     `/admin/congress/tickers?period=${encodeURIComponent(period)}&basis=created_at`,
+    token,
+    {
+      allowErrorBody: true
+    }
+  );
+}
+
+export async function readCongressMacroHeatmap(
+  apiBase: string,
+  token: string,
+  limit = 14
+): Promise<CongressMacroHeatmapResponse> {
+  return apiFetch<CongressMacroHeatmapResponse>(
+    apiBase,
+    `/admin/congress/macro?limit=${limit}`,
     token,
     {
       allowErrorBody: true
