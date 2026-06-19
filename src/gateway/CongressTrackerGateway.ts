@@ -25,6 +25,7 @@ const PRICE_REFRESH_LIMIT = 100;
 const DEFAULT_GITHUB_RUNNER_REF = "main";
 const TICKER_HIERARCHY_LIMIT = 40;
 const TICKER_DETAIL_LIMIT = 240;
+const CONFLICT_FLAG_LOOKUP_BATCH_SIZE = 75;
 const MACRO_HEATMAP_WINDOWS = [30, 60, 90] as const;
 const MACRO_HEATMAP_LIMIT = 14;
 
@@ -1618,30 +1619,34 @@ async function attachConflictFlags(
     return rows;
   }
 
-  const ids = rows.map((row) => row.transaction_id);
-  const placeholders = ids.map(() => "?").join(",");
-  const flagResult = await congressDb(env)
-    .prepare(
-      `SELECT *
-       FROM congress_conflict_flags
-       WHERE transaction_id IN (${placeholders})
-       ORDER BY
-         CASE severity
-           WHEN 'HIGH' THEN 3
-           WHEN 'MEDIUM' THEN 2
-           WHEN 'LOW' THEN 1
-           ELSE 0
-         END DESC,
-         created_at DESC`
-    )
-    .bind(...ids)
-    .all<CongressConflictFlagRow>();
+  const ids = Array.from(new Set(rows.map((row) => row.transaction_id).filter(Boolean)));
   const flagsByTransaction = new Map<string, CongressConflictFlagRow[]>();
 
-  for (const flag of flagResult.results ?? []) {
-    const existing = flagsByTransaction.get(flag.transaction_id) ?? [];
-    existing.push(flag);
-    flagsByTransaction.set(flag.transaction_id, existing);
+  for (let offset = 0; offset < ids.length; offset += CONFLICT_FLAG_LOOKUP_BATCH_SIZE) {
+    const chunk = ids.slice(offset, offset + CONFLICT_FLAG_LOOKUP_BATCH_SIZE);
+    const placeholders = chunk.map(() => "?").join(",");
+    const flagResult = await congressDb(env)
+      .prepare(
+        `SELECT *
+         FROM congress_conflict_flags
+         WHERE transaction_id IN (${placeholders})
+         ORDER BY
+           CASE severity
+             WHEN 'HIGH' THEN 3
+             WHEN 'MEDIUM' THEN 2
+             WHEN 'LOW' THEN 1
+             ELSE 0
+           END DESC,
+           created_at DESC`
+      )
+      .bind(...chunk)
+      .all<CongressConflictFlagRow>();
+
+    for (const flag of flagResult.results ?? []) {
+      const existing = flagsByTransaction.get(flag.transaction_id) ?? [];
+      existing.push(flag);
+      flagsByTransaction.set(flag.transaction_id, existing);
+    }
   }
 
   return rows.map((row) => {
