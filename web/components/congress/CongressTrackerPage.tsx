@@ -405,6 +405,10 @@ export default function CongressTrackerPage() {
         <div className="settings-nav">
           <a href="/">Command Center</a>
           <a href="/settings">Settings</a>
+          <a href="/equity">
+            <Landmark size={16} />
+            Equity
+          </a>
           <button onClick={() => void refresh()}>
             <RefreshCcw size={16} />
             Refresh

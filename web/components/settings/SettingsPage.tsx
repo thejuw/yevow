@@ -6,6 +6,7 @@ import {
   DatabaseZap,
   Flame,
   KeyRound,
+  Landmark,
   Lock,
   RadioTower,
   Save,
@@ -623,6 +624,10 @@ export default function SettingsPage() {
           <a href="/congress">
             <DatabaseZap size={16} />
             Congress
+          </a>
+          <a href="/equity">
+            <Landmark size={16} />
+            Equity
           </a>
           <button onClick={() => void refresh()}>
             <RadioTower size={16} />

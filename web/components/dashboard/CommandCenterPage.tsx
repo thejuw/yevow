@@ -9,6 +9,7 @@ import {
   Flame,
   Gauge,
   KeyRound,
+  Landmark,
   LogOut,
   RadioTower,
   ReceiptText,
@@ -906,6 +907,10 @@ export default function CommandCenterPage() {
           <a className="compact-action settings-link" href="/congress">
             <DatabaseZap size={16} />
             Congress
+          </a>
+          <a className="compact-action settings-link" href="/equity">
+            <Landmark size={16} />
+            Equity
           </a>
           <a className="compact-action settings-link" href="#paper-ledger">
             <ReceiptText size={16} />
