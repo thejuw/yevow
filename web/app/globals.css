@@ -2434,6 +2434,148 @@ output {
   color: var(--text);
 }
 
+.copy-portfolio-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.copy-portfolio-controls {
+  display: grid;
+  gap: 9px;
+  grid-template-columns: minmax(240px, 1.35fr) 140px 160px;
+}
+
+.copy-portfolio-controls label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.copy-portfolio-controls select,
+.copy-portfolio-controls input {
+  min-height: 36px;
+  border: 1px solid var(--line-cold);
+  border-radius: 7px;
+  padding: 0 10px;
+  color: var(--text);
+  background: rgba(7, 10, 14, 0.7);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+}
+
+.copy-portfolio-summary {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.copy-portfolio-coverage {
+  min-height: 34px;
+  display: grid;
+  grid-template-columns: 148px minmax(160px, 1fr) 176px;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid rgba(150, 165, 188, 0.1);
+  border-radius: 7px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.022);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+}
+
+.copy-portfolio-coverage span {
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.copy-portfolio-coverage i {
+  height: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(215, 196, 139, 0.22);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.copy-portfolio-coverage b {
+  height: 100%;
+  display: block;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(102, 227, 161, 0.86), rgba(215, 196, 139, 0.88));
+}
+
+.copy-portfolio-coverage code {
+  color: var(--text);
+  text-align: right;
+}
+
+.copy-portfolio-table {
+  display: grid;
+  gap: 6px;
+  overflow-x: auto;
+}
+
+.copy-portfolio-row {
+  min-width: 980px;
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 128px 150px 120px 116px 150px;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid rgba(150, 165, 188, 0.1);
+  border-radius: 7px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.024);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+}
+
+.copy-portfolio-row.header {
+  min-height: 30px;
+  color: var(--muted);
+  background: rgba(215, 196, 139, 0.04);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.copy-portfolio-row div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.copy-portfolio-row strong {
+  color: var(--text);
+}
+
+.copy-portfolio-row div strong {
+  color: var(--gold);
+}
+
+.copy-portfolio-row span,
+.copy-portfolio-row small,
+.copy-portfolio-row code {
+  color: var(--muted);
+}
+
+.copy-portfolio-row code,
+.copy-portfolio-row > strong,
+.copy-portfolio-row > span:not(.ticker-weight) {
+  text-align: right;
+}
+
+.copy-portfolio-note {
+  margin: 0;
+  color: var(--muted);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .ticker-hierarchy-stack {
   display: grid;
   gap: 7px;
@@ -2763,6 +2905,7 @@ output {
   .param-grid,
   .strategy-knob-grid,
   .compact-param-grid,
+  .copy-portfolio-summary,
   .cascade-ops-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -2827,6 +2970,9 @@ output {
   .macro-window-strip,
   .macro-ticker-row,
   .sector-heat-row,
+  .copy-portfolio-controls,
+  .copy-portfolio-summary,
+  .copy-portfolio-coverage,
   .ticker-detail-grid,
   .ticker-hierarchy-summary,
   .ticker-asset-row,
@@ -2877,7 +3023,8 @@ output {
   }
 
   .macro-ticker-row code,
-  .sector-heat-row code {
+  .sector-heat-row code,
+  .copy-portfolio-coverage code {
     text-align: left;
   }
 

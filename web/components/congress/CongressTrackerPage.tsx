@@ -56,6 +56,38 @@ interface MemberTransactionBatch {
   transactions: CongressTransaction[];
 }
 
+type CopyPortfolioPeriod = "30d" | "90d" | "180d" | "12m" | "all";
+
+interface CopyPortfolioHolding {
+  symbol: string;
+  displayName: string;
+  sector: string;
+  transactionCount: number;
+  latestBuyDate: string | null;
+  disclosedMidpoint: number;
+  weightPct: number;
+  allocation: number;
+  markedAllocation: number;
+  estimatedValue: number | null;
+  estimatedPnl: number | null;
+  returnPct: number | null;
+}
+
+interface CopyPortfolioModel {
+  memberName: string;
+  chamber: string;
+  periodLabel: string;
+  capital: number;
+  buyCount: number;
+  skippedCount: number;
+  disclosedMidpoint: number;
+  markedAllocation: number;
+  estimatedValue: number | null;
+  estimatedPnl: number | null;
+  returnPct: number | null;
+  holdings: CopyPortfolioHolding[];
+}
+
 const currency = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
@@ -67,6 +99,13 @@ const compact = new Intl.NumberFormat("en-US", {
 });
 
 const PERIOD_OPTIONS: CongressPeriod[] = ["24h", "7d", "30d", "90d", "ytd", "all"];
+const COPY_PORTFOLIO_PERIODS: Array<{ label: string; value: CopyPortfolioPeriod }> = [
+  { label: "30D", value: "30d" },
+  { label: "90D", value: "90d" },
+  { label: "6M", value: "180d" },
+  { label: "12M", value: "12m" },
+  { label: "ALL", value: "all" }
+];
 
 export default function CongressTrackerPage() {
   const [apiBase, setApiBase] = useState(DEFAULT_API_BASE);
@@ -83,6 +122,9 @@ export default function CongressTrackerPage() {
     null
   );
   const [tickerPeriod, setTickerPeriod] = useState<CongressPeriod>("24h");
+  const [copyMemberKey, setCopyMemberKey] = useState("");
+  const [copyPeriod, setCopyPeriod] = useState<CopyPortfolioPeriod>("12m");
+  const [copyCapital, setCopyCapital] = useState("10000");
   const [query, setQuery] = useState("");
   const isUnlocked = Boolean(token);
 
@@ -115,6 +157,31 @@ export default function CongressTrackerPage() {
     () => buildMemberBatches(filteredTransactions),
     [filteredTransactions]
   );
+  const allMemberBatches = useMemo(() => buildMemberBatches(transactions), [transactions]);
+  const normalizedCopyCapital = useMemo(() => normalizeCapital(copyCapital), [copyCapital]);
+  const copyPortfolio = useMemo(
+    () =>
+      buildCopyPortfolio({
+        batches: allMemberBatches,
+        capital: normalizedCopyCapital,
+        memberKey: copyMemberKey,
+        period: copyPeriod
+      }),
+    [allMemberBatches, copyMemberKey, copyPeriod, normalizedCopyCapital]
+  );
+
+  useEffect(() => {
+    if (allMemberBatches.length === 0) {
+      if (copyMemberKey) {
+        setCopyMemberKey("");
+      }
+      return;
+    }
+
+    if (!copyMemberKey || !allMemberBatches.some((batch) => batch.key === copyMemberKey)) {
+      setCopyMemberKey(allMemberBatches[0].key);
+    }
+  }, [allMemberBatches, copyMemberKey]);
 
   const refresh = useCallback(async () => {
     if (!token) {
@@ -129,7 +196,7 @@ export default function CongressTrackerPage() {
         await Promise.all([
           readCongressStatus(apiBase, token),
           readCongressRuns(apiBase, token, 8),
-          readCongressTransactions(apiBase, token, 150),
+          readCongressTransactions(apiBase, token, 250),
           readCongressTickerHierarchy(apiBase, token, tickerPeriod),
           readCongressMacroHeatmap(apiBase, token, 14)
         ]);
@@ -364,6 +431,17 @@ export default function CongressTrackerPage() {
 
       <MacroHeatmapPanel heatmap={macroHeatmap} />
 
+      <CopyPortfolioPanel
+        batches={allMemberBatches}
+        capital={copyCapital}
+        model={copyPortfolio}
+        period={copyPeriod}
+        selectedMemberKey={copyMemberKey}
+        onCapitalChange={setCopyCapital}
+        onMemberChange={setCopyMemberKey}
+        onPeriodChange={setCopyPeriod}
+      />
+
       <section className="settings-panel settings-panel-wide glass congress-ledger-panel">
         <div className="congress-table-header">
           <div className="panel-title">
@@ -590,6 +668,177 @@ function TransactionCard({ row }: { row: CongressTransaction }) {
         </div>
       ) : null}
     </article>
+  );
+}
+
+function CopyPortfolioPanel({
+  batches,
+  capital,
+  model,
+  period,
+  selectedMemberKey,
+  onCapitalChange,
+  onMemberChange,
+  onPeriodChange
+}: {
+  batches: MemberTransactionBatch[];
+  capital: string;
+  model: CopyPortfolioModel | null;
+  period: CopyPortfolioPeriod;
+  selectedMemberKey: string;
+  onCapitalChange: (value: string) => void;
+  onMemberChange: (value: string) => void;
+  onPeriodChange: (value: CopyPortfolioPeriod) => void;
+}) {
+  const coveragePct =
+    model && model.capital > 0 ? Math.min(100, (model.markedAllocation / model.capital) * 100) : 0;
+  const pnlPositive = (model?.estimatedPnl ?? 0) >= 0;
+
+  return (
+    <section className="settings-panel settings-panel-wide glass copy-portfolio-panel">
+      <div className="congress-table-header">
+        <div className="panel-title">
+          <TrendingUp size={17} />
+          <span>Copy Portfolio Generator</span>
+          <strong className="panel-pill">Fintech Mock Allocation</strong>
+        </div>
+        <span className="macro-generated">
+          Stock buys only · midpoint weighted · research simulation
+        </span>
+      </div>
+
+      <div className="copy-portfolio-controls">
+        <label>
+          Politician
+          <select
+            value={selectedMemberKey}
+            onChange={(event) => onMemberChange(event.target.value)}
+          >
+            {batches.length === 0 ? <option value="">No members loaded</option> : null}
+            {batches.map((batch) => (
+              <option key={batch.key} value={batch.key}>
+                {batch.memberName} · {batch.chamber.toUpperCase()} ·{" "}
+                {compact.format(batch.purchaseCount)} buys
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Lookback
+          <select
+            value={period}
+            onChange={(event) => onPeriodChange(event.target.value as CopyPortfolioPeriod)}
+          >
+            {COPY_PORTFOLIO_PERIODS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Mock Capital
+          <input
+            min="100"
+            max="10000000"
+            step="100"
+            inputMode="decimal"
+            value={capital}
+            onChange={(event) => onCapitalChange(event.target.value)}
+          />
+        </label>
+      </div>
+
+      {!model ? (
+        <div className="ticker-hierarchy-empty">
+          Select a member with resolved stock purchase disclosures to generate a mock portfolio.
+        </div>
+      ) : (
+        <>
+          <div className="copy-portfolio-summary">
+            <SmallMetric label="Member" value={model.memberName} />
+            <SmallMetric label="Window" value={model.periodLabel} />
+            <SmallMetric label="Mock Capital" value={currency.format(model.capital)} />
+            <SmallMetric label="Disclosed Buy Basis" value={currency.format(model.disclosedMidpoint)} />
+            <SmallMetric label="Eligible Buys" value={compact.format(model.buyCount)} />
+            <SmallMetric label="Skipped Rows" value={compact.format(model.skippedCount)} />
+            <SmallMetric
+              label="Estimated Value"
+              value={model.estimatedValue === null ? "unmarked" : currency.format(model.estimatedValue)}
+            />
+            <SmallMetric
+              label="Estimated PnL"
+              value={
+                model.estimatedPnl === null
+                  ? "unmarked"
+                  : pnlPositive
+                    ? currency.format(model.estimatedPnl)
+                    : `-${currency.format(Math.abs(model.estimatedPnl))}`
+              }
+            />
+          </div>
+
+          <div className="copy-portfolio-coverage">
+            <span>Price mark coverage</span>
+            <i>
+              <b style={{ width: `${Math.max(2, coveragePct)}%` }} />
+            </i>
+            <code>
+              {compact.format(coveragePct)}% · {currency.format(model.markedAllocation)} marked
+            </code>
+          </div>
+
+          <div className="copy-portfolio-table">
+            <div className="copy-portfolio-row header">
+              <span>Ticker</span>
+              <span>Allocation</span>
+              <span>Weight</span>
+              <span>Marked Return</span>
+              <span>Est. PnL</span>
+              <span>Latest Buy</span>
+            </div>
+            {model.holdings.map((holding) => (
+              <CopyPortfolioHoldingRow holding={holding} key={holding.symbol} />
+            ))}
+          </div>
+        </>
+      )}
+
+      <p className="copy-portfolio-note">
+        This is a hypothetical basket built from public PTR purchase rows. It excludes options,
+        unresolved tickers, sales, exchanges, fixed income, and private funds. Disclosed amount
+        bands are approximated with midpoint values.
+      </p>
+    </section>
+  );
+}
+
+function CopyPortfolioHoldingRow({ holding }: { holding: CopyPortfolioHolding }) {
+  const pnlPositive = (holding.estimatedPnl ?? 0) >= 0;
+
+  return (
+    <div className="copy-portfolio-row">
+      <div>
+        <strong>{holding.symbol}</strong>
+        <span>{holding.displayName}</span>
+        <small>{holding.sector}</small>
+      </div>
+      <code>{currency.format(holding.allocation)}</code>
+      <span className="ticker-weight">
+        <i style={{ width: `${Math.min(100, Math.max(2, holding.weightPct))}%` }} />
+      </span>
+      <code>{holding.returnPct === null ? "unmarked" : percentOrDash(holding.returnPct)}</code>
+      <strong className={pnlPositive ? "positive" : "negative"}>
+        {holding.estimatedPnl === null
+          ? "unmarked"
+          : pnlPositive
+            ? currency.format(holding.estimatedPnl)
+            : `-${currency.format(Math.abs(holding.estimatedPnl))}`}
+      </strong>
+      <span>
+        {formatDate(holding.latestBuyDate)} · {compact.format(holding.transactionCount)} buys
+      </span>
+    </div>
   );
 }
 
@@ -823,34 +1072,6 @@ function TickerHierarchyRow({ item }: { item: CongressTickerHierarchyItem }) {
   );
 }
 
-function TransactionRow({ row }: { row: CongressTransaction }) {
-  const pnl = row.pnl_estimate ?? 0;
-  const positive = pnl >= 0;
-
-  return (
-    <tr>
-      <td>
-        <a href={row.source_url ?? "#"} target="_blank" rel="noreferrer">
-          {row.member_name ?? "Unknown"}
-        </a>
-        <small>{row.asset_name ?? "Unlabeled asset"}</small>
-      </td>
-      <td>{row.chamber.toUpperCase()}</td>
-      <td>{displayInstrument(row)}</td>
-      <td>{row.transaction_type}</td>
-      <td>{formatDate(row.transaction_date)}</td>
-      <td>{formatAmountBand(row)}</td>
-      <td>{moneyOrDash(row.transaction_price)}</td>
-      <td>
-        {moneyOrDash(row.current_price)}
-        <small>{row.price_provider ?? "unmarked"}</small>
-      </td>
-      <td className={positive ? "positive" : "negative"}>{percentOrDash(row.return_pct)}</td>
-      <td className={positive ? "positive" : "negative"}>{moneyOrDash(row.pnl_estimate)}</td>
-    </tr>
-  );
-}
-
 function buildMemberBatches(rows: CongressTransaction[]): MemberTransactionBatch[] {
   const batches = new Map<string, MemberTransactionBatch>();
 
@@ -914,6 +1135,164 @@ function buildMemberBatches(rows: CongressTransaction[]): MemberTransactionBatch
     );
 }
 
+function buildCopyPortfolio({
+  batches,
+  capital,
+  memberKey,
+  period
+}: {
+  batches: MemberTransactionBatch[];
+  capital: number;
+  memberKey: string;
+  period: CopyPortfolioPeriod;
+}): CopyPortfolioModel | null {
+  const batch = batches.find((candidate) => candidate.key === memberKey) ?? batches[0];
+
+  if (!batch) {
+    return null;
+  }
+
+  const now = Date.now();
+  const cutoff = copyPortfolioCutoff(period, now);
+  const aggregates = new Map<
+    string,
+    {
+      symbol: string;
+      displayName: string;
+      sector: string;
+      transactionCount: number;
+      latestBuyDate: string | null;
+      disclosedMidpoint: number;
+      markedDisclosedMidpoint: number;
+      weightedReturnPct: number;
+    }
+  >();
+  let buyCount = 0;
+  let skippedCount = 0;
+
+  for (const row of batch.transactions) {
+    if (!isPurchase(row)) {
+      continue;
+    }
+
+    if (!isCopyPortfolioDateEligible(row, cutoff, now)) {
+      continue;
+    }
+
+    const symbol = normalizeCopySymbol(row.symbol);
+    const disclosedMidpoint = row.amount_mid ?? 0;
+
+    if (!symbol || disclosedMidpoint <= 0 || row.option_decoder) {
+      skippedCount += 1;
+      continue;
+    }
+
+    buyCount += 1;
+
+    const existing =
+      aggregates.get(symbol) ??
+      ({
+        symbol,
+        displayName: row.asset_name?.trim() || symbol,
+        sector: row.security_sector?.trim() || "Unclassified",
+        transactionCount: 0,
+        latestBuyDate: null,
+        disclosedMidpoint: 0,
+        markedDisclosedMidpoint: 0,
+        weightedReturnPct: 0
+      } satisfies {
+        symbol: string;
+        displayName: string;
+        sector: string;
+        transactionCount: number;
+        latestBuyDate: string | null;
+        disclosedMidpoint: number;
+        markedDisclosedMidpoint: number;
+        weightedReturnPct: number;
+      });
+
+    existing.transactionCount += 1;
+    existing.disclosedMidpoint += disclosedMidpoint;
+
+    if (typeof row.return_pct === "number") {
+      existing.markedDisclosedMidpoint += disclosedMidpoint;
+      existing.weightedReturnPct += disclosedMidpoint * row.return_pct;
+    }
+
+    if (isAfter(row.transaction_date, existing.latestBuyDate)) {
+      existing.latestBuyDate = row.transaction_date;
+    }
+
+    aggregates.set(symbol, existing);
+  }
+
+  const disclosedMidpoint = [...aggregates.values()].reduce(
+    (total, holding) => total + holding.disclosedMidpoint,
+    0
+  );
+
+  if (disclosedMidpoint <= 0 || aggregates.size === 0) {
+    return null;
+  }
+
+  const holdings = [...aggregates.values()]
+    .map((holding) => {
+      const weightPct = (holding.disclosedMidpoint / disclosedMidpoint) * 100;
+      const allocation = capital * (weightPct / 100);
+      const markedCoverage =
+        holding.disclosedMidpoint > 0
+          ? holding.markedDisclosedMidpoint / holding.disclosedMidpoint
+          : 0;
+      const markedAllocation = allocation * markedCoverage;
+      const returnPct =
+        holding.markedDisclosedMidpoint > 0
+          ? holding.weightedReturnPct / holding.markedDisclosedMidpoint
+          : null;
+      const estimatedPnl =
+        returnPct === null || markedAllocation <= 0 ? null : markedAllocation * (returnPct / 100);
+
+      return {
+        symbol: holding.symbol,
+        displayName: holding.displayName,
+        sector: holding.sector,
+        transactionCount: holding.transactionCount,
+        latestBuyDate: holding.latestBuyDate,
+        disclosedMidpoint: holding.disclosedMidpoint,
+        weightPct,
+        allocation,
+        markedAllocation,
+        estimatedValue: estimatedPnl === null ? null : allocation + estimatedPnl,
+        estimatedPnl,
+        returnPct
+      } satisfies CopyPortfolioHolding;
+    })
+    .sort(
+      (left, right) =>
+        right.allocation - left.allocation ||
+        right.transactionCount - left.transactionCount ||
+        left.symbol.localeCompare(right.symbol)
+    );
+
+  const markedAllocation = holdings.reduce((total, holding) => total + holding.markedAllocation, 0);
+  const estimatedPnl = holdings.reduce((total, holding) => total + (holding.estimatedPnl ?? 0), 0);
+  const hasMarkedRows = markedAllocation > 0;
+
+  return {
+    memberName: batch.memberName,
+    chamber: batch.chamber,
+    periodLabel: copyPortfolioPeriodLabel(period),
+    capital,
+    buyCount,
+    skippedCount,
+    disclosedMidpoint,
+    markedAllocation,
+    estimatedValue: hasMarkedRows ? capital + estimatedPnl : null,
+    estimatedPnl: hasMarkedRows ? estimatedPnl : null,
+    returnPct: hasMarkedRows ? (estimatedPnl / markedAllocation) * 100 : null,
+    holdings
+  };
+}
+
 function compareTransactions(left: CongressTransaction, right: CongressTransaction): number {
   const leftTime = dateTime(left.transaction_date) ?? dateTime(left.created_at) ?? 0;
   const rightTime = dateTime(right.transaction_date) ?? dateTime(right.created_at) ?? 0;
@@ -938,6 +1317,84 @@ function dateTime(value: string | null): number | null {
 
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function copyPortfolioCutoff(period: CopyPortfolioPeriod, now: number): number | null {
+  if (period === "all") {
+    return null;
+  }
+
+  const start = new Date(now);
+
+  if (period === "30d") {
+    start.setUTCDate(start.getUTCDate() - 30);
+  } else if (period === "90d") {
+    start.setUTCDate(start.getUTCDate() - 90);
+  } else if (period === "180d") {
+    start.setUTCDate(start.getUTCDate() - 180);
+  } else {
+    start.setUTCFullYear(start.getUTCFullYear() - 1);
+  }
+
+  return start.getTime();
+}
+
+function copyPortfolioPeriodLabel(period: CopyPortfolioPeriod): string {
+  if (period === "30d") {
+    return "Last 30 days";
+  }
+  if (period === "90d") {
+    return "Last 90 days";
+  }
+  if (period === "180d") {
+    return "Last 6 months";
+  }
+  if (period === "12m") {
+    return "Last 12 months";
+  }
+  return "All loaded";
+}
+
+function isCopyPortfolioDateEligible(
+  row: CongressTransaction,
+  cutoff: number | null,
+  now: number
+): boolean {
+  const observedAt = dateTime(row.transaction_date) ?? dateTime(row.created_at);
+
+  if (observedAt === null) {
+    return false;
+  }
+
+  if (observedAt > now + 86_400_000) {
+    return false;
+  }
+
+  return cutoff === null || observedAt >= cutoff;
+}
+
+function isPurchase(row: CongressTransaction): boolean {
+  return row.transaction_type.trim().toUpperCase() === "PURCHASE";
+}
+
+function normalizeCopySymbol(symbol: string | null): string | null {
+  const normalized = symbol?.trim().toUpperCase() ?? "";
+
+  if (!normalized || normalized === "N/A" || normalized === "NA" || normalized === "UNRESOLVED") {
+    return null;
+  }
+
+  return /^[A-Z][A-Z0-9.-]{0,10}$/.test(normalized) ? normalized : null;
+}
+
+function normalizeCapital(value: string): number {
+  const parsed = Number(value.replace(/[$,\s]/g, ""));
+
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 10_000;
+  }
+
+  return Math.min(10_000_000, Math.max(100, parsed));
 }
 
 function displayInstrument(row: CongressTransaction): string {
