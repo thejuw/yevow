@@ -13,6 +13,7 @@
     "lint:all:visible": "eslint \"src/**/*.ts\" --max-warnings 9999 || true",
     "moltworker:local": "node scripts/moltworker_supervisor_loop.mjs",
     "moltworker:once": "MOLTWORKER_ONCE=true node scripts/moltworker_supervisor_loop.mjs",
+    "equity:backfill:ytd": "node scripts/backfill_pe_deals_ytd.mjs",
     "proto:compile": "node scripts/compile-protos.mjs",
     "test:engine": "vitest run --coverage",
     "tune:parameters": "tsx scripts/tune_parameters.ts",
