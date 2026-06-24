@@ -207,6 +207,17 @@ export async function refreshCongressPnl(
   });
 }
 
+export async function backfillCongressOptions(
+  apiBase: string,
+  token: string,
+  limit = 500
+): Promise<JsonRecord> {
+  return apiFetch<JsonRecord>(apiBase, "/admin/congress/options/backfill", token, {
+    method: "POST",
+    body: JSON.stringify({ limit })
+  });
+}
+
 export async function readCongressAlphaBot(
   apiBase: string,
   token: string

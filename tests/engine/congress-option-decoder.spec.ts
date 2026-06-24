@@ -55,4 +55,16 @@ describe("Congress option trade decoder", () => {
 
     expect(decoded).toBeNull();
   });
+
+  it("does not confuse callable municipal debt with listed options", () => {
+    const decoded = decodeCongressOptionTrade({
+      symbol: null,
+      assetName: "SP California St Go Call 12/1/27 4% due",
+      rawText: "Partial sale of California State GO callable bond due 2035",
+      transactionType: "SALE",
+      transactionDate: "2026-06-01T00:00:00.000Z"
+    });
+
+    expect(decoded).toBeNull();
+  });
 });

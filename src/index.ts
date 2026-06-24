@@ -57,6 +57,7 @@ import {
 } from "./gateway/StrategyVaultGateway";
 import { placementColo, topologyTelemetry } from "./gateway/Topology";
 import {
+  backfillCongressOptions,
   handleCongressScheduled,
   ingestCongressPayload,
   readCongressFilings,
@@ -447,6 +448,7 @@ async function handleAdminRequest(
         "GET /admin/congress/macro",
         "GET /admin/congress/transactions",
         "POST /admin/congress/pnl/refresh",
+        "POST /admin/congress/options/backfill",
         "GET /admin/congress/alpha",
         "POST /admin/congress/alpha/run"
       ]
@@ -902,6 +904,13 @@ async function handleAdminRequest(
       return json({ ok: false, error: "Method not allowed" }, 405);
     }
     return refreshCongressPnl(request, env, logger, topology, auth);
+  }
+
+  if (url.pathname === "/admin/congress/options/backfill") {
+    if (request.method !== "POST") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+    return backfillCongressOptions(request, env, logger, topology, auth);
   }
 
   if (url.pathname === "/admin/congress/alpha") {

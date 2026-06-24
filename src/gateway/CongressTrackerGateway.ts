@@ -80,6 +80,15 @@ interface CongressTransactionRow {
   member_key: string | null;
   member_party: string | null;
   security_sector: string | null;
+  instrument_type?: string | null;
+  option_underlying?: string | null;
+  option_type?: string | null;
+  option_strike?: number | null;
+  option_expiration_date?: string | null;
+  option_exposure?: string | null;
+  option_intensity?: string | null;
+  option_is_leap?: number | null;
+  option_decoder_json?: string | null;
   created_at: string;
   updated_at: string;
   conflict_flag_count?: number;
@@ -843,6 +852,15 @@ export async function ingestCongressPayload(
 
   for (const transaction of transactions) {
     const normalizedSymbol = normalizeTickerSymbol(transaction.symbol ?? "") ?? null;
+    const optionDecode = decodeCongressOptionTrade({
+      symbol: normalizedSymbol,
+      assetName: nullableString(transaction.assetName),
+      rawText: nullableString(transaction.rawText),
+      transactionType: normalizeTransactionType(transaction.transactionType),
+      transactionDate: nullableDate(transaction.transactionDate)
+    });
+    const instrumentType = optionDecode ? "OPTION" : "EQUITY";
+    const alphaSymbol = optionDecode?.underlying ?? normalizedSymbol;
     const transactionId = transaction.transactionId ?? (await stableId("transaction", transaction));
     const memberName = nullableString(transaction.memberName);
     const memberKey = normalizeCongressMemberKey(memberName) || null;
@@ -859,9 +877,12 @@ export async function ingestCongressPayload(
             transaction_id, filing_id, chamber, member_name, owner, symbol, asset_name,
             transaction_type, transaction_date, notification_date, amount_min, amount_max,
             amount_mid, transaction_price, transaction_price_as_of, confidence, raw_text,
-            source_url, member_key, member_party, security_sector, created_at, updated_at
+            source_url, member_key, member_party, security_sector, instrument_type,
+            option_underlying, option_type, option_strike, option_expiration_date,
+            option_exposure, option_intensity, option_is_leap, option_decoder_json,
+            created_at, updated_at
           )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(transaction_id) DO UPDATE SET
            filing_id = excluded.filing_id,
            chamber = excluded.chamber,
@@ -883,6 +904,15 @@ export async function ingestCongressPayload(
            member_key = excluded.member_key,
            member_party = excluded.member_party,
            security_sector = excluded.security_sector,
+           instrument_type = excluded.instrument_type,
+           option_underlying = excluded.option_underlying,
+           option_type = excluded.option_type,
+           option_strike = excluded.option_strike,
+           option_expiration_date = excluded.option_expiration_date,
+           option_exposure = excluded.option_exposure,
+           option_intensity = excluded.option_intensity,
+           option_is_leap = excluded.option_is_leap,
+           option_decoder_json = excluded.option_decoder_json,
            updated_at = excluded.updated_at`
         )
         .bind(
@@ -907,6 +937,15 @@ export async function ingestCongressPayload(
           memberKey,
           memberProfile?.party ?? null,
           securitySector,
+          instrumentType,
+          optionDecode?.underlying ?? null,
+          optionDecode?.optionType ?? null,
+          optionDecode?.strike ?? null,
+          optionDecode?.expirationDate ?? null,
+          optionDecode?.exposure ?? null,
+          optionDecode?.intensity ?? null,
+          optionDecode?.isLeap ? 1 : 0,
+          optionDecode ? stringifyJson(optionDecode) : null,
           now,
           now
         )
@@ -922,7 +961,7 @@ export async function ingestCongressPayload(
       transactionId,
       chamber: normalizeChamber(transaction.chamber),
       memberName,
-      symbol: normalizedSymbol,
+      symbol: alphaSymbol,
       assetName: nullableString(transaction.assetName),
       transactionType: normalizeTransactionType(transaction.transactionType)
     });
@@ -1068,6 +1107,101 @@ export async function refreshCongressPnl(
   return json({ ok: true, ...result });
 }
 
+export async function backfillCongressOptions(
+  request: Request,
+  env: Env,
+  logger: Logger,
+  topology: EdgeTopology,
+  auth: AuthenticatedAdmin
+): Promise<Response> {
+  const body = await readJsonBody<{ limit?: number }>(request);
+  const limit = clampLimit(body?.limit, 500);
+  const rows = await congressDb(env)
+    .prepare(
+      `SELECT *
+       FROM congress_transactions
+       WHERE COALESCE(instrument_type, 'EQUITY') != 'OPTION'
+         AND option_decoder_json IS NULL
+         AND (
+           UPPER(COALESCE(asset_name, '')) LIKE '%CALL%' OR
+           UPPER(COALESCE(asset_name, '')) LIKE '%PUT%' OR
+           UPPER(COALESCE(asset_name, '')) LIKE '%OPTION%' OR
+           UPPER(COALESCE(asset_name, '')) LIKE '%LEAP%' OR
+           UPPER(COALESCE(raw_text, '')) LIKE '%CALL%' OR
+           UPPER(COALESCE(raw_text, '')) LIKE '%PUT%' OR
+           UPPER(COALESCE(raw_text, '')) LIKE '%OPTION%' OR
+           UPPER(COALESCE(raw_text, '')) LIKE '%LEAP%'
+         )
+       ORDER BY updated_at DESC
+       LIMIT ?`
+    )
+    .bind(limit)
+    .all<CongressTransactionRow>();
+  const statements: D1PreparedStatement[] = [];
+  const now = new Date().toISOString();
+  let decoded = 0;
+
+  for (const row of rows.results ?? []) {
+    const optionDecode = decodeCongressOptionTrade({
+      symbol: row.symbol,
+      assetName: row.asset_name,
+      rawText: row.raw_text,
+      transactionType: row.transaction_type,
+      transactionDate: row.transaction_date
+    });
+
+    if (!optionDecode) {
+      continue;
+    }
+
+    decoded += 1;
+    statements.push(
+      congressDb(env)
+        .prepare(
+          `UPDATE congress_transactions
+              SET instrument_type = 'OPTION',
+                  option_underlying = ?,
+                  option_type = ?,
+                  option_strike = ?,
+                  option_expiration_date = ?,
+                  option_exposure = ?,
+                  option_intensity = ?,
+                  option_is_leap = ?,
+                  option_decoder_json = ?,
+                  updated_at = ?
+            WHERE transaction_id = ?`
+        )
+        .bind(
+          optionDecode.underlying,
+          optionDecode.optionType,
+          optionDecode.strike,
+          optionDecode.expirationDate,
+          optionDecode.exposure,
+          optionDecode.intensity,
+          optionDecode.isLeap ? 1 : 0,
+          stringifyJson(optionDecode),
+          now,
+          row.transaction_id
+        )
+    );
+  }
+
+  if (statements.length > 0) {
+    await congressDb(env).batch(statements);
+  }
+
+  logger.info("CONGRESS_OPTIONS_BACKFILLED", "Congress option decoder backfill completed", {
+    actor: auth.subject,
+    scanned: rows.results?.length ?? 0,
+    decoded,
+    sourceIp: sourceIp(request),
+    colo: topology.colo,
+    placement: topology.placement
+  });
+
+  return json({ ok: true, scanned: rows.results?.length ?? 0, decoded, limit });
+}
+
 export async function handleCongressScheduled(
   controller: ScheduledController,
   env: Env,
@@ -1171,16 +1305,22 @@ async function refreshCongressPnlBatch(
   const failures: JsonRecord[] = [];
 
   for (const row of rows.results ?? []) {
-    if (!row.symbol) {
+    const markSymbol =
+      row.instrument_type === "OPTION" && row.option_underlying ? row.option_underlying : row.symbol;
+
+    if (!markSymbol) {
       continue;
     }
 
     try {
-      const mark = await fetchCongressPriceMark(row.symbol, row.transaction_date);
+      const mark = await fetchCongressPriceMark(markSymbol, row.transaction_date);
       const basisPrice = row.transaction_price ?? mark.transactionPrice;
       const basisAsOf = row.transaction_price_as_of ?? mark.transactionPriceAsOf;
-      const pnl = calculatePnl(row, mark.currentPrice, basisPrice);
-      const returnPct = calculateReturnPct(row.transaction_type, mark.currentPrice, basisPrice);
+      const isOption = row.instrument_type === "OPTION";
+      const pnl = isOption ? null : calculatePnl(row, mark.currentPrice, basisPrice);
+      const returnPct = isOption
+        ? calculateOptionUnderlyingReturnPct(row, mark.currentPrice, basisPrice)
+        : calculateReturnPct(row.transaction_type, mark.currentPrice, basisPrice);
       const now = new Date().toISOString();
 
       statements.push(
@@ -1233,7 +1373,8 @@ async function refreshCongressPnlBatch(
 
       marks.push({
         transactionId: row.transaction_id,
-        symbol: row.symbol,
+        symbol: markSymbol,
+        instrumentType: row.instrument_type ?? "EQUITY",
         provider: mark.provider,
         currentPrice: mark.currentPrice,
         currentPriceAsOf: mark.currentPriceAsOf,
@@ -1692,13 +1833,16 @@ async function attachConflictFlags(
       conflict_flag_count: flags.length,
       conflict_highest_severity: flags[0]?.severity ?? null,
       conflict_flags: summarizeConflictFlags(flags),
-      option_decoder: decodeCongressOptionTrade({
-        symbol: row.symbol,
-        assetName: row.asset_name,
-        rawText: row.raw_text,
-        transactionType: row.transaction_type,
-        transactionDate: row.transaction_date
-      })
+      instrument_type: row.instrument_type ?? "EQUITY",
+      option_decoder:
+        parseJsonObject(row.option_decoder_json ?? null) ??
+        decodeCongressOptionTrade({
+          symbol: row.symbol,
+          assetName: row.asset_name,
+          rawText: row.raw_text,
+          transactionType: row.transaction_type,
+          transactionDate: row.transaction_date
+        })
     };
   });
 }
@@ -1934,6 +2078,30 @@ function calculateReturnPct(
   return roundNumber(direction * ((currentPrice - transactionPrice) / transactionPrice) * 100, 4);
 }
 
+function calculateOptionUnderlyingReturnPct(
+  transaction: CongressTransactionRow,
+  currentPrice: number,
+  transactionPrice: number | null
+): number | null {
+  if (!transactionPrice) {
+    return null;
+  }
+
+  const exposure = transaction.option_exposure?.trim().toUpperCase();
+  const direction =
+    exposure === "BULLISH" || exposure === "INCOME_OR_CLOSING"
+      ? 1
+      : exposure === "BEARISH" || exposure === "HEDGE_OR_PROTECTION"
+        ? -1
+        : 0;
+
+  if (direction === 0) {
+    return null;
+  }
+
+  return roundNumber(direction * ((currentPrice - transactionPrice) / transactionPrice) * 100, 4);
+}
+
 function transactionDirection(transactionType: string): 1 | -1 | 0 {
   const normalized = transactionType.trim().toUpperCase();
 
@@ -2027,6 +2195,21 @@ function stringifyJson(value: unknown): string {
     return JSON.stringify(value ?? {});
   } catch {
     return "{}";
+  }
+}
+
+function parseJsonObject(value: string | null): JsonRecord | null {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as JsonRecord)
+      : null;
+  } catch {
+    return null;
   }
 }
 

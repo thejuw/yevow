@@ -63,6 +63,10 @@ export function decodeCongressOptionTrade(input: OptionDecodeInput): CongressOpt
     return null;
   }
 
+  if (isCallableDebtText(text)) {
+    return null;
+  }
+
   const parsed = parseOccStyleContract(text) ?? parseReadableContract(text, input.symbol);
   if (!parsed) {
     return null;
@@ -111,6 +115,19 @@ export function decodeCongressOptionTrade(input: OptionDecodeInput): CongressOpt
     caveat:
       "Premium, contract count, and whether the trade opened or closed exposure are not always disclosed in PTR text."
   };
+}
+
+function isCallableDebtText(text: string): boolean {
+  const upper = text.toUpperCase();
+  const hasDebtLanguage = /\b(DUE|BOND|BONDS|NOTE|NOTES|MUNI|MUNICIPAL|GO|REV|REVENUE)\b/.test(
+    upper
+  );
+  const hasExplicitOptionLanguage =
+    /\b(OPTION|OPTIONS|LEAPS?|PUT|PUTS)\b/.test(upper) ||
+    /\$?\d+(?:\.\d+)?\s*[CP]\b/.test(upper) ||
+    /\b[A-Z]{1,6}\s*\d{6}[CP]\d{8}\b/.test(upper);
+
+  return hasDebtLanguage && /\bCALL\b/.test(upper) && !hasExplicitOptionLanguage;
 }
 
 function hasOptionSignal(text: string): boolean {

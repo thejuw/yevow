@@ -17,6 +17,7 @@ import type { ReactNode } from "react";
 import {
   DEFAULT_API_BASE,
   SovereignApiError,
+  backfillCongressOptions,
   login,
   readCongressMacroHeatmap,
   readCongressRuns,
@@ -144,6 +145,9 @@ export default function CongressTrackerPage() {
         displayInstrument(row),
         row.asset_name,
         row.transaction_type,
+        row.instrument_type,
+        row.option_underlying,
+        row.option_exposure,
         row.chamber,
         row.member_party,
         row.security_sector,
@@ -334,6 +338,24 @@ export default function CongressTrackerPage() {
     } catch (caught: unknown) {
       setError(errorMessage(caught));
       setCommandStatus("Price mark refresh failed.");
+    }
+  }
+
+  async function submitOptionBackfill() {
+    setError(null);
+    setCommandStatus("Decoding stored option disclosures...");
+
+    try {
+      const response = await backfillCongressOptions(apiBase, token, 500);
+      await refresh();
+      setCommandStatus(
+        `Option decoder backfill complete: ${String(response.decoded ?? 0)} decoded from ${String(
+          response.scanned ?? 0
+        )} scanned rows.`
+      );
+    } catch (caught: unknown) {
+      setError(errorMessage(caught));
+      setCommandStatus("Option decoder backfill failed.");
     }
   }
 
@@ -530,6 +552,7 @@ export default function CongressTrackerPage() {
             <button onClick={() => void submitRun("house")}>House</button>
             <button onClick={() => void submitRun("senate")}>Senate</button>
             <button onClick={() => void submitYearToDateBackfill()}>Backfill YTD</button>
+            <button onClick={() => void submitOptionBackfill()}>Decode Options</button>
             <button className="primary-action" onClick={() => void submitPnlRefresh()}>
               Refresh PnL
             </button>
@@ -681,6 +704,7 @@ function TransactionCard({ row }: { row: CongressTransaction }) {
   const conflictFlags = row.conflict_flags ?? [];
   const hasConflict = conflictFlags.length > 0;
   const optionDecoder = row.option_decoder ?? null;
+  const isOption = row.instrument_type === "OPTION" || Boolean(optionDecoder);
 
   return (
     <article
@@ -703,11 +727,16 @@ function TransactionCard({ row }: { row: CongressTransaction }) {
         <span>{row.asset_name ?? "Unlabeled asset"}</span>
       </div>
       <code>{optionDecoder?.shortLabel ?? displayInstrument(row)}</code>
+      <span className={isOption ? "instrument-pill option" : "instrument-pill"}>
+        {isOption ? "OPTION" : "EQUITY"}
+      </span>
       <span>{row.transaction_type}</span>
       <span>{formatDate(row.transaction_date)}</span>
       <span>{formatAmountBand(row)}</span>
       <strong className={positive ? "positive" : "negative"}>
-        {moneyOrDash(row.pnl_estimate)}
+        {isOption
+          ? `Underlying ${percentOrDash(row.return_pct)}`
+          : moneyOrDash(row.pnl_estimate)}
       </strong>
       {optionDecoder ? (
         <div className={`option-decoder-strip ${optionDecoder.exposure.toLowerCase()}`}>
@@ -1465,6 +1494,10 @@ function normalizeCapital(value: string): number {
 }
 
 function displayInstrument(row: CongressTransaction): string {
+  if (row.instrument_type === "OPTION" && row.option_underlying) {
+    return row.option_underlying;
+  }
+
   if (row.symbol) {
     return row.symbol;
   }

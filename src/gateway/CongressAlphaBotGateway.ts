@@ -49,9 +49,16 @@ export { buildSchedulerStatus } from "./congressAlpha/Scheduler";
 interface CongressAlphaCandidateRow {
   symbol: string;
   sector: string | null;
+  instrument_types: string | null;
   transaction_count: number;
   purchase_count: number;
   sale_count: number;
+  option_count: number;
+  bullish_option_count: number;
+  bearish_option_count: number;
+  leap_option_count: number;
+  bullish_option_amount_mid: number | null;
+  bearish_option_amount_mid: number | null;
   purchase_amount_mid: number | null;
   sale_amount_mid: number | null;
   net_amount_mid: number | null;
@@ -939,31 +946,64 @@ async function loadSignalCandidates(
   const rows = await db
     .prepare(
       `SELECT
-         UPPER(symbol) AS symbol,
+         UPPER(COALESCE(option_underlying, symbol)) AS symbol,
          COALESCE(security_sector, 'UNRESOLVED') AS sector,
+         GROUP_CONCAT(DISTINCT COALESCE(instrument_type, 'EQUITY')) AS instrument_types,
          COUNT(*) AS transaction_count,
-         SUM(CASE WHEN transaction_type IN ('P', 'BUY', 'PURCHASE', 'PURCHASED') THEN 1 ELSE 0 END) AS purchase_count,
-         SUM(CASE WHEN transaction_type IN ('S', 'SELL', 'SALE', 'SOLD') THEN 1 ELSE 0 END) AS sale_count,
-         SUM(CASE WHEN transaction_type IN ('P', 'BUY', 'PURCHASE', 'PURCHASED') THEN COALESCE(amount_mid, 0) ELSE 0 END) AS purchase_amount_mid,
-         SUM(CASE WHEN transaction_type IN ('S', 'SELL', 'SALE', 'SOLD') THEN COALESCE(amount_mid, 0) ELSE 0 END) AS sale_amount_mid,
          SUM(CASE
-               WHEN transaction_type IN ('P', 'BUY', 'PURCHASE', 'PURCHASED') THEN COALESCE(amount_mid, 0)
-               WHEN transaction_type IN ('S', 'SELL', 'SALE', 'SOLD') THEN -COALESCE(amount_mid, 0)
+               WHEN COALESCE(instrument_type, 'EQUITY') = 'OPTION' AND option_exposure = 'BULLISH' THEN 1
+               WHEN COALESCE(instrument_type, 'EQUITY') != 'OPTION' AND transaction_type IN ('P', 'BUY', 'PURCHASE', 'PURCHASED') THEN 1
+               ELSE 0
+             END) AS purchase_count,
+         SUM(CASE
+               WHEN COALESCE(instrument_type, 'EQUITY') = 'OPTION' AND option_exposure IN ('BEARISH', 'HEDGE_OR_PROTECTION') THEN 1
+               WHEN COALESCE(instrument_type, 'EQUITY') != 'OPTION' AND transaction_type IN ('S', 'SELL', 'SALE', 'SOLD') THEN 1
+               ELSE 0
+             END) AS sale_count,
+         SUM(CASE WHEN COALESCE(instrument_type, 'EQUITY') = 'OPTION' THEN 1 ELSE 0 END) AS option_count,
+         SUM(CASE WHEN COALESCE(instrument_type, 'EQUITY') = 'OPTION' AND option_exposure = 'BULLISH' THEN 1 ELSE 0 END) AS bullish_option_count,
+         SUM(CASE WHEN COALESCE(instrument_type, 'EQUITY') = 'OPTION' AND option_exposure IN ('BEARISH', 'HEDGE_OR_PROTECTION') THEN 1 ELSE 0 END) AS bearish_option_count,
+         SUM(CASE WHEN COALESCE(instrument_type, 'EQUITY') = 'OPTION' AND option_is_leap = 1 THEN 1 ELSE 0 END) AS leap_option_count,
+         SUM(CASE WHEN COALESCE(instrument_type, 'EQUITY') = 'OPTION' AND option_exposure = 'BULLISH' THEN COALESCE(amount_mid, 0) ELSE 0 END) AS bullish_option_amount_mid,
+         SUM(CASE WHEN COALESCE(instrument_type, 'EQUITY') = 'OPTION' AND option_exposure IN ('BEARISH', 'HEDGE_OR_PROTECTION') THEN COALESCE(amount_mid, 0) ELSE 0 END) AS bearish_option_amount_mid,
+         SUM(CASE
+               WHEN COALESCE(instrument_type, 'EQUITY') = 'OPTION' AND option_exposure = 'BULLISH' THEN COALESCE(amount_mid, 0)
+               WHEN COALESCE(instrument_type, 'EQUITY') != 'OPTION' AND transaction_type IN ('P', 'BUY', 'PURCHASE', 'PURCHASED') THEN COALESCE(amount_mid, 0)
+               ELSE 0
+             END) AS purchase_amount_mid,
+         SUM(CASE
+               WHEN COALESCE(instrument_type, 'EQUITY') = 'OPTION' AND option_exposure IN ('BEARISH', 'HEDGE_OR_PROTECTION') THEN COALESCE(amount_mid, 0)
+               WHEN COALESCE(instrument_type, 'EQUITY') != 'OPTION' AND transaction_type IN ('S', 'SELL', 'SALE', 'SOLD') THEN COALESCE(amount_mid, 0)
+               ELSE 0
+             END) AS sale_amount_mid,
+         SUM(CASE
+               WHEN COALESCE(instrument_type, 'EQUITY') = 'OPTION' AND option_exposure = 'BULLISH' THEN COALESCE(amount_mid, 0)
+               WHEN COALESCE(instrument_type, 'EQUITY') = 'OPTION' AND option_exposure IN ('BEARISH', 'HEDGE_OR_PROTECTION') THEN -COALESCE(amount_mid, 0)
+               WHEN COALESCE(instrument_type, 'EQUITY') != 'OPTION' AND transaction_type IN ('P', 'BUY', 'PURCHASE', 'PURCHASED') THEN COALESCE(amount_mid, 0)
+               WHEN COALESCE(instrument_type, 'EQUITY') != 'OPTION' AND transaction_type IN ('S', 'SELL', 'SALE', 'SOLD') THEN -COALESCE(amount_mid, 0)
                ELSE 0
              END) AS net_amount_mid,
          COUNT(DISTINCT COALESCE(member_key, member_name)) AS member_count,
          MAX(datetime(COALESCE(transaction_date, created_at))) AS latest_trade_at,
          MAX(current_price) AS current_price,
          AVG(return_pct) AS average_return_pct,
-         SUM(CASE WHEN member_party = 'D' AND transaction_type IN ('P', 'BUY', 'PURCHASE', 'PURCHASED') THEN 1 ELSE 0 END) AS democratic_purchase_count,
-         SUM(CASE WHEN member_party = 'R' AND transaction_type IN ('P', 'BUY', 'PURCHASE', 'PURCHASED') THEN 1 ELSE 0 END) AS republican_purchase_count
+         SUM(CASE
+               WHEN member_party = 'D' AND (
+                 (COALESCE(instrument_type, 'EQUITY') = 'OPTION' AND option_exposure = 'BULLISH') OR
+                 (COALESCE(instrument_type, 'EQUITY') != 'OPTION' AND transaction_type IN ('P', 'BUY', 'PURCHASE', 'PURCHASED'))
+               ) THEN 1 ELSE 0 END) AS democratic_purchase_count,
+         SUM(CASE
+               WHEN member_party = 'R' AND (
+                 (COALESCE(instrument_type, 'EQUITY') = 'OPTION' AND option_exposure = 'BULLISH') OR
+                 (COALESCE(instrument_type, 'EQUITY') != 'OPTION' AND transaction_type IN ('P', 'BUY', 'PURCHASE', 'PURCHASED'))
+               ) THEN 1 ELSE 0 END) AS republican_purchase_count
        FROM congress_transactions
-       WHERE symbol IS NOT NULL
-         AND TRIM(symbol) != ''
-         AND UPPER(symbol) NOT IN ('N/A', 'NA', 'UNRESOLVED', 'NONE')
+       WHERE COALESCE(option_underlying, symbol) IS NOT NULL
+         AND TRIM(COALESCE(option_underlying, symbol)) != ''
+         AND UPPER(COALESCE(option_underlying, symbol)) NOT IN ('N/A', 'NA', 'UNRESOLVED', 'NONE')
          AND transaction_type IN ('P', 'BUY', 'PURCHASE', 'PURCHASED', 'S', 'SELL', 'SALE', 'SOLD', 'EXCHANGE')
          AND datetime(COALESCE(transaction_date, created_at)) BETWEEN datetime(?) AND datetime(?)
-       GROUP BY UPPER(symbol), COALESCE(security_sector, 'UNRESOLVED')
+       GROUP BY UPPER(COALESCE(option_underlying, symbol)), COALESCE(security_sector, 'UNRESOLVED')
        HAVING purchase_count > 0
        ORDER BY purchase_amount_mid DESC
        LIMIT 250`
@@ -977,11 +1017,11 @@ async function loadSignalCandidates(
 async function loadConflictCounts(db: D1Database): Promise<Map<string, number>> {
   const rows = await db
     .prepare(
-      `SELECT UPPER(t.symbol) AS symbol, COUNT(*) AS conflict_count
+      `SELECT UPPER(COALESCE(t.option_underlying, t.symbol)) AS symbol, COUNT(*) AS conflict_count
          FROM congress_conflict_flags f
          JOIN congress_transactions t ON t.transaction_id = f.transaction_id
-        WHERE t.symbol IS NOT NULL
-        GROUP BY UPPER(t.symbol)`
+        WHERE COALESCE(t.option_underlying, t.symbol) IS NOT NULL
+        GROUP BY UPPER(COALESCE(t.option_underlying, t.symbol))`
     )
     .all<CongressAlphaConflictRow>();
   return new Map((rows.results ?? []).map((row) => [row.symbol, row.conflict_count]));
@@ -1033,6 +1073,12 @@ function buildSignalFromCandidate(
 ): CongressAlphaSignal {
   const purchaseAmountMid = nonNegative(candidate.purchase_amount_mid);
   const saleAmountMid = nonNegative(candidate.sale_amount_mid);
+  const optionCount = Number(candidate.option_count ?? 0);
+  const bullishOptionCount = Number(candidate.bullish_option_count ?? 0);
+  const bearishOptionCount = Number(candidate.bearish_option_count ?? 0);
+  const leapOptionCount = Number(candidate.leap_option_count ?? 0);
+  const bullishOptionAmountMid = nonNegative(candidate.bullish_option_amount_mid);
+  const bearishOptionAmountMid = nonNegative(candidate.bearish_option_amount_mid);
   const netAmountMid = Number(candidate.net_amount_mid ?? purchaseAmountMid - saleAmountMid);
   const score = scoreCongressAlphaCandidate({
     transactionCount: Number(candidate.transaction_count ?? 0),
@@ -1048,6 +1094,15 @@ function buildSignalFromCandidate(
     latestTradeAt: candidate.latest_trade_at,
     asOf
   });
+  const optionBoost = Math.min(8, bullishOptionCount * 2 + leapOptionCount * 1.5);
+  const optionDrag = Math.min(12, bearishOptionCount * 3);
+  const adjustedScore = round(Math.max(0, Math.min(100, score.score + optionBoost - optionDrag)), 2);
+  const adjustedConfidence = round(
+    Math.max(0, Math.min(1, score.confidence + optionBoost / 250 - optionDrag / 200)),
+    4
+  );
+  const adjustedDirection =
+    bearishOptionCount > bullishOptionCount && adjustedScore < 55 ? "FLAT" : score.direction;
 
   return {
     signalId: crypto.randomUUID(),
@@ -1055,9 +1110,9 @@ function buildSignalFromCandidate(
     symbol: candidate.symbol,
     sector: candidate.sector ?? "UNRESOLVED",
     asOf,
-    score: score.score,
-    confidence: score.confidence,
-    direction: score.direction,
+    score: adjustedScore,
+    confidence: adjustedConfidence,
+    direction: adjustedDirection,
     horizonDays: 90,
     latestTradeAt: candidate.latest_trade_at,
     currentPrice:
@@ -1074,7 +1129,25 @@ function buildSignalFromCandidate(
     conflictCount,
     bipartisanScore: score.bipartisanScore,
     freshnessPenalty: score.freshnessPenalty,
-    rationale: score.rationale
+    rationale: {
+      ...score.rationale,
+      instrumentTypes: String(candidate.instrument_types ?? "EQUITY")
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean),
+      options: {
+        optionCount,
+        bullishOptionCount,
+        bearishOptionCount,
+        leapOptionCount,
+        bullishOptionAmountMid,
+        bearishOptionAmountMid,
+        optionBoost,
+        optionDrag,
+        caveat:
+          "Option disclosures are scored directionally from decoded exposure. Dollar PnL is not option-premium modeled."
+      }
+    }
   };
 }
 

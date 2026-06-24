@@ -2225,6 +2225,27 @@ output {
   background: rgba(255, 92, 92, 0.045);
 }
 
+.instrument-pill {
+  display: inline-flex;
+  min-height: 22px;
+  min-width: 64px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  padding: 0 8px;
+  color: var(--muted);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+
+.instrument-pill.option {
+  border-color: rgba(245, 158, 11, 0.38);
+  background: rgba(245, 158, 11, 0.1);
+  color: #fbbf24;
+}
+
 .congress-period-select {
   min-height: 34px;
   display: inline-flex;

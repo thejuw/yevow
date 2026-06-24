@@ -1050,6 +1050,14 @@ export interface CongressTransaction {
   member_key: string | null;
   member_party: string | null;
   security_sector: string | null;
+  instrument_type?: "EQUITY" | "OPTION" | string | null;
+  option_underlying?: string | null;
+  option_type?: "CALL" | "PUT" | string | null;
+  option_strike?: number | null;
+  option_expiration_date?: string | null;
+  option_exposure?: "BULLISH" | "BEARISH" | "INCOME_OR_CLOSING" | "HEDGE_OR_PROTECTION" | string | null;
+  option_intensity?: "HIGH" | "MEDIUM" | "LOW" | string | null;
+  option_is_leap?: number | null;
   created_at: string;
   updated_at: string;
   conflict_flag_count?: number;
