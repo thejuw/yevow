@@ -14,6 +14,8 @@ import type {
   CostDashboardResponse,
   CascadeBacktestResponse,
   CongressPnlRefreshResponse,
+  CongressAlphaBotResponse,
+  CongressAlphaSettings,
   CongressMacroHeatmapResponse,
   CongressPeriod,
   CongressRunsResponse,
@@ -24,6 +26,7 @@ import type {
   DiagnosticsResponse,
   ExecutionQualityResponse,
   GlobalRiskConfig,
+  JsonRecord,
   LiveReadinessResponse,
   LoginResponse,
   MacroBiasDirection,
@@ -201,6 +204,74 @@ export async function refreshCongressPnl(
   return apiFetch<CongressPnlRefreshResponse>(apiBase, "/admin/congress/pnl/refresh", token, {
     method: "POST",
     body: JSON.stringify({ limit })
+  });
+}
+
+export async function readCongressAlphaBot(
+  apiBase: string,
+  token: string
+): Promise<CongressAlphaBotResponse> {
+  return apiFetch<CongressAlphaBotResponse>(apiBase, "/admin/congress/alpha", token, {
+    allowErrorBody: true
+  });
+}
+
+export async function runCongressAlphaBot(
+  apiBase: string,
+  token: string,
+  options: {
+    bankroll?: number;
+    maxPositions?: number;
+    minScore?: number;
+    maxWeightPct?: number;
+    lookbackDays?: number;
+    reason?: string;
+  } = {}
+): Promise<CongressAlphaBotResponse> {
+  return apiFetch<CongressAlphaBotResponse>(apiBase, "/admin/congress/alpha/run", token, {
+    method: "POST",
+    body: JSON.stringify(options),
+    allowErrorBody: true
+  });
+}
+
+export async function updateCongressAlphaSettings(
+  apiBase: string,
+  token: string,
+  settings: Partial<CongressAlphaSettings>
+): Promise<CongressAlphaBotResponse> {
+  return apiFetch<CongressAlphaBotResponse>(apiBase, "/admin/congress/alpha/settings", token, {
+    method: "POST",
+    body: JSON.stringify(settings),
+    allowErrorBody: true
+  });
+}
+
+export async function enrichCongressAlphaUniverse(
+  apiBase: string,
+  token: string
+): Promise<{ ok: boolean; enriched: number; sources: JsonRecord; error?: string }> {
+  return apiFetch(apiBase, "/admin/congress/alpha/enrich", token, {
+    method: "POST",
+    body: JSON.stringify({}),
+    allowErrorBody: true
+  });
+}
+
+export async function runCongressAlphaBacktest(
+  apiBase: string,
+  token: string
+): Promise<{
+  ok: boolean;
+  backtestId: string;
+  settings: JsonRecord;
+  result: JsonRecord;
+  error?: string;
+}> {
+  return apiFetch(apiBase, "/admin/congress/alpha/backtest", token, {
+    method: "POST",
+    body: JSON.stringify({}),
+    allowErrorBody: true
   });
 }
 

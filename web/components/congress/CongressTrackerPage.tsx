@@ -211,10 +211,9 @@ export default function CongressTrackerPage() {
 
       setTracker(statusResult);
       setRuns(runsResult.ok ? runsResult.runs : []);
-      const loadedTransactions =
-        (transactionsResult as CongressTransactionsResponse).ok
-          ? await loadCongressTransactionPages(apiBase, token, transactionsResult)
-          : [];
+      const loadedTransactions = (transactionsResult as CongressTransactionsResponse).ok
+        ? await loadCongressTransactionPages(apiBase, token, transactionsResult)
+        : [];
       setTransactions(loadedTransactions);
       setTickerHierarchy(tickerResult.ok ? tickerResult : null);
       setMacroHeatmap(macroResult.ok ? macroResult : null);
@@ -404,6 +403,10 @@ export default function CongressTrackerPage() {
         </div>
         <div className="settings-nav">
           <a href="/">Command Center</a>
+          <a href="/congress-alpha">
+            <TrendingUp size={16} />
+            Alpha Bot
+          </a>
           <a href="/settings">Settings</a>
           <a href="/equity">
             <Landmark size={16} />
@@ -818,12 +821,17 @@ function CopyPortfolioPanel({
             <SmallMetric label="Member" value={model.memberName} />
             <SmallMetric label="Window" value={model.periodLabel} />
             <SmallMetric label="Mock Capital" value={currency.format(model.capital)} />
-            <SmallMetric label="Disclosed Buy Basis" value={currency.format(model.disclosedMidpoint)} />
+            <SmallMetric
+              label="Disclosed Buy Basis"
+              value={currency.format(model.disclosedMidpoint)}
+            />
             <SmallMetric label="Eligible Buys" value={compact.format(model.buyCount)} />
             <SmallMetric label="Skipped Rows" value={compact.format(model.skippedCount)} />
             <SmallMetric
               label="Estimated Value"
-              value={model.estimatedValue === null ? "unmarked" : currency.format(model.estimatedValue)}
+              value={
+                model.estimatedValue === null ? "unmarked" : currency.format(model.estimatedValue)
+              }
             />
             <SmallMetric
               label="Estimated PnL"

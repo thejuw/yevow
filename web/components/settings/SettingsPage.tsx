@@ -2,6 +2,7 @@
 
 import {
   BellRing,
+  Bot,
   ChevronRight,
   DatabaseZap,
   Flame,
@@ -624,6 +625,10 @@ export default function SettingsPage() {
           <a href="/congress">
             <DatabaseZap size={16} />
             Congress
+          </a>
+          <a href="/congress-alpha">
+            <Bot size={16} />
+            Alpha Bot
           </a>
           <a href="/equity">
             <Landmark size={16} />

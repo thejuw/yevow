@@ -1227,6 +1227,150 @@ export interface CongressPnlRefreshResponse {
   failures: JsonRecord[];
 }
 
+export interface CongressAlphaSignal {
+  signalId: string;
+  runId: string;
+  symbol: string;
+  sector: string;
+  asOf: string;
+  score: number;
+  confidence: number;
+  direction: "LONG" | "FLAT" | "AVOID";
+  horizonDays: number;
+  latestTradeAt: string | null;
+  currentPrice: number | null;
+  netAmountMid: number;
+  purchaseAmountMid: number;
+  saleAmountMid: number;
+  transactionCount: number;
+  purchaseCount: number;
+  saleCount: number;
+  memberCount: number;
+  conflictCount: number;
+  bipartisanScore: number;
+  freshnessPenalty: number;
+  rationale: JsonRecord;
+  createdAt: string;
+}
+
+export interface CongressAlphaTarget {
+  targetId: string;
+  runId: string;
+  signalId: string;
+  symbol: string;
+  sector: string;
+  referencePrice: number | null;
+  targetWeightPct: number;
+  targetNotional: number;
+  score: number;
+  confidence: number;
+  reason: string;
+  createdAt: string;
+}
+
+export interface CongressAlphaPaperOrder {
+  orderId: string;
+  runId: string;
+  signalId: string | null;
+  symbol: string;
+  side: "BUY" | "SELL";
+  quantity: number;
+  limitPrice: number;
+  notional: number;
+  status: "PAPER_FILLED";
+  reason: string;
+  createdAt: string;
+}
+
+export interface CongressAlphaPosition {
+  symbol: string;
+  quantity: number;
+  avgPrice: number;
+  marketPrice: number;
+  marketValue: number;
+  unrealizedPnl: number;
+  targetWeightPct: number;
+  updatedAt: string;
+}
+
+export interface CongressAlphaRun {
+  runId: string;
+  status: string;
+  mode: string;
+  bankroll: number;
+  maxPositions: number;
+  minScore: number;
+  generatedSignals: number;
+  targetCount: number;
+  orderCount: number;
+  createdBy: string | null;
+  errorMessage: string | null;
+  maxWeightPct?: number | null;
+  lookbackDays?: number | null;
+  config?: JsonRecord;
+  enrichment?: JsonRecord;
+  backtest?: JsonRecord;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export interface CongressAlphaSettings {
+  bankroll: number;
+  maxPositions: number;
+  minScore: number;
+  maxWeightPct: number;
+  lookbackDays: number;
+  autoRunEnabled: boolean;
+}
+
+export interface CongressAlphaSchedulerStatus {
+  autoRunEnabled: boolean;
+  timezone: string;
+  localDate: string;
+  localTime: string;
+  expectedWindowLocal: string;
+  nextRunLocalDate: string;
+  nextRunLocalTime: string;
+  nextRunHint: string;
+  lastScheduledRunAt: string | null;
+}
+
+export interface CongressAlphaBotResponse {
+  ok: boolean;
+  mode: "PAPER_ONLY";
+  generatedAt?: string;
+  error?: string;
+  hint?: string;
+  summary?: {
+    latestRunId?: string | null;
+    latestRunStatus?: string;
+    bankroll: number;
+    invested?: number;
+    cash?: number;
+    equity?: number;
+    unrealizedPnl?: number;
+    maxPositions?: number;
+    minScore?: number;
+    signalCount: number;
+    targetCount: number;
+    orderCount: number;
+    positionCount?: number;
+  };
+  settings?: CongressAlphaSettings;
+  scheduler?: CongressAlphaSchedulerStatus;
+  enrichment?: {
+    count: number;
+    latest: JsonRecord[];
+  };
+  backtest?: JsonRecord | null;
+  latestRun?: CongressAlphaRun | null;
+  signals?: CongressAlphaSignal[];
+  targets?: CongressAlphaTarget[];
+  orders?: CongressAlphaPaperOrder[];
+  positions?: CongressAlphaPosition[];
+  guardrails?: string[];
+}
+
 export interface PrivateEquityDeal {
   id: string;
   published_date: string;

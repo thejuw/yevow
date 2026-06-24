@@ -71,7 +71,9 @@ export const ROUTE_CATALOG = [
   "GET /admin/congress/tickers",
   "GET /admin/congress/macro",
   "GET /admin/congress/transactions",
-  "POST /admin/congress/pnl/refresh"
+  "POST /admin/congress/pnl/refresh",
+  "GET /admin/congress/alpha",
+  "POST /admin/congress/alpha/run"
 ] as const;
 
 export function gatewayCatalogResponse(env: Env, topology: EdgeTopology): Response {

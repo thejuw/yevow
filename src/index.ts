@@ -69,6 +69,14 @@ import {
   triggerCongressRun
 } from "./gateway/CongressTrackerGateway";
 import {
+  enrichCongressAlphaUniverse,
+  handleCongressAlphaScheduled,
+  readCongressAlphaBot,
+  runCongressAlphaBacktest,
+  runCongressAlphaBot,
+  updateCongressAlphaSettings
+} from "./gateway/CongressAlphaBotGateway";
+import {
   handlePrivateEquityScheduled,
   readPrivateEquityDeals
 } from "./gateway/PrivateEquityDealsGateway";
@@ -187,6 +195,7 @@ export default {
     );
 
     await handleCongressScheduled(controller, env, ctx, logger, topology);
+    await handleCongressAlphaScheduled(controller, env, ctx, logger, topology);
     await handlePrivateEquityScheduled(controller, env, ctx, logger, topology);
   }
 } satisfies ExportedHandler<Env>;
@@ -437,7 +446,9 @@ async function handleAdminRequest(
         "GET /admin/congress/tickers",
         "GET /admin/congress/macro",
         "GET /admin/congress/transactions",
-        "POST /admin/congress/pnl/refresh"
+        "POST /admin/congress/pnl/refresh",
+        "GET /admin/congress/alpha",
+        "POST /admin/congress/alpha/run"
       ]
     });
   }
@@ -891,6 +902,41 @@ async function handleAdminRequest(
       return json({ ok: false, error: "Method not allowed" }, 405);
     }
     return refreshCongressPnl(request, env, logger, topology, auth);
+  }
+
+  if (url.pathname === "/admin/congress/alpha") {
+    if (request.method !== "GET") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+    return readCongressAlphaBot(env);
+  }
+
+  if (url.pathname === "/admin/congress/alpha/run") {
+    if (request.method !== "POST") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+    return runCongressAlphaBot(request, env, logger, topology, auth);
+  }
+
+  if (url.pathname === "/admin/congress/alpha/settings") {
+    if (request.method !== "POST") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+    return updateCongressAlphaSettings(request, env, auth);
+  }
+
+  if (url.pathname === "/admin/congress/alpha/enrich") {
+    if (request.method !== "POST") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+    return enrichCongressAlphaUniverse(env, auth);
+  }
+
+  if (url.pathname === "/admin/congress/alpha/backtest") {
+    if (request.method !== "POST") {
+      return json({ ok: false, error: "Method not allowed" }, 405);
+    }
+    return runCongressAlphaBacktest(env, auth);
   }
 
   return json({ ok: false, error: "Not found" }, 404);

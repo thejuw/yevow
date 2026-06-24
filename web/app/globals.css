@@ -1871,6 +1871,7 @@ output {
 
 .congress-shell > .settings-hero,
 .congress-shell > .macro-heatmap-panel,
+.congress-shell > .congress-alpha-panel,
 .congress-shell > .congress-ledger-panel,
 .congress-shell > .congress-hierarchy-panel,
 .congress-shell > .settings-grid {
@@ -2437,6 +2438,398 @@ output {
 .copy-portfolio-panel {
   display: grid;
   gap: 10px;
+}
+
+.congress-alpha-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.alpha-hero {
+  align-items: center;
+  border: 1px solid rgba(215, 196, 139, 0.18);
+  border-radius: 8px;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 14px;
+  background:
+    linear-gradient(135deg, rgba(215, 196, 139, 0.1), rgba(255, 255, 255, 0.018)),
+    rgba(7, 10, 14, 0.4);
+}
+
+.alpha-identity {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  min-width: 0;
+}
+
+.alpha-orb {
+  align-items: center;
+  border: 1px solid rgba(215, 196, 139, 0.34);
+  border-radius: 8px;
+  color: var(--gold);
+  display: grid;
+  flex: 0 0 46px;
+  height: 46px;
+  justify-items: center;
+  background: rgba(215, 196, 139, 0.08);
+}
+
+.alpha-identity h2 {
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: clamp(24px, 3vw, 36px);
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 0.95;
+  margin: 2px 0 5px;
+}
+
+.alpha-identity p {
+  color: var(--muted);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 0;
+  max-width: 720px;
+}
+
+.alpha-run-stack {
+  align-items: end;
+  display: grid;
+  flex: 0 0 auto;
+  gap: 8px;
+  justify-items: end;
+}
+
+.alpha-status {
+  border: 1px solid rgba(150, 165, 188, 0.18);
+  border-radius: 8px;
+  color: var(--muted);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  padding: 7px 10px;
+  text-transform: uppercase;
+}
+
+.alpha-status-completed {
+  border-color: rgba(71, 202, 154, 0.3);
+  color: var(--positive);
+}
+
+.alpha-status-running,
+.alpha-status-pending {
+  border-color: rgba(215, 196, 139, 0.32);
+  color: var(--gold);
+}
+
+.alpha-status-failed {
+  border-color: rgba(255, 112, 112, 0.35);
+  color: var(--negative);
+}
+
+.alpha-kpi-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.alpha-kpi {
+  border: 1px solid rgba(150, 165, 188, 0.12);
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 11px 12px;
+  background: rgba(255, 255, 255, 0.024);
+}
+
+.alpha-kpi-large {
+  grid-column: span 1;
+}
+
+.alpha-kpi span,
+.alpha-kpi small {
+  color: var(--muted);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.alpha-kpi strong {
+  color: var(--text);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.alpha-warning {
+  align-items: center;
+  background: rgba(255, 183, 77, 0.08);
+  border: 1px solid rgba(255, 183, 77, 0.28);
+  border-radius: 8px;
+  color: #ffd699;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: 120px minmax(0, 1fr);
+  padding: 10px 12px;
+}
+
+.alpha-warning strong,
+.alpha-warning span {
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+}
+
+.alpha-warning span {
+  color: rgba(255, 235, 204, 0.82);
+}
+
+.alpha-console-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(250px, 0.82fr) repeat(2, minmax(0, 1fr));
+}
+
+.congress-alpha-card {
+  border: 1px solid rgba(150, 165, 188, 0.12);
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.022);
+}
+
+.alpha-controls {
+  align-content: start;
+}
+
+.alpha-control-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.alpha-input {
+  display: grid;
+  gap: 5px;
+}
+
+.alpha-input span,
+.alpha-run-meta span {
+  color: var(--muted);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.alpha-input input {
+  background: rgba(5, 8, 11, 0.7);
+  border: 1px solid rgba(150, 165, 188, 0.16);
+  border-radius: 7px;
+  color: var(--text);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  height: 34px;
+  outline: none;
+  padding: 0 10px;
+  width: 100%;
+}
+
+.alpha-input input:focus {
+  border-color: rgba(215, 196, 139, 0.42);
+}
+
+.alpha-toggle {
+  background: rgba(5, 8, 11, 0.7);
+  border: 1px solid rgba(150, 165, 188, 0.16);
+  border-radius: 7px;
+  color: var(--muted);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  height: 34px;
+}
+
+.alpha-toggle.on {
+  border-color: rgba(71, 202, 154, 0.34);
+  color: var(--positive);
+}
+
+.alpha-run-meta {
+  border-top: 1px solid rgba(150, 165, 188, 0.1);
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding-top: 8px;
+}
+
+.alpha-run-meta code {
+  color: var(--gold);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.alpha-action-row {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: 1fr;
+}
+
+.alpha-action-row button {
+  background: rgba(215, 196, 139, 0.06);
+  border: 1px solid rgba(215, 196, 139, 0.22);
+  border-radius: 7px;
+  color: var(--gold);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  min-height: 32px;
+}
+
+.congress-alpha-list {
+  display: grid;
+  gap: 6px;
+}
+
+.congress-alpha-row {
+  align-items: center;
+  border: 1px solid rgba(150, 165, 188, 0.1);
+  border-radius: 7px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 72px minmax(120px, 1fr) 90px 120px 120px;
+  min-height: 40px;
+  padding: 8px 10px;
+  background: rgba(7, 10, 14, 0.38);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+}
+
+.congress-alpha-row strong {
+  color: var(--gold);
+}
+
+.congress-alpha-row span,
+.congress-alpha-row small {
+  min-width: 0;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.congress-alpha-row code,
+.congress-alpha-row small {
+  text-align: right;
+}
+
+.congress-alpha-trace {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.congress-alpha-trace div {
+  border: 1px solid rgba(150, 165, 188, 0.1);
+  border-radius: 7px;
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  background: rgba(215, 196, 139, 0.035);
+}
+
+.congress-alpha-trace strong,
+.congress-alpha-trace span {
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+}
+
+.congress-alpha-trace strong {
+  color: var(--gold);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.congress-alpha-trace span {
+  color: var(--muted);
+}
+
+.alpha-ledger-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.alpha-intel-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.alpha-kpi-grid-compact {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.alpha-order-list,
+.alpha-signal-list {
+  display: grid;
+  gap: 6px;
+}
+
+.alpha-order-row,
+.alpha-signal-row {
+  align-items: center;
+  border: 1px solid rgba(150, 165, 188, 0.1);
+  border-radius: 7px;
+  display: grid;
+  gap: 8px;
+  min-height: 40px;
+  padding: 8px 10px;
+  background: rgba(7, 10, 14, 0.38);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+}
+
+.alpha-order-row {
+  grid-template-columns: 54px 70px 90px 110px minmax(120px, 1fr);
+}
+
+.alpha-signal-row {
+  grid-template-columns: minmax(120px, 1fr) 92px 78px minmax(160px, 1.2fr);
+}
+
+.alpha-order-row span,
+.alpha-order-row small,
+.alpha-signal-row span,
+.alpha-signal-row small {
+  color: var(--muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.alpha-order-row code,
+.alpha-signal-row code {
+  color: var(--text);
+  text-align: right;
+}
+
+.alpha-signal-row strong {
+  color: var(--gold);
+  display: block;
 }
 
 .copy-portfolio-controls {
@@ -3280,6 +3673,7 @@ output {
   .strategy-knob-grid,
   .compact-param-grid,
   .copy-portfolio-summary,
+  .alpha-kpi-grid,
   .cascade-ops-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
@@ -3300,6 +3694,13 @@ output {
   }
 
   .macro-heatmap-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .alpha-console-grid,
+  .alpha-ledger-grid,
+  .alpha-intel-grid,
+  .congress-alpha-trace {
     grid-template-columns: 1fr;
   }
 }
@@ -3375,6 +3776,11 @@ output {
   .copy-portfolio-controls,
   .copy-portfolio-summary,
   .copy-portfolio-coverage,
+  .alpha-hero,
+  .alpha-kpi-grid,
+  .alpha-order-row,
+  .alpha-signal-row,
+  .congress-alpha-row,
   .ticker-detail-grid,
   .ticker-hierarchy-summary,
   .ticker-asset-row,

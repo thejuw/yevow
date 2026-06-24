@@ -2,6 +2,7 @@
 
 import {
   AlertTriangle,
+  Bot,
   Brain,
   ChevronRight,
   CircleDot,
@@ -908,6 +909,10 @@ export default function CommandCenterPage() {
             <DatabaseZap size={16} />
             Congress
           </a>
+          <a className="compact-action settings-link" href="/congress-alpha">
+            <Bot size={16} />
+            Alpha Bot
+          </a>
           <a className="compact-action settings-link" href="/equity">
             <Landmark size={16} />
             Equity
@@ -1114,10 +1119,7 @@ export default function CommandCenterPage() {
             </a>
           </div>
           <div className="trade-summary compact-summary">
-            <Metric
-              label="Filings"
-              value={compact.format(congressStatus?.counts.filings ?? 0)}
-            />
+            <Metric label="Filings" value={compact.format(congressStatus?.counts.filings ?? 0)} />
             <Metric
               label="Transactions"
               value={compact.format(congressStatus?.counts.transactions ?? 0)}

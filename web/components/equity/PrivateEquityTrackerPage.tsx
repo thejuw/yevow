@@ -3,6 +3,7 @@
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Bot,
   DatabaseZap,
   ExternalLink,
   FileText,
@@ -92,7 +93,9 @@ export default function PrivateEquityTrackerPage() {
       setDealStatus("READY");
     } catch (error) {
       setDealStatus("ERROR");
-      setDealError(error instanceof Error ? error.message : "Private equity deal feed unavailable.");
+      setDealError(
+        error instanceof Error ? error.message : "Private equity deal feed unavailable."
+      );
     }
   }, []);
 
@@ -119,6 +122,10 @@ export default function PrivateEquityTrackerPage() {
           <a href="/congress">
             <DatabaseZap size={16} />
             Congress
+          </a>
+          <a href="/congress-alpha">
+            <Bot size={16} />
+            Alpha Bot
           </a>
           <a href="/settings">Settings</a>
         </div>
@@ -162,7 +169,11 @@ export default function PrivateEquityTrackerPage() {
                   : "rounded-md border border-emerald-300/25 bg-emerald-400/10 px-3 py-2 font-mono text-[11px] uppercase text-emerald-200"
               }
             >
-              {dealStatus === "LOADING" ? "Loading" : dealStatus === "ERROR" ? "Feed Error" : "Live Feed"}
+              {dealStatus === "LOADING"
+                ? "Loading"
+                : dealStatus === "ERROR"
+                  ? "Feed Error"
+                  : "Live Feed"}
             </span>
             <button
               className="inline-flex min-h-[34px] items-center gap-2 rounded-md border border-[#d8c68f66] bg-[#d8c68f1a] px-3 py-2 text-[12px] text-[#f3eee6]"
@@ -178,7 +189,9 @@ export default function PrivateEquityTrackerPage() {
         <div className="mb-3 grid grid-cols-1 gap-2 md:grid-cols-4">
           <div className="rounded-lg border border-slate-400/15 bg-white/[0.025] p-3">
             <span className="font-mono text-[10px] uppercase text-slate-400">Latest Deals</span>
-            <strong className="mt-2 block font-mono text-[20px] text-[#f3eee6]">{deals.length}</strong>
+            <strong className="mt-2 block font-mono text-[20px] text-[#f3eee6]">
+              {deals.length}
+            </strong>
           </div>
           <div className="rounded-lg border border-slate-400/15 bg-white/[0.025] p-3">
             <span className="font-mono text-[10px] uppercase text-slate-400">Known Value</span>
