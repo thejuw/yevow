@@ -901,10 +901,6 @@ export default function CommandCenterPage() {
             <Shield size={16} />
             {isRunningDiagnostics ? "Scanning" : "Run Integrity Check"}
           </button>
-          <a className="compact-action settings-link" href="/dotcast">
-            <RadioTower size={16} />
-            dotCast
-          </a>
           <a className="compact-action settings-link" href="/settings">
             <Settings size={16} />
             Settings

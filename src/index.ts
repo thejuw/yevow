@@ -48,7 +48,9 @@ import {
   previewDotCastOdds,
   readDotCastPool,
   readDotCastHealth,
-  simulateDotCastSettlement
+  settleDotCastPool,
+  simulateDotCastSettlement,
+  voidDotCastPool
 } from "./gateway/DotCastGateway";
 import {
   readAdminLogs,
@@ -112,6 +114,12 @@ gatewayRouter.post("/api/dotcast/pools/:id/entries", async (c) =>
 );
 gatewayRouter.post("/api/dotcast/pools/:id/lock", async (c) =>
   lockDotCastPool(c.req.param("id"), c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/pools/:id/settle", async (c) =>
+  settleDotCastPool(c.req.param("id"), c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/pools/:id/void", async (c) =>
+  voidDotCastPool(c.req.param("id"), c.req.raw, c.env)
 );
 
 gatewayRouter.get("/health", async (c) => {

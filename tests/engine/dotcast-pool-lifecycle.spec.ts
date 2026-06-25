@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   createPoolFromMarket,
+  lockSnapshotIfNeeded,
   lockPoolIfNeeded,
   placeEntry,
+  settlePoolSnapshot,
   transitionPool,
+  voidPoolSnapshot,
   type DotCastMarketSnapshot,
+  type DotCastPoolSnapshot,
   type StakeBalance
 } from "../../src/engine/dotcast";
 
@@ -201,6 +205,131 @@ describe("dotCast pool lifecycle", () => {
       })
     ).toThrow(/only be placed while pool is open/);
   });
+
+  it("voids and refunds one-sided or under-liquidity pools at lock", () => {
+    const placed = placeEntry({
+      pool: openPool({ minLiquidity: 100 }),
+      balance: stakeBalance({ available: 250, locked: 0 }),
+      userId: "user-1",
+      side: "yes",
+      amount: 100,
+      now: "2026-06-25T17:02:00.000Z",
+      entryId: "entry-1"
+    });
+    const snapshot = snapshotFromPlacement(placed.pool, [placed.entry], {
+      "user-1": placed.balance
+    });
+
+    const locked = lockSnapshotIfNeeded(snapshot, close);
+
+    expect(locked.pool.status).toBe("voided");
+    expect(locked.voidReason).toBe("ONE_SIDED_POOL");
+    expect(locked.entries[0]).toMatchObject({ refunded: true, payout: null });
+    expect(locked.balances["user-1"]).toMatchObject({ available: 250, locked: 0 });
+  });
+
+  it("settles a locked pool, credits winners, zeroes losers, and records rake once", () => {
+    const pool = openPool({ minLiquidity: 1 });
+    const yes = placeEntry({
+      pool,
+      balance: stakeBalance({ userId: "yes-user", available: 1000, locked: 0 }),
+      userId: "yes-user",
+      side: "yes",
+      amount: 700,
+      now: "2026-06-25T17:01:00.000Z",
+      entryId: "yes-entry"
+    });
+    const no = placeEntry({
+      pool: yes.pool,
+      balance: stakeBalance({ userId: "no-user", available: 1000, locked: 0 }),
+      userId: "no-user",
+      side: "no",
+      amount: 300,
+      now: "2026-06-25T17:02:00.000Z",
+      entryId: "no-entry"
+    });
+    const locked = lockSnapshotIfNeeded(
+      snapshotFromPlacement(no.pool, [yes.entry, no.entry], {
+        "yes-user": yes.balance,
+        "no-user": no.balance
+      }),
+      close
+    );
+
+    const settled = settlePoolSnapshot(locked, "yes", "2026-06-25T17:06:00.000Z");
+    const replayed = settlePoolSnapshot(settled, "yes", "2026-06-25T17:07:00.000Z");
+
+    expect(settled.pool).toMatchObject({
+      status: "settled",
+      outcome: "yes",
+      settledAt: "2026-06-25T17:06:00.000Z"
+    });
+    expect(settled.entries.find((entry) => entry.id === "yes-entry")).toMatchObject({
+      payout: 985
+    });
+    expect(settled.entries.find((entry) => entry.id === "no-entry")).toMatchObject({ payout: 0 });
+    expect(settled.balances["yes-user"]).toMatchObject({ available: 1285, locked: 0 });
+    expect(settled.balances["no-user"]).toMatchObject({ available: 700, locked: 0 });
+    expect(settled.settlement).toMatchObject({
+      totalStaked: 1000,
+      payoutTotal: 985,
+      rakeAmount: 15
+    });
+    expect(settled.houseLedger).toHaveLength(1);
+    expect(replayed).toEqual(settled);
+  });
+
+  it("routes invalid resolutions and no-winner books to void refunds", () => {
+    const pool = openPool({ minLiquidity: 1 });
+    const no = placeEntry({
+      pool,
+      balance: stakeBalance({ available: 500, locked: 0 }),
+      userId: "user-1",
+      side: "no",
+      amount: 200,
+      now: "2026-06-25T17:01:00.000Z",
+      entryId: "no-only"
+    });
+    const locked = {
+      ...snapshotFromPlacement(no.pool, [no.entry], { "user-1": no.balance }),
+      pool: transitionPool(no.pool, "locked", close)
+    };
+
+    const invalid = settlePoolSnapshot(locked, "invalid", "2026-06-25T17:06:00.000Z");
+    const noWinner = settlePoolSnapshot(locked, "yes", "2026-06-25T17:06:00.000Z");
+
+    expect(invalid).toMatchObject({
+      pool: { status: "voided", outcome: "invalid" },
+      voidReason: "INVALID_RESOLUTION",
+      balances: { "user-1": { available: 500, locked: 0 } }
+    });
+    expect(noWinner).toMatchObject({
+      pool: { status: "voided" },
+      voidReason: "NO_WINNING_ENTRIES",
+      balances: { "user-1": { available: 500, locked: 0 } }
+    });
+  });
+
+  it("admin voids are idempotent and do not double-refund", () => {
+    const placed = placeEntry({
+      pool: openPool(),
+      balance: stakeBalance({ available: 300, locked: 0 }),
+      userId: "user-1",
+      side: "yes",
+      amount: 100,
+      now: "2026-06-25T17:01:00.000Z",
+      entryId: "entry-void"
+    });
+    const snapshot = snapshotFromPlacement(placed.pool, [placed.entry], {
+      "user-1": placed.balance
+    });
+
+    const voided = voidPoolSnapshot(snapshot, "ADMIN_VOID", "2026-06-25T17:02:00.000Z");
+    const replayed = voidPoolSnapshot(voided, "ADMIN_VOID", "2026-06-25T17:03:00.000Z");
+
+    expect(voided.balances["user-1"]).toMatchObject({ available: 300, locked: 0 });
+    expect(replayed).toEqual(voided);
+  });
 });
 
 function market(overrides: Partial<DotCastMarketSnapshot> = {}): DotCastMarketSnapshot {
@@ -215,26 +344,40 @@ function market(overrides: Partial<DotCastMarketSnapshot> = {}): DotCastMarketSn
   };
 }
 
-function openPool() {
+function openPool(overrides: { minLiquidity?: number } = {}) {
   return createPoolFromMarket({
     id: "pool-1",
     market: market(),
     unit: "points",
     entryClosesAt: close,
     rake: 0.05,
-    minLiquidity: 100,
+    minLiquidity: overrides.minLiquidity ?? 100,
     now
   });
 }
 
-function stakeBalance(
-  overrides: Partial<StakeBalance> = {}
-): StakeBalance {
+function stakeBalance(overrides: Partial<StakeBalance> = {}): StakeBalance {
   return {
     userId: "user-1",
     unit: "points",
     available: 250,
     locked: 0,
     ...overrides
+  };
+}
+
+function snapshotFromPlacement(
+  pool: DotCastPoolSnapshot["pool"],
+  entries: DotCastPoolSnapshot["entries"],
+  balances: DotCastPoolSnapshot["balances"]
+): DotCastPoolSnapshot {
+  return {
+    pool,
+    entries,
+    balances,
+    houseLedger: [],
+    settlement: null,
+    voidReason: null,
+    updatedAt: now
   };
 }

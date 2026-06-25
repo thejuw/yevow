@@ -4,14 +4,16 @@ import {
   placeDotCastPoolEntry,
   previewDotCastOdds,
   readDotCastHealth,
-  simulateDotCastSettlement
+  settleDotCastPool,
+  simulateDotCastSettlement,
+  voidDotCastPool
 } from "../../src/gateway/DotCastGateway";
 import type { Env } from "../../src/types";
 
 describe("dotCast gateway handlers", () => {
   it("reports milestone health without requiring funds or persistence", async () => {
     const response = readDotCastHealth();
-    const body = await response.json() as Record<string, unknown>;
+    const body = (await response.json()) as Record<string, unknown>;
 
     expect(response.status).toBe(200);
     expect(body).toMatchObject({
@@ -30,7 +32,7 @@ describe("dotCast gateway handlers", () => {
         rake: 0.05
       })
     );
-    const body = await response.json() as Record<string, unknown>;
+    const body = (await response.json()) as Record<string, unknown>;
 
     expect(response.status).toBe(200);
     expect(body).toMatchObject({
@@ -65,7 +67,7 @@ describe("dotCast gateway handlers", () => {
         rake: 0.05
       })
     );
-    const body = await response.json() as Record<string, unknown>;
+    const body = (await response.json()) as Record<string, unknown>;
 
     expect(response.status).toBe(200);
     expect(body).toMatchObject({
@@ -159,7 +161,7 @@ describe("dotCast gateway handlers", () => {
       }),
       env
     );
-    const body = await response.json() as Record<string, unknown>;
+    const body = (await response.json()) as Record<string, unknown>;
 
     expect(response.status).toBe(200);
     expect(calls).toEqual(["POST /entries"]);
@@ -168,7 +170,56 @@ describe("dotCast gateway handlers", () => {
       side: "yes",
       amount: 25
     });
-    expect((body.entry as Record<string, unknown>).entryId).toEqual(expect.stringMatching(/^entry:/));
+    expect((body.entry as Record<string, unknown>).entryId).toEqual(
+      expect.stringMatching(/^entry:/)
+    );
+  });
+
+  it("proxies settlement and admin void requests through the pool object", async () => {
+    const calls: Array<{ route: string; body: Record<string, unknown> }> = [];
+    const env = envWithDotCastPool(async (request) => {
+      calls.push({
+        route: `${request.method} ${new URL(request.url).pathname}`,
+        body: await request.json<Record<string, unknown>>()
+      });
+      return Response.json({ ok: true });
+    });
+
+    const settled = await settleDotCastPool(
+      "pool-gateway",
+      jsonRequest("/api/dotcast/pools/pool-gateway/settle", {
+        outcome: "yes",
+        now: "2026-06-25T17:06:00.000Z"
+      }),
+      env
+    );
+    const voided = await voidDotCastPool(
+      "pool-gateway",
+      jsonRequest("/api/dotcast/pools/pool-gateway/void", {
+        reason: "ADMIN_VOID",
+        now: "2026-06-25T17:07:00.000Z"
+      }),
+      env
+    );
+
+    expect(settled.status).toBe(200);
+    expect(voided.status).toBe(200);
+    expect(calls).toEqual([
+      {
+        route: "POST /settle",
+        body: {
+          outcome: "yes",
+          now: "2026-06-25T17:06:00.000Z"
+        }
+      },
+      {
+        route: "POST /void",
+        body: {
+          reason: "ADMIN_VOID",
+          now: "2026-06-25T17:07:00.000Z"
+        }
+      }
+    ]);
   });
 });
 

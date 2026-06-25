@@ -43,6 +43,16 @@ interface DotCastPlaceEntryRequest {
   entryId?: unknown;
 }
 
+interface DotCastSettlePoolRequest {
+  outcome?: unknown;
+  now?: unknown;
+}
+
+interface DotCastVoidPoolRequest {
+  reason?: unknown;
+  now?: unknown;
+}
+
 export function readDotCastHealth(): Response {
   return json({
     ok: true,
@@ -51,7 +61,9 @@ export function readDotCastHealth(): Response {
     milestones: {
       p0: "parimutuel-core-ready",
       p1: "pool-lifecycle-core-ready",
-      persistence: "pending-durable-object-migration",
+      p2: "settlement-core-ready",
+      p4: "void-refund-core-ready",
+      persistence: "durable-object-ready",
       settlementRail: "not-enabled"
     },
     routes: [
@@ -61,7 +73,9 @@ export function readDotCastHealth(): Response {
       "POST /api/dotcast/pools",
       "GET /api/dotcast/pools/:id",
       "POST /api/dotcast/pools/:id/entries",
-      "POST /api/dotcast/pools/:id/lock"
+      "POST /api/dotcast/pools/:id/lock",
+      "POST /api/dotcast/pools/:id/settle",
+      "POST /api/dotcast/pools/:id/void"
     ]
   });
 }
@@ -76,7 +90,10 @@ export async function createDotCastPool(request: Request, env: Env): Promise<Res
       body: JSON.stringify(payload)
     });
   } catch (error) {
-    return json({ ok: false, error: error instanceof Error ? error.message : "Invalid request" }, 400);
+    return json(
+      { ok: false, error: error instanceof Error ? error.message : "Invalid request" },
+      400
+    );
   }
 }
 
@@ -104,11 +121,18 @@ export async function placeDotCastPoolEntry(
       body: JSON.stringify(payload)
     });
   } catch (error) {
-    return json({ ok: false, error: error instanceof Error ? error.message : "Invalid request" }, 400);
+    return json(
+      { ok: false, error: error instanceof Error ? error.message : "Invalid request" },
+      400
+    );
   }
 }
 
-export async function lockDotCastPool(poolId: string, request: Request, env: Env): Promise<Response> {
+export async function lockDotCastPool(
+  poolId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
   try {
     const body = await readJsonBody<{ now?: unknown }>(request);
     return proxyDotCastPoolRequest(env, poolId, "/lock", {
@@ -118,7 +142,54 @@ export async function lockDotCastPool(poolId: string, request: Request, env: Env
       })
     });
   } catch (error) {
-    return json({ ok: false, error: error instanceof Error ? error.message : "Invalid request" }, 400);
+    return json(
+      { ok: false, error: error instanceof Error ? error.message : "Invalid request" },
+      400
+    );
+  }
+}
+
+export async function settleDotCastPool(
+  poolId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastSettlePoolRequest>(request);
+    return proxyDotCastPoolRequest(env, poolId, "/settle", {
+      method: "POST",
+      body: JSON.stringify({
+        outcome: parseOutcome(body?.outcome),
+        now: parseOptionalString(body?.now, "now")
+      })
+    });
+  } catch (error) {
+    return json(
+      { ok: false, error: error instanceof Error ? error.message : "Invalid request" },
+      400
+    );
+  }
+}
+
+export async function voidDotCastPool(
+  poolId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastVoidPoolRequest>(request);
+    return proxyDotCastPoolRequest(env, poolId, "/void", {
+      method: "POST",
+      body: JSON.stringify({
+        reason: parseVoidReason(body?.reason),
+        now: parseOptionalString(body?.now, "now")
+      })
+    });
+  } catch (error) {
+    return json(
+      { ok: false, error: error instanceof Error ? error.message : "Invalid request" },
+      400
+    );
   }
 }
 
@@ -143,7 +214,10 @@ export async function previewDotCastOdds(request: Request): Promise<Response> {
       rake
     });
   } catch (error) {
-    return json({ ok: false, error: error instanceof Error ? error.message : "Invalid request" }, 400);
+    return json(
+      { ok: false, error: error instanceof Error ? error.message : "Invalid request" },
+      400
+    );
   }
 }
 
@@ -167,7 +241,10 @@ export async function simulateDotCastSettlement(request: Request): Promise<Respo
       }
     });
   } catch (error) {
-    return json({ ok: false, error: error instanceof Error ? error.message : "Invalid request" }, 400);
+    return json(
+      { ok: false, error: error instanceof Error ? error.message : "Invalid request" },
+      400
+    );
   }
 }
 
@@ -222,9 +299,13 @@ function parseMarketSnapshot(value: DotCastCreatePoolRequest["market"]): DotCast
 
   return {
     id: parseRequiredString(value.id, "market.id"),
-    venue: value.venue === "kalshi" || value.venue === "polymarket" || value.venue === "dotcast" || value.venue === "unknown"
-      ? value.venue
-      : "unknown",
+    venue:
+      value.venue === "kalshi" ||
+      value.venue === "polymarket" ||
+      value.venue === "dotcast" ||
+      value.venue === "unknown"
+        ? value.venue
+        : "unknown",
     question: parseRequiredString(value.question, "market.question"),
     status: value.status === "open" ? "open" : "closed",
     closeTime: parseRequiredString(value.closeTime, "market.closeTime"),
@@ -249,6 +330,30 @@ function parseSide(value: unknown): Side {
   }
 
   throw new Error("side/outcome must be yes or no");
+}
+
+function parseOutcome(value: unknown): Side | "invalid" {
+  if (value === "yes" || value === "no" || value === "invalid") {
+    return value;
+  }
+
+  throw new Error("outcome must be yes, no, or invalid");
+}
+
+function parseVoidReason(value: unknown): string {
+  if (
+    value === "UNDER_LIQUIDITY" ||
+    value === "ONE_SIDED_POOL" ||
+    value === "NO_WINNING_ENTRIES" ||
+    value === "INVALID_RESOLUTION" ||
+    value === "GRACE_TIMEOUT" ||
+    value === "SOURCE_CANCELLED" ||
+    value === "ADMIN_VOID"
+  ) {
+    return value;
+  }
+
+  throw new Error("void reason is required");
 }
 
 function parseStakeUnit(value: unknown): StakeUnit {
@@ -286,7 +391,9 @@ function parseMinorUnits(value: unknown, label: string, allowZero = false): numb
     value < 0 ||
     (!allowZero && value === 0)
   ) {
-    throw new Error(`${label} must be ${allowZero ? "a non-negative" : "a positive"} integer minor-unit amount`);
+    throw new Error(
+      `${label} must be ${allowZero ? "a non-negative" : "a positive"} integer minor-unit amount`
+    );
   }
 
   return value;

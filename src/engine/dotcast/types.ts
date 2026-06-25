@@ -8,6 +8,15 @@ export type PoolStatus = "open" | "locked" | "resolving" | "settled" | "voided";
 
 export type Side = "yes" | "no";
 
+export type DotCastVoidReason =
+  | "UNDER_LIQUIDITY"
+  | "ONE_SIDED_POOL"
+  | "NO_WINNING_ENTRIES"
+  | "INVALID_RESOLUTION"
+  | "GRACE_TIMEOUT"
+  | "SOURCE_CANCELLED"
+  | "ADMIN_VOID";
+
 export interface SideTotals {
   yes: number;
   no: number;
@@ -85,9 +94,31 @@ export interface FreeEntryCredit {
   consumedByEntryId: string | null;
 }
 
+export interface HouseLedgerEntry {
+  id: string;
+  poolId: string;
+  unit: StakeUnit;
+  amount: number;
+  reason: "rake";
+  createdAt: string;
+}
+
+export interface DotCastSettlementRecord {
+  id: string;
+  poolId: string;
+  outcome: Side;
+  totalStaked: number;
+  payoutTotal: number;
+  rakeAmount: number;
+  createdAt: string;
+}
+
 export interface DotCastPoolSnapshot {
   pool: DotCastPool;
   entries: DotCastEntry[];
   balances: Record<string, StakeBalance>;
+  houseLedger: HouseLedgerEntry[];
+  settlement: DotCastSettlementRecord | null;
+  voidReason: DotCastVoidReason | null;
   updatedAt: string;
 }

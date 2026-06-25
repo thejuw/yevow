@@ -1,15 +1,18 @@
-import {
-  impliedProb,
-  previewPayout
-} from "./Parimutuel";
+import { impliedProb, previewPayout } from "./Parimutuel";
 import {
   createPoolFromMarket,
-  lockPoolIfNeeded,
   placeEntry,
   type CreatePoolInput,
   type PlaceEntryInput
 } from "./PoolLifecycle";
+import {
+  lockSnapshotIfNeeded,
+  normalizePoolSnapshot,
+  settlePoolSnapshot,
+  voidPoolSnapshot
+} from "./PoolSettlement";
 import type {
+  DotCastVoidReason,
   DotCastEntry,
   DotCastPoolSnapshot,
   Side,
@@ -33,6 +36,16 @@ interface PlaceEntryPayload {
 }
 
 interface LockPoolPayload {
+  now?: string;
+}
+
+interface SettlePoolPayload {
+  outcome?: unknown;
+  now?: string;
+}
+
+interface VoidPoolPayload {
+  reason?: unknown;
   now?: string;
 }
 
@@ -60,6 +73,14 @@ export class DotCastPool {
 
       if (request.method === "POST" && url.pathname === "/lock") {
         return await this.lock(request);
+      }
+
+      if (request.method === "POST" && url.pathname === "/settle") {
+        return await this.settle(request);
+      }
+
+      if (request.method === "POST" && url.pathname === "/void") {
+        return await this.void(request);
       }
 
       return jsonResponse({ ok: false, error: "Not found" }, 404);
@@ -90,6 +111,9 @@ export class DotCastPool {
       pool,
       entries: [],
       balances: {},
+      houseLedger: [],
+      settlement: null,
+      voidReason: null,
       updatedAt: now
     };
 
@@ -135,9 +159,9 @@ export class DotCastPool {
       entryId: payload.entryId ?? randomId("entry")
     };
     const result = placeEntry(input);
-    const maybeLockedPool = lockPoolIfNeeded(result.pool, now);
-    const nextSnapshot: DotCastPoolSnapshot = {
-      pool: maybeLockedPool,
+    const placedSnapshot: DotCastPoolSnapshot = {
+      ...snapshot,
+      pool: result.pool,
       entries: [...snapshot.entries, result.entry],
       balances: {
         ...snapshot.balances,
@@ -145,9 +169,13 @@ export class DotCastPool {
       },
       updatedAt: now
     };
+    const nextSnapshot = lockSnapshotIfNeeded(placedSnapshot, now);
 
     await this.writeSnapshot(nextSnapshot);
-    return jsonResponse({ ok: true, entry: result.entry, balance: result.balance, ...decorateSnapshot(nextSnapshot) }, 201);
+    return jsonResponse(
+      { ok: true, entry: result.entry, balance: result.balance, ...decorateSnapshot(nextSnapshot) },
+      201
+    );
   }
 
   private async lock(request: Request): Promise<Response> {
@@ -156,21 +184,48 @@ export class DotCastPool {
     const now = payload.now ?? new Date().toISOString();
     const nextSnapshot = await this.lockIfNeeded(snapshot, now);
 
-    if (nextSnapshot.pool.status !== "locked") {
-      return jsonResponse({ ok: false, error: "pool is not ready to lock", ...decorateSnapshot(nextSnapshot) }, 409);
+    if (nextSnapshot.pool.status !== "locked" && nextSnapshot.pool.status !== "voided") {
+      return jsonResponse(
+        { ok: false, error: "pool is not ready to lock", ...decorateSnapshot(nextSnapshot) },
+        409
+      );
     }
 
     return jsonResponse({ ok: true, ...decorateSnapshot(nextSnapshot) });
   }
 
-  private async lockIfNeeded(snapshot: DotCastPoolSnapshot, now: string): Promise<DotCastPoolSnapshot> {
-    const pool = lockPoolIfNeeded(snapshot.pool, now);
+  private async settle(request: Request): Promise<Response> {
+    const payload = await readJson<SettlePoolPayload>(request);
+    const snapshot = await this.requireSnapshot();
+    const now = payload.now ?? new Date().toISOString();
+    const outcome = parseOutcome(payload.outcome);
+    const nextSnapshot = settlePoolSnapshot(snapshot, outcome, now);
 
-    if (pool === snapshot.pool) {
+    await this.writeSnapshot(nextSnapshot);
+    return jsonResponse({ ok: true, ...decorateSnapshot(nextSnapshot) });
+  }
+
+  private async void(request: Request): Promise<Response> {
+    const payload = await readJson<VoidPoolPayload>(request);
+    const snapshot = await this.requireSnapshot();
+    const now = payload.now ?? new Date().toISOString();
+    const reason = parseVoidReason(payload.reason);
+    const nextSnapshot = voidPoolSnapshot(snapshot, reason, now);
+
+    await this.writeSnapshot(nextSnapshot);
+    return jsonResponse({ ok: true, ...decorateSnapshot(nextSnapshot) });
+  }
+
+  private async lockIfNeeded(
+    snapshot: DotCastPoolSnapshot,
+    now: string
+  ): Promise<DotCastPoolSnapshot> {
+    const nextSnapshot = lockSnapshotIfNeeded(snapshot, now);
+
+    if (nextSnapshot === snapshot) {
       return snapshot;
     }
 
-    const nextSnapshot = { ...snapshot, pool, updatedAt: now };
     await this.writeSnapshot(nextSnapshot);
     return nextSnapshot;
   }
@@ -186,7 +241,8 @@ export class DotCastPool {
   }
 
   private async readSnapshot(): Promise<DotCastPoolSnapshot | null> {
-    return (await this.state.storage.get<DotCastPoolSnapshot>(POOL_STATE_KEY)) ?? null;
+    const snapshot = (await this.state.storage.get<DotCastPoolSnapshot>(POOL_STATE_KEY)) ?? null;
+    return snapshot ? normalizePoolSnapshot(snapshot) : null;
   }
 
   private async writeSnapshot(snapshot: DotCastPoolSnapshot): Promise<void> {
@@ -244,6 +300,30 @@ function parseSide(value: unknown): Side {
   }
 
   throw new Error("side must be yes or no");
+}
+
+function parseOutcome(value: unknown): Side | "invalid" {
+  if (value === "yes" || value === "no" || value === "invalid") {
+    return value;
+  }
+
+  throw new Error("outcome must be yes, no, or invalid");
+}
+
+function parseVoidReason(value: unknown): DotCastVoidReason {
+  if (
+    value === "UNDER_LIQUIDITY" ||
+    value === "ONE_SIDED_POOL" ||
+    value === "NO_WINNING_ENTRIES" ||
+    value === "INVALID_RESOLUTION" ||
+    value === "GRACE_TIMEOUT" ||
+    value === "SOURCE_CANCELLED" ||
+    value === "ADMIN_VOID"
+  ) {
+    return value;
+  }
+
+  throw new Error("void reason is required");
 }
 
 function parseAmount(value: unknown): number {

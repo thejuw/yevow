@@ -38,7 +38,9 @@ describe("dotCast pool durable object", () => {
       }
     });
 
-    const secondCreate = await object.fetch(jsonRequest("/create", createPayload({ id: "pool-do-1" })));
+    const secondCreate = await object.fetch(
+      jsonRequest("/create", createPayload({ id: "pool-do-1" }))
+    );
     expect(secondCreate.status).toBe(200);
     expect(await jsonBody(secondCreate)).toMatchObject({ ok: true, created: false });
   });
@@ -106,7 +108,27 @@ describe("dotCast pool durable object", () => {
 
   it("rejects entries after close and locks when requested at the boundary", async () => {
     const object = createObject();
-    await object.fetch(jsonRequest("/create", createPayload({ id: "pool-do-lock" })));
+    await object.fetch(
+      jsonRequest("/create", createPayload({ id: "pool-do-lock", minLiquidity: 0 }))
+    );
+    await object.fetch(
+      jsonRequest("/entries", {
+        userId: "yes-user",
+        side: "yes",
+        amount: 100,
+        entryId: "yes-seed",
+        now: "2099-06-25T17:01:00.000Z"
+      })
+    );
+    await object.fetch(
+      jsonRequest("/entries", {
+        userId: "no-user",
+        side: "no",
+        amount: 100,
+        entryId: "no-seed",
+        now: "2099-06-25T17:01:00.000Z"
+      })
+    );
 
     const lateEntry = await object.fetch(
       jsonRequest("/entries", {
@@ -138,6 +160,157 @@ describe("dotCast pool durable object", () => {
       })
     );
     expect(postLockEntry.status).toBe(400);
+  });
+
+  it("voids one-sided pools at lock and refunds exact user stakes", async () => {
+    const object = createObject();
+    await object.fetch(
+      jsonRequest("/create", createPayload({ id: "pool-do-void", minLiquidity: 1 }))
+    );
+    await object.fetch(
+      jsonRequest("/entries", {
+        userId: "user-1",
+        side: "yes",
+        amount: 100,
+        entryId: "entry-void",
+        now: "2099-06-25T17:01:00.000Z"
+      })
+    );
+
+    const locked = await jsonBody(await object.fetch(jsonRequest("/lock", { now: close })));
+
+    expect(locked).toMatchObject({
+      ok: true,
+      snapshot: {
+        pool: {
+          status: "voided"
+        },
+        entries: [{ id: "entry-void", refunded: true, payout: null }],
+        balances: {
+          "user-1": {
+            available: 10000,
+            locked: 0
+          }
+        },
+        voidReason: "ONE_SIDED_POOL"
+      }
+    });
+  });
+
+  it("settles locked pools idempotently through the object", async () => {
+    const object = createObject();
+    await object.fetch(
+      jsonRequest("/create", createPayload({ id: "pool-do-settle", minLiquidity: 1 }))
+    );
+    await object.fetch(
+      jsonRequest("/entries", {
+        userId: "yes-user",
+        side: "yes",
+        amount: 700,
+        entryId: "yes-entry",
+        now: "2099-06-25T17:01:00.000Z"
+      })
+    );
+    await object.fetch(
+      jsonRequest("/entries", {
+        userId: "no-user",
+        side: "no",
+        amount: 300,
+        entryId: "no-entry",
+        now: "2099-06-25T17:02:00.000Z"
+      })
+    );
+    await object.fetch(jsonRequest("/lock", { now: close }));
+
+    const settled = await jsonBody(
+      await object.fetch(
+        jsonRequest("/settle", { outcome: "yes", now: "2099-06-25T17:06:00.000Z" })
+      )
+    );
+    const replayed = await jsonBody(
+      await object.fetch(
+        jsonRequest("/settle", { outcome: "yes", now: "2099-06-25T17:07:00.000Z" })
+      )
+    );
+
+    expect(settled).toMatchObject({
+      ok: true,
+      snapshot: {
+        pool: {
+          status: "settled",
+          outcome: "yes"
+        },
+        balances: {
+          "yes-user": {
+            available: 10285,
+            locked: 0
+          },
+          "no-user": {
+            available: 9700,
+            locked: 0
+          }
+        },
+        settlement: {
+          payoutTotal: 985,
+          rakeAmount: 15
+        },
+        houseLedger: [{ amount: 15, reason: "rake" }]
+      }
+    });
+    expect(replayed.snapshot).toEqual(settled.snapshot);
+  });
+
+  it("routes invalid resolutions to void refunds", async () => {
+    const object = createObject();
+    await object.fetch(
+      jsonRequest("/create", createPayload({ id: "pool-do-invalid", minLiquidity: 0 }))
+    );
+    await object.fetch(
+      jsonRequest("/entries", {
+        userId: "yes-user",
+        side: "yes",
+        amount: 100,
+        entryId: "yes-entry",
+        now: "2099-06-25T17:01:00.000Z"
+      })
+    );
+    await object.fetch(
+      jsonRequest("/entries", {
+        userId: "no-user",
+        side: "no",
+        amount: 100,
+        entryId: "no-entry",
+        now: "2099-06-25T17:02:00.000Z"
+      })
+    );
+    await object.fetch(jsonRequest("/lock", { now: close }));
+
+    const invalid = await jsonBody(
+      await object.fetch(
+        jsonRequest("/settle", { outcome: "invalid", now: "2099-06-25T17:06:00.000Z" })
+      )
+    );
+
+    expect(invalid).toMatchObject({
+      ok: true,
+      snapshot: {
+        pool: {
+          status: "voided",
+          outcome: "invalid"
+        },
+        voidReason: "INVALID_RESOLUTION",
+        balances: {
+          "yes-user": {
+            available: 10000,
+            locked: 0
+          },
+          "no-user": {
+            available: 10000,
+            locked: 0
+          }
+        }
+      }
+    });
   });
 });
 
