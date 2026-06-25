@@ -41,6 +41,11 @@ import {
 import { handleTopologyCalibration } from "./gateway/AdminTopologyGateway";
 import { readMoltworkerHealth, updateMoltworkerHeartbeat } from "./gateway/MoltworkerGateway";
 import {
+  previewDotCastOdds,
+  readDotCastHealth,
+  simulateDotCastSettlement
+} from "./gateway/DotCastGateway";
+import {
   readAdminLogs,
   readExecutionQuality,
   readTradeHistory
@@ -90,6 +95,11 @@ const gatewayRouter = new Hono<GatewayHono>();
 gatewayRouter.options("*", () => corsPreflight());
 
 gatewayRouter.get("/api/equity-deals", async (c) => readPrivateEquityDeals(c.env));
+gatewayRouter.get("/api/dotcast/health", () => readDotCastHealth());
+gatewayRouter.post("/api/dotcast/preview", async (c) => previewDotCastOdds(c.req.raw));
+gatewayRouter.post("/api/dotcast/settlement/simulate", async (c) =>
+  simulateDotCastSettlement(c.req.raw)
+);
 
 gatewayRouter.get("/health", async (c) => {
   const runtime = gatewayRuntime(c);
