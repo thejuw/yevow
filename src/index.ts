@@ -4,6 +4,7 @@ import { ActiveTokenStore } from "./auth/JwtRevocation";
 import { ConfigManager } from "./ConfigManager";
 import { Logger } from "./Logger";
 import { TradingEngine } from "./TradingEngine";
+import { DotCastPool } from "./engine/dotcast";
 import { evaluateRateLimit, ipRateLimitKey } from "./gateway/middleware/RateLimitMiddleware";
 import { adminUiResponse } from "./gateway/AdminUi";
 import { ACTIVE_TOKEN_PREFIX, ENGINE_HEALTH_TIMEOUT_MS } from "./gateway/GatewayConstants";
@@ -41,7 +42,11 @@ import {
 import { handleTopologyCalibration } from "./gateway/AdminTopologyGateway";
 import { readMoltworkerHealth, updateMoltworkerHeartbeat } from "./gateway/MoltworkerGateway";
 import {
+  createDotCastPool,
+  lockDotCastPool,
+  placeDotCastPoolEntry,
   previewDotCastOdds,
+  readDotCastPool,
   readDotCastHealth,
   simulateDotCastSettlement
 } from "./gateway/DotCastGateway";
@@ -88,7 +93,7 @@ import {
 } from "./gateway/PrivateEquityDealsGateway";
 import type { EdgeTopology, Env } from "./types";
 
-export { TradingEngine };
+export { DotCastPool, TradingEngine };
 
 const gatewayRouter = new Hono<GatewayHono>();
 
@@ -99,6 +104,14 @@ gatewayRouter.get("/api/dotcast/health", () => readDotCastHealth());
 gatewayRouter.post("/api/dotcast/preview", async (c) => previewDotCastOdds(c.req.raw));
 gatewayRouter.post("/api/dotcast/settlement/simulate", async (c) =>
   simulateDotCastSettlement(c.req.raw)
+);
+gatewayRouter.post("/api/dotcast/pools", async (c) => createDotCastPool(c.req.raw, c.env));
+gatewayRouter.get("/api/dotcast/pools/:id", async (c) => readDotCastPool(c.req.param("id"), c.env));
+gatewayRouter.post("/api/dotcast/pools/:id/entries", async (c) =>
+  placeDotCastPoolEntry(c.req.param("id"), c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/pools/:id/lock", async (c) =>
+  lockDotCastPool(c.req.param("id"), c.req.raw, c.env)
 );
 
 gatewayRouter.get("/health", async (c) => {

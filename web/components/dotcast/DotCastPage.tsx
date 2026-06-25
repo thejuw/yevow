@@ -27,7 +27,7 @@ import {
   WalletCards,
   Zap
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type Side = "yes" | "no";
 
@@ -48,6 +48,30 @@ interface EngineMetric {
   label: string;
   value: string;
   tone?: "good" | "warn" | "hot";
+}
+
+interface DotCastApiSnapshot {
+  pool: {
+    id: string;
+    status: string;
+    pools: {
+      yes: number;
+      no: number;
+    };
+  };
+  entries: Array<{ id: string }>;
+  balances: Record<string, { available: number; locked: number }>;
+}
+
+interface DotCastApiResponse {
+  ok: boolean;
+  error?: string;
+  created?: boolean;
+  snapshot?: DotCastApiSnapshot;
+  balance?: {
+    available: number;
+    locked: number;
+  };
 }
 
 const reactions: Reaction[] = [
@@ -84,12 +108,10 @@ const livePots: LivePot[] = [
   }
 ];
 
-const engineMetrics: EngineMetric[] = [
-  { label: "Matched stake", value: "$4.29K", tone: "good" },
-  { label: "Reserve cover", value: "132%", tone: "good" },
-  { label: "Oracle SLA", value: "0.8s", tone: "warn" },
-  { label: "Router bridge", value: "Ready", tone: "good" }
-];
+const DOTCAST_API_BASE =
+  process.env.NEXT_PUBLIC_DOTCAST_API_BASE ?? "https://api.yevow.co/api/dotcast";
+const DEMO_POOL_ID = "dotcast-demo-orbital-v2";
+const DEMO_USER_STORAGE_KEY = "dotcast:user-id";
 
 const settlementSteps = [
   "Prompt locked",
@@ -131,6 +153,35 @@ function formatCountdown(totalSeconds: number) {
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
+async function dotCastApi<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${DOTCAST_API_BASE}${path}`, {
+    ...init,
+    headers: {
+      "content-type": "application/json",
+      ...(init?.headers ?? {})
+    }
+  });
+  const payload = (await response.json()) as DotCastApiResponse;
+
+  if (!response.ok || !payload.ok) {
+    throw new Error(payload.error ?? "dotCast API request failed");
+  }
+
+  return payload as T;
+}
+
+function getOrCreateUserId() {
+  const existing = window.localStorage.getItem(DEMO_USER_STORAGE_KEY);
+
+  if (existing) {
+    return existing;
+  }
+
+  const userId = `dotcast-user-${crypto.randomUUID()}`;
+  window.localStorage.setItem(DEMO_USER_STORAGE_KEY, userId);
+  return userId;
+}
+
 export default function DotCastPage() {
   const [selectedSide, setSelectedSide] = useState<Side>("yes");
   const [stake, setStake] = useState(25);
@@ -139,9 +190,15 @@ export default function DotCastPage() {
   const [freeEntries, setFreeEntries] = useState(3);
   const [entryCount, setEntryCount] = useState(286);
   const [secondsLeft, setSecondsLeft] = useState(258);
+  const [poolStatus, setPoolStatus] = useState("open");
+  const [userId, setUserId] = useState<string | null>(null);
+  const [balance, setBalance] = useState<{ available: number; locked: number } | null>(null);
+  const [apiStatus, setApiStatus] = useState("Syncing");
+  const [apiError, setApiError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const totalPool = yesPool + noPool;
-  const yesPct = Math.round((yesPool / totalPool) * 100);
+  const yesPct = totalPool > 0 ? Math.round((yesPool / totalPool) * 100) : 50;
   const noPct = 100 - yesPct;
   const projectedWin = useMemo(
     () => payoutPreview(selectedSide, stake, yesPool, noPool),
@@ -149,29 +206,138 @@ export default function DotCastPage() {
   );
   const selectedPct = selectedSide === "yes" ? yesPct : noPct;
   const selectedLabel = selectedSide === "yes" ? "Yes" : "No";
+  const engineReadouts = useMemo<EngineMetric[]>(
+    () => [
+      { label: "Matched stake", value: compactMoney.format(totalPool), tone: "good" },
+      {
+        label: "Reserve cover",
+        value: balance ? compactMoney.format(balance.available) : "Pending",
+        tone: balance ? "good" : "warn"
+      },
+      { label: "Pool status", value: poolStatus, tone: poolStatus === "open" ? "good" : "warn" },
+      { label: "Router bridge", value: "Ready", tone: "good" }
+    ],
+    [balance, poolStatus, totalPool]
+  );
 
-  function placeEntry(amount = stake) {
-    if (amount <= 0) {
-      return;
+  useEffect(() => {
+    const nextUserId = getOrCreateUserId();
+    setUserId(nextUserId);
+    void ensureDemoPool(nextUserId);
+  }, []);
+
+  function applyApiResponse(payload: DotCastApiResponse, nextStatus = "Pool synced") {
+    if (payload.snapshot) {
+      setYesPool(payload.snapshot.pool.pools.yes);
+      setNoPool(payload.snapshot.pool.pools.no);
+      setPoolStatus(payload.snapshot.pool.status);
+      setEntryCount(payload.snapshot.entries.length);
+      setBalance(payload.balance ?? payload.snapshot.balances[userId ?? ""] ?? null);
     }
 
-    if (selectedSide === "yes") {
-      setYesPool((current) => current + amount);
-    } else {
-      setNoPool((current) => current + amount);
+    if (payload.balance) {
+      setBalance(payload.balance);
     }
 
-    setEntryCount((current) => current + 1);
-    setSecondsLeft((current) => Math.max(45, current - 7));
+    setApiStatus(nextStatus);
+    setApiError(null);
   }
 
-  function useFreeEntry() {
+  async function ensureDemoPool(nextUserId: string) {
+    try {
+      const now = new Date().toISOString();
+      const payload = await dotCastApi<DotCastApiResponse>("/pools", {
+        method: "POST",
+        body: JSON.stringify({
+          id: DEMO_POOL_ID,
+          market: {
+            id: "dotcast:orbital-next-call-demo",
+            venue: "dotcast",
+            question: "Orbital nails the next on-air call?",
+            status: "open",
+            closeTime: "2099-06-25T17:05:00.000Z",
+            expectedResolveAt: "2099-06-25T17:10:00.000Z"
+          },
+          unit: "points",
+          entryOpensAt: now,
+          entryClosesAt: "2099-06-25T17:05:00.000Z",
+          rake: 0.05,
+          minLiquidity: 100,
+          now
+        })
+      });
+      let syncedPayload = payload;
+
+      if (payload.snapshot && payload.snapshot.entries.length === 0) {
+        await seedDemoEntry("seed-yes", "yes", 1420, now);
+        syncedPayload = await seedDemoEntry("seed-no", "no", 2870, now);
+      }
+
+      const balancePayload = syncedPayload.snapshot?.balances[nextUserId]
+        ? syncedPayload
+        : await dotCastApi<DotCastApiResponse>(`/pools/${encodeURIComponent(DEMO_POOL_ID)}`);
+      applyApiResponse(balancePayload, "Pool live");
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : "Pool sync failed");
+      setApiStatus("Pool offline");
+    }
+  }
+
+  async function seedDemoEntry(entryId: string, side: Side, amount: number, now: string) {
+    return dotCastApi<DotCastApiResponse>(`/pools/${encodeURIComponent(DEMO_POOL_ID)}/entries`, {
+      method: "POST",
+      body: JSON.stringify({
+        userId: "dotcast-host-seed",
+        side,
+        amount,
+        entryId,
+        now
+      })
+    });
+  }
+
+  async function placeEntry(amount = stake): Promise<boolean> {
+    if (amount <= 0) {
+      return false;
+    }
+
+    if (!userId || isSubmitting || poolStatus !== "open") {
+      return false;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      const payload = await dotCastApi<DotCastApiResponse>(`/pools/${encodeURIComponent(DEMO_POOL_ID)}/entries`, {
+        method: "POST",
+        body: JSON.stringify({
+          userId,
+          side: selectedSide,
+          amount,
+          now: new Date().toISOString()
+        })
+      });
+      applyApiResponse(payload, "Prediction placed");
+      setSecondsLeft((current) => Math.max(45, current - 7));
+      return true;
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : "Prediction failed");
+      return false;
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function useFreeEntry() {
     if (freeEntries <= 0) {
       return;
     }
 
-    setFreeEntries((current) => current - 1);
-    placeEntry(5);
+    const placed = await placeEntry(5);
+
+    if (placed) {
+      setFreeEntries((current) => Math.max(0, current - 1));
+    }
   }
 
   return (
@@ -310,7 +476,7 @@ export default function DotCastPage() {
                   Max
                 </button>
                 <span className="dotcast-stake-divider" />
-                <button type="button" className="dotcast-free-button" disabled={freeEntries === 0} onClick={useFreeEntry}>
+                <button type="button" className="dotcast-free-button" disabled={freeEntries === 0 || isSubmitting} onClick={useFreeEntry}>
                   <Zap size={16} />
                   Free x {freeEntries}
                 </button>
@@ -320,10 +486,15 @@ export default function DotCastPage() {
                 <div>
                   <span>{selectedLabel} selected</span>
                   <strong>{selectedPct}% current share</strong>
-                  <em>Projected return {money.format(projectedWin)}</em>
+                  <em>{apiError ?? `${apiStatus} · Projected return ${money.format(projectedWin)}`}</em>
                 </div>
-                <button type="button" className="dotcast-submit-button" onClick={() => placeEntry()}>
-                  Place prediction
+                <button
+                  type="button"
+                  className="dotcast-submit-button"
+                  disabled={isSubmitting || poolStatus !== "open"}
+                  onClick={() => void placeEntry()}
+                >
+                  {isSubmitting ? "Placing" : "Place prediction"}
                 </button>
               </div>
             </section>
@@ -382,7 +553,7 @@ export default function DotCastPage() {
             </section>
 
             <div className="dotcast-engine-metrics">
-              {engineMetrics.map((metric) => (
+              {engineReadouts.map((metric) => (
                 <div key={metric.label} className={metric.tone ? `dotcast-engine-metric ${metric.tone}` : "dotcast-engine-metric"}>
                   <span>{metric.label}</span>
                   <strong>{metric.value}</strong>

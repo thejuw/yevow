@@ -101,6 +101,17 @@ describe("dotCast pool lifecycle", () => {
 
     expect(() =>
       placeEntry({
+        pool: { ...pool, entryOpensAt: "2026-06-25T17:01:00.000Z" },
+        balance: stakeBalance(),
+        userId: "user-1",
+        side: "yes",
+        amount: 10,
+        now
+      })
+    ).toThrow(/not open/);
+
+    expect(() =>
+      placeEntry({
         pool,
         balance: stakeBalance(),
         userId: "user-1",

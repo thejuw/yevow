@@ -2,11 +2,14 @@ import {
   impliedProb,
   previewPayout,
   settleParimutuel,
+  type DotCastMarketSnapshot,
   type SettlementEntry,
   type Side,
-  type SideTotals
+  type SideTotals,
+  type StakeUnit
 } from "../engine/dotcast";
-import { json, readJsonBody } from "./ResponseHelpers";
+import type { Env } from "../types";
+import { json, readJsonBody, withCors } from "./ResponseHelpers";
 
 interface DotCastPreviewRequest {
   pools?: Partial<SideTotals>;
@@ -19,6 +22,25 @@ interface DotCastSettlementSimulationRequest {
   entries?: unknown;
   outcome?: unknown;
   rake?: unknown;
+}
+
+interface DotCastCreatePoolRequest {
+  id?: unknown;
+  market?: Partial<DotCastMarketSnapshot>;
+  unit?: unknown;
+  entryOpensAt?: unknown;
+  entryClosesAt?: unknown;
+  rake?: unknown;
+  minLiquidity?: unknown;
+  now?: unknown;
+}
+
+interface DotCastPlaceEntryRequest {
+  userId?: unknown;
+  side?: unknown;
+  amount?: unknown;
+  now?: unknown;
+  entryId?: unknown;
 }
 
 export function readDotCastHealth(): Response {
@@ -35,9 +57,69 @@ export function readDotCastHealth(): Response {
     routes: [
       "GET /api/dotcast/health",
       "POST /api/dotcast/preview",
-      "POST /api/dotcast/settlement/simulate"
+      "POST /api/dotcast/settlement/simulate",
+      "POST /api/dotcast/pools",
+      "GET /api/dotcast/pools/:id",
+      "POST /api/dotcast/pools/:id/entries",
+      "POST /api/dotcast/pools/:id/lock"
     ]
   });
+}
+
+export async function createDotCastPool(request: Request, env: Env): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastCreatePoolRequest>(request);
+    const payload = parseCreatePoolPayload(body);
+    const poolId = payload.id;
+    return proxyDotCastPoolRequest(env, poolId, "/create", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+  } catch (error) {
+    return json({ ok: false, error: error instanceof Error ? error.message : "Invalid request" }, 400);
+  }
+}
+
+export async function readDotCastPool(poolId: string, env: Env): Promise<Response> {
+  return proxyDotCastPoolRequest(env, poolId, "/", { method: "GET" });
+}
+
+export async function placeDotCastPoolEntry(
+  poolId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastPlaceEntryRequest>(request);
+    const payload = {
+      userId: parseRequiredString(body?.userId, "userId"),
+      side: parseSide(body?.side),
+      amount: parseMinorUnits(body?.amount, "amount"),
+      now: parseOptionalString(body?.now, "now"),
+      entryId: parseOptionalString(body?.entryId, "entryId") ?? randomId("entry")
+    };
+
+    return proxyDotCastPoolRequest(env, poolId, "/entries", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+  } catch (error) {
+    return json({ ok: false, error: error instanceof Error ? error.message : "Invalid request" }, 400);
+  }
+}
+
+export async function lockDotCastPool(poolId: string, request: Request, env: Env): Promise<Response> {
+  try {
+    const body = await readJsonBody<{ now?: unknown }>(request);
+    return proxyDotCastPoolRequest(env, poolId, "/lock", {
+      method: "POST",
+      body: JSON.stringify({
+        now: parseOptionalString(body?.now, "now")
+      })
+    });
+  } catch (error) {
+    return json({ ok: false, error: error instanceof Error ? error.message : "Invalid request" }, 400);
+  }
 }
 
 export async function previewDotCastOdds(request: Request): Promise<Response> {
@@ -111,6 +193,49 @@ function parseEntries(value: unknown): SettlementEntry[] {
   });
 }
 
+function parseCreatePoolPayload(body: DotCastCreatePoolRequest | null) {
+  const now = parseOptionalString(body?.now, "now") ?? new Date().toISOString();
+  const market = parseMarketSnapshot(body?.market);
+  const unit = parseStakeUnit(body?.unit ?? "points");
+  const id = parseOptionalString(body?.id, "id") ?? randomPoolId(market.id, now);
+
+  if (unit !== "points") {
+    throw new Error("usdc pools are disabled until the settlement rail is enabled");
+  }
+
+  return {
+    id,
+    market,
+    unit,
+    entryOpensAt: parseOptionalString(body?.entryOpensAt, "entryOpensAt"),
+    entryClosesAt: parseRequiredString(body?.entryClosesAt, "entryClosesAt"),
+    rake: parseRake(body?.rake ?? 0.05),
+    minLiquidity: parseMinorUnits(body?.minLiquidity ?? 0, "minLiquidity", true),
+    now
+  };
+}
+
+function parseMarketSnapshot(value: DotCastCreatePoolRequest["market"]): DotCastMarketSnapshot {
+  if (!value || typeof value !== "object") {
+    throw new Error("market is required");
+  }
+
+  return {
+    id: parseRequiredString(value.id, "market.id"),
+    venue: value.venue === "kalshi" || value.venue === "polymarket" || value.venue === "dotcast" || value.venue === "unknown"
+      ? value.venue
+      : "unknown",
+    question: parseRequiredString(value.question, "market.question"),
+    status: value.status === "open" ? "open" : "closed",
+    closeTime: parseRequiredString(value.closeTime, "market.closeTime"),
+    expectedResolveAt:
+      typeof value.expectedResolveAt === "string" || value.expectedResolveAt === null
+        ? value.expectedResolveAt
+        : null,
+    referenceUrl: typeof value.referenceUrl === "string" ? value.referenceUrl : undefined
+  };
+}
+
 function parseSideTotals(value: DotCastPreviewRequest["pools"]): SideTotals {
   return {
     yes: parseMinorUnits(value?.yes ?? 0, "pools.yes", true),
@@ -124,6 +249,34 @@ function parseSide(value: unknown): Side {
   }
 
   throw new Error("side/outcome must be yes or no");
+}
+
+function parseStakeUnit(value: unknown): StakeUnit {
+  if (value === "points" || value === "usdc") {
+    return value;
+  }
+
+  throw new Error("unit must be points or usdc");
+}
+
+function parseRequiredString(value: unknown, label: string): string {
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value.trim();
+  }
+
+  throw new Error(`${label} is required`);
+}
+
+function parseOptionalString(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value.trim();
+  }
+
+  throw new Error(`${label} must be a non-empty string`);
 }
 
 function parseMinorUnits(value: unknown, label: string, allowZero = false): number {
@@ -147,4 +300,37 @@ function parseRake(value: unknown): number {
   }
 
   return rake;
+}
+
+async function proxyDotCastPoolRequest(
+  env: Env,
+  poolId: string,
+  pathname: string,
+  init: RequestInit
+): Promise<Response> {
+  if (!env.DOTCAST_POOL) {
+    return json({ ok: false, error: "dotCast pool storage is not configured" }, 503);
+  }
+
+  const objectId = env.DOTCAST_POOL.idFromName(poolId);
+  const object = env.DOTCAST_POOL.get(objectId);
+  const response = await object.fetch(
+    new Request(`https://dotcast.pool${pathname}`, {
+      ...init,
+      headers: {
+        "content-type": "application/json;charset=UTF-8",
+        ...(init.headers ?? {})
+      }
+    })
+  );
+
+  return withCors(response);
+}
+
+function randomPoolId(marketId: string, now: string): string {
+  return `dotcast:${marketId}:${Date.parse(now)}:${randomId("pool")}`;
+}
+
+function randomId(prefix: string): string {
+  return `${prefix}:${crypto.randomUUID()}`;
 }

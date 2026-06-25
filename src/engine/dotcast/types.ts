@@ -84,3 +84,10 @@ export interface FreeEntryCredit {
   consumedAt: string | null;
   consumedByEntryId: string | null;
 }
+
+export interface DotCastPoolSnapshot {
+  pool: DotCastPool;
+  entries: DotCastEntry[];
+  balances: Record<string, StakeBalance>;
+  updatedAt: string;
+}

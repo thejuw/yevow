@@ -1,5 +1,6 @@
 export interface Env {
   TRADING_ENGINE: DurableObjectNamespace;
+  DOTCAST_POOL?: DurableObjectNamespace;
   INGEST_COORDINATOR?: DurableObjectNamespace;
   TRADING_DB: D1Database;
   CONGRESS_DB?: D1Database;

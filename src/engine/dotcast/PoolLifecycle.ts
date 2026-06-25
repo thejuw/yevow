@@ -95,10 +95,15 @@ export function createPoolFromMarket(input: CreatePoolInput): DotCastPool {
 
 export function placeEntry(input: PlaceEntryInput): PlaceEntryResult {
   const nowMs = assertIso(input.now, "now");
+  const opensMs = assertIso(input.pool.entryOpensAt, "entryOpensAt");
   const closesMs = assertIso(input.pool.entryClosesAt, "entryClosesAt");
 
   if (input.pool.status !== "open") {
     throw new Error("entries can only be placed while pool is open");
+  }
+
+  if (nowMs < opensMs) {
+    throw new Error("entry window is not open");
   }
 
   if (nowMs > closesMs) {

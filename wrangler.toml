@@ -10,9 +10,17 @@ routes = [
 name = "TRADING_ENGINE"
 class_name = "TradingEngine"
 
+[[durable_objects.bindings]]
+name = "DOTCAST_POOL"
+class_name = "DotCastPool"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["TradingEngine"]
+
+[[migrations]]
+tag = "v2_dotcast_pool"
+new_sqlite_classes = ["DotCastPool"]
 
 [[d1_databases]]
 binding = "TRADING_DB"
