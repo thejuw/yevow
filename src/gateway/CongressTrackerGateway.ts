@@ -389,20 +389,20 @@ export async function readCongressTickerHierarchy(env: Env, url: URL): Promise<R
       congressDb(env)
         .prepare(
           `SELECT
-             COALESCE(NULLIF(UPPER(symbol), ''), 'UNRESOLVED') AS ticker,
+             COALESCE(NULLIF(UPPER(COALESCE(option_underlying, symbol)), ''), 'UNRESOLVED') AS ticker,
              CASE
-               WHEN symbol IS NULL OR TRIM(symbol) = ''
+               WHEN COALESCE(option_underlying, symbol) IS NULL OR TRIM(COALESCE(option_underlying, symbol)) = ''
                  THEN 'Unresolved / fixed income and funds'
-               ELSE UPPER(symbol)
+               ELSE UPPER(COALESCE(option_underlying, symbol))
              END AS display_name,
              COUNT(*) AS transaction_count,
-             SUM(CASE WHEN transaction_type = 'PURCHASE' THEN 1 ELSE 0 END) AS purchase_count,
-             SUM(CASE WHEN transaction_type = 'SALE' THEN 1 ELSE 0 END) AS sale_count,
+             SUM(CASE WHEN transaction_type = 'PURCHASE' OR option_exposure = 'BULLISH' THEN 1 ELSE 0 END) AS purchase_count,
+             SUM(CASE WHEN transaction_type = 'SALE' OR option_exposure IN ('BEARISH', 'HEDGE_OR_PROTECTION') THEN 1 ELSE 0 END) AS sale_count,
              SUM(CASE WHEN transaction_type = 'EXCHANGE' THEN 1 ELSE 0 END) AS exchange_count,
              SUM(COALESCE(amount_mid, 0)) AS total_amount_mid,
-             SUM(CASE WHEN transaction_type = 'PURCHASE' THEN COALESCE(amount_mid, 0) ELSE 0 END)
+             SUM(CASE WHEN transaction_type = 'PURCHASE' OR option_exposure = 'BULLISH' THEN COALESCE(amount_mid, 0) ELSE 0 END)
                AS purchase_amount_mid,
-             SUM(CASE WHEN transaction_type = 'SALE' THEN COALESCE(amount_mid, 0) ELSE 0 END)
+             SUM(CASE WHEN transaction_type = 'SALE' OR option_exposure IN ('BEARISH', 'HEDGE_OR_PROTECTION') THEN COALESCE(amount_mid, 0) ELSE 0 END)
                AS sale_amount_mid,
              SUM(CASE WHEN pnl_estimate IS NOT NULL THEN 1 ELSE 0 END) AS marked_count,
              SUM(COALESCE(pnl_estimate, 0)) AS pnl_estimate,
@@ -1702,7 +1702,7 @@ function groupTransactionsByTicker(
   const grouped = new Map<string, CongressTransactionRow[]>();
 
   for (const row of rows) {
-    const ticker = row.symbol?.trim().toUpperCase() || "UNRESOLVED";
+    const ticker = (row.option_underlying ?? row.symbol)?.trim().toUpperCase() || "UNRESOLVED";
     const bucket = grouped.get(ticker) ?? [];
     bucket.push(row);
     grouped.set(ticker, bucket);

@@ -522,7 +522,7 @@ export default function CongressTrackerPage() {
         <div className="congress-table-header">
           <div className="panel-title">
             <TrendingUp size={17} />
-            <span>Ticker Hierarchy</span>
+            <span>Stock Interface</span>
           </div>
           <label className="congress-period-select">
             Window
@@ -1091,6 +1091,7 @@ function TickerHierarchy({ hierarchy }: { hierarchy: CongressTickerHierarchyResp
 function TickerHierarchyRow({ item }: { item: CongressTickerHierarchyItem }) {
   const isUnresolved = item.ticker === "UNRESOLVED";
   const positive = item.pnlEstimate >= 0;
+  const profile = buildStockProfile(item);
 
   return (
     <details className={isUnresolved ? "ticker-hierarchy-row unresolved" : "ticker-hierarchy-row"}>
@@ -1105,67 +1106,243 @@ function TickerHierarchyRow({ item }: { item: CongressTickerHierarchyItem }) {
         <code>{currency.format(item.totalAmountMid)}</code>
       </summary>
 
-      <div className="ticker-detail-grid">
-        <div className="ticker-detail-card">
-          <span>Flow</span>
-          <strong>{compact.format(item.transactionCount)} txns</strong>
-          <small>
-            {compact.format(item.purchaseCount)} buys · {compact.format(item.saleCount)} sells ·{" "}
-            {compact.format(item.exchangeCount)} exchanges
-          </small>
-        </div>
-        <div className="ticker-detail-card">
-          <span>Directional Midpoint</span>
-          <strong>{currency.format(item.netDirectionalAmountMid)}</strong>
-          <small>
-            Buys {currency.format(item.purchaseAmountMid)} · Sells{" "}
-            {currency.format(item.saleAmountMid)}
-          </small>
-        </div>
-        <div className="ticker-detail-card">
-          <span>Estimated Mark</span>
-          <strong className={positive ? "positive" : "negative"}>
-            {currency.format(item.pnlEstimate)}
-          </strong>
-          <small>{compact.format(item.markedCount)} rows with price marks</small>
-        </div>
-      </div>
-
-      <div className="ticker-asset-stack">
-        {item.topAssets.length === 0 ? (
-          <span className="muted">No asset detail attached to this ticker bucket.</span>
-        ) : (
-          item.topAssets.map((asset) => (
-            <div className="ticker-asset-row" key={asset.assetName}>
-              <strong>{asset.assetName}</strong>
-              <span>{currency.format(asset.totalAmountMid)}</span>
-              <code>
-                {compact.format(asset.transactionCount)} txns · {compact.format(asset.memberCount)}{" "}
-                members
-              </code>
-            </div>
-          ))
-        )}
-      </div>
-
-      <div className="ticker-transaction-list">
-        {item.transactions.map((row) => (
-          <div className="ticker-transaction-row" key={row.transaction_id}>
-            <strong>{row.member_name ?? "Unknown"}</strong>
-            {(row.conflict_flag_count ?? 0) > 0 ? (
-              <span className="ticker-conflict-pill">
-                <ShieldAlert size={12} />
-                {compact.format(row.conflict_flag_count ?? 0)}
-              </span>
-            ) : null}
-            <span>{row.transaction_type}</span>
-            <span>{formatDate(row.transaction_date)}</span>
-            <code>{formatAmountBand(row)}</code>
+      <div className="stock-interface">
+        <div className="stock-profile-header">
+          <div>
+            <span className="section-eyebrow">Congress Stock Profile</span>
+            <h3>{isUnresolved ? "Unresolved Instruments" : item.ticker}</h3>
+            <p>{stockSubtitle(item, profile)}</p>
           </div>
-        ))}
+          <div className="stock-price-card">
+            <span>Latest Mark</span>
+            <strong>{profile.latestPrice === null ? "unmarked" : currency.format(profile.latestPrice)}</strong>
+            <small>
+              {profile.latestPriceDate ? `as of ${formatDate(profile.latestPriceDate)}` : "price feed pending"}
+            </small>
+          </div>
+        </div>
+
+        <div className="ticker-detail-grid">
+          <div className="ticker-detail-card">
+            <span>Flow</span>
+            <strong>{compact.format(item.transactionCount)} txns</strong>
+            <small>
+              {compact.format(item.purchaseCount)} buys · {compact.format(item.saleCount)} sells ·{" "}
+              {compact.format(item.exchangeCount)} exchanges
+            </small>
+          </div>
+          <div className="ticker-detail-card">
+            <span>Directional Midpoint</span>
+            <strong>{currency.format(item.netDirectionalAmountMid)}</strong>
+            <small>
+              Buys {currency.format(item.purchaseAmountMid)} · Sells{" "}
+              {currency.format(item.saleAmountMid)}
+            </small>
+          </div>
+          <div className="ticker-detail-card">
+            <span>Estimated Mark</span>
+            <strong className={positive ? "positive" : "negative"}>
+              {currency.format(item.pnlEstimate)}
+            </strong>
+            <small>{compact.format(item.markedCount)} equity rows with price marks</small>
+          </div>
+          <div className="ticker-detail-card">
+            <span>Options</span>
+            <strong>{compact.format(profile.optionCount)}</strong>
+            <small>
+              {compact.format(profile.bullishOptionCount)} bullish ·{" "}
+              {compact.format(profile.bearishOptionCount)} bearish/protective
+            </small>
+          </div>
+        </div>
+
+        <StockFlowChart profile={profile} />
+
+        <div className="stock-detail-columns">
+          <div className="ticker-asset-stack">
+            {item.topAssets.length === 0 ? (
+              <span className="muted">No asset detail attached to this ticker bucket.</span>
+            ) : (
+              item.topAssets.map((asset) => (
+                <div className="ticker-asset-row" key={asset.assetName}>
+                  <strong>{asset.assetName}</strong>
+                  <span>{currency.format(asset.totalAmountMid)}</span>
+                  <code>
+                    {compact.format(asset.transactionCount)} txns ·{" "}
+                    {compact.format(asset.memberCount)} members
+                  </code>
+                </div>
+              ))
+            )}
+          </div>
+
+          <div className="ticker-transaction-list">
+            {item.transactions.map((row) => (
+              <div className="ticker-transaction-row" key={row.transaction_id}>
+                <strong>{row.member_name ?? "Unknown"}</strong>
+                {(row.conflict_flag_count ?? 0) > 0 ? (
+                  <span className="ticker-conflict-pill">
+                    <ShieldAlert size={12} />
+                    {compact.format(row.conflict_flag_count ?? 0)}
+                  </span>
+                ) : null}
+                <span>{row.instrument_type === "OPTION" ? "OPTION" : row.transaction_type}</span>
+                <span>{formatDate(row.transaction_date)}</span>
+                <code>{formatAmountBand(row)}</code>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     </details>
   );
+}
+
+interface StockFlowPoint {
+  date: string;
+  buyAmount: number;
+  sellAmount: number;
+  optionAmount: number;
+  netAmount: number;
+}
+
+interface StockProfile {
+  points: StockFlowPoint[];
+  latestPrice: number | null;
+  latestPriceDate: string | null;
+  latestReturnPct: number | null;
+  optionCount: number;
+  bullishOptionCount: number;
+  bearishOptionCount: number;
+  uniqueMembers: number;
+  latestTransactionDate: string | null;
+}
+
+function StockFlowChart({ profile }: { profile: StockProfile }) {
+  if (profile.points.length === 0) {
+    return <div className="stock-chart-empty">No dated flow available for this ticker.</div>;
+  }
+
+  const maxAmount = Math.max(
+    1,
+    ...profile.points.map((point) =>
+      Math.max(point.buyAmount, point.sellAmount, point.optionAmount, Math.abs(point.netAmount))
+    )
+  );
+
+  return (
+    <div className="stock-chart-card">
+      <div className="stock-chart-header">
+        <span>Disclosure Flow Chart</span>
+        <code>{compact.format(profile.points.length)} sessions</code>
+      </div>
+      <div className="stock-chart-bars">
+        {profile.points.map((point) => (
+          <div className="stock-chart-day" key={point.date} title={`${point.date} · net ${currency.format(point.netAmount)}`}>
+            <i className="buy" style={{ height: `${Math.max(3, (point.buyAmount / maxAmount) * 100)}%` }} />
+            <i className="sell" style={{ height: `${Math.max(3, (point.sellAmount / maxAmount) * 100)}%` }} />
+            {point.optionAmount > 0 ? (
+              <i className="option" style={{ height: `${Math.max(3, (point.optionAmount / maxAmount) * 100)}%` }} />
+            ) : null}
+          </div>
+        ))}
+      </div>
+      <div className="stock-chart-legend">
+        <span><i className="buy" /> buys</span>
+        <span><i className="sell" /> sells</span>
+        <span><i className="option" /> options</span>
+      </div>
+    </div>
+  );
+}
+
+function buildStockProfile(item: CongressTickerHierarchyItem): StockProfile {
+  const points = new Map<string, StockFlowPoint>();
+  const members = new Set<string>();
+  let latestPrice: number | null = null;
+  let latestPriceDate: string | null = null;
+  let latestReturnPct: number | null = null;
+  let latestTransactionDate: string | null = null;
+  let optionCount = 0;
+  let bullishOptionCount = 0;
+  let bearishOptionCount = 0;
+
+  for (const row of item.transactions) {
+    if (row.member_name) {
+      members.add(row.member_name);
+    }
+
+    if (row.transaction_date && (!latestTransactionDate || row.transaction_date > latestTransactionDate)) {
+      latestTransactionDate = row.transaction_date;
+    }
+
+    if (typeof row.current_price === "number" && row.current_price_as_of) {
+      if (!latestPriceDate || row.current_price_as_of > latestPriceDate) {
+        latestPrice = row.current_price;
+        latestPriceDate = row.current_price_as_of;
+        latestReturnPct = row.return_pct;
+      }
+    }
+
+    const day = (row.transaction_date ?? row.created_at ?? "").slice(0, 10);
+    if (!day) {
+      continue;
+    }
+
+    const point = points.get(day) ?? {
+      date: day,
+      buyAmount: 0,
+      sellAmount: 0,
+      optionAmount: 0,
+      netAmount: 0
+    };
+    const amount = row.amount_mid ?? 0;
+    const type = row.transaction_type.trim().toUpperCase();
+
+    if (row.instrument_type === "OPTION" || row.option_decoder) {
+      optionCount += 1;
+      point.optionAmount += amount;
+      if (row.option_exposure === "BULLISH" || row.option_decoder?.exposure === "BULLISH") {
+        bullishOptionCount += 1;
+        point.buyAmount += amount;
+        point.netAmount += amount;
+      } else if (
+        row.option_exposure === "BEARISH" ||
+        row.option_exposure === "HEDGE_OR_PROTECTION" ||
+        row.option_decoder?.exposure === "BEARISH" ||
+        row.option_decoder?.exposure === "HEDGE_OR_PROTECTION"
+      ) {
+        bearishOptionCount += 1;
+        point.sellAmount += amount;
+        point.netAmount -= amount;
+      }
+    } else if (type === "PURCHASE" || type === "P" || type === "BUY") {
+      point.buyAmount += amount;
+      point.netAmount += amount;
+    } else if (type === "SALE" || type === "S" || type === "SELL") {
+      point.sellAmount += amount;
+      point.netAmount -= amount;
+    }
+
+    points.set(day, point);
+  }
+
+  return {
+    points: [...points.values()].sort((left, right) => left.date.localeCompare(right.date)).slice(-30),
+    latestPrice,
+    latestPriceDate,
+    latestReturnPct,
+    optionCount,
+    bullishOptionCount,
+    bearishOptionCount,
+    uniqueMembers: members.size,
+    latestTransactionDate
+  };
+}
+
+function stockSubtitle(item: CongressTickerHierarchyItem, profile: StockProfile): string {
+  const marked = profile.latestReturnPct === null ? "unmarked" : `${percentOrDash(profile.latestReturnPct)} marked`;
+  return `${compact.format(profile.uniqueMembers)} members · ${compact.format(item.transactionCount)} disclosures · ${marked} · latest ${formatDate(profile.latestTransactionDate)}`;
 }
 
 function buildMemberBatches(rows: CongressTransaction[]): MemberTransactionBatch[] {
