@@ -3,6 +3,7 @@ import {
   applyDotCastPoolResolution,
   createDotCastPool,
   placeDotCastPoolEntry,
+  pollDotCastPoolResolution,
   previewDotCastOdds,
   readDotCastHealth,
   settleDotCastPool,
@@ -24,7 +25,7 @@ describe("dotCast gateway handlers", () => {
       milestones: {
         e0: "parimutuel-core-ready",
         e1: "pool-lifecycle-core-ready",
-        e2: "router-resolution-intake-ready",
+        e2: "router-resolution-polling-ready",
         e13: "resolution-router-not-started"
       }
     });
@@ -267,6 +268,35 @@ describe("dotCast gateway handlers", () => {
           source: "kalshi",
           now: "2026-06-25T17:06:01.000Z",
           maxGraceMs: 60000
+        }
+      }
+    ]);
+  });
+
+  it("proxies E2 router polling through the pool object", async () => {
+    const calls: Array<{ route: string; body: Record<string, unknown> }> = [];
+    const env = envWithDotCastPool(async (request) => {
+      calls.push({
+        route: `${request.method} ${new URL(request.url).pathname}`,
+        body: await request.json<Record<string, unknown>>()
+      });
+      return Response.json({ ok: true, poll: { kind: "pending" } });
+    });
+
+    const response = await pollDotCastPoolResolution(
+      "pool-gateway",
+      jsonRequest("/api/dotcast/pools/pool-gateway/poll-resolution", {
+        now: "2026-06-25T17:06:01.000Z"
+      }),
+      env
+    );
+
+    expect(response.status).toBe(200);
+    expect(calls).toEqual([
+      {
+        route: "POST /poll-resolution",
+        body: {
+          now: "2026-06-25T17:06:01.000Z"
         }
       }
     ]);

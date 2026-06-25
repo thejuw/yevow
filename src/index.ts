@@ -46,6 +46,7 @@ import {
   createDotCastPool,
   lockDotCastPool,
   placeDotCastPoolEntry,
+  pollDotCastPoolResolution,
   previewDotCastOdds,
   readDotCastPool,
   readDotCastHealth,
@@ -121,6 +122,9 @@ gatewayRouter.post("/api/dotcast/pools/:id/settle", async (c) =>
 );
 gatewayRouter.post("/api/dotcast/pools/:id/resolution", async (c) =>
   applyDotCastPoolResolution(c.req.param("id"), c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/pools/:id/poll-resolution", async (c) =>
+  pollDotCastPoolResolution(c.req.param("id"), c.req.raw, c.env)
 );
 gatewayRouter.post("/api/dotcast/pools/:id/void", async (c) =>
   voidDotCastPool(c.req.param("id"), c.req.raw, c.env)

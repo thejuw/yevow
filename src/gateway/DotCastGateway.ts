@@ -65,6 +65,10 @@ interface DotCastRouterResolutionRequest {
   maxGraceMs?: unknown;
 }
 
+interface DotCastPollResolutionRequest {
+  now?: unknown;
+}
+
 export function readDotCastHealth(): Response {
   return json({
     ok: true,
@@ -73,7 +77,7 @@ export function readDotCastHealth(): Response {
     milestones: {
       e0: "parimutuel-core-ready",
       e1: "pool-lifecycle-core-ready",
-      e2: "router-resolution-intake-ready",
+      e2: "router-resolution-polling-ready",
       e3: "live-reference-price-not-started",
       e4: "void-refund-core-ready",
       e5: "settlement-rail-not-enabled",
@@ -98,6 +102,7 @@ export function readDotCastHealth(): Response {
       "POST /api/dotcast/pools/:id/lock",
       "POST /api/dotcast/pools/:id/settle",
       "POST /api/dotcast/pools/:id/resolution",
+      "POST /api/dotcast/pools/:id/poll-resolution",
       "POST /api/dotcast/pools/:id/void"
     ]
   });
@@ -212,6 +217,27 @@ export async function applyDotCastPoolResolution(
         source: parseOptionalVenue(body?.source, "resolution.source"),
         now: parseOptionalString(body?.now, "now"),
         maxGraceMs: parseOptionalMinorUnits(body?.maxGraceMs, "maxGraceMs")
+      })
+    });
+  } catch (error) {
+    return json(
+      { ok: false, error: error instanceof Error ? error.message : "Invalid request" },
+      400
+    );
+  }
+}
+
+export async function pollDotCastPoolResolution(
+  poolId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastPollResolutionRequest>(request);
+    return proxyDotCastPoolRequest(env, poolId, "/poll-resolution", {
+      method: "POST",
+      body: JSON.stringify({
+        now: parseOptionalString(body?.now, "now")
       })
     });
   } catch (error) {

@@ -1,6 +1,10 @@
 export interface Env {
   TRADING_ENGINE: DurableObjectNamespace;
   DOTCAST_POOL?: DurableObjectNamespace;
+  DOTCAST_ROUTER_RESOLUTION_URL?: string;
+  DOTCAST_ROUTER_RESOLUTION_TOKEN?: string;
+  DOTCAST_ROUTER_RESOLUTION_POLL_MS?: string;
+  DOTCAST_ROUTER_RESOLUTION_MAX_GRACE_MS?: string;
   INGEST_COORDINATOR?: DurableObjectNamespace;
   TRADING_DB: D1Database;
   CONGRESS_DB?: D1Database;

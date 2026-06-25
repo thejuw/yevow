@@ -7,11 +7,16 @@ import {
 } from "./PoolLifecycle";
 import {
   applyRouterResolution,
+  type DotCastResolutionIntakeResult,
   lockSnapshotIfNeeded,
   normalizePoolSnapshot,
   settlePoolSnapshot,
   voidPoolSnapshot
 } from "./PoolSettlement";
+import {
+  fetchDotCastRouterResolution,
+  type DotCastRouterResolutionFetchResult
+} from "./RouterResolutionClient";
 import type {
   DotCastEntry,
   DotCastPoolSnapshot,
@@ -26,6 +31,7 @@ import type { Env } from "../../types";
 
 const POOL_STATE_KEY = "dotcast:pool-state:v1";
 const DEFAULT_POINTS_BALANCE = 10_000;
+const DEFAULT_ROUTER_RESOLUTION_POLL_MS = 60_000;
 
 interface CreatePoolPayload extends Omit<CreatePoolInput, "now"> {
   now?: string;
@@ -64,6 +70,10 @@ interface RouterResolutionPayload {
   maxGraceMs?: unknown;
 }
 
+interface PollResolutionPayload {
+  now?: string;
+}
+
 export class DotCastPool {
   constructor(
     private readonly state: DurableObjectState,
@@ -96,6 +106,10 @@ export class DotCastPool {
 
       if (request.method === "POST" && url.pathname === "/resolution") {
         return await this.applyResolution(request);
+      }
+
+      if (request.method === "POST" && url.pathname === "/poll-resolution") {
+        return await this.pollResolution(request);
       }
 
       if (request.method === "POST" && url.pathname === "/void") {
@@ -137,7 +151,7 @@ export class DotCastPool {
       updatedAt: now
     };
 
-    await this.writeSnapshot(snapshot);
+    await this.persistSnapshot(snapshot, now);
     return jsonResponse({ ok: true, created: true, ...decorateSnapshot(snapshot) }, 201);
   }
 
@@ -191,7 +205,7 @@ export class DotCastPool {
     };
     const nextSnapshot = lockSnapshotIfNeeded(placedSnapshot, now);
 
-    await this.writeSnapshot(nextSnapshot);
+    await this.persistSnapshot(nextSnapshot, now);
     return jsonResponse(
       { ok: true, entry: result.entry, balance: result.balance, ...decorateSnapshot(nextSnapshot) },
       201
@@ -221,7 +235,7 @@ export class DotCastPool {
     const outcome = parseOutcome(payload.outcome);
     const nextSnapshot = settlePoolSnapshot(snapshot, outcome, now);
 
-    await this.writeSnapshot(nextSnapshot);
+    await this.persistSnapshot(nextSnapshot, now);
     return jsonResponse({ ok: true, ...decorateSnapshot(nextSnapshot) });
   }
 
@@ -236,13 +250,25 @@ export class DotCastPool {
       maxGraceMs: parseOptionalNonNegativeInteger(payload.maxGraceMs, "maxGraceMs")
     });
 
-    await this.writeSnapshot(result.snapshot);
+    await this.persistSnapshot(result.snapshot, now);
     return jsonResponse({
       ok: true,
       action: result.action,
       reason: result.reason,
       ...decorateSnapshot(result.snapshot)
     });
+  }
+
+  private async pollResolution(request: Request): Promise<Response> {
+    const payload = await readJson<PollResolutionPayload>(request);
+    const now = payload.now ?? new Date().toISOString();
+    const result = await this.pollRouterResolution(now);
+
+    if (!result.ok) {
+      return jsonResponse(result, typeof result.status === "number" ? result.status : 500);
+    }
+
+    return jsonResponse(result);
   }
 
   private async void(request: Request): Promise<Response> {
@@ -252,8 +278,12 @@ export class DotCastPool {
     const reason = parseVoidReason(payload.reason);
     const nextSnapshot = voidPoolSnapshot(snapshot, reason, now);
 
-    await this.writeSnapshot(nextSnapshot);
+    await this.persistSnapshot(nextSnapshot, now);
     return jsonResponse({ ok: true, ...decorateSnapshot(nextSnapshot) });
+  }
+
+  async alarm(): Promise<void> {
+    await this.pollRouterResolution(new Date().toISOString());
   }
 
   private async lockIfNeeded(
@@ -266,8 +296,83 @@ export class DotCastPool {
       return snapshot;
     }
 
-    await this.writeSnapshot(nextSnapshot);
+    await this.persistSnapshot(nextSnapshot, now);
     return nextSnapshot;
+  }
+
+  private async pollRouterResolution(now: string): Promise<Record<string, unknown>> {
+    const snapshot = await this.requireSnapshot();
+    const lockedSnapshot = lockSnapshotIfNeeded(snapshot, now);
+
+    if (lockedSnapshot !== snapshot) {
+      await this.persistSnapshot(lockedSnapshot, now);
+    }
+
+    if (lockedSnapshot.pool.status === "settled" || lockedSnapshot.pool.status === "voided") {
+      await this.reconcileResolutionAlarm(lockedSnapshot, now);
+      return {
+        ok: true,
+        poll: { kind: "ignored" },
+        action: "ignored",
+        reason: "TERMINAL_POOL",
+        ...decorateSnapshot(lockedSnapshot)
+      };
+    }
+
+    if (lockedSnapshot.pool.status !== "locked" && lockedSnapshot.pool.status !== "resolving") {
+      await this.reconcileResolutionAlarm(lockedSnapshot, now);
+      return {
+        ok: true,
+        poll: { kind: "held" },
+        action: "held",
+        reason: "POOL_NOT_LOCKED",
+        ...decorateSnapshot(lockedSnapshot)
+      };
+    }
+
+    let fetchResult: DotCastRouterResolutionFetchResult;
+    try {
+      fetchResult = await fetchDotCastRouterResolution(this.env, lockedSnapshot.pool.marketId, now);
+    } catch (error) {
+      await this.reconcileResolutionAlarm(lockedSnapshot, now);
+      return {
+        ok: false,
+        status: 502,
+        error: errorMessage(error),
+        poll: { kind: "error" },
+        ...decorateSnapshot(lockedSnapshot)
+      };
+    }
+
+    if (fetchResult.kind === "not_configured") {
+      await this.reconcileResolutionAlarm(lockedSnapshot, now);
+      return {
+        ok: false,
+        status: 503,
+        error: fetchResult.error,
+        poll: { kind: "not_configured" },
+        ...decorateSnapshot(lockedSnapshot)
+      };
+    }
+
+    const result: DotCastResolutionIntakeResult = applyRouterResolution({
+      snapshot: lockedSnapshot,
+      resolution: fetchResult.resolution,
+      now,
+      maxGraceMs: parseEnvNonNegativeInteger(
+        this.env.DOTCAST_ROUTER_RESOLUTION_MAX_GRACE_MS,
+        "DOTCAST_ROUTER_RESOLUTION_MAX_GRACE_MS"
+      )
+    });
+    await this.persistSnapshot(result.snapshot, now);
+
+    return {
+      ok: true,
+      poll: { kind: fetchResult.kind },
+      action: result.action,
+      reason: result.reason,
+      ...decorateSnapshot(result.snapshot)
+    };
   }
 
   private async requireSnapshot(): Promise<DotCastPoolSnapshot> {
@@ -287,6 +392,25 @@ export class DotCastPool {
 
   private async writeSnapshot(snapshot: DotCastPoolSnapshot): Promise<void> {
     await this.state.storage.put(POOL_STATE_KEY, snapshot);
+  }
+
+  private async persistSnapshot(snapshot: DotCastPoolSnapshot, now: string): Promise<void> {
+    await this.writeSnapshot(snapshot);
+    await this.reconcileResolutionAlarm(snapshot, now);
+  }
+
+  private async reconcileResolutionAlarm(
+    snapshot: DotCastPoolSnapshot,
+    now: string
+  ): Promise<void> {
+    if (snapshot.pool.status === "locked" || snapshot.pool.status === "resolving") {
+      await this.state.storage.setAlarm(
+        Date.parse(now) + resolvePollIntervalMs(this.env.DOTCAST_ROUTER_RESOLUTION_POLL_MS)
+      );
+      return;
+    }
+
+    await this.state.storage.deleteAlarm();
   }
 }
 
@@ -422,6 +546,25 @@ function parseOptionalNonNegativeInteger(value: unknown, label: string): number 
   }
 
   return value;
+}
+
+function parseEnvNonNegativeInteger(value: string | undefined, label: string): number | undefined {
+  if (value === undefined || value.trim().length === 0) {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new Error(`${label} must be a non-negative integer`);
+  }
+
+  return parsed;
+}
+
+function resolvePollIntervalMs(value: string | undefined): number {
+  const parsed = parseEnvNonNegativeInteger(value, "DOTCAST_ROUTER_RESOLUTION_POLL_MS");
+  return parsed ?? DEFAULT_ROUTER_RESOLUTION_POLL_MS;
 }
 
 function parseVoidReason(value: unknown): DotCastVoidReason {

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DotCastPool } from "../../src/engine/dotcast";
 import type { Env } from "../../src/types";
 
@@ -6,6 +6,10 @@ const now = "2099-06-25T17:00:00.000Z";
 const close = "2099-06-25T17:05:00.000Z";
 
 describe("dotCast pool durable object", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("creates, reads, and idempotently re-reads a persistent pool", async () => {
     const object = createObject();
     const created = await jsonBody(
@@ -453,6 +457,119 @@ describe("dotCast pool durable object", () => {
       }
     });
   });
+
+  it("polls configured router resolutions and clears the E2 alarm after terminal settlement", async () => {
+    const state = fakeState();
+    const object = new DotCastPool(state, {
+      DOTCAST_ROUTER_RESOLUTION_URL: "https://router.test/markets/{marketId}/resolution",
+      DOTCAST_ROUTER_RESOLUTION_POLL_MS: "30000"
+    } as Env);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          resolution: {
+            marketId: "kalshi:demo-do",
+            outcome: "yes",
+            resolvedAt: "2099-06-25T17:06:00.000Z",
+            fetchedAt: "2099-06-25T17:06:01.000Z",
+            stale: false,
+            source: "kalshi"
+          }
+        })
+      )
+    );
+
+    await object.fetch(
+      jsonRequest("/create", createPayload({ id: "pool-do-poll", minLiquidity: 1 }))
+    );
+    await object.fetch(
+      jsonRequest("/entries", {
+        userId: "yes-user",
+        side: "yes",
+        amount: 700,
+        entryId: "yes-entry",
+        now: "2099-06-25T17:01:00.000Z"
+      })
+    );
+    await object.fetch(
+      jsonRequest("/entries", {
+        userId: "no-user",
+        side: "no",
+        amount: 300,
+        entryId: "no-entry",
+        now: "2099-06-25T17:02:00.000Z"
+      })
+    );
+    await object.fetch(jsonRequest("/lock", { now: close }));
+
+    expect(await state.storage.getAlarm()).toBe(Date.parse(close) + 30_000);
+
+    const polled = await jsonBody(
+      await object.fetch(
+        jsonRequest("/poll-resolution", {
+          now: "2099-06-25T17:06:01.000Z"
+        })
+      )
+    );
+
+    expect(polled).toMatchObject({
+      ok: true,
+      poll: { kind: "resolution" },
+      action: "settled",
+      reason: "DEFINITIVE_OUTCOME",
+      snapshot: {
+        pool: { status: "settled", outcome: "yes" },
+        settlement: { payoutTotal: 985, rakeAmount: 15 }
+      }
+    });
+    expect(await state.storage.getAlarm()).toBeNull();
+  });
+
+  it("reports unconfigured E2 polling without guessing a resolution", async () => {
+    const state = fakeState();
+    const object = new DotCastPool(state, {} as Env);
+    await object.fetch(
+      jsonRequest("/create", createPayload({ id: "pool-do-no-router", minLiquidity: 1 }))
+    );
+    await object.fetch(
+      jsonRequest("/entries", {
+        userId: "yes-user",
+        side: "yes",
+        amount: 100,
+        entryId: "yes-entry",
+        now: "2099-06-25T17:01:00.000Z"
+      })
+    );
+    await object.fetch(
+      jsonRequest("/entries", {
+        userId: "no-user",
+        side: "no",
+        amount: 100,
+        entryId: "no-entry",
+        now: "2099-06-25T17:02:00.000Z"
+      })
+    );
+    await object.fetch(jsonRequest("/lock", { now: close }));
+
+    const response = await object.fetch(
+      jsonRequest("/poll-resolution", {
+        now: "2099-06-25T17:06:00.000Z"
+      })
+    );
+    const body = await jsonBody(response);
+
+    expect(response.status).toBe(503);
+    expect(body).toMatchObject({
+      ok: false,
+      poll: { kind: "not_configured" },
+      snapshot: {
+        pool: { status: "locked", outcome: null },
+        lastResolution: null
+      }
+    });
+    expect(await state.storage.getAlarm()).toBe(Date.parse("2099-06-25T17:06:00.000Z") + 60_000);
+  });
 });
 
 function createObject() {
@@ -461,12 +578,20 @@ function createObject() {
 
 function fakeState(): DurableObjectState {
   const values = new Map<string, unknown>();
+  let alarm: number | null = null;
 
   return {
     storage: {
       get: async <T>(key: string) => values.get(key) as T | undefined,
       put: async (key: string, value: unknown) => {
         values.set(key, value);
+      },
+      setAlarm: async (scheduledTime: number) => {
+        alarm = scheduledTime;
+      },
+      getAlarm: async () => alarm,
+      deleteAlarm: async () => {
+        alarm = null;
       }
     },
     blockConcurrencyWhile: async <T>(callback: () => T | Promise<T>) => callback()
