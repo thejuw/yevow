@@ -82,7 +82,7 @@ export function readDotCastHealth(): Response {
       e4: "void-refund-core-ready",
       e5: "settlement-rail-not-enabled",
       e6: "points-layer-not-started",
-      e7: "audit-limits-not-started",
+      e7: "audit-ledger-core-ready",
       e8: "gamification-not-started",
       e9: "rewarded-ad-onramp-not-started",
       e10: "sponsored-questions-not-started",

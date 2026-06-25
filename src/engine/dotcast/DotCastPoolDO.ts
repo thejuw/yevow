@@ -1,5 +1,11 @@
 import { impliedProb, previewPayout } from "./Parimutuel";
 import {
+  buildDotCastAuditWritePlan,
+  writeDotCastAuditPlan,
+  type DotCastAuditAction,
+  type DotCastAuditDb
+} from "./DotCastAuditLedger";
+import {
   createPoolFromMarket,
   placeEntry,
   type CreatePoolInput,
@@ -152,7 +158,9 @@ export class DotCastPool {
     };
 
     await this.persistSnapshot(snapshot, now);
-    return jsonResponse({ ok: true, created: true, ...decorateSnapshot(snapshot) }, 201);
+    const responseBody = { ok: true, created: true, ...decorateSnapshot(snapshot) };
+    await this.audit("create", responseBody);
+    return jsonResponse(responseBody, 201);
   }
 
   private async read(): Promise<Response> {
@@ -206,10 +214,19 @@ export class DotCastPool {
     const nextSnapshot = lockSnapshotIfNeeded(placedSnapshot, now);
 
     await this.persistSnapshot(nextSnapshot, now);
-    return jsonResponse(
-      { ok: true, entry: result.entry, balance: result.balance, ...decorateSnapshot(nextSnapshot) },
-      201
-    );
+    const responseBody = {
+      ok: true,
+      entry: result.entry,
+      balance: result.balance,
+      ...decorateSnapshot(nextSnapshot)
+    };
+    await this.audit("entry", responseBody);
+
+    if (nextSnapshot.pool.status !== result.pool.status) {
+      await this.audit("lock", { ok: true, ...decorateSnapshot(nextSnapshot) });
+    }
+
+    return jsonResponse(responseBody, 201);
   }
 
   private async lock(request: Request): Promise<Response> {
@@ -236,7 +253,9 @@ export class DotCastPool {
     const nextSnapshot = settlePoolSnapshot(snapshot, outcome, now);
 
     await this.persistSnapshot(nextSnapshot, now);
-    return jsonResponse({ ok: true, ...decorateSnapshot(nextSnapshot) });
+    const responseBody = { ok: true, ...decorateSnapshot(nextSnapshot) };
+    await this.audit("settle", responseBody);
+    return jsonResponse(responseBody);
   }
 
   private async applyResolution(request: Request): Promise<Response> {
@@ -251,12 +270,14 @@ export class DotCastPool {
     });
 
     await this.persistSnapshot(result.snapshot, now);
-    return jsonResponse({
+    const responseBody = {
       ok: true,
       action: result.action,
       reason: result.reason,
       ...decorateSnapshot(result.snapshot)
-    });
+    };
+    await this.audit("resolution", responseBody);
+    return jsonResponse(responseBody);
   }
 
   private async pollResolution(request: Request): Promise<Response> {
@@ -279,7 +300,9 @@ export class DotCastPool {
     const nextSnapshot = voidPoolSnapshot(snapshot, reason, now);
 
     await this.persistSnapshot(nextSnapshot, now);
-    return jsonResponse({ ok: true, ...decorateSnapshot(nextSnapshot) });
+    const responseBody = { ok: true, ...decorateSnapshot(nextSnapshot) };
+    await this.audit("void", responseBody);
+    return jsonResponse(responseBody);
   }
 
   async alarm(): Promise<void> {
@@ -297,37 +320,38 @@ export class DotCastPool {
     }
 
     await this.persistSnapshot(nextSnapshot, now);
+    await this.audit("lock", { ok: true, ...decorateSnapshot(nextSnapshot) });
     return nextSnapshot;
   }
 
   private async pollRouterResolution(now: string): Promise<Record<string, unknown>> {
     const snapshot = await this.requireSnapshot();
-    const lockedSnapshot = lockSnapshotIfNeeded(snapshot, now);
-
-    if (lockedSnapshot !== snapshot) {
-      await this.persistSnapshot(lockedSnapshot, now);
-    }
+    const lockedSnapshot = await this.lockIfNeeded(snapshot, now);
 
     if (lockedSnapshot.pool.status === "settled" || lockedSnapshot.pool.status === "voided") {
       await this.reconcileResolutionAlarm(lockedSnapshot, now);
-      return {
+      const result = {
         ok: true,
         poll: { kind: "ignored" },
         action: "ignored",
         reason: "TERMINAL_POOL",
         ...decorateSnapshot(lockedSnapshot)
       };
+      await this.audit("poll", result);
+      return result;
     }
 
     if (lockedSnapshot.pool.status !== "locked" && lockedSnapshot.pool.status !== "resolving") {
       await this.reconcileResolutionAlarm(lockedSnapshot, now);
-      return {
+      const result = {
         ok: true,
         poll: { kind: "held" },
         action: "held",
         reason: "POOL_NOT_LOCKED",
         ...decorateSnapshot(lockedSnapshot)
       };
+      await this.audit("poll", result);
+      return result;
     }
 
     let fetchResult: DotCastRouterResolutionFetchResult;
@@ -335,24 +359,28 @@ export class DotCastPool {
       fetchResult = await fetchDotCastRouterResolution(this.env, lockedSnapshot.pool.marketId, now);
     } catch (error) {
       await this.reconcileResolutionAlarm(lockedSnapshot, now);
-      return {
+      const result = {
         ok: false,
         status: 502,
         error: errorMessage(error),
         poll: { kind: "error" },
         ...decorateSnapshot(lockedSnapshot)
       };
+      await this.audit("poll", result);
+      return result;
     }
 
     if (fetchResult.kind === "not_configured") {
       await this.reconcileResolutionAlarm(lockedSnapshot, now);
-      return {
+      const result = {
         ok: false,
         status: 503,
         error: fetchResult.error,
         poll: { kind: "not_configured" },
         ...decorateSnapshot(lockedSnapshot)
       };
+      await this.audit("poll", result);
+      return result;
     }
 
     const result: DotCastResolutionIntakeResult = applyRouterResolution({
@@ -366,13 +394,15 @@ export class DotCastPool {
     });
     await this.persistSnapshot(result.snapshot, now);
 
-    return {
+    const responseBody = {
       ok: true,
       poll: { kind: fetchResult.kind },
       action: result.action,
       reason: result.reason,
       ...decorateSnapshot(result.snapshot)
     };
+    await this.audit("poll", responseBody);
+    return responseBody;
   }
 
   private async requireSnapshot(): Promise<DotCastPoolSnapshot> {
@@ -411,6 +441,33 @@ export class DotCastPool {
     }
 
     await this.state.storage.deleteAlarm();
+  }
+
+  private async audit(action: DotCastAuditAction, body: Record<string, unknown>): Promise<void> {
+    const db = (this.env as Partial<Env>).TRADING_DB as DotCastAuditDb | undefined;
+
+    if (!db) {
+      return;
+    }
+
+    const plan = buildDotCastAuditWritePlan(action, body);
+
+    if (
+      plan.events.length === 0 &&
+      plan.balanceLedger.length === 0 &&
+      plan.houseLedger.length === 0
+    ) {
+      return;
+    }
+
+    try {
+      await writeDotCastAuditPlan(db, plan);
+    } catch (error) {
+      console.error(
+        "[dotCast] failed to write audit ledger",
+        error instanceof Error ? error.message : error
+      );
+    }
   }
 }
 

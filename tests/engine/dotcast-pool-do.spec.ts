@@ -570,6 +570,52 @@ describe("dotCast pool durable object", () => {
     });
     expect(await state.storage.getAlarm()).toBe(Date.parse("2099-06-25T17:06:00.000Z") + 60_000);
   });
+
+  it("writes E2/E7 audit records for mutations and failed router polls", async () => {
+    const audit = fakeAuditDb();
+    const state = fakeState();
+    const object = new DotCastPool(state, { TRADING_DB: audit.db } as Env);
+
+    await object.fetch(
+      jsonRequest("/create", createPayload({ id: "pool-do-audit", minLiquidity: 1 }))
+    );
+    await object.fetch(
+      jsonRequest("/entries", {
+        userId: "yes-user",
+        side: "yes",
+        amount: 100,
+        entryId: "yes-entry",
+        now: "2099-06-25T17:01:00.000Z"
+      })
+    );
+    await object.fetch(
+      jsonRequest("/entries", {
+        userId: "no-user",
+        side: "no",
+        amount: 100,
+        entryId: "no-entry",
+        now: "2099-06-25T17:02:00.000Z"
+      })
+    );
+    await object.fetch(jsonRequest("/lock", { now: close }));
+    await object.fetch(
+      jsonRequest("/poll-resolution", {
+        now: "2099-06-25T17:06:00.000Z"
+      })
+    );
+
+    const eventTypes = audit.statements
+      .filter((statement) => statement.query.includes("dotcast_audit_events"))
+      .map((statement) => statement.params[3]);
+    const balanceReasons = audit.statements
+      .filter((statement) => statement.query.includes("dotcast_balance_ledger"))
+      .map((statement) => statement.params[9]);
+
+    expect(eventTypes).toEqual(
+      expect.arrayContaining(["POOL_CREATED", "ENTRY_PLACED", "POOL_LOCKED", "ROUTER_POLL"])
+    );
+    expect(balanceReasons).toEqual(expect.arrayContaining(["ENTRY_LOCK"]));
+  });
 });
 
 function createObject() {
@@ -628,4 +674,21 @@ function jsonRequest(pathname: string, body: unknown) {
 
 async function jsonBody(response: Response) {
   return (await response.json()) as Record<string, unknown>;
+}
+
+function fakeAuditDb() {
+  const statements: Array<{ query: string; params: unknown[] }> = [];
+  const db = {
+    prepare: (query: string) =>
+      ({
+        bind: (...params: unknown[]) => {
+          const statement = { query, params };
+          statements.push(statement);
+          return statement as unknown as D1PreparedStatement;
+        }
+      }) as D1PreparedStatement,
+    batch: async () => []
+  } as unknown as D1Database;
+
+  return { db, statements };
 }
