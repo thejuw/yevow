@@ -915,7 +915,15 @@ function CopyPortfolioHoldingRow({ holding }: { holding: CopyPortfolioHolding })
   return (
     <div className="copy-portfolio-row">
       <div>
-        <strong>{holding.symbol}</strong>
+        <a
+          className="ticker-news-link"
+          href={yahooNewsUrl(holding.symbol)}
+          target="_blank"
+          rel="noreferrer"
+          title={`Open ${holding.symbol} news on Yahoo Finance`}
+        >
+          {holding.symbol}
+        </a>
         <span>{holding.displayName}</span>
         <small>{holding.sector}</small>
       </div>
@@ -1097,7 +1105,21 @@ function TickerHierarchyRow({ item }: { item: CongressTickerHierarchyItem }) {
     <details className={isUnresolved ? "ticker-hierarchy-row unresolved" : "ticker-hierarchy-row"}>
       <summary className="ticker-hierarchy-summary">
         <span className="ticker-rank">#{item.rank}</span>
-        <strong>{isUnresolved ? "UNRESOLVED" : item.ticker}</strong>
+        {isUnresolved ? (
+          <strong>UNRESOLVED</strong>
+        ) : (
+          <a
+            className="ticker-news-link"
+            href={yahooNewsUrl(item.ticker)}
+            target="_blank"
+            rel="noreferrer"
+            onMouseDown={(event) => event.stopPropagation()}
+            onClick={(event) => event.stopPropagation()}
+            title={`Open ${item.ticker} news on Yahoo Finance`}
+          >
+            {item.ticker}
+          </a>
+        )}
         <span className="ticker-display-name">{item.displayName}</span>
         <span className="ticker-weight">
           <i style={{ width: `${Math.min(100, Math.max(2, item.weightPct))}%` }} />
@@ -1344,6 +1366,10 @@ function buildStockProfile(item: CongressTickerHierarchyItem): StockProfile {
 function stockSubtitle(item: CongressTickerHierarchyItem, profile: StockProfile): string {
   const marked = profile.latestReturnPct === null ? "unmarked" : `${percentOrDash(profile.latestReturnPct)} marked`;
   return `${compact.format(profile.uniqueMembers)} members · ${compact.format(item.transactionCount)} disclosures · ${marked} · latest ${formatDate(profile.latestTransactionDate)}`;
+}
+
+function yahooNewsUrl(ticker: string): string {
+  return `https://finance.yahoo.com/quote/${encodeURIComponent(ticker)}/news/`;
 }
 
 function buildMemberBatches(rows: CongressTransaction[]): MemberTransactionBatch[] {

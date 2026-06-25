@@ -3056,6 +3056,16 @@ output {
   color: var(--gold);
 }
 
+.ticker-news-link {
+  color: var(--gold);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.ticker-news-link:hover {
+  text-decoration: underline;
+}
+
 .ticker-display-name {
   overflow: hidden;
   text-overflow: ellipsis;
