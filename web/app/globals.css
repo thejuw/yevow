@@ -3020,7 +3020,7 @@ output {
 .ticker-hierarchy-summary {
   min-height: 42px;
   display: grid;
-  grid-template-columns: 20px 46px 92px minmax(180px, 1fr) minmax(110px, 0.42fr) 72px 136px;
+  grid-template-columns: 20px 46px 92px minmax(180px, 1fr) minmax(110px, 0.42fr) 72px 136px 104px;
   gap: 10px;
   align-items: center;
   padding: 8px 10px;
@@ -3080,6 +3080,17 @@ output {
 .ticker-hierarchy-summary code {
   color: var(--text);
   text-align: right;
+}
+
+.ticker-open-hint {
+  justify-self: end;
+  border: 1px solid rgba(215, 196, 139, 0.24);
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: var(--gold) !important;
+  background: rgba(215, 196, 139, 0.07);
+  font-size: 9px !important;
+  text-transform: uppercase;
 }
 
 .stock-interface {

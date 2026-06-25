@@ -124,7 +124,7 @@ export default function CongressTrackerPage() {
   const [tickerHierarchy, setTickerHierarchy] = useState<CongressTickerHierarchyResponse | null>(
     null
   );
-  const [tickerPeriod, setTickerPeriod] = useState<CongressPeriod>("24h");
+  const [tickerPeriod, setTickerPeriod] = useState<CongressPeriod>("all");
   const [copyMemberKey, setCopyMemberKey] = useState("");
   const [copyPeriod, setCopyPeriod] = useState<CopyPortfolioPeriod>("12m");
   const [copyCapital, setCopyCapital] = useState("10000");
@@ -1104,6 +1104,7 @@ function TickerHierarchyRow({ item }: { item: CongressTickerHierarchyItem }) {
         </span>
         <span>{compact.format(item.weightPct)}%</span>
         <code>{currency.format(item.totalAmountMid)}</code>
+        <span className="ticker-open-hint">Open profile</span>
       </summary>
 
       <div className="stock-interface">
