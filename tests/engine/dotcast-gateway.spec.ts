@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyDotCastPoolResolution,
   createDotCastPool,
   placeDotCastPoolEntry,
   previewDotCastOdds,
@@ -19,7 +20,13 @@ describe("dotCast gateway handlers", () => {
     expect(body).toMatchObject({
       ok: true,
       product: "dotCast",
-      engine: "live-parimutuel"
+      engine: "live-parimutuel",
+      milestones: {
+        e0: "parimutuel-core-ready",
+        e1: "pool-lifecycle-core-ready",
+        e2: "router-resolution-intake-ready",
+        e13: "resolution-router-not-started"
+      }
     });
   });
 
@@ -217,6 +224,49 @@ describe("dotCast gateway handlers", () => {
         body: {
           reason: "ADMIN_VOID",
           now: "2026-06-25T17:07:00.000Z"
+        }
+      }
+    ]);
+  });
+
+  it("proxies E2 router resolution intake through the pool object", async () => {
+    const calls: Array<{ route: string; body: Record<string, unknown> }> = [];
+    const env = envWithDotCastPool(async (request) => {
+      calls.push({
+        route: `${request.method} ${new URL(request.url).pathname}`,
+        body: await request.json<Record<string, unknown>>()
+      });
+      return Response.json({ ok: true, action: "settled" });
+    });
+
+    const response = await applyDotCastPoolResolution(
+      "pool-gateway",
+      jsonRequest("/api/dotcast/pools/pool-gateway/resolution", {
+        marketId: "kalshi:gateway",
+        outcome: "yes",
+        resolvedAt: "2026-06-25T17:06:00.000Z",
+        fetchedAt: "2026-06-25T17:06:01.000Z",
+        stale: false,
+        source: "kalshi",
+        now: "2026-06-25T17:06:01.000Z",
+        maxGraceMs: 60000
+      }),
+      env
+    );
+
+    expect(response.status).toBe(200);
+    expect(calls).toEqual([
+      {
+        route: "POST /resolution",
+        body: {
+          marketId: "kalshi:gateway",
+          outcome: "yes",
+          resolvedAt: "2026-06-25T17:06:00.000Z",
+          fetchedAt: "2026-06-25T17:06:01.000Z",
+          stale: false,
+          source: "kalshi",
+          now: "2026-06-25T17:06:01.000Z",
+          maxGraceMs: 60000
         }
       }
     ]);

@@ -42,6 +42,7 @@ import {
 import { handleTopologyCalibration } from "./gateway/AdminTopologyGateway";
 import { readMoltworkerHealth, updateMoltworkerHeartbeat } from "./gateway/MoltworkerGateway";
 import {
+  applyDotCastPoolResolution,
   createDotCastPool,
   lockDotCastPool,
   placeDotCastPoolEntry,
@@ -117,6 +118,9 @@ gatewayRouter.post("/api/dotcast/pools/:id/lock", async (c) =>
 );
 gatewayRouter.post("/api/dotcast/pools/:id/settle", async (c) =>
   settleDotCastPool(c.req.param("id"), c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/pools/:id/resolution", async (c) =>
+  applyDotCastPoolResolution(c.req.param("id"), c.req.raw, c.env)
 );
 gatewayRouter.post("/api/dotcast/pools/:id/void", async (c) =>
   voidDotCastPool(c.req.param("id"), c.req.raw, c.env)

@@ -3,6 +3,7 @@ import {
   previewPayout,
   settleParimutuel,
   type DotCastMarketSnapshot,
+  type DotCastResolutionOutcome,
   type SettlementEntry,
   type Side,
   type SideTotals,
@@ -53,16 +54,37 @@ interface DotCastVoidPoolRequest {
   now?: unknown;
 }
 
+interface DotCastRouterResolutionRequest {
+  marketId?: unknown;
+  outcome?: unknown;
+  resolvedAt?: unknown;
+  fetchedAt?: unknown;
+  stale?: unknown;
+  source?: unknown;
+  now?: unknown;
+  maxGraceMs?: unknown;
+}
+
 export function readDotCastHealth(): Response {
   return json({
     ok: true,
     product: "dotCast",
     engine: "live-parimutuel",
     milestones: {
-      p0: "parimutuel-core-ready",
-      p1: "pool-lifecycle-core-ready",
-      p2: "settlement-core-ready",
-      p4: "void-refund-core-ready",
+      e0: "parimutuel-core-ready",
+      e1: "pool-lifecycle-core-ready",
+      e2: "router-resolution-intake-ready",
+      e3: "live-reference-price-not-started",
+      e4: "void-refund-core-ready",
+      e5: "settlement-rail-not-enabled",
+      e6: "points-layer-not-started",
+      e7: "audit-limits-not-started",
+      e8: "gamification-not-started",
+      e9: "rewarded-ad-onramp-not-started",
+      e10: "sponsored-questions-not-started",
+      e11: "creator-economy-not-started",
+      e12: "referrals-not-started",
+      e13: "resolution-router-not-started",
       persistence: "durable-object-ready",
       settlementRail: "not-enabled"
     },
@@ -75,6 +97,7 @@ export function readDotCastHealth(): Response {
       "POST /api/dotcast/pools/:id/entries",
       "POST /api/dotcast/pools/:id/lock",
       "POST /api/dotcast/pools/:id/settle",
+      "POST /api/dotcast/pools/:id/resolution",
       "POST /api/dotcast/pools/:id/void"
     ]
   });
@@ -161,6 +184,34 @@ export async function settleDotCastPool(
       body: JSON.stringify({
         outcome: parseOutcome(body?.outcome),
         now: parseOptionalString(body?.now, "now")
+      })
+    });
+  } catch (error) {
+    return json(
+      { ok: false, error: error instanceof Error ? error.message : "Invalid request" },
+      400
+    );
+  }
+}
+
+export async function applyDotCastPoolResolution(
+  poolId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastRouterResolutionRequest>(request);
+    return proxyDotCastPoolRequest(env, poolId, "/resolution", {
+      method: "POST",
+      body: JSON.stringify({
+        marketId: parseRequiredString(body?.marketId, "resolution.marketId"),
+        outcome: parseResolutionOutcome(body?.outcome),
+        resolvedAt: parseNullableString(body?.resolvedAt, "resolution.resolvedAt"),
+        fetchedAt: parseOptionalString(body?.fetchedAt, "resolution.fetchedAt"),
+        stale: parseOptionalBoolean(body?.stale, "resolution.stale") ?? false,
+        source: parseOptionalVenue(body?.source, "resolution.source"),
+        now: parseOptionalString(body?.now, "now"),
+        maxGraceMs: parseOptionalMinorUnits(body?.maxGraceMs, "maxGraceMs")
       })
     });
   } catch (error) {
@@ -340,6 +391,14 @@ function parseOutcome(value: unknown): Side | "invalid" {
   throw new Error("outcome must be yes, no, or invalid");
 }
 
+function parseResolutionOutcome(value: unknown): DotCastResolutionOutcome {
+  if (value === "yes" || value === "no" || value === "invalid" || value === "pending") {
+    return value;
+  }
+
+  throw new Error("resolution outcome must be yes, no, invalid, or pending");
+}
+
 function parseVoidReason(value: unknown): string {
   if (
     value === "UNDER_LIQUIDITY" ||
@@ -354,6 +413,18 @@ function parseVoidReason(value: unknown): string {
   }
 
   throw new Error("void reason is required");
+}
+
+function parseOptionalVenue(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (value === "kalshi" || value === "polymarket" || value === "dotcast" || value === "unknown") {
+    return value;
+  }
+
+  throw new Error(`${label} must be a supported venue`);
 }
 
 function parseStakeUnit(value: unknown): StakeUnit {
@@ -382,6 +453,34 @@ function parseOptionalString(value: unknown, label: string): string | undefined 
   }
 
   throw new Error(`${label} must be a non-empty string`);
+}
+
+function parseNullableString(value: unknown, label: string): string | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  return parseOptionalString(value, label) ?? null;
+}
+
+function parseOptionalBoolean(value: unknown, label: string): boolean | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  throw new Error(`${label} must be a boolean`);
+}
+
+function parseOptionalMinorUnits(value: unknown, label: string): number | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  return parseMinorUnits(value, label, true);
 }
 
 function parseMinorUnits(value: unknown, label: string, allowZero = false): number {

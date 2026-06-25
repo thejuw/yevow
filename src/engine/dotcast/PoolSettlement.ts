@@ -4,6 +4,7 @@ import type {
   DotCastEntry,
   DotCastPool,
   DotCastPoolSnapshot,
+  DotCastRouterResolution,
   DotCastSettlementRecord,
   DotCastVoidReason,
   HouseLedgerEntry,
@@ -11,12 +12,40 @@ import type {
   StakeBalance
 } from "./types";
 
+export type DotCastResolutionIntakeAction = "settled" | "voided" | "held" | "ignored";
+
+export type DotCastResolutionIntakeReason =
+  | "DEFINITIVE_OUTCOME"
+  | "INVALID_RESOLUTION"
+  | "PENDING_RESOLUTION"
+  | "STALE_RESOLUTION"
+  | "GRACE_TIMEOUT"
+  | "LOCK_VOID"
+  | "POOL_NOT_LOCKED"
+  | "TERMINAL_POOL";
+
+export interface DotCastResolutionIntakeInput {
+  snapshot: DotCastPoolSnapshot;
+  resolution: DotCastRouterResolution;
+  now: string;
+  maxGraceMs?: number;
+}
+
+export interface DotCastResolutionIntakeResult {
+  action: DotCastResolutionIntakeAction;
+  reason: DotCastResolutionIntakeReason;
+  snapshot: DotCastPoolSnapshot;
+}
+
+const DEFAULT_RESOLUTION_MAX_GRACE_MS = 24 * 60 * 60 * 1000;
+
 export function normalizePoolSnapshot(snapshot: DotCastPoolSnapshot): DotCastPoolSnapshot {
   return {
     ...snapshot,
     houseLedger: snapshot.houseLedger ?? [],
     settlement: snapshot.settlement ?? null,
-    voidReason: snapshot.voidReason ?? null
+    voidReason: snapshot.voidReason ?? null,
+    lastResolution: snapshot.lastResolution ?? null
   };
 }
 
@@ -143,7 +172,107 @@ export function settlePoolSnapshot(
     houseLedger,
     settlement: record,
     voidReason: null,
+    lastResolution: normalized.lastResolution,
     updatedAt: now
+  };
+}
+
+export function applyRouterResolution(
+  input: DotCastResolutionIntakeInput
+): DotCastResolutionIntakeResult {
+  const nowMs = assertIso(input.now, "now");
+  assertIso(input.resolution.fetchedAt, "resolution.fetchedAt");
+
+  if (input.resolution.resolvedAt !== null) {
+    assertIso(input.resolution.resolvedAt, "resolution.resolvedAt");
+  }
+
+  const maxGraceMs = input.maxGraceMs ?? DEFAULT_RESOLUTION_MAX_GRACE_MS;
+  if (!Number.isSafeInteger(maxGraceMs) || maxGraceMs < 0) {
+    throw new RangeError("maxGraceMs must be a non-negative safe integer");
+  }
+
+  const normalized = withResolution(
+    normalizePoolSnapshot(input.snapshot),
+    input.resolution,
+    input.now
+  );
+
+  if (normalized.pool.marketId !== input.resolution.marketId) {
+    throw new Error("resolution marketId does not match pool marketId");
+  }
+
+  if (normalized.pool.status === "settled" || normalized.pool.status === "voided") {
+    return {
+      action: "ignored",
+      reason: "TERMINAL_POOL",
+      snapshot: normalized
+    };
+  }
+
+  const lockedSnapshot = lockSnapshotIfNeeded(normalized, input.now);
+
+  if (lockedSnapshot.pool.status === "voided") {
+    return {
+      action: "voided",
+      reason: "LOCK_VOID",
+      snapshot: lockedSnapshot
+    };
+  }
+
+  if (lockedSnapshot.pool.status !== "locked" && lockedSnapshot.pool.status !== "resolving") {
+    return {
+      action: "held",
+      reason: "POOL_NOT_LOCKED",
+      snapshot: lockedSnapshot
+    };
+  }
+
+  if (input.resolution.stale) {
+    if (isPastResolutionGrace(lockedSnapshot.pool, nowMs, maxGraceMs)) {
+      return {
+        action: "voided",
+        reason: "GRACE_TIMEOUT",
+        snapshot: voidPoolSnapshot(lockedSnapshot, "GRACE_TIMEOUT", input.now)
+      };
+    }
+
+    return {
+      action: "held",
+      reason: "STALE_RESOLUTION",
+      snapshot: lockedSnapshot
+    };
+  }
+
+  if (input.resolution.outcome === "pending") {
+    if (isPastResolutionGrace(lockedSnapshot.pool, nowMs, maxGraceMs)) {
+      return {
+        action: "voided",
+        reason: "GRACE_TIMEOUT",
+        snapshot: voidPoolSnapshot(lockedSnapshot, "GRACE_TIMEOUT", input.now)
+      };
+    }
+
+    return {
+      action: "held",
+      reason: "PENDING_RESOLUTION",
+      snapshot: lockedSnapshot
+    };
+  }
+
+  if (input.resolution.outcome === "invalid") {
+    return {
+      action: "voided",
+      reason: "INVALID_RESOLUTION",
+      snapshot: settlePoolSnapshot(lockedSnapshot, "invalid", input.now)
+    };
+  }
+
+  const settled = settlePoolSnapshot(lockedSnapshot, input.resolution.outcome, input.now);
+  return {
+    action: settled.pool.status === "voided" ? "voided" : "settled",
+    reason: "DEFINITIVE_OUTCOME",
+    snapshot: settled
   };
 }
 
@@ -211,6 +340,27 @@ export function lockVoidReason(pool: DotCastPool): DotCastVoidReason | null {
   return null;
 }
 
+function withResolution(
+  snapshot: DotCastPoolSnapshot,
+  resolution: DotCastRouterResolution,
+  now: string
+): DotCastPoolSnapshot {
+  return {
+    ...snapshot,
+    lastResolution: resolution,
+    updatedAt: now
+  };
+}
+
+function isPastResolutionGrace(pool: DotCastPool, nowMs: number, maxGraceMs: number): boolean {
+  if (!pool.expectedResolveAt) {
+    return false;
+  }
+
+  const expectedMs = assertIso(pool.expectedResolveAt, "expectedResolveAt");
+  return nowMs > expectedMs + maxGraceMs;
+}
+
 function toSettlementEntry(entry: DotCastEntry): SettlementEntry {
   return {
     id: entry.id,
@@ -258,4 +408,14 @@ function houseRakeEntry(pool: DotCastPool, amount: number, now: string): HouseLe
     reason: "rake",
     createdAt: now
   };
+}
+
+function assertIso(value: string, label: string): number {
+  const parsed = Date.parse(value);
+
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`${label} must be an ISO timestamp`);
+  }
+
+  return parsed;
 }

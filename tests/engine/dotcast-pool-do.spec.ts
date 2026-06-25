@@ -312,6 +312,147 @@ describe("dotCast pool durable object", () => {
       }
     });
   });
+
+  it("applies router-shaped E2 resolutions and stores last resolution state", async () => {
+    const object = createObject();
+    await object.fetch(
+      jsonRequest("/create", createPayload({ id: "pool-do-resolution", minLiquidity: 1 }))
+    );
+    await object.fetch(
+      jsonRequest("/entries", {
+        userId: "yes-user",
+        side: "yes",
+        amount: 700,
+        entryId: "yes-entry",
+        now: "2099-06-25T17:01:00.000Z"
+      })
+    );
+    await object.fetch(
+      jsonRequest("/entries", {
+        userId: "no-user",
+        side: "no",
+        amount: 300,
+        entryId: "no-entry",
+        now: "2099-06-25T17:02:00.000Z"
+      })
+    );
+    await object.fetch(jsonRequest("/lock", { now: close }));
+
+    const held = await jsonBody(
+      await object.fetch(
+        jsonRequest("/resolution", {
+          marketId: "kalshi:demo-do",
+          outcome: "pending",
+          resolvedAt: null,
+          fetchedAt: "2099-06-25T17:06:00.000Z",
+          stale: false,
+          now: "2099-06-25T17:06:00.000Z",
+          maxGraceMs: 60_000
+        })
+      )
+    );
+    const settled = await jsonBody(
+      await object.fetch(
+        jsonRequest("/resolution", {
+          marketId: "kalshi:demo-do",
+          outcome: "yes",
+          resolvedAt: "2099-06-25T17:06:30.000Z",
+          fetchedAt: "2099-06-25T17:06:31.000Z",
+          stale: false,
+          source: "kalshi",
+          now: "2099-06-25T17:06:31.000Z"
+        })
+      )
+    );
+
+    expect(held).toMatchObject({
+      ok: true,
+      action: "held",
+      reason: "PENDING_RESOLUTION",
+      snapshot: {
+        pool: { status: "locked" },
+        lastResolution: { outcome: "pending" }
+      }
+    });
+    expect(settled).toMatchObject({
+      ok: true,
+      action: "settled",
+      reason: "DEFINITIVE_OUTCOME",
+      snapshot: {
+        pool: { status: "settled", outcome: "yes" },
+        lastResolution: { outcome: "yes", source: "kalshi" },
+        settlement: { payoutTotal: 985, rakeAmount: 15 }
+      }
+    });
+  });
+
+  it("voids stale E2 router resolutions after grace expires", async () => {
+    const object = createObject();
+    await object.fetch(
+      jsonRequest(
+        "/create",
+        createPayload({
+          id: "pool-do-grace",
+          minLiquidity: 1,
+          market: {
+            id: "kalshi:demo-do",
+            venue: "kalshi",
+            question: "Will the host land the next call?",
+            status: "open",
+            closeTime: close,
+            expectedResolveAt: "2099-06-25T17:10:00.000Z"
+          }
+        })
+      )
+    );
+    await object.fetch(
+      jsonRequest("/entries", {
+        userId: "yes-user",
+        side: "yes",
+        amount: 100,
+        entryId: "yes-entry",
+        now: "2099-06-25T17:01:00.000Z"
+      })
+    );
+    await object.fetch(
+      jsonRequest("/entries", {
+        userId: "no-user",
+        side: "no",
+        amount: 100,
+        entryId: "no-entry",
+        now: "2099-06-25T17:02:00.000Z"
+      })
+    );
+    await object.fetch(jsonRequest("/lock", { now: close }));
+
+    const voided = await jsonBody(
+      await object.fetch(
+        jsonRequest("/resolution", {
+          marketId: "kalshi:demo-do",
+          outcome: "yes",
+          resolvedAt: "2099-06-25T17:10:00.000Z",
+          fetchedAt: "2099-06-25T17:12:00.001Z",
+          stale: true,
+          now: "2099-06-25T17:12:00.001Z",
+          maxGraceMs: 120_000
+        })
+      )
+    );
+
+    expect(voided).toMatchObject({
+      ok: true,
+      action: "voided",
+      reason: "GRACE_TIMEOUT",
+      snapshot: {
+        pool: { status: "voided", outcome: null },
+        voidReason: "GRACE_TIMEOUT",
+        balances: {
+          "yes-user": { available: 10000, locked: 0 },
+          "no-user": { available: 10000, locked: 0 }
+        }
+      }
+    });
+  });
 });
 
 function createObject() {

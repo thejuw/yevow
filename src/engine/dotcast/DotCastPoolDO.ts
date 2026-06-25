@@ -6,15 +6,19 @@ import {
   type PlaceEntryInput
 } from "./PoolLifecycle";
 import {
+  applyRouterResolution,
   lockSnapshotIfNeeded,
   normalizePoolSnapshot,
   settlePoolSnapshot,
   voidPoolSnapshot
 } from "./PoolSettlement";
 import type {
-  DotCastVoidReason,
   DotCastEntry,
   DotCastPoolSnapshot,
+  DotCastResolutionOutcome,
+  DotCastRouterResolution,
+  DotCastVenue,
+  DotCastVoidReason,
   Side,
   StakeBalance
 } from "./types";
@@ -49,6 +53,17 @@ interface VoidPoolPayload {
   now?: string;
 }
 
+interface RouterResolutionPayload {
+  marketId?: unknown;
+  outcome?: unknown;
+  resolvedAt?: unknown;
+  fetchedAt?: unknown;
+  stale?: unknown;
+  source?: unknown;
+  now?: string;
+  maxGraceMs?: unknown;
+}
+
 export class DotCastPool {
   constructor(
     private readonly state: DurableObjectState,
@@ -77,6 +92,10 @@ export class DotCastPool {
 
       if (request.method === "POST" && url.pathname === "/settle") {
         return await this.settle(request);
+      }
+
+      if (request.method === "POST" && url.pathname === "/resolution") {
+        return await this.applyResolution(request);
       }
 
       if (request.method === "POST" && url.pathname === "/void") {
@@ -114,6 +133,7 @@ export class DotCastPool {
       houseLedger: [],
       settlement: null,
       voidReason: null,
+      lastResolution: null,
       updatedAt: now
     };
 
@@ -203,6 +223,26 @@ export class DotCastPool {
 
     await this.writeSnapshot(nextSnapshot);
     return jsonResponse({ ok: true, ...decorateSnapshot(nextSnapshot) });
+  }
+
+  private async applyResolution(request: Request): Promise<Response> {
+    const payload = await readJson<RouterResolutionPayload>(request);
+    const snapshot = await this.requireSnapshot();
+    const now = payload.now ?? new Date().toISOString();
+    const result = applyRouterResolution({
+      snapshot,
+      resolution: parseRouterResolution(payload, now),
+      now,
+      maxGraceMs: parseOptionalNonNegativeInteger(payload.maxGraceMs, "maxGraceMs")
+    });
+
+    await this.writeSnapshot(result.snapshot);
+    return jsonResponse({
+      ok: true,
+      action: result.action,
+      reason: result.reason,
+      ...decorateSnapshot(result.snapshot)
+    });
   }
 
   private async void(request: Request): Promise<Response> {
@@ -308,6 +348,80 @@ function parseOutcome(value: unknown): Side | "invalid" {
   }
 
   throw new Error("outcome must be yes, no, or invalid");
+}
+
+function parseResolutionOutcome(value: unknown): DotCastResolutionOutcome {
+  if (value === "yes" || value === "no" || value === "invalid" || value === "pending") {
+    return value;
+  }
+
+  throw new Error("resolution outcome must be yes, no, invalid, or pending");
+}
+
+function parseRouterResolution(
+  payload: RouterResolutionPayload,
+  fallbackFetchedAt: string
+): DotCastRouterResolution {
+  return {
+    marketId: parseRequiredString(payload.marketId, "resolution.marketId"),
+    outcome: parseResolutionOutcome(payload.outcome),
+    resolvedAt: parseNullableString(payload.resolvedAt, "resolution.resolvedAt"),
+    fetchedAt: parseOptionalString(payload.fetchedAt, "resolution.fetchedAt") ?? fallbackFetchedAt,
+    stale: typeof payload.stale === "boolean" ? payload.stale : false,
+    source: parseOptionalVenue(payload.source)
+  };
+}
+
+function parseRequiredString(value: unknown, label: string): string {
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value.trim();
+  }
+
+  throw new Error(`${label} is required`);
+}
+
+function parseOptionalString(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value.trim();
+  }
+
+  throw new Error(`${label} must be a non-empty string`);
+}
+
+function parseNullableString(value: unknown, label: string): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  return parseOptionalString(value, label) ?? null;
+}
+
+function parseOptionalVenue(value: unknown): DotCastVenue | undefined {
+  if (value === "kalshi" || value === "polymarket" || value === "dotcast" || value === "unknown") {
+    return value;
+  }
+
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  throw new Error("resolution.source must be a supported venue");
+}
+
+function parseOptionalNonNegativeInteger(value: unknown, label: string): number | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${label} must be a non-negative integer`);
+  }
+
+  return value;
 }
 
 function parseVoidReason(value: unknown): DotCastVoidReason {

@@ -8,6 +8,8 @@ export type PoolStatus = "open" | "locked" | "resolving" | "settled" | "voided";
 
 export type Side = "yes" | "no";
 
+export type DotCastResolutionOutcome = Side | "invalid" | "pending";
+
 export type DotCastVoidReason =
   | "UNDER_LIQUIDITY"
   | "ONE_SIDED_POOL"
@@ -94,6 +96,15 @@ export interface FreeEntryCredit {
   consumedByEntryId: string | null;
 }
 
+export interface DotCastRouterResolution {
+  marketId: string;
+  outcome: DotCastResolutionOutcome;
+  resolvedAt: string | null;
+  fetchedAt: string;
+  stale: boolean;
+  source?: DotCastVenue;
+}
+
 export interface HouseLedgerEntry {
   id: string;
   poolId: string;
@@ -120,5 +131,6 @@ export interface DotCastPoolSnapshot {
   houseLedger: HouseLedgerEntry[];
   settlement: DotCastSettlementRecord | null;
   voidReason: DotCastVoidReason | null;
+  lastResolution: DotCastRouterResolution | null;
   updatedAt: string;
 }

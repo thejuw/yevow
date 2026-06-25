@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   createPoolFromMarket,
+  applyRouterResolution,
   lockSnapshotIfNeeded,
   lockPoolIfNeeded,
   placeEntry,
@@ -330,6 +331,117 @@ describe("dotCast pool lifecycle", () => {
     expect(voided.balances["user-1"]).toMatchObject({ available: 300, locked: 0 });
     expect(replayed).toEqual(voided);
   });
+
+  it("settles only from non-stale definitive router resolutions in E2", () => {
+    const locked = twoSidedLockedSnapshot();
+
+    const result = applyRouterResolution({
+      snapshot: locked,
+      resolution: {
+        marketId: "kalshi:demo",
+        outcome: "yes",
+        resolvedAt: "2026-06-25T17:06:00.000Z",
+        fetchedAt: "2026-06-25T17:06:01.000Z",
+        stale: false,
+        source: "kalshi"
+      },
+      now: "2026-06-25T17:06:01.000Z"
+    });
+
+    expect(result.action).toBe("settled");
+    expect(result.reason).toBe("DEFINITIVE_OUTCOME");
+    expect(result.snapshot.pool).toMatchObject({ status: "settled", outcome: "yes" });
+    expect(result.snapshot.lastResolution).toMatchObject({ outcome: "yes", stale: false });
+  });
+
+  it("holds pending or stale E2 router resolutions before grace expires", () => {
+    const locked = twoSidedLockedSnapshot();
+
+    const pending = applyRouterResolution({
+      snapshot: locked,
+      resolution: {
+        marketId: "kalshi:demo",
+        outcome: "pending",
+        resolvedAt: null,
+        fetchedAt: "2026-06-25T17:10:30.000Z",
+        stale: false
+      },
+      now: "2026-06-25T17:10:30.000Z",
+      maxGraceMs: 60_000
+    });
+    const stale = applyRouterResolution({
+      snapshot: locked,
+      resolution: {
+        marketId: "kalshi:demo",
+        outcome: "yes",
+        resolvedAt: "2026-06-25T17:10:00.000Z",
+        fetchedAt: "2026-06-25T17:10:30.000Z",
+        stale: true
+      },
+      now: "2026-06-25T17:10:30.000Z",
+      maxGraceMs: 60_000
+    });
+
+    expect(pending).toMatchObject({
+      action: "held",
+      reason: "PENDING_RESOLUTION",
+      snapshot: { pool: { status: "locked" } }
+    });
+    expect(stale).toMatchObject({
+      action: "held",
+      reason: "STALE_RESOLUTION",
+      snapshot: { pool: { status: "locked" } }
+    });
+  });
+
+  it("voids E2 pending/stale resolutions after max grace without fabricating an outcome", () => {
+    const locked = twoSidedLockedSnapshot();
+
+    const result = applyRouterResolution({
+      snapshot: locked,
+      resolution: {
+        marketId: "kalshi:demo",
+        outcome: "pending",
+        resolvedAt: null,
+        fetchedAt: "2026-06-25T17:12:00.001Z",
+        stale: false
+      },
+      now: "2026-06-25T17:12:00.001Z",
+      maxGraceMs: 120_000
+    });
+
+    expect(result).toMatchObject({
+      action: "voided",
+      reason: "GRACE_TIMEOUT",
+      snapshot: {
+        pool: {
+          status: "voided",
+          outcome: null
+        },
+        voidReason: "GRACE_TIMEOUT",
+        balances: {
+          "yes-user": { available: 1000, locked: 0 },
+          "no-user": { available: 1000, locked: 0 }
+        }
+      }
+    });
+  });
+
+  it("rejects E2 router resolutions for the wrong market", () => {
+    expect(() =>
+      applyRouterResolution({
+        snapshot: twoSidedLockedSnapshot(),
+        resolution: {
+          marketId: "kalshi:wrong-market",
+          outcome: "yes",
+          resolvedAt: "2026-06-25T17:06:00.000Z",
+          fetchedAt: "2026-06-25T17:06:01.000Z",
+          stale: false
+        },
+        now: "2026-06-25T17:06:01.000Z"
+      })
+    ).toThrow(/marketId/);
+  });
 });
 
 function market(overrides: Partial<DotCastMarketSnapshot> = {}): DotCastMarketSnapshot {
@@ -378,6 +490,37 @@ function snapshotFromPlacement(
     houseLedger: [],
     settlement: null,
     voidReason: null,
+    lastResolution: null,
     updatedAt: now
   };
+}
+
+function twoSidedLockedSnapshot(): DotCastPoolSnapshot {
+  const pool = openPool({ minLiquidity: 1 });
+  const yes = placeEntry({
+    pool,
+    balance: stakeBalance({ userId: "yes-user", available: 1000, locked: 0 }),
+    userId: "yes-user",
+    side: "yes",
+    amount: 700,
+    now: "2026-06-25T17:01:00.000Z",
+    entryId: "yes-entry"
+  });
+  const no = placeEntry({
+    pool: yes.pool,
+    balance: stakeBalance({ userId: "no-user", available: 1000, locked: 0 }),
+    userId: "no-user",
+    side: "no",
+    amount: 300,
+    now: "2026-06-25T17:02:00.000Z",
+    entryId: "no-entry"
+  });
+
+  return lockSnapshotIfNeeded(
+    snapshotFromPlacement(no.pool, [yes.entry, no.entry], {
+      "yes-user": yes.balance,
+      "no-user": no.balance
+    }),
+    close
+  );
 }
