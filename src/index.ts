@@ -48,6 +48,7 @@ import {
   placeDotCastPoolEntry,
   pollDotCastPoolResolution,
   previewDotCastOdds,
+  readDotCastPoolLiveOdds,
   readDotCastPool,
   readDotCastHealth,
   settleDotCastPool,
@@ -111,6 +112,9 @@ gatewayRouter.post("/api/dotcast/settlement/simulate", async (c) =>
 );
 gatewayRouter.post("/api/dotcast/pools", async (c) => createDotCastPool(c.req.raw, c.env));
 gatewayRouter.get("/api/dotcast/pools/:id", async (c) => readDotCastPool(c.req.param("id"), c.env));
+gatewayRouter.get("/api/dotcast/pools/:id/odds", async (c) =>
+  readDotCastPoolLiveOdds(c.req.param("id"), c.req.raw, c.env)
+);
 gatewayRouter.post("/api/dotcast/pools/:id/entries", async (c) =>
   placeDotCastPoolEntry(c.req.param("id"), c.req.raw, c.env)
 );

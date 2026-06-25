@@ -1,10 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   applyDotCastPoolResolution,
   createDotCastPool,
   placeDotCastPoolEntry,
   pollDotCastPoolResolution,
   previewDotCastOdds,
+  readDotCastPoolLiveOdds,
   readDotCastHealth,
   settleDotCastPool,
   simulateDotCastSettlement,
@@ -13,6 +14,10 @@ import {
 import type { Env } from "../../src/types";
 
 describe("dotCast gateway handlers", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("reports milestone health without requiring funds or persistence", async () => {
     const response = readDotCastHealth();
     const body = (await response.json()) as Record<string, unknown>;
@@ -26,6 +31,7 @@ describe("dotCast gateway handlers", () => {
         e0: "parimutuel-core-ready",
         e1: "pool-lifecycle-core-ready",
         e2: "router-resolution-polling-ready",
+        e3: "live-odds-reference-endpoint-ready",
         e13: "resolution-router-not-started"
       }
     });
@@ -300,6 +306,127 @@ describe("dotCast gateway handlers", () => {
         }
       }
     ]);
+  });
+
+  it("reads E3 live odds and enriches them with router reference price", async () => {
+    const calls: string[] = [];
+    const env = envWithDotCastPool(async (request) => {
+      calls.push(
+        `${request.method} ${new URL(request.url).pathname}${new URL(request.url).search}`
+      );
+      return Response.json({
+        ok: true,
+        liveOdds: {
+          poolId: "pool-gateway",
+          marketId: "kalshi:gateway",
+          status: "open",
+          unit: "points",
+          odds: { yes: 0.7, no: 0.3 },
+          pools: { yes: 700, no: 300 },
+          totalStaked: 1000,
+          entryCount: 2,
+          updatedAt: "2026-06-25T17:02:00.000Z",
+          previews: {
+            yes: { "25": 34 },
+            no: { "25": 76 }
+          },
+          hypothetical: {
+            amount: 25,
+            payout: { yes: 34, no: 76 }
+          }
+        },
+        snapshot: {
+          pool: {
+            marketId: "kalshi:gateway"
+          }
+        }
+      });
+    }) as Env & {
+      DOTCAST_ROUTER_REFERENCE_PRICE_URL: string;
+      DOTCAST_ROUTER_REFERENCE_PRICE_TOKEN: string;
+    };
+    env.DOTCAST_ROUTER_REFERENCE_PRICE_URL = "https://router.test/markets/{marketId}";
+    env.DOTCAST_ROUTER_REFERENCE_PRICE_TOKEN = "token";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          market: {
+            id: "kalshi:gateway",
+            venue: "kalshi",
+            price: { yes: 0.62, no: 0.41 },
+            lastUpdated: "2026-06-25T17:02:01.000Z",
+            stale: false,
+            referenceUrl: "https://kalshi.example/markets/gateway"
+          }
+        })
+      )
+    );
+
+    const response = await readDotCastPoolLiveOdds(
+      "pool-gateway",
+      new Request("https://api.test/api/dotcast/pools/pool-gateway/odds?amount=25"),
+      env
+    );
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(200);
+    expect(calls).toEqual(["GET /odds?amount=25"]);
+    expect(body).toMatchObject({
+      ok: true,
+      liveOdds: {
+        marketId: "kalshi:gateway",
+        entryCount: 2,
+        hypothetical: {
+          amount: 25
+        }
+      },
+      referencePrice: {
+        available: true,
+        kind: "reference",
+        marketId: "kalshi:gateway",
+        venue: "kalshi",
+        price: { yes: 0.62, no: 0.41 },
+        stale: false,
+        referenceUrl: "https://kalshi.example/markets/gateway"
+      }
+    });
+  });
+
+  it("keeps E3 live odds available when router reference price is not configured", async () => {
+    const env = envWithDotCastPool(async () =>
+      Response.json({
+        ok: true,
+        liveOdds: {
+          poolId: "pool-gateway",
+          marketId: "kalshi:gateway",
+          status: "open",
+          unit: "points",
+          odds: { yes: 0.5, no: 0.5 },
+          pools: { yes: 0, no: 0 },
+          totalStaked: 0,
+          entryCount: 0,
+          updatedAt: "2026-06-25T17:02:00.000Z",
+          previews: { yes: {}, no: {} },
+          hypothetical: null
+        }
+      })
+    );
+
+    const response = await readDotCastPoolLiveOdds(
+      "pool-gateway",
+      new Request("https://api.test/api/dotcast/pools/pool-gateway/odds"),
+      env
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      ok: true,
+      referencePrice: {
+        available: false,
+        kind: "not_configured"
+      }
+    });
   });
 });
 

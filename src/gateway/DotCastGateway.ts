@@ -1,8 +1,11 @@
 import {
+  fetchDotCastReferencePrice,
   impliedProb,
   previewPayout,
   settleParimutuel,
+  type DotCastLiveOddsSnapshot,
   type DotCastMarketSnapshot,
+  type DotCastReferencePriceFetchResult,
   type DotCastResolutionOutcome,
   type SettlementEntry,
   type Side,
@@ -78,7 +81,7 @@ export function readDotCastHealth(): Response {
       e0: "parimutuel-core-ready",
       e1: "pool-lifecycle-core-ready",
       e2: "router-resolution-polling-ready",
-      e3: "live-reference-price-not-started",
+      e3: "live-odds-reference-endpoint-ready",
       e4: "void-refund-core-ready",
       e5: "settlement-rail-not-enabled",
       e6: "points-layer-not-started",
@@ -98,6 +101,7 @@ export function readDotCastHealth(): Response {
       "POST /api/dotcast/settlement/simulate",
       "POST /api/dotcast/pools",
       "GET /api/dotcast/pools/:id",
+      "GET /api/dotcast/pools/:id/odds",
       "POST /api/dotcast/pools/:id/entries",
       "POST /api/dotcast/pools/:id/lock",
       "POST /api/dotcast/pools/:id/settle",
@@ -127,6 +131,46 @@ export async function createDotCastPool(request: Request, env: Env): Promise<Res
 
 export async function readDotCastPool(poolId: string, env: Env): Promise<Response> {
   return proxyDotCastPoolRequest(env, poolId, "/", { method: "GET" });
+}
+
+export async function readDotCastPoolLiveOdds(
+  poolId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const requestUrl = new URL(request.url);
+  const pathname = `/odds${requestUrl.search}`;
+  const response = await proxyDotCastPoolRequest(env, poolId, pathname, { method: "GET" });
+
+  if (!response.ok) {
+    return response;
+  }
+
+  try {
+    const body = (await response.clone().json()) as Record<string, unknown>;
+    const marketId = extractLiveOddsMarketId(body);
+    const referencePrice = await fetchDotCastReferencePrice(
+      env,
+      marketId,
+      new Date().toISOString()
+    );
+
+    return json(
+      {
+        ...body,
+        referencePrice: toReferencePriceEnvelope(referencePrice)
+      },
+      response.status
+    );
+  } catch (error) {
+    return json(
+      {
+        ok: false,
+        error: error instanceof Error ? error.message : "Invalid pool odds response"
+      },
+      502
+    );
+  }
 }
 
 export async function placeDotCastPoolEntry(
@@ -557,6 +601,40 @@ async function proxyDotCastPoolRequest(
   );
 
   return withCors(response);
+}
+
+function extractLiveOddsMarketId(body: Record<string, unknown>): string {
+  const liveOdds = body.liveOdds as Partial<DotCastLiveOddsSnapshot> | undefined;
+
+  if (liveOdds && typeof liveOdds.marketId === "string" && liveOdds.marketId.length > 0) {
+    return liveOdds.marketId;
+  }
+
+  const snapshot = body.snapshot as { pool?: { marketId?: unknown } } | undefined;
+  const marketId = snapshot?.pool?.marketId;
+
+  if (typeof marketId === "string" && marketId.length > 0) {
+    return marketId;
+  }
+
+  throw new Error("pool odds response is missing marketId");
+}
+
+function toReferencePriceEnvelope(result: DotCastReferencePriceFetchResult) {
+  if (result.kind === "reference") {
+    return {
+      available: true,
+      kind: result.kind,
+      ...result.referencePrice
+    };
+  }
+
+  return {
+    available: false,
+    kind: result.kind,
+    error: result.error,
+    ...(result.kind === "unavailable" && result.status ? { status: result.status } : {})
+  };
 }
 
 function randomPoolId(marketId: string, now: string): string {

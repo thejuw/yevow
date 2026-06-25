@@ -25,6 +25,7 @@ import {
 } from "./RouterResolutionClient";
 import type {
   DotCastEntry,
+  DotCastLiveOddsSnapshot,
   DotCastPoolSnapshot,
   DotCastResolutionOutcome,
   DotCastRouterResolution,
@@ -98,6 +99,10 @@ export class DotCastPool {
         return await this.read();
       }
 
+      if (request.method === "GET" && url.pathname === "/odds") {
+        return await this.readOdds(request);
+      }
+
       if (request.method === "POST" && url.pathname === "/entries") {
         return await this.placeEntry(request);
       }
@@ -167,6 +172,18 @@ export class DotCastPool {
     const snapshot = await this.requireSnapshot();
     const lockedSnapshot = await this.lockIfNeeded(snapshot, new Date().toISOString());
     return jsonResponse({ ok: true, ...decorateSnapshot(lockedSnapshot) });
+  }
+
+  private async readOdds(request: Request): Promise<Response> {
+    const snapshot = await this.requireSnapshot();
+    const lockedSnapshot = await this.lockIfNeeded(snapshot, new Date().toISOString());
+    const amount = parseOptionalAmount(new URL(request.url).searchParams.get("amount"));
+
+    return jsonResponse({
+      ok: true,
+      liveOdds: buildLiveOdds(lockedSnapshot, amount),
+      ...decorateSnapshot(lockedSnapshot)
+    });
   }
 
   private async placeEntry(request: Request): Promise<Response> {
@@ -482,6 +499,42 @@ function decorateSnapshot(snapshot: DotCastPoolSnapshot) {
   };
 }
 
+function buildLiveOdds(
+  snapshot: DotCastPoolSnapshot,
+  hypotheticalAmount: number | null = null
+): DotCastLiveOddsSnapshot {
+  return {
+    poolId: snapshot.pool.id,
+    marketId: snapshot.pool.marketId,
+    status: snapshot.pool.status,
+    unit: snapshot.pool.unit,
+    odds: impliedProb(snapshot.pool.pools),
+    pools: snapshot.pool.pools,
+    totalStaked: snapshot.pool.pools.yes + snapshot.pool.pools.no,
+    entryCount: snapshot.entries.length,
+    updatedAt: snapshot.updatedAt,
+    previews: {
+      yes: previewForSide(snapshot, "yes"),
+      no: previewForSide(snapshot, "no")
+    },
+    hypothetical:
+      hypotheticalAmount !== null
+        ? {
+            amount: hypotheticalAmount,
+            payout: {
+              yes: previewPayout(
+                snapshot.pool.pools,
+                "yes",
+                hypotheticalAmount,
+                snapshot.pool.rake
+              ),
+              no: previewPayout(snapshot.pool.pools, "no", hypotheticalAmount, snapshot.pool.rake)
+            }
+          }
+        : null
+  };
+}
+
 function previewForSide(snapshot: DotCastPoolSnapshot, side: Side): Record<string, number> {
   return {
     "10": previewPayout(snapshot.pool.pools, side, 10, snapshot.pool.rake),
@@ -638,6 +691,20 @@ function parseVoidReason(value: unknown): DotCastVoidReason {
   }
 
   throw new Error("void reason is required");
+}
+
+function parseOptionalAmount(value: string | null): number | null {
+  if (value === null) {
+    return null;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error("amount must be a positive integer minor-unit amount");
+  }
+
+  return parsed;
 }
 
 function parseAmount(value: unknown): number {

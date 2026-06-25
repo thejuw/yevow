@@ -110,6 +110,54 @@ describe("dotCast pool durable object", () => {
     });
   });
 
+  it("exposes E3 live odds snapshots with entry counts and hypothetical payouts", async () => {
+    const object = createObject();
+    await object.fetch(jsonRequest("/create", createPayload({ id: "pool-do-odds" })));
+    await object.fetch(
+      jsonRequest("/entries", {
+        userId: "yes-user",
+        side: "yes",
+        amount: 700,
+        entryId: "yes-entry",
+        now: "2099-06-25T17:01:00.000Z"
+      })
+    );
+    await object.fetch(
+      jsonRequest("/entries", {
+        userId: "no-user",
+        side: "no",
+        amount: 300,
+        entryId: "no-entry",
+        now: "2099-06-25T17:02:00.000Z"
+      })
+    );
+
+    const odds = await jsonBody(
+      await object.fetch(new Request("https://dotcast.pool/odds?amount=700"))
+    );
+
+    expect(odds).toMatchObject({
+      ok: true,
+      liveOdds: {
+        poolId: "pool-do-odds",
+        marketId: "kalshi:demo-do",
+        status: "open",
+        unit: "points",
+        odds: { yes: 0.7, no: 0.3 },
+        pools: { yes: 700, no: 300 },
+        totalStaked: 1000,
+        entryCount: 2,
+        hypothetical: {
+          amount: 700,
+          payout: {
+            yes: 842,
+            no: 1165
+          }
+        }
+      }
+    });
+  });
+
   it("rejects entries after close and locks when requested at the boundary", async () => {
     const object = createObject();
     await object.fetch(

@@ -24,6 +24,37 @@ export interface SideTotals {
   no: number;
 }
 
+export interface DotCastReferencePrice {
+  marketId: string;
+  venue: DotCastVenue;
+  price: SideTotals;
+  lastUpdated: string;
+  stale: boolean;
+  sourceLabel: string;
+  referenceUrl: string | null;
+  fetchedAt: string;
+}
+
+export interface DotCastLiveOddsSnapshot {
+  poolId: string;
+  marketId: string;
+  status: PoolStatus;
+  unit: StakeUnit;
+  odds: SideTotals;
+  pools: SideTotals;
+  totalStaked: number;
+  entryCount: number;
+  updatedAt: string;
+  previews: {
+    yes: Record<string, number>;
+    no: Record<string, number>;
+  };
+  hypothetical: {
+    amount: number;
+    payout: Record<Side, number>;
+  } | null;
+}
+
 export interface DotCastPool {
   id: string;
   marketId: string;
