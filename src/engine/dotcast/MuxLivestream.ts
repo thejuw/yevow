@@ -398,11 +398,7 @@ export async function createMuxLiveStream(
     playback_policies: [config.playbackPolicy],
     reconnect_window: config.reconnectWindowSeconds,
     latency_mode: config.lowLatency ? "low" : "standard",
-    passthrough: input.passthrough ?? input.streamId,
-    meta: {
-      dotcast_stream_id: input.streamId,
-      ...(input.metadata ?? {})
-    }
+    passthrough: input.passthrough ?? input.streamId
   };
 
   if (config.recordingEnabled) {
