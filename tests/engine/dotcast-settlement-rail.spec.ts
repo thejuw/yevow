@@ -1,15 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyUsdcPoolTerminalSettlement,
   confirmMockWithdrawal,
   creditDevnetDeposit,
   DotCastSettlementRailError,
   readSolanaUsdcSettlementRailStatus,
   reconcileDevnetSettlementRail,
+  reserveUsdcPoolEntry,
   requestDevnetWithdrawal,
+  type DotCastPoolSnapshot,
   type DotCastSettlementBalance,
   type DotCastSettlementRailEvent,
   type DotCastSettlementRailStore,
-  type DotCastSettlementTransfer
+  type DotCastSettlementTransfer,
+  type DotCastUsdcPoolFundingEvent,
+  type DotCastUsdcPoolFundingLock,
+  type DotCastUsdcPoolFundingStore
 } from "../../src/engine/dotcast";
 
 describe("dotCast E5 Solana USDC devnet settlement rail", () => {
@@ -196,15 +202,85 @@ describe("dotCast E5 Solana USDC devnet settlement rail", () => {
       reason: "BALANCED"
     });
   });
+
+  it("reserves USDC for E6 pool entries and finalizes terminal payouts idempotently", async () => {
+    const store = new InMemorySettlementRailStore();
+    const env = devnetEnv({ DOTCAST_USDC_POOLS_ENABLED: "true" });
+
+    await creditDevnetDeposit(store, env, {
+      userId: "yes-user",
+      amount: 1_000,
+      txRef: "devnet-e6-yes",
+      confirmations: 1,
+      now: "2099-06-25T17:00:00.000Z"
+    });
+    await creditDevnetDeposit(store, env, {
+      userId: "no-user",
+      amount: 1_000,
+      txRef: "devnet-e6-no",
+      confirmations: 1,
+      now: "2099-06-25T17:00:00.000Z"
+    });
+
+    const yesLock = await reserveUsdcPoolEntry(store, env, {
+      poolId: "pool-e6",
+      entryId: "yes-entry",
+      userId: "yes-user",
+      amount: 700,
+      now: "2099-06-25T17:01:00.000Z"
+    });
+    const noLock = await reserveUsdcPoolEntry(store, env, {
+      poolId: "pool-e6",
+      entryId: "no-entry",
+      userId: "no-user",
+      amount: 300,
+      now: "2099-06-25T17:02:00.000Z"
+    });
+    const settled = settledUsdcSnapshot();
+    const applied = await applyUsdcPoolTerminalSettlement(store, env, {
+      snapshot: settled,
+      now: "2099-06-25T17:06:00.000Z"
+    });
+    const replayed = await applyUsdcPoolTerminalSettlement(store, env, {
+      snapshot: settled,
+      now: "2099-06-25T17:07:00.000Z"
+    });
+
+    expect(yesLock).toMatchObject({
+      status: "locked",
+      balance: { availableUsdc: 300, lockedPoolUsdc: 700 }
+    });
+    expect(noLock).toMatchObject({
+      status: "locked",
+      balance: { availableUsdc: 700, lockedPoolUsdc: 300 }
+    });
+    expect(applied).toMatchObject({ applied: 2, idempotent: 0 });
+    expect(replayed).toMatchObject({ applied: 0, idempotent: 2 });
+    expect(await store.getBalance("yes-user")).toMatchObject({
+      availableUsdc: 1_285,
+      lockedPoolUsdc: 0
+    });
+    expect(await store.getBalance("no-user")).toMatchObject({
+      availableUsdc: 700,
+      lockedPoolUsdc: 0
+    });
+    expect([...store.poolLocks.values()]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ entryId: "yes-entry", status: "settled", payout: 985 }),
+        expect.objectContaining({ entryId: "no-entry", status: "settled", payout: 0 })
+      ])
+    );
+  });
 });
 
-function devnetEnv() {
+function devnetEnv(overrides: Record<string, string> = {}) {
   return {
     DOTCAST_SETTLEMENT_RAIL_MODE: "devnet",
     DOTCAST_SOLANA_CLUSTER: "devnet",
     DOTCAST_SETTLEMENT_SIGNER_MODE: "mock",
     DOTCAST_DEPOSIT_CONFIRMATIONS_REQUIRED: "1",
-    DOTCAST_WITHDRAWAL_MAX_MINOR_UNITS: "1000000"
+    DOTCAST_WITHDRAWAL_MAX_MINOR_UNITS: "1000000",
+    ...overrides
   };
 }
 
@@ -217,10 +293,14 @@ function mainnetEnv() {
   };
 }
 
-class InMemorySettlementRailStore implements DotCastSettlementRailStore {
+class InMemorySettlementRailStore
+  implements DotCastSettlementRailStore, DotCastUsdcPoolFundingStore
+{
   readonly balances = new Map<string, DotCastSettlementBalance>();
   readonly transfers = new Map<string, DotCastSettlementTransfer>();
   readonly events: DotCastSettlementRailEvent[] = [];
+  readonly poolLocks = new Map<string, DotCastUsdcPoolFundingLock>();
+  readonly poolEvents: DotCastUsdcPoolFundingEvent[] = [];
 
   async getBalance(userId: string): Promise<DotCastSettlementBalance | null> {
     return this.balances.get(userId) ?? null;
@@ -263,4 +343,82 @@ class InMemorySettlementRailStore implements DotCastSettlementRailStore {
       this.events.push({ ...event });
     }
   }
+
+  async getPoolFundingLock(lockId: string): Promise<DotCastUsdcPoolFundingLock | null> {
+    return this.poolLocks.get(lockId) ?? null;
+  }
+
+  async insertPoolFundingLock(lock: DotCastUsdcPoolFundingLock): Promise<void> {
+    this.poolLocks.set(lock.lockId, { ...lock });
+  }
+
+  async updatePoolFundingLock(lock: DotCastUsdcPoolFundingLock): Promise<void> {
+    this.poolLocks.set(lock.lockId, { ...lock });
+  }
+
+  async appendPoolFundingEvent(event: DotCastUsdcPoolFundingEvent): Promise<void> {
+    if (!this.poolEvents.some((candidate) => candidate.eventId === event.eventId)) {
+      this.poolEvents.push({ ...event });
+    }
+  }
+}
+
+function settledUsdcSnapshot(): DotCastPoolSnapshot {
+  return {
+    pool: {
+      id: "pool-e6",
+      marketId: "kalshi:e6",
+      venue: "kalshi",
+      unit: "usdc",
+      question: "Will E6 settle USDC pools?",
+      status: "settled",
+      entryOpensAt: "2099-06-25T17:00:00.000Z",
+      entryClosesAt: "2099-06-25T17:05:00.000Z",
+      expectedResolveAt: "2099-06-25T17:10:00.000Z",
+      rake: 0.05,
+      pools: { yes: 700, no: 300 },
+      minLiquidity: 1,
+      createdAt: "2099-06-25T17:00:00.000Z",
+      settledAt: "2099-06-25T17:06:00.000Z",
+      outcome: "yes"
+    },
+    entries: [
+      {
+        id: "yes-entry",
+        poolId: "pool-e6",
+        userId: "yes-user",
+        side: "yes",
+        amount: 700,
+        funding: "user",
+        placedAt: "2099-06-25T17:01:00.000Z",
+        payout: 985,
+        refunded: false
+      },
+      {
+        id: "no-entry",
+        poolId: "pool-e6",
+        userId: "no-user",
+        side: "no",
+        amount: 300,
+        funding: "user",
+        placedAt: "2099-06-25T17:02:00.000Z",
+        payout: 0,
+        refunded: false
+      }
+    ],
+    balances: {},
+    houseLedger: [],
+    settlement: {
+      id: "settlement:pool-e6:yes",
+      poolId: "pool-e6",
+      outcome: "yes",
+      totalStaked: 1_000,
+      payoutTotal: 985,
+      rakeAmount: 15,
+      createdAt: "2099-06-25T17:06:00.000Z"
+    },
+    voidReason: null,
+    lastResolution: null,
+    updatedAt: "2099-06-25T17:06:00.000Z"
+  };
 }

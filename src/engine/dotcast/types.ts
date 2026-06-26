@@ -149,6 +149,7 @@ export interface DotCastSettlementBalance {
   availableUsdc: number;
   pendingDepositUsdc: number;
   pendingWithdrawalUsdc: number;
+  lockedPoolUsdc: number;
   updatedAt: string;
 }
 
@@ -182,6 +183,41 @@ export interface DotCastSettlementRailEvent {
   withdrawalId: string | null;
   status: DotCastSettlementTransferStatus | "reconciled" | null;
   reason: string | null;
+  eventJson: Record<string, unknown>;
+  createdAt: string;
+}
+
+export type DotCastUsdcPoolFundingLockStatus = "locked" | "released" | "settled" | "refunded";
+
+export type DotCastUsdcPoolFundingEventType =
+  | "POOL_ENTRY_RESERVED"
+  | "POOL_ENTRY_RELEASED"
+  | "POOL_ENTRY_SETTLED"
+  | "POOL_ENTRY_REFUNDED";
+
+export interface DotCastUsdcPoolFundingLock {
+  lockId: string;
+  poolId: string;
+  entryId: string;
+  userId: string;
+  amount: number;
+  status: DotCastUsdcPoolFundingLockStatus;
+  payout: number | null;
+  createdAt: string;
+  updatedAt: string;
+  eventJson: Record<string, unknown>;
+}
+
+export interface DotCastUsdcPoolFundingEvent {
+  eventId: string;
+  lockId: string;
+  poolId: string;
+  entryId: string;
+  userId: string;
+  eventType: DotCastUsdcPoolFundingEventType;
+  amount: number;
+  payout: number | null;
+  status: DotCastUsdcPoolFundingLockStatus;
   eventJson: Record<string, unknown>;
   createdAt: string;
 }

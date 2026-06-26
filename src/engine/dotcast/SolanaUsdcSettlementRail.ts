@@ -78,7 +78,8 @@ export class D1DotCastSettlementRailStore implements DotCastSettlementRailStore 
   async getBalance(userId: string): Promise<DotCastSettlementBalance | null> {
     const row = await this.db
       .prepare(
-        `SELECT user_id, available_usdc, pending_deposit_usdc, pending_withdrawal_usdc, updated_at
+        `SELECT user_id, available_usdc, pending_deposit_usdc, pending_withdrawal_usdc,
+                locked_pool_usdc, updated_at
          FROM dotcast_settlement_balances
          WHERE user_id = ?`
       )
@@ -92,12 +93,14 @@ export class D1DotCastSettlementRailStore implements DotCastSettlementRailStore 
     await this.db
       .prepare(
         `INSERT INTO dotcast_settlement_balances (
-           user_id, available_usdc, pending_deposit_usdc, pending_withdrawal_usdc, updated_at
-         ) VALUES (?, ?, ?, ?, ?)
+           user_id, available_usdc, pending_deposit_usdc, pending_withdrawal_usdc,
+           locked_pool_usdc, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(user_id) DO UPDATE SET
            available_usdc = excluded.available_usdc,
            pending_deposit_usdc = excluded.pending_deposit_usdc,
            pending_withdrawal_usdc = excluded.pending_withdrawal_usdc,
+           locked_pool_usdc = excluded.locked_pool_usdc,
            updated_at = excluded.updated_at`
       )
       .bind(
@@ -105,6 +108,7 @@ export class D1DotCastSettlementRailStore implements DotCastSettlementRailStore 
         balance.availableUsdc,
         balance.pendingDepositUsdc,
         balance.pendingWithdrawalUsdc,
+        balance.lockedPoolUsdc,
         balance.updatedAt
       )
       .run();
@@ -113,7 +117,8 @@ export class D1DotCastSettlementRailStore implements DotCastSettlementRailStore 
   async listBalances(): Promise<DotCastSettlementBalance[]> {
     const result = await this.db
       .prepare(
-        `SELECT user_id, available_usdc, pending_deposit_usdc, pending_withdrawal_usdc, updated_at
+        `SELECT user_id, available_usdc, pending_deposit_usdc, pending_withdrawal_usdc,
+                locked_pool_usdc, updated_at
          FROM dotcast_settlement_balances`
       )
       .all<Record<string, unknown>>();
@@ -595,6 +600,7 @@ export async function reconcileDevnetSettlementRail(
   availableUsdc: number;
   pendingDepositUsdc: number;
   pendingWithdrawalUsdc: number;
+  lockedPoolUsdc: number;
   driftUsdc: number;
   reconciledAt: string;
 }> {
@@ -607,11 +613,13 @@ export async function reconcileDevnetSettlementRail(
     (acc, balance) => ({
       availableUsdc: acc.availableUsdc + balance.availableUsdc,
       pendingDepositUsdc: acc.pendingDepositUsdc + balance.pendingDepositUsdc,
-      pendingWithdrawalUsdc: acc.pendingWithdrawalUsdc + balance.pendingWithdrawalUsdc
+      pendingWithdrawalUsdc: acc.pendingWithdrawalUsdc + balance.pendingWithdrawalUsdc,
+      lockedPoolUsdc: acc.lockedPoolUsdc + balance.lockedPoolUsdc
     }),
-    { availableUsdc: 0, pendingDepositUsdc: 0, pendingWithdrawalUsdc: 0 }
+    { availableUsdc: 0, pendingDepositUsdc: 0, pendingWithdrawalUsdc: 0, lockedPoolUsdc: 0 }
   );
-  const internalLiabilityUsdc = totals.availableUsdc + totals.pendingWithdrawalUsdc;
+  const internalLiabilityUsdc =
+    totals.availableUsdc + totals.pendingWithdrawalUsdc + totals.lockedPoolUsdc;
   const driftUsdc = input.custodiedAmount - internalLiabilityUsdc;
 
   await store.appendEvent({
@@ -711,6 +719,7 @@ function emptyBalance(userId: string, now: string): DotCastSettlementBalance {
     availableUsdc: 0,
     pendingDepositUsdc: 0,
     pendingWithdrawalUsdc: 0,
+    lockedPoolUsdc: 0,
     updatedAt: now
   };
 }
@@ -803,6 +812,7 @@ function balanceFromRow(row: Record<string, unknown>): DotCastSettlementBalance 
     availableUsdc: Number(row.available_usdc ?? 0),
     pendingDepositUsdc: Number(row.pending_deposit_usdc ?? 0),
     pendingWithdrawalUsdc: Number(row.pending_withdrawal_usdc ?? 0),
+    lockedPoolUsdc: Number(row.locked_pool_usdc ?? 0),
     updatedAt: String(row.updated_at)
   };
 }

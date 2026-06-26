@@ -23,6 +23,7 @@ import {
   fetchDotCastRouterResolution,
   type DotCastRouterResolutionFetchResult
 } from "./RouterResolutionClient";
+import { applyUsdcPoolTerminalSettlement, D1DotCastUsdcPoolFundingStore } from "./UsdcPoolFunding";
 import type {
   DotCastEntry,
   DotCastLiveOddsSnapshot,
@@ -50,6 +51,11 @@ interface PlaceEntryPayload {
   amount?: unknown;
   now?: string;
   entryId?: string;
+  settlementFunding?: {
+    rail?: unknown;
+    lockId?: unknown;
+    reservedAmount?: unknown;
+  };
 }
 
 interface LockPoolPayload {
@@ -193,6 +199,11 @@ export class DotCastPool {
     const userId = parseUserId(payload.userId);
     const side = parseSide(payload.side);
     const amount = parseAmount(payload.amount);
+    const settlementFunding = parseSettlementFunding(
+      payload.settlementFunding,
+      snapshot.pool.unit,
+      amount
+    );
     const existingEntry = payload.entryId
       ? snapshot.entries.find((entry) => entry.id === payload.entryId)
       : null;
@@ -207,7 +218,13 @@ export class DotCastPool {
       });
     }
 
-    const balance = snapshot.balances[userId] ?? seedBalance(userId, snapshot.pool.unit);
+    const currentBalance = snapshot.balances[userId] ?? seedBalance(userId, snapshot.pool.unit);
+    const balance = settlementFunding
+      ? {
+          ...currentBalance,
+          available: currentBalance.available + settlementFunding.reservedAmount
+        }
+      : currentBalance;
     const input: PlaceEntryInput = {
       pool: snapshot.pool,
       balance,
@@ -235,6 +252,15 @@ export class DotCastPool {
       ok: true,
       entry: result.entry,
       balance: result.balance,
+      ...(settlementFunding
+        ? {
+            settlementFunding: {
+              rail: settlementFunding.rail,
+              lockId: settlementFunding.lockId,
+              reservedAmount: settlementFunding.reservedAmount
+            }
+          }
+        : {}),
       ...decorateSnapshot(nextSnapshot)
     };
     await this.audit("entry", responseBody);
@@ -444,6 +470,7 @@ export class DotCastPool {
   private async persistSnapshot(snapshot: DotCastPoolSnapshot, now: string): Promise<void> {
     await this.writeSnapshot(snapshot);
     await this.reconcileResolutionAlarm(snapshot, now);
+    await this.reconcileUsdcPoolFunding(snapshot, now);
   }
 
   private async reconcileResolutionAlarm(
@@ -485,6 +512,28 @@ export class DotCastPool {
         error instanceof Error ? error.message : error
       );
     }
+  }
+
+  private async reconcileUsdcPoolFunding(
+    snapshot: DotCastPoolSnapshot,
+    now: string
+  ): Promise<void> {
+    if (
+      snapshot.pool.unit !== "usdc" ||
+      (snapshot.pool.status !== "settled" && snapshot.pool.status !== "voided")
+    ) {
+      return;
+    }
+
+    if (!this.env.TRADING_DB) {
+      throw new Error("E6 USDC pool funding database is not configured");
+    }
+
+    await applyUsdcPoolTerminalSettlement(
+      new D1DotCastUsdcPoolFundingStore(this.env.TRADING_DB),
+      this.env,
+      { snapshot, now }
+    );
   }
 }
 
@@ -574,6 +623,34 @@ function parseSide(value: unknown): Side {
   }
 
   throw new Error("side must be yes or no");
+}
+
+function parseSettlementFunding(
+  value: PlaceEntryPayload["settlementFunding"],
+  unit: StakeBalance["unit"],
+  amount: number
+): { rail: string; lockId: string; reservedAmount: number } | null {
+  if (unit !== "usdc") {
+    return null;
+  }
+
+  if (!value || typeof value !== "object") {
+    throw new Error("usdc entries require an E6 settlement funding reservation");
+  }
+
+  const rail = parseRequiredString(value.rail, "settlementFunding.rail");
+  const lockId = parseRequiredString(value.lockId, "settlementFunding.lockId");
+  const reservedAmount = parseAmount(value.reservedAmount);
+
+  if (rail !== "solana-usdc-devnet") {
+    throw new Error("usdc entries require a solana-usdc-devnet funding rail");
+  }
+
+  if (reservedAmount !== amount) {
+    throw new Error("settlement funding reservation must equal entry amount");
+  }
+
+  return { rail, lockId, reservedAmount };
 }
 
 function parseOutcome(value: unknown): Side | "invalid" {

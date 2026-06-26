@@ -136,7 +136,7 @@ describe("dotCast gateway handlers", () => {
     });
   });
 
-  it("rejects public USDC pool creation until the settlement rail exists", async () => {
+  it("rejects public USDC pool creation until E6 funding is enabled", async () => {
     const response = await createDotCastPool(
       jsonRequest("/api/dotcast/pools", {
         id: "pool-usdc",
@@ -158,7 +158,44 @@ describe("dotCast gateway handlers", () => {
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({
       ok: false,
-      error: "usdc pools are disabled until the settlement rail is enabled"
+      error: "usdc pools are disabled until the E6 pool funding rail is enabled"
+    });
+  });
+
+  it("allows devnet-gated USDC pool creation once E6 funding is ready", async () => {
+    const calls: string[] = [];
+    const env = envWithDotCastPoolAndSettlementRail(async (request) => {
+      calls.push(`${request.method} ${new URL(request.url).pathname}`);
+      const body = await request.json<Record<string, unknown>>();
+      return Response.json({
+        ok: true,
+        created: true,
+        snapshot: { pool: { id: body.id, unit: body.unit } }
+      });
+    });
+    const response = await createDotCastPool(
+      jsonRequest("/api/dotcast/pools", {
+        id: "pool-usdc",
+        market: {
+          id: "kalshi:gateway",
+          venue: "kalshi",
+          question: "Will gateway creation work?",
+          status: "open",
+          closeTime: "2026-06-25T17:05:00.000Z",
+          expectedResolveAt: null
+        },
+        unit: "usdc",
+        entryClosesAt: "2026-06-25T17:05:00.000Z",
+        now: "2026-06-25T17:00:00.000Z"
+      }),
+      env
+    );
+
+    expect(response.status).toBe(200);
+    expect(calls).toEqual(["POST /create"]);
+    expect(await response.json()).toMatchObject({
+      ok: true,
+      snapshot: { pool: { id: "pool-usdc", unit: "usdc" } }
     });
   });
 
@@ -243,6 +280,10 @@ describe("dotCast gateway handlers", () => {
     const calls: string[] = [];
     const env = envWithDotCastPool(async (request) => {
       calls.push(`${request.method} ${new URL(request.url).pathname}`);
+      if (request.method === "GET") {
+        return Response.json({ ok: true, snapshot: { pool: { unit: "points" } } });
+      }
+
       const body = await request.json<Record<string, unknown>>();
       return Response.json({ ok: true, entry: body });
     });
@@ -259,7 +300,7 @@ describe("dotCast gateway handlers", () => {
     const body = (await response.json()) as Record<string, unknown>;
 
     expect(response.status).toBe(200);
-    expect(calls).toEqual(["POST /entries"]);
+    expect(calls).toEqual(["GET /", "POST /entries"]);
     expect(body.entry).toMatchObject({
       userId: "user-1",
       side: "yes",
@@ -268,6 +309,78 @@ describe("dotCast gateway handlers", () => {
     expect((body.entry as Record<string, unknown>).entryId).toEqual(
       expect.stringMatching(/^entry:/)
     );
+  });
+
+  it("reserves E6 USDC pool funding before forwarding entries", async () => {
+    const calls: Array<{ route: string; body: Record<string, unknown> | null }> = [];
+    const env = envWithDotCastPoolAndSettlementRail(async (request) => {
+      const route = `${request.method} ${new URL(request.url).pathname}`;
+      if (request.method === "GET") {
+        calls.push({ route, body: null });
+        return Response.json({ ok: true, snapshot: { pool: { unit: "usdc" } } });
+      }
+
+      const body = await request.json<Record<string, unknown>>();
+      calls.push({ route, body });
+      return Response.json({
+        ok: true,
+        entry: body,
+        balance: { available: 0, locked: body.amount },
+        snapshot: { pool: { unit: "usdc" } }
+      });
+    });
+
+    await recordDotCastDevnetDeposit(
+      jsonRequest("/api/dotcast/settlement-rail/deposits/devnet", {
+        userId: "user-usdc-entry",
+        amount: 1_000,
+        txRef: "gateway-e6-deposit",
+        confirmations: 1,
+        now: "2099-06-25T17:00:00.000Z"
+      }),
+      env
+    );
+    const response = await placeDotCastPoolEntry(
+      "pool-usdc-gateway",
+      jsonRequest("/api/dotcast/pools/pool-usdc-gateway/entries", {
+        userId: "user-usdc-entry",
+        side: "yes",
+        amount: 250,
+        entryId: "entry-usdc-gateway",
+        now: "2099-06-25T17:01:00.000Z"
+      }),
+      env
+    );
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(200);
+    expect(calls).toEqual([
+      { route: "GET /", body: null },
+      {
+        route: "POST /entries",
+        body: expect.objectContaining({
+          userId: "user-usdc-entry",
+          amount: 250,
+          entryId: "entry-usdc-gateway",
+          settlementFunding: {
+            rail: "solana-usdc-devnet",
+            lockId: "dotcast:e6:pool-lock:pool-usdc-gateway:entry-usdc-gateway",
+            reservedAmount: 250
+          }
+        })
+      }
+    ]);
+    expect(body).toMatchObject({
+      ok: true,
+      settlementFunding: {
+        milestone: "E6",
+        status: "locked",
+        balance: {
+          availableUsdc: 750,
+          lockedPoolUsdc: 250
+        }
+      }
+    });
   });
 
   it("proxies settlement and admin void requests through the pool object", async () => {
@@ -528,6 +641,18 @@ function envWithDotCastPool(handler: (request: Request) => Promise<Response> | R
   } as Env;
 }
 
+function envWithDotCastPoolAndSettlementRail(
+  handler: (request: Request) => Promise<Response> | Response
+): Env {
+  return {
+    ...envWithSettlementRailDb(),
+    DOTCAST_POOL: {
+      idFromName: (name: string) => ({ name }) as unknown as DurableObjectId,
+      get: () => ({ fetch: handler }) as unknown as DurableObjectStub
+    } as unknown as DurableObjectNamespace
+  } as Env;
+}
+
 function envWithSettlementRailDb(): Env {
   const d1 = new FakeSettlementRailD1();
 
@@ -537,7 +662,8 @@ function envWithSettlementRailDb(): Env {
     DOTCAST_SOLANA_CLUSTER: "devnet",
     DOTCAST_SETTLEMENT_SIGNER_MODE: "mock",
     DOTCAST_DEPOSIT_CONFIRMATIONS_REQUIRED: "1",
-    DOTCAST_WITHDRAWAL_MAX_MINOR_UNITS: "1000000"
+    DOTCAST_WITHDRAWAL_MAX_MINOR_UNITS: "1000000",
+    DOTCAST_USDC_POOLS_ENABLED: "true"
   } as Env;
 }
 
@@ -545,6 +671,8 @@ class FakeSettlementRailD1 {
   readonly balances = new Map<string, Record<string, unknown>>();
   readonly transfers = new Map<string, Record<string, unknown>>();
   readonly events = new Map<string, Record<string, unknown>>();
+  readonly poolLocks = new Map<string, Record<string, unknown>>();
+  readonly poolEvents = new Map<string, Record<string, unknown>>();
 
   prepare(query: string) {
     return {
@@ -566,6 +694,10 @@ class FakeSettlementRailD1 {
 
     if (query.includes("WHERE transfer_id = ?")) {
       return this.transfers.get(String(params[0])) ?? null;
+    }
+
+    if (query.includes("FROM dotcast_usdc_pool_locks")) {
+      return this.poolLocks.get(String(params[0])) ?? null;
     }
 
     if (query.includes("WHERE tx_ref = ?")) {
@@ -594,7 +726,8 @@ class FakeSettlementRailD1 {
         available_usdc: params[1],
         pending_deposit_usdc: params[2],
         pending_withdrawal_usdc: params[3],
-        updated_at: params[4]
+        locked_pool_usdc: params[4],
+        updated_at: params[5]
       });
       return;
     }
@@ -651,6 +784,52 @@ class FakeSettlementRailD1 {
         reason: params[10],
         event_json: params[11],
         created_at: params[12]
+      });
+      return;
+    }
+
+    if (query.includes("INSERT INTO dotcast_usdc_pool_locks")) {
+      this.poolLocks.set(String(params[0]), {
+        lock_id: params[0],
+        pool_id: params[1],
+        entry_id: params[2],
+        user_id: params[3],
+        amount: params[4],
+        status: params[5],
+        payout: params[6],
+        created_at: params[7],
+        updated_at: params[8],
+        event_json: params[9]
+      });
+      return;
+    }
+
+    if (query.includes("UPDATE dotcast_usdc_pool_locks")) {
+      const lockId = String(params[4]);
+      const existing = this.poolLocks.get(lockId) ?? {};
+      this.poolLocks.set(lockId, {
+        ...existing,
+        status: params[0],
+        payout: params[1],
+        updated_at: params[2],
+        event_json: params[3]
+      });
+      return;
+    }
+
+    if (query.includes("INSERT OR IGNORE INTO dotcast_usdc_pool_events")) {
+      this.poolEvents.set(String(params[0]), {
+        event_id: params[0],
+        lock_id: params[1],
+        pool_id: params[2],
+        entry_id: params[3],
+        user_id: params[4],
+        event_type: params[5],
+        amount: params[6],
+        payout: params[7],
+        status: params[8],
+        event_json: params[9],
+        created_at: params[10]
       });
     }
   }

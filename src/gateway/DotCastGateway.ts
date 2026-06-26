@@ -2,17 +2,23 @@ import {
   confirmMockWithdrawal,
   creditDevnetDeposit,
   D1DotCastSettlementRailStore,
+  D1DotCastUsdcPoolFundingStore,
   DotCastSettlementRailError,
+  DotCastUsdcPoolFundingError,
   fetchDotCastReferencePrice,
   impliedProb,
   previewPayout,
   readSettlementBalance,
   readSolanaUsdcSettlementRailStatus,
+  readUsdcPoolFundingStatus,
   reconcileDevnetSettlementRail,
+  releaseUsdcPoolEntryReservation,
+  reserveUsdcPoolEntry,
   requestDevnetWithdrawal,
   settleParimutuel,
   type DotCastLiveOddsSnapshot,
   type DotCastMarketSnapshot,
+  type DotCastPoolSnapshot,
   type DotCastReferencePriceFetchResult,
   type DotCastResolutionOutcome,
   type SettlementEntry,
@@ -53,6 +59,14 @@ interface DotCastPlaceEntryRequest {
   amount?: unknown;
   now?: unknown;
   entryId?: unknown;
+}
+
+interface ParsedDotCastPlaceEntry {
+  userId: string;
+  side: Side;
+  amount: number;
+  now?: string;
+  entryId: string;
 }
 
 interface DotCastSettlePoolRequest {
@@ -108,6 +122,7 @@ interface DotCastReconcileRailRequest {
 
 export function readDotCastHealth(env?: Env): Response {
   const settlementRail = env ? readSolanaUsdcSettlementRailStatus(env) : null;
+  const usdcPoolFunding = env ? readUsdcPoolFundingStatus(env) : null;
 
   return json({
     ok: true,
@@ -120,7 +135,7 @@ export function readDotCastHealth(env?: Env): Response {
       e3: "live-odds-reference-endpoint-ready",
       e4: "void-refund-core-ready",
       e5: "solana-usdc-devnet-mock-rail-ready",
-      e6: "points-layer-not-started",
+      e6: "usdc-pool-funding-devnet-ready",
       e7: "audit-ledger-core-ready",
       e8: "gamification-not-started",
       e9: "rewarded-ad-onramp-not-started",
@@ -129,9 +144,11 @@ export function readDotCastHealth(env?: Env): Response {
       e12: "referrals-not-started",
       e13: "resolution-router-not-started",
       persistence: "durable-object-ready",
-      settlementRail: settlementRail?.ready ? "devnet-mock-ready" : "devnet-mock-code-ready"
+      settlementRail: settlementRail?.ready ? "devnet-mock-ready" : "devnet-mock-code-ready",
+      usdcPoolFunding: usdcPoolFunding?.ready ? "devnet-ready" : "devnet-code-ready"
     },
     ...(settlementRail ? { settlementRail } : {}),
+    ...(usdcPoolFunding ? { usdcPoolFunding } : {}),
     routes: [
       "GET /api/dotcast/health",
       "POST /api/dotcast/preview",
@@ -281,13 +298,17 @@ export async function reconcileDotCastDevnetSettlementRail(
 export async function createDotCastPool(request: Request, env: Env): Promise<Response> {
   try {
     const body = await readJsonBody<DotCastCreatePoolRequest>(request);
-    const payload = parseCreatePoolPayload(body);
+    const payload = parseCreatePoolPayload(body, env);
     const poolId = payload.id;
     return proxyDotCastPoolRequest(env, poolId, "/create", {
       method: "POST",
       body: JSON.stringify(payload)
     });
   } catch (error) {
+    if (error instanceof DotCastUsdcPoolFundingError) {
+      return settlementRailErrorResponse(error, "E6");
+    }
+
     return json(
       { ok: false, error: error instanceof Error ? error.message : "Invalid request" },
       400
@@ -353,12 +374,21 @@ export async function placeDotCastPoolEntry(
       now: parseOptionalString(body?.now, "now"),
       entryId: parseOptionalString(body?.entryId, "entryId") ?? randomId("entry")
     };
+    const poolUnit = await readDotCastPoolUnit(poolId, env);
+
+    if (poolUnit === "usdc") {
+      return placeDotCastUsdcPoolEntry(poolId, payload, env);
+    }
 
     return proxyDotCastPoolRequest(env, poolId, "/entries", {
       method: "POST",
       body: JSON.stringify(payload)
     });
   } catch (error) {
+    if (error instanceof DotCastUsdcPoolFundingError) {
+      return settlementRailErrorResponse(error, "E6");
+    }
+
     return json(
       { ok: false, error: error instanceof Error ? error.message : "Invalid request" },
       400
@@ -557,14 +587,14 @@ function parseEntries(value: unknown): SettlementEntry[] {
   });
 }
 
-function parseCreatePoolPayload(body: DotCastCreatePoolRequest | null) {
+function parseCreatePoolPayload(body: DotCastCreatePoolRequest | null, env: Env) {
   const now = parseOptionalString(body?.now, "now") ?? new Date().toISOString();
   const market = parseMarketSnapshot(body?.market);
   const unit = parseStakeUnit(body?.unit ?? "points");
   const id = parseOptionalString(body?.id, "id") ?? randomPoolId(market.id, now);
 
-  if (unit !== "points") {
-    throw new Error("usdc pools are disabled until the settlement rail is enabled");
+  if (unit === "usdc" && !readUsdcPoolFundingStatus(env).ready) {
+    throw new Error("usdc pools are disabled until the E6 pool funding rail is enabled");
   }
 
   return {
@@ -769,6 +799,77 @@ async function proxyDotCastPoolRequest(
   return withCors(response);
 }
 
+async function placeDotCastUsdcPoolEntry(
+  poolId: string,
+  payload: ParsedDotCastPlaceEntry,
+  env: Env
+): Promise<Response> {
+  const store = usdcPoolFundingStore(env);
+  const now = payload.now ?? new Date().toISOString();
+  const reservation = await reserveUsdcPoolEntry(store, env, {
+    poolId,
+    entryId: payload.entryId,
+    userId: payload.userId,
+    amount: payload.amount,
+    now
+  });
+  const response = await proxyDotCastPoolRequest(env, poolId, "/entries", {
+    method: "POST",
+    body: JSON.stringify({
+      ...payload,
+      now,
+      settlementFunding: {
+        rail: "solana-usdc-devnet",
+        lockId: reservation.lock.lockId,
+        reservedAmount: payload.amount
+      }
+    })
+  });
+
+  if (!response.ok) {
+    await releaseUsdcPoolEntryReservation(store, env, {
+      poolId,
+      entryId: payload.entryId,
+      userId: payload.userId,
+      reason: `pool_entry_rejected:${response.status}`,
+      now
+    });
+    return response;
+  }
+
+  const body = (await response.json()) as Record<string, unknown>;
+  return json(
+    {
+      ...body,
+      settlementFunding: {
+        milestone: "E6",
+        status: reservation.status,
+        idempotent: reservation.idempotent,
+        lock: reservation.lock,
+        balance: reservation.balance
+      }
+    },
+    response.status
+  );
+}
+
+async function readDotCastPoolUnit(poolId: string, env: Env): Promise<StakeUnit> {
+  const response = await proxyDotCastPoolRequest(env, poolId, "/", { method: "GET" });
+
+  if (!response.ok) {
+    throw new Error(`pool read failed before entry placement: ${response.status}`);
+  }
+
+  const body = (await response.json()) as { snapshot?: Partial<DotCastPoolSnapshot> };
+  const unit = body.snapshot?.pool?.unit;
+
+  if (unit !== "points" && unit !== "usdc") {
+    throw new Error("pool snapshot is missing stake unit");
+  }
+
+  return unit;
+}
+
 function settlementRailStore(env: Env): D1DotCastSettlementRailStore {
   if (!env.TRADING_DB) {
     throw new DotCastSettlementRailError(
@@ -781,12 +882,36 @@ function settlementRailStore(env: Env): D1DotCastSettlementRailStore {
   return new D1DotCastSettlementRailStore(env.TRADING_DB);
 }
 
-function settlementRailErrorResponse(error: unknown): Response {
+function usdcPoolFundingStore(env: Env): D1DotCastUsdcPoolFundingStore {
+  if (!env.TRADING_DB) {
+    throw new DotCastUsdcPoolFundingError(
+      "SETTLEMENT_DB_NOT_CONFIGURED",
+      "E6 USDC pool funding database is not configured",
+      503
+    );
+  }
+
+  return new D1DotCastUsdcPoolFundingStore(env.TRADING_DB);
+}
+
+function settlementRailErrorResponse(error: unknown, milestone = "E5"): Response {
   if (error instanceof DotCastSettlementRailError) {
     return json(
       {
         ok: false,
-        milestone: "E5",
+        milestone,
+        code: error.code,
+        error: error.message
+      },
+      error.status
+    );
+  }
+
+  if (error instanceof DotCastUsdcPoolFundingError) {
+    return json(
+      {
+        ok: false,
+        milestone: "E6",
         code: error.code,
         error: error.message
       },
@@ -797,7 +922,7 @@ function settlementRailErrorResponse(error: unknown): Response {
   return json(
     {
       ok: false,
-      milestone: "E5",
+      milestone,
       error: error instanceof Error ? error.message : "Invalid request"
     },
     400

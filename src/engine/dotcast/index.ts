@@ -7,3 +7,4 @@ export * from "./RouterReferencePriceClient";
 export * from "./RouterResolutionClient";
 export * from "./SolanaUsdcSettlementRail";
 export * from "./types";
+export * from "./UsdcPoolFunding";

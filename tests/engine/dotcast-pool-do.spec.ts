@@ -110,6 +110,66 @@ describe("dotCast pool durable object", () => {
     });
   });
 
+  it("requires E6 settlement funding reservations for USDC entries", async () => {
+    const object = createObject();
+    await object.fetch(
+      jsonRequest("/create", createPayload({ id: "pool-do-usdc", unit: "usdc", minLiquidity: 0 }))
+    );
+
+    const unfunded = await object.fetch(
+      jsonRequest("/entries", {
+        userId: "user-usdc",
+        side: "yes",
+        amount: 250,
+        entryId: "entry-usdc",
+        now: "2099-06-25T17:01:00.000Z"
+      })
+    );
+    const funded = await jsonBody(
+      await object.fetch(
+        jsonRequest("/entries", {
+          userId: "user-usdc",
+          side: "yes",
+          amount: 250,
+          entryId: "entry-usdc",
+          now: "2099-06-25T17:01:00.000Z",
+          settlementFunding: {
+            rail: "solana-usdc-devnet",
+            lockId: "dotcast:e6:pool-lock:pool-do-usdc:entry-usdc",
+            reservedAmount: 250
+          }
+        })
+      )
+    );
+
+    expect(unfunded.status).toBe(400);
+    expect(await jsonBody(unfunded)).toMatchObject({
+      ok: false,
+      error: "usdc entries require an E6 settlement funding reservation"
+    });
+    expect(funded).toMatchObject({
+      ok: true,
+      entry: {
+        id: "entry-usdc",
+        amount: 250
+      },
+      balance: {
+        available: 0,
+        locked: 250
+      },
+      settlementFunding: {
+        rail: "solana-usdc-devnet",
+        reservedAmount: 250
+      },
+      snapshot: {
+        pool: {
+          unit: "usdc",
+          pools: { yes: 250, no: 0 }
+        }
+      }
+    });
+  });
+
   it("exposes E3 live odds snapshots with entry counts and hypothetical payouts", async () => {
     const object = createObject();
     await object.fetch(jsonRequest("/create", createPayload({ id: "pool-do-odds" })));
