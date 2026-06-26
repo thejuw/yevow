@@ -1,9 +1,12 @@
 import {
   confirmMockWithdrawal,
+  applyDotCastGamificationSettlement,
   creditDevnetDeposit,
   D1DotCastSettlementRailStore,
+  D1DotCastGamificationStore,
   D1DotCastUsdcPoolFundingStore,
   D1DotCastLivestreamStore,
+  DotCastGamificationError,
   DotCastSettlementRailError,
   DotCastLivestreamError,
   DotCastUsdcPoolFundingError,
@@ -15,6 +18,8 @@ import {
   parseVerifiedMuxWebhook,
   previewPayout,
   readSettlementBalance,
+  readDotCastGamificationStatus,
+  readDotCastGamificationUserSummary,
   readMuxLivestreamConfig,
   readSolanaUsdcSettlementRailStatus,
   readUsdcPoolFundingStatus,
@@ -159,6 +164,9 @@ export function readDotCastHealth(env?: Env): Response {
   const settlementRail = env ? readSolanaUsdcSettlementRailStatus(env) : null;
   const usdcPoolFunding = env ? readUsdcPoolFundingStatus(env) : null;
   const livestream = env ? readMuxLivestreamConfig(env) : null;
+  const gamification = env
+    ? readDotCastGamificationStatus(env, Boolean(env.DOTCAST_DB ?? env.TRADING_DB))
+    : null;
 
   return json({
     ok: true,
@@ -173,7 +181,7 @@ export function readDotCastHealth(env?: Env): Response {
       e5: "solana-usdc-devnet-mock-rail-ready",
       e6: "usdc-pool-funding-devnet-ready",
       e7: "audit-ledger-core-ready",
-      e8: "gamification-not-started",
+      e8: gamification?.ready ? "gamification-ledger-ready" : "gamification-code-ready",
       e9: "rewarded-ad-onramp-not-started",
       e10: "sponsored-questions-not-started",
       e11: "creator-economy-not-started",
@@ -189,6 +197,7 @@ export function readDotCastHealth(env?: Env): Response {
     ...(settlementRail ? { settlementRail } : {}),
     ...(usdcPoolFunding ? { usdcPoolFunding } : {}),
     ...(livestream ? { livestream } : {}),
+    ...(gamification ? { gamification } : {}),
     routes: [
       "GET /api/dotcast/health",
       "POST /api/dotcast/preview",
@@ -199,6 +208,8 @@ export function readDotCastHealth(env?: Env): Response {
       "POST /api/dotcast/settlement-rail/withdrawals/devnet",
       "POST /api/dotcast/settlement-rail/withdrawals/:id/confirm",
       "POST /api/dotcast/settlement-rail/reconcile/devnet",
+      "GET /api/dotcast/gamification/users/:userId",
+      "POST /api/dotcast/gamification/pools/:id/apply",
       "POST /api/dotcast/livestreams",
       "GET /api/dotcast/livestreams/:id",
       "GET /api/dotcast/livestreams/:id/playback",
@@ -351,6 +362,48 @@ export async function reconcileDotCastDevnetSettlementRail(
   }
 }
 
+export async function readDotCastGamificationUser(userId: string, env: Env): Promise<Response> {
+  try {
+    const summary = await readDotCastGamificationUserSummary(
+      gamificationStore(env),
+      parseRequiredString(userId, "userId")
+    );
+
+    return json({
+      ok: true,
+      milestone: "E8",
+      gamification: readDotCastGamificationStatus(env, true),
+      summary
+    });
+  } catch (error) {
+    return gamificationErrorResponse(error);
+  }
+}
+
+export async function applyDotCastGamificationForPool(
+  poolId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const body = await readJsonBody<{ now?: unknown }>(request);
+    const now = parseOptionalString(body?.now, "now") ?? new Date().toISOString();
+    const snapshot = await readDotCastPoolSnapshot(poolId, env);
+    const result = await applyDotCastGamificationSettlement(gamificationStore(env), env, snapshot, {
+      now,
+      hasDatabase: true
+    });
+
+    return json({
+      ok: true,
+      milestone: "E8",
+      gamification: summarizeGamificationResult(result)
+    });
+  } catch (error) {
+    return gamificationErrorResponse(error);
+  }
+}
+
 export async function createDotCastLivestreamSession(
   request: Request,
   env: Env
@@ -358,7 +411,8 @@ export async function createDotCastLivestreamSession(
   try {
     const body = await readJsonBody<DotCastCreateLivestreamRequest>(request);
     const now = parseOptionalString(body?.now, "now") ?? new Date().toISOString();
-    const streamId = parseOptionalString(body?.streamId, "streamId") ?? `stream:${crypto.randomUUID()}`;
+    const streamId =
+      parseOptionalString(body?.streamId, "streamId") ?? `stream:${crypto.randomUUID()}`;
     const hostId = parseRequiredString(body?.hostId, "hostId");
     const title = parseRequiredString(body?.title, "title");
     const metadata = parseMetadataRecord(body?.metadata);
@@ -470,10 +524,7 @@ export async function readDotCastLivestream(
   return proxyDotCastLivestreamRequest(env, streamId, `/${search}`, { method: "GET" });
 }
 
-export async function readDotCastLivestreamPlayback(
-  streamId: string,
-  env: Env
-): Promise<Response> {
+export async function readDotCastLivestreamPlayback(streamId: string, env: Env): Promise<Response> {
   try {
     const record = await requireLivestreamRecord(streamId, env);
 
@@ -833,6 +884,7 @@ export async function lockDotCastPool(
 
     if (response.ok) {
       await refreshLivestreamPoolIfRequested(env, streamId, poolId, now);
+      return await applyGamificationIfSettled(response, env, now);
     }
 
     return response;
@@ -863,6 +915,7 @@ export async function settleDotCastPool(
 
     if (response.ok) {
       await refreshLivestreamPoolIfRequested(env, streamId, poolId, now);
+      return await applyGamificationIfSettled(response, env, now);
     }
 
     return response;
@@ -899,6 +952,7 @@ export async function applyDotCastPoolResolution(
 
     if (response.ok) {
       await refreshLivestreamPoolIfRequested(env, streamId, poolId, now);
+      return await applyGamificationIfSettled(response, env, now);
     }
 
     return response;
@@ -928,6 +982,7 @@ export async function pollDotCastPoolResolution(
 
     if (response.ok) {
       await refreshLivestreamPoolIfRequested(env, streamId, poolId, now);
+      return await applyGamificationIfSettled(response, env, now);
     }
 
     return response;
@@ -1234,12 +1289,7 @@ function parseRake(value: unknown): number {
 }
 
 function parsePoolStatus(value: unknown): "open" | "locked" | "resolving" | "settled" | "voided" {
-  if (
-    value === "locked" ||
-    value === "resolving" ||
-    value === "settled" ||
-    value === "voided"
-  ) {
+  if (value === "locked" || value === "resolving" || value === "settled" || value === "voided") {
     return value;
   }
 
@@ -1336,7 +1386,10 @@ async function syncRealtimeLivestreamFromMuxWebhook(
     return;
   }
 
-  if (event.eventType === "video.live_stream.idle" || event.eventType === "video.live_stream.errored") {
+  if (
+    event.eventType === "video.live_stream.idle" ||
+    event.eventType === "video.live_stream.errored"
+  ) {
     await proxyDotCastLivestreamRequest(env, record.streamId, "/pause", {
       method: "POST",
       body: JSON.stringify({ now: event.createdAt })
@@ -1499,6 +1552,122 @@ async function readDotCastPoolUnit(poolId: string, env: Env): Promise<StakeUnit>
   return unit;
 }
 
+async function readDotCastPoolSnapshot(poolId: string, env: Env): Promise<DotCastPoolSnapshot> {
+  const response = await proxyDotCastPoolRequest(env, poolId, "/", { method: "GET" });
+
+  if (!response.ok) {
+    throw new DotCastGamificationError(
+      "POOL_READ_FAILED",
+      `pool read failed before E8 gamification apply: ${response.status}`,
+      502
+    );
+  }
+
+  const body = await response.json<Record<string, unknown>>();
+  const snapshot = extractPoolSnapshot(body);
+
+  if (!snapshot) {
+    throw new DotCastGamificationError(
+      "POOL_SNAPSHOT_MISSING",
+      "pool response is missing a dotCast snapshot",
+      502
+    );
+  }
+
+  return snapshot;
+}
+
+async function applyGamificationIfSettled(
+  response: Response,
+  env: Env,
+  now?: string
+): Promise<Response> {
+  if (!(env.DOTCAST_DB ?? env.TRADING_DB)) {
+    return response;
+  }
+
+  let body: Record<string, unknown>;
+  try {
+    body = await response.clone().json<Record<string, unknown>>();
+  } catch {
+    return response;
+  }
+
+  const snapshot = extractPoolSnapshot(body);
+  if (snapshot?.pool.unit !== "points" || snapshot.pool.status !== "settled") {
+    return response;
+  }
+
+  try {
+    const result = await applyDotCastGamificationSettlement(gamificationStore(env), env, snapshot, {
+      now: now ?? snapshot.updatedAt,
+      hasDatabase: true
+    });
+
+    return json(
+      {
+        ...body,
+        gamification: summarizeGamificationResult(result)
+      },
+      response.status
+    );
+  } catch (error) {
+    console.error("[dotCast] E8 gamification settlement apply failed", {
+      poolId: snapshot.pool.id,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return json(
+      {
+        ...body,
+        gamification: {
+          milestone: "E8",
+          applied: false,
+          idempotent: false,
+          error: error instanceof Error ? error.message : "E8 gamification apply failed"
+        }
+      },
+      response.status
+    );
+  }
+}
+
+function extractPoolSnapshot(body: Record<string, unknown>): DotCastPoolSnapshot | null {
+  const snapshot = body.snapshot as Partial<DotCastPoolSnapshot> | undefined;
+
+  if (
+    snapshot?.pool &&
+    typeof snapshot.pool.id === "string" &&
+    (snapshot.pool.unit === "points" || snapshot.pool.unit === "usdc") &&
+    Array.isArray(snapshot.entries)
+  ) {
+    return snapshot as DotCastPoolSnapshot;
+  }
+
+  return null;
+}
+
+function summarizeGamificationResult(
+  result: Awaited<ReturnType<typeof applyDotCastGamificationSettlement>>
+) {
+  return {
+    milestone: "E8",
+    applied: result.applied,
+    idempotent: result.idempotent,
+    settlement: result.settlement,
+    affectedUsers: result.profiles.map((profile) => ({
+      userId: profile.userId,
+      pointsBalance: profile.pointsBalance,
+      currentStreak: profile.currentStreak,
+      longestStreak: profile.longestStreak,
+      availableFreeEntries: Math.max(0, profile.freeEntriesGranted - profile.freeEntriesConsumed)
+    })),
+    ledgerEntries: result.ledger.length,
+    pointsAwarded: result.settlement.pointsAwarded,
+    freeEntriesGranted: result.freeEntries.length,
+    status: result.status
+  };
+}
+
 function settlementRailStore(env: Env): D1DotCastSettlementRailStore {
   if (!env.TRADING_DB) {
     throw new DotCastSettlementRailError(
@@ -1509,6 +1678,20 @@ function settlementRailStore(env: Env): D1DotCastSettlementRailStore {
   }
 
   return new D1DotCastSettlementRailStore(env.TRADING_DB);
+}
+
+function gamificationStore(env: Env): D1DotCastGamificationStore {
+  const db = env.DOTCAST_DB ?? env.TRADING_DB;
+
+  if (!db) {
+    throw new DotCastGamificationError(
+      "GAMIFICATION_DB_NOT_CONFIGURED",
+      "E8 gamification database is not configured",
+      503
+    );
+  }
+
+  return new D1DotCastGamificationStore(db);
 }
 
 function livestreamStore(env: Env): D1DotCastLivestreamStore {
@@ -1569,6 +1752,29 @@ function livestreamErrorResponse(error: unknown): Response {
   return json(
     {
       ok: false,
+      error: error instanceof Error ? error.message : "Invalid request"
+    },
+    400
+  );
+}
+
+function gamificationErrorResponse(error: unknown): Response {
+  if (error instanceof DotCastGamificationError) {
+    return json(
+      {
+        ok: false,
+        milestone: "E8",
+        code: error.code,
+        error: error.message
+      },
+      error.status
+    );
+  }
+
+  return json(
+    {
+      ok: false,
+      milestone: "E8",
       error: error instanceof Error ? error.message : "Invalid request"
     },
     400

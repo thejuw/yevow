@@ -42,6 +42,7 @@ import {
 import { handleTopologyCalibration } from "./gateway/AdminTopologyGateway";
 import { readMoltworkerHealth, updateMoltworkerHeartbeat } from "./gateway/MoltworkerGateway";
 import {
+  applyDotCastGamificationForPool,
   applyDotCastPoolResolution,
   archiveDotCastLivestream,
   confirmDotCastMockWithdrawal,
@@ -56,6 +57,7 @@ import {
   placeDotCastPoolEntry,
   pollDotCastPoolResolution,
   previewDotCastOdds,
+  readDotCastGamificationUser,
   readDotCastSettlementRailBalance,
   readDotCastSettlementRailStatus,
   readDotCastLivestream,
@@ -149,6 +151,12 @@ gatewayRouter.post("/api/dotcast/settlement-rail/withdrawals/:id/confirm", async
 );
 gatewayRouter.post("/api/dotcast/settlement-rail/reconcile/devnet", async (c) =>
   reconcileDotCastDevnetSettlementRail(c.req.raw, c.env)
+);
+gatewayRouter.get("/api/dotcast/gamification/users/:userId", async (c) =>
+  readDotCastGamificationUser(c.req.param("userId"), c.env)
+);
+gatewayRouter.post("/api/dotcast/gamification/pools/:id/apply", async (c) =>
+  applyDotCastGamificationForPool(c.req.param("id"), c.req.raw, c.env)
 );
 gatewayRouter.post("/api/dotcast/livestreams/webhooks/mux", async (c) =>
   handleMuxLivestreamWebhook(c.req.raw, c.env)

@@ -226,6 +226,7 @@ export type PointsLedgerReason =
   | "predict_correct"
   | "predict_incorrect"
   | "streak_bonus"
+  | "free_entry_grant"
   | "free_entry_redeem"
   | "adjustment";
 
@@ -235,16 +236,53 @@ export interface PointsLedgerEntry {
   delta: number;
   reason: PointsLedgerReason;
   poolId: string | null;
+  entryId: string | null;
   createdAt: string;
   balanceAfter: number;
+  eventJson: Record<string, unknown>;
 }
 
 export interface FreeEntryCredit {
   id: string;
   userId: string;
+  grantReason: "streak_bonus" | "manual_grant" | "rewarded_ad" | "adjustment";
+  poolId: string | null;
   grantedAt: string;
+  expiresAt: string | null;
   consumedAt: string | null;
   consumedByEntryId: string | null;
+  eventJson: Record<string, unknown>;
+}
+
+export interface DotCastGamificationProfile {
+  userId: string;
+  pointsBalance: number;
+  currentStreak: number;
+  longestStreak: number;
+  settledPredictions: number;
+  correctPredictions: number;
+  incorrectPredictions: number;
+  freeEntriesGranted: number;
+  freeEntriesConsumed: number;
+  lastSettledPoolId: string | null;
+  lastSettledAt: string | null;
+  updatedAt: string;
+}
+
+export interface DotCastGamificationSettlement {
+  poolId: string;
+  settlementId: string;
+  outcome: Side;
+  unit: StakeUnit;
+  status: PoolStatus;
+  appliedEntries: number;
+  correctEntries: number;
+  incorrectEntries: number;
+  pointsAwarded: number;
+  freeEntriesGranted: number;
+  idempotencyKey: string;
+  eventJson: Record<string, unknown>;
+  createdAt: string;
 }
 
 export interface DotCastRouterResolution {
