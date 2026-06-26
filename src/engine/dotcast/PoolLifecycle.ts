@@ -1,4 +1,5 @@
 import type {
+  DotCastCreatorPoolBranding,
   DotCastEntry,
   DotCastMarketSnapshot,
   DotCastPool,
@@ -15,6 +16,8 @@ export interface CreatePoolInput {
   entryClosesAt: string;
   rake: number;
   minLiquidity: number;
+  originatingCreatorId?: string | null;
+  creatorBrand?: DotCastCreatorPoolBranding | null;
   now: string;
 }
 
@@ -89,7 +92,17 @@ export function createPoolFromMarket(input: CreatePoolInput): DotCastPool {
     minLiquidity: input.minLiquidity,
     createdAt,
     settledAt: null,
-    outcome: null
+    outcome: null,
+    ...(input.originatingCreatorId
+      ? {
+          originatingCreatorId: input.originatingCreatorId,
+          creatorBrand: input.creatorBrand ?? {
+            creatorId: input.originatingCreatorId,
+            displayName: input.originatingCreatorId,
+            disclosureLabel: "Creator-originated" as const
+          }
+        }
+      : {})
   };
 }
 

@@ -1,4 +1,5 @@
 import { impliedProb, previewPayout } from "./Parimutuel";
+import { applyDotCastCreatorRakeShareSettlement, D1DotCastCreatorStore } from "./CreatorEconomy";
 import {
   buildDotCastAuditWritePlan,
   writeDotCastAuditPlan,
@@ -25,7 +26,6 @@ import {
 } from "./RouterResolutionClient";
 import { applyUsdcPoolTerminalSettlement, D1DotCastUsdcPoolFundingStore } from "./UsdcPoolFunding";
 import type {
-  DotCastEntry,
   DotCastLiveOddsSnapshot,
   DotCastPoolSnapshot,
   DotCastResolutionOutcome,
@@ -471,6 +471,7 @@ export class DotCastPool {
     await this.writeSnapshot(snapshot);
     await this.reconcileResolutionAlarm(snapshot, now);
     await this.reconcileUsdcPoolFunding(snapshot, now);
+    await this.reconcileCreatorEconomy(snapshot, now);
   }
 
   private async reconcileResolutionAlarm(
@@ -534,6 +535,32 @@ export class DotCastPool {
       this.env,
       { snapshot, now }
     );
+  }
+
+  private async reconcileCreatorEconomy(snapshot: DotCastPoolSnapshot, now: string): Promise<void> {
+    if (snapshot.pool.status !== "settled" || !snapshot.pool.originatingCreatorId) {
+      return;
+    }
+
+    const db = this.env.DOTCAST_DB ?? this.env.TRADING_DB;
+    if (!db) {
+      throw new Error("E11 creator economy database is not configured");
+    }
+
+    try {
+      await applyDotCastCreatorRakeShareSettlement(
+        new D1DotCastCreatorStore(db),
+        this.env,
+        { snapshot, now },
+        true
+      );
+    } catch (error) {
+      console.error("[dotCast] E11 creator rake-share accrual failed", {
+        poolId: snapshot.pool.id,
+        creatorId: snapshot.pool.originatingCreatorId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
   }
 }
 
@@ -603,7 +630,7 @@ function seedBalance(userId: string, unit: StakeBalance["unit"]): StakeBalance {
 
 async function readJson<T>(request: Request): Promise<T> {
   try {
-    return (await request.json()) as T;
+    return await request.json();
   } catch {
     throw new Error("request body must be JSON");
   }

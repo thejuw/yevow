@@ -43,10 +43,12 @@ import { handleTopologyCalibration } from "./gateway/AdminTopologyGateway";
 import { readMoltworkerHealth, updateMoltworkerHeartbeat } from "./gateway/MoltworkerGateway";
 import {
   applyDotCastGamificationForPool,
+  applyDotCastCreatorRakeShareForPool,
   applyDotCastPoolResolution,
   archiveDotCastLivestream,
   completeDotCastRewardedStreamOnrampSession,
   confirmDotCastMockWithdrawal,
+  confirmDotCastCreatorEconomyPayout,
   createDotCastPool,
   createDotCastLivestreamSession,
   createDotCastSponsoredQuestionPlacement,
@@ -55,12 +57,16 @@ import {
   detachDotCastLivestreamPool,
   handleMuxLivestreamWebhook,
   listDotCastSponsoredQuestionPlacements,
+  onboardDotCastCreatorProfile,
   lockDotCastPool,
   pauseDotCastLivestream,
   placeDotCastPoolEntry,
+  planDotCastCreatorNudges,
   pollDotCastPoolResolution,
   previewDotCastOdds,
   readDotCastGamificationUser,
+  readDotCastCreatorEconomyReadiness,
+  readDotCastCreatorProfile,
   readDotCastRewardedStreamOnrampStatus,
   readDotCastRewardedStreamUser,
   readDotCastSponsoredQuestionPlacement,
@@ -73,11 +79,13 @@ import {
   refreshDotCastLivestreamPool,
   reconcileDotCastDevnetSettlementRail,
   recordDotCastDevnetDeposit,
+  recordDotCastCreatorSeed,
   readDotCastPoolLiveOdds,
   readDotCastPool,
   readDotCastHealth,
   recordDotCastLivestreamPresence,
   requestDotCastDevnetWithdrawal,
+  requestDotCastCreatorEconomyPayout,
   resumeDotCastLivestream,
   recordDotCastSponsoredQuestionPlacementBilling,
   setDotCastLivestreamFeaturedPool,
@@ -193,6 +201,28 @@ gatewayRouter.post("/api/dotcast/sponsored-questions", async (c) =>
 );
 gatewayRouter.post("/api/dotcast/sponsored-questions/:id/billing-events", async (c) =>
   recordDotCastSponsoredQuestionPlacementBilling(c.req.param("id"), c.req.raw, c.env)
+);
+gatewayRouter.get("/api/dotcast/creators/status", (c) => readDotCastCreatorEconomyReadiness(c.env));
+gatewayRouter.post("/api/dotcast/creators", async (c) =>
+  onboardDotCastCreatorProfile(c.req.raw, c.env)
+);
+gatewayRouter.get("/api/dotcast/creators/:id", async (c) =>
+  readDotCastCreatorProfile(c.req.param("id"), c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/creators/:id/pools/:poolId/apply-rake-share", async (c) =>
+  applyDotCastCreatorRakeShareForPool(c.req.param("id"), c.req.param("poolId"), c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/creators/:id/payouts", async (c) =>
+  requestDotCastCreatorEconomyPayout(c.req.param("id"), c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/creators/:id/payouts/:payoutId/confirm", async (c) =>
+  confirmDotCastCreatorEconomyPayout(c.req.param("id"), c.req.param("payoutId"), c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/creators/:id/nudges/plan", async (c) =>
+  planDotCastCreatorNudges(c.req.param("id"), c.req.raw)
+);
+gatewayRouter.post("/api/dotcast/creators/:id/seeds", async (c) =>
+  recordDotCastCreatorSeed(c.req.param("id"), c.req.raw, c.env)
 );
 gatewayRouter.post("/api/dotcast/livestreams/webhooks/mux", async (c) =>
   handleMuxLivestreamWebhook(c.req.raw, c.env)

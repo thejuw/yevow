@@ -2,6 +2,35 @@ export type DotCastVenue = "kalshi" | "polymarket" | "dotcast" | "unknown";
 
 export type StakeUnit = "points" | "usdc";
 
+export type DotCastCreatorTier = "casual" | "verified" | "partner";
+
+export type DotCastCreatorStatus = "active" | "suspended" | "archived";
+
+export type DotCastCreatorKycStatus = "unverified" | "verified" | "rejected";
+
+export type DotCastCreatorPayoutSchedule = "manual" | "weekly" | "on_demand";
+
+export type DotCastCreatorPayoutStatus =
+  | "requested"
+  | "signed"
+  | "confirmed"
+  | "failed"
+  | "rejected";
+
+export type DotCastCreatorEventType =
+  | "CREATOR_ONBOARDED"
+  | "CREATOR_UPDATED"
+  | "CREATOR_RAKE_ACCRUED"
+  | "CREATOR_PAYOUT_REQUESTED"
+  | "CREATOR_PAYOUT_CONFIRMED"
+  | "CREATOR_PAYOUT_REJECTED"
+  | "CREATOR_SEED_RECORDED"
+  | "CREATOR_NUDGE_SUPPRESSED";
+
+export type DotCastCreatorSeedMode = "boost_winners" | "void_insurance" | "bonus_pool";
+
+export type DotCastResolutionBinding = "oracle_bound" | "optimistic" | "jury" | "unknown";
+
 export type DotCastMarketStatus = "open" | "closed" | "settled" | "cancelled" | "voided";
 
 export type PoolStatus = "open" | "locked" | "resolving" | "settled" | "voided";
@@ -71,6 +100,14 @@ export interface DotCastPool {
   createdAt: string;
   settledAt: string | null;
   outcome: Side | "invalid" | null;
+  originatingCreatorId?: string | null;
+  creatorBrand?: DotCastCreatorPoolBranding | null;
+}
+
+export interface DotCastCreatorPoolBranding {
+  creatorId: string;
+  displayName: string;
+  disclosureLabel: "Creator-originated";
 }
 
 export interface DotCastMarketSnapshot {
@@ -391,6 +428,94 @@ export interface DotCastSponsoredQuestionBillingEvent {
   quantity: number;
   amountMinorUnits: number;
   idempotencyKey: string;
+  eventJson: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface DotCastCreatorProfile {
+  creatorId: string;
+  displayName: string;
+  tier: DotCastCreatorTier;
+  status: DotCastCreatorStatus;
+  kycStatus: DotCastCreatorKycStatus;
+  payoutDestination: string | null;
+  accuracyBps: number;
+  retentionBps: number;
+  volumeScore: number;
+  manualReviewRequired: boolean;
+  sponsorshipEligible: boolean;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DotCastCreatorEarningsBalance {
+  creatorId: string;
+  unit: StakeUnit;
+  available: number;
+  pendingPayout: number;
+  lifetimeAccrued: number;
+  lifetimePaid: number;
+  updatedAt: string;
+}
+
+export interface DotCastCreatorRakeAccrual {
+  accrualId: string;
+  poolId: string;
+  settlementId: string;
+  creatorId: string;
+  unit: StakeUnit;
+  totalRake: number;
+  creatorShare: number;
+  houseShare: number;
+  tier: DotCastCreatorTier;
+  tierShareBps: number;
+  effectiveShareBps: number;
+  accuracyBps: number;
+  retentionBps: number;
+  idempotencyKey: string;
+  eventJson: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface DotCastCreatorPayout {
+  payoutId: string;
+  creatorId: string;
+  unit: "usdc";
+  amount: number;
+  status: DotCastCreatorPayoutStatus;
+  destination: string;
+  idempotencyKey: string;
+  railTransferId: string | null;
+  railTxRef: string | null;
+  mockSignature: string | null;
+  requestedAt: string;
+  updatedAt: string;
+  eventJson: Record<string, unknown>;
+}
+
+export interface DotCastCreatorEvent {
+  eventId: string;
+  creatorId: string;
+  poolId: string | null;
+  eventType: DotCastCreatorEventType;
+  unit: StakeUnit | null;
+  amount: number | null;
+  eventJson: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface DotCastCreatorPoolSeed {
+  seedId: string;
+  creatorId: string;
+  poolId: string;
+  unit: StakeUnit;
+  amount: number;
+  mode: DotCastCreatorSeedMode;
+  resolutionBinding: DotCastResolutionBinding;
+  status: "accepted" | "rejected" | "applied" | "returned";
+  disclosureLabel: "Creator seed";
+  creatorHoldsPosition: boolean;
   eventJson: Record<string, unknown>;
   createdAt: string;
 }

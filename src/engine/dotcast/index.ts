@@ -1,5 +1,6 @@
 export { DotCastPool } from "./DotCastPoolDO";
 export { DotCastLivestream } from "./DotCastLivestreamDO";
+export * from "./CreatorEconomy";
 export * from "./DotCastAuditLedger";
 export * from "./Gamification";
 export * from "./MuxLivestream";

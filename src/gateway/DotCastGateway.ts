@@ -1,13 +1,17 @@
 import {
   confirmMockWithdrawal,
+  confirmDotCastCreatorPayout,
   applyDotCastGamificationSettlement,
+  applyDotCastCreatorRakeShareSettlement,
   creditDevnetDeposit,
+  D1DotCastCreatorStore,
   D1DotCastSettlementRailStore,
   D1DotCastGamificationStore,
   D1DotCastRewardedStreamStore,
   D1DotCastSponsoredQuestionStore,
   D1DotCastUsdcPoolFundingStore,
   D1DotCastLivestreamStore,
+  DotCastCreatorEconomyError,
   DotCastGamificationError,
   DotCastRewardedStreamError,
   DotCastSponsoredQuestionError,
@@ -21,9 +25,13 @@ import {
   fetchDotCastReferencePrice,
   impliedProb,
   listDotCastSponsoredQuestionFeed,
+  onboardDotCastCreator,
+  planCreatorPoolNudges,
   parseVerifiedMuxWebhook,
   previewPayout,
   readSettlementBalance,
+  readDotCastCreatorEconomyStatus,
+  readDotCastCreatorSummary,
   readDotCastGamificationStatus,
   readDotCastGamificationUserSummary,
   readDotCastRewardedStreamStatus,
@@ -33,11 +41,14 @@ import {
   readSolanaUsdcSettlementRailStatus,
   readUsdcPoolFundingStatus,
   reconcileDevnetSettlementRail,
+  recordDotCastCreatorPoolSeed,
   recordDotCastSponsoredQuestionBillingEvent,
   releaseUsdcPoolEntryReservation,
   reserveUsdcPoolEntry,
   requestDevnetWithdrawal,
+  requestDotCastCreatorPayout,
   settleParimutuel,
+  type CreatorNudgeRecipient,
   startDotCastRewardedStreamSession,
   completeDotCastRewardedStreamSession,
   type DotCastLiveOddsSnapshot,
@@ -46,6 +57,11 @@ import {
   type DotCastPoolSnapshot,
   type DotCastReferencePriceFetchResult,
   type DotCastResolutionOutcome,
+  type DotCastCreatorKycStatus,
+  type DotCastCreatorSeedMode,
+  type DotCastCreatorStatus,
+  type DotCastCreatorTier,
+  type DotCastResolutionBinding,
   type DotCastSponsoredQuestionBillingEventType,
   type DotCastSponsoredQuestionPricingModel,
   type DotCastSponsoredQuestionStatus,
@@ -79,6 +95,9 @@ interface DotCastCreatePoolRequest {
   entryClosesAt?: unknown;
   rake?: unknown;
   minLiquidity?: unknown;
+  creator?: DotCastCreatorAttributionRequest;
+  originatingCreatorId?: unknown;
+  creatorDisplayName?: unknown;
   now?: unknown;
 }
 
@@ -211,6 +230,63 @@ interface DotCastCreateSponsoredQuestionRequest {
   metadata?: unknown;
 }
 
+interface DotCastCreatorAttributionRequest {
+  creatorId?: unknown;
+  displayName?: unknown;
+}
+
+interface DotCastOnboardCreatorRequest {
+  creatorId?: unknown;
+  displayName?: unknown;
+  tier?: unknown;
+  status?: unknown;
+  kycStatus?: unknown;
+  payoutDestination?: unknown;
+  accuracyBps?: unknown;
+  retentionBps?: unknown;
+  volumeScore?: unknown;
+  manualReviewRequired?: unknown;
+  sponsorshipEligible?: unknown;
+  metadata?: unknown;
+  now?: unknown;
+}
+
+interface DotCastApplyCreatorAccrualRequest {
+  now?: unknown;
+}
+
+interface DotCastCreatorPayoutRequest {
+  amount?: unknown;
+  destination?: unknown;
+  idempotencyKey?: unknown;
+  operatorApproved?: unknown;
+  now?: unknown;
+}
+
+interface DotCastConfirmCreatorPayoutRequest {
+  txRef?: unknown;
+  now?: unknown;
+}
+
+interface DotCastCreatorNudgePlanRequest {
+  poolId?: unknown;
+  recipients?: unknown;
+  now?: unknown;
+  metadata?: unknown;
+}
+
+interface DotCastCreatorSeedRequest {
+  seedId?: unknown;
+  poolId?: unknown;
+  unit?: unknown;
+  amount?: unknown;
+  mode?: unknown;
+  resolutionBinding?: unknown;
+  creatorHoldsPosition?: unknown;
+  now?: unknown;
+  eventJson?: unknown;
+}
+
 interface DotCastSponsoredQuestionBillingRequest {
   eventType?: unknown;
   quantity?: unknown;
@@ -233,6 +309,9 @@ export function readDotCastHealth(env?: Env): Response {
   const sponsoredQuestions = env
     ? readDotCastSponsoredQuestionsStatus(env, Boolean(env.DOTCAST_DB ?? env.TRADING_DB))
     : null;
+  const creatorEconomy = env
+    ? readDotCastCreatorEconomyStatus(env, Boolean(env.DOTCAST_DB ?? env.TRADING_DB))
+    : null;
 
   return json({
     ok: true,
@@ -254,7 +333,7 @@ export function readDotCastHealth(env?: Env): Response {
       e10: sponsoredQuestions?.ready
         ? "sponsored-questions-placement-ready"
         : "sponsored-questions-code-ready",
-      e11: "creator-economy-not-started",
+      e11: creatorEconomy?.ready ? "creator-economy-ready" : "creator-economy-code-ready",
       e12: "referrals-not-started",
       e13: "resolution-router-not-started",
       persistence: "durable-object-ready",
@@ -270,6 +349,7 @@ export function readDotCastHealth(env?: Env): Response {
     ...(gamification ? { gamification } : {}),
     ...(rewardedStream ? { rewardedStream } : {}),
     ...(sponsoredQuestions ? { sponsoredQuestions } : {}),
+    ...(creatorEconomy ? { creatorEconomy } : {}),
     routes: [
       "GET /api/dotcast/health",
       "POST /api/dotcast/preview",
@@ -291,6 +371,14 @@ export function readDotCastHealth(env?: Env): Response {
       "GET /api/dotcast/sponsored-questions/:id",
       "POST /api/dotcast/sponsored-questions",
       "POST /api/dotcast/sponsored-questions/:id/billing-events",
+      "GET /api/dotcast/creators/status",
+      "POST /api/dotcast/creators",
+      "GET /api/dotcast/creators/:id",
+      "POST /api/dotcast/creators/:id/pools/:poolId/apply-rake-share",
+      "POST /api/dotcast/creators/:id/payouts",
+      "POST /api/dotcast/creators/:id/payouts/:payoutId/confirm",
+      "POST /api/dotcast/creators/:id/nudges/plan",
+      "POST /api/dotcast/creators/:id/seeds",
       "POST /api/dotcast/livestreams",
       "GET /api/dotcast/livestreams/:id",
       "GET /api/dotcast/livestreams/:id/playback",
@@ -739,6 +827,259 @@ export async function recordDotCastSponsoredQuestionPlacementBilling(
     });
   } catch (error) {
     return sponsoredQuestionErrorResponse(error);
+  }
+}
+
+export function readDotCastCreatorEconomyReadiness(env: Env): Response {
+  return json({
+    ok: true,
+    milestone: "E11",
+    creatorEconomy: readDotCastCreatorEconomyStatus(env, Boolean(env.DOTCAST_DB ?? env.TRADING_DB))
+  });
+}
+
+export async function onboardDotCastCreatorProfile(request: Request, env: Env): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastOnboardCreatorRequest>(request);
+    const result = await onboardDotCastCreator(
+      creatorStore(env),
+      env,
+      {
+        creatorId: parseRequiredString(body?.creatorId, "creatorId"),
+        displayName: parseRequiredString(body?.displayName, "displayName"),
+        tier: parseOptionalCreatorTier(body?.tier),
+        status: parseOptionalCreatorStatus(body?.status),
+        kycStatus: parseOptionalCreatorKycStatus(body?.kycStatus),
+        payoutDestination: parseNullableString(body?.payoutDestination, "payoutDestination"),
+        accuracyBps: parseOptionalMinorUnits(body?.accuracyBps, "accuracyBps"),
+        retentionBps: parseOptionalMinorUnits(body?.retentionBps, "retentionBps"),
+        volumeScore: parseOptionalMinorUnits(body?.volumeScore, "volumeScore"),
+        manualReviewRequired: parseOptionalBoolean(
+          body?.manualReviewRequired,
+          "manualReviewRequired"
+        ),
+        sponsorshipEligible: parseOptionalBoolean(body?.sponsorshipEligible, "sponsorshipEligible"),
+        metadata: parseMetadataRecord(body?.metadata),
+        now: parseOptionalString(body?.now, "now")
+      },
+      true
+    );
+
+    return json(
+      {
+        ok: true,
+        milestone: "E11",
+        creatorEconomy: result
+      },
+      201
+    );
+  } catch (error) {
+    return creatorEconomyErrorResponse(error);
+  }
+}
+
+export async function readDotCastCreatorProfile(
+  creatorId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const limit = parseOptionalQueryInteger(
+      new URL(request.url).searchParams.get("limit"),
+      "limit"
+    );
+    const summary = await readDotCastCreatorSummary(
+      creatorStore(env),
+      parseRequiredString(creatorId, "creatorId"),
+      limit ?? 25
+    );
+
+    return json({
+      ok: true,
+      milestone: "E11",
+      creatorEconomy: {
+        status: readDotCastCreatorEconomyStatus(env, true),
+        summary
+      }
+    });
+  } catch (error) {
+    return creatorEconomyErrorResponse(error);
+  }
+}
+
+export async function applyDotCastCreatorRakeShareForPool(
+  creatorId: string,
+  poolId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastApplyCreatorAccrualRequest>(request);
+    const snapshot = await readDotCastPoolSnapshot(poolId, env);
+    const parsedCreatorId = parseRequiredString(creatorId, "creatorId");
+
+    if (snapshot.pool.originatingCreatorId !== parsedCreatorId) {
+      throw new DotCastCreatorEconomyError(
+        "CREATOR_POOL_ATTRIBUTION_MISMATCH",
+        "pool is not attributed to this creator",
+        409
+      );
+    }
+
+    const result = await applyDotCastCreatorRakeShareSettlement(
+      creatorStore(env),
+      env,
+      {
+        snapshot,
+        now: parseOptionalString(body?.now, "now")
+      },
+      true
+    );
+
+    return json({
+      ok: true,
+      milestone: "E11",
+      creatorEconomy: summarizeCreatorAccrualResult(result)
+    });
+  } catch (error) {
+    return creatorEconomyErrorResponse(error);
+  }
+}
+
+export async function requestDotCastCreatorEconomyPayout(
+  creatorId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastCreatorPayoutRequest>(request);
+    const result = await requestDotCastCreatorPayout(
+      creatorStore(env),
+      settlementRailStore(env),
+      env,
+      {
+        creatorId: parseRequiredString(creatorId, "creatorId"),
+        amount: parseMinorUnits(body?.amount, "amount"),
+        destination: parseOptionalString(body?.destination, "destination"),
+        idempotencyKey: parseRequiredString(body?.idempotencyKey, "idempotencyKey"),
+        operatorApproved: parseOptionalBoolean(body?.operatorApproved, "operatorApproved"),
+        now: parseOptionalString(body?.now, "now")
+      },
+      true
+    );
+
+    return json({
+      ok: true,
+      milestone: "E11",
+      creatorEconomy: result
+    });
+  } catch (error) {
+    return creatorEconomyErrorResponse(error);
+  }
+}
+
+export async function confirmDotCastCreatorEconomyPayout(
+  creatorId: string,
+  payoutId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    parseRequiredString(creatorId, "creatorId");
+    const body = await readJsonBody<DotCastConfirmCreatorPayoutRequest>(request);
+    const result = await confirmDotCastCreatorPayout(
+      creatorStore(env),
+      settlementRailStore(env),
+      env,
+      {
+        payoutId: parseRequiredString(payoutId, "payoutId"),
+        txRef: parseOptionalString(body?.txRef, "txRef"),
+        now: parseOptionalString(body?.now, "now")
+      },
+      true
+    );
+
+    if (result.payout.creatorId !== creatorId) {
+      throw new DotCastCreatorEconomyError(
+        "CREATOR_PAYOUT_ATTRIBUTION_MISMATCH",
+        "payout does not belong to this creator",
+        409
+      );
+    }
+
+    return json({
+      ok: true,
+      milestone: "E11",
+      creatorEconomy: result
+    });
+  } catch (error) {
+    return creatorEconomyErrorResponse(error);
+  }
+}
+
+export async function planDotCastCreatorNudges(
+  creatorId: string,
+  request: Request
+): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastCreatorNudgePlanRequest>(request);
+    const plan = planCreatorPoolNudges({
+      creatorId: parseRequiredString(creatorId, "creatorId"),
+      poolId: parseRequiredString(body?.poolId, "poolId"),
+      recipients: parseCreatorNudgeRecipients(body?.recipients),
+      now: parseOptionalString(body?.now, "now"),
+      metadata: parseMetadataRecord(body?.metadata)
+    });
+
+    return json({
+      ok: true,
+      milestone: "E11",
+      creatorEconomy: {
+        nudgePlan: plan,
+        suppressedCount: plan.suppressed.length,
+        allowedCount: plan.allowed.length
+      }
+    });
+  } catch (error) {
+    return creatorEconomyErrorResponse(error);
+  }
+}
+
+export async function recordDotCastCreatorSeed(
+  creatorId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastCreatorSeedRequest>(request);
+    const result = await recordDotCastCreatorPoolSeed(
+      creatorStore(env),
+      env,
+      {
+        seedId: parseOptionalString(body?.seedId, "seedId"),
+        creatorId: parseRequiredString(creatorId, "creatorId"),
+        poolId: parseRequiredString(body?.poolId, "poolId"),
+        unit: parseStakeUnit(body?.unit),
+        amount: parseMinorUnits(body?.amount, "amount"),
+        mode: parseCreatorSeedMode(body?.mode),
+        resolutionBinding: parseResolutionBinding(body?.resolutionBinding),
+        creatorHoldsPosition: parseOptionalBoolean(
+          body?.creatorHoldsPosition,
+          "creatorHoldsPosition"
+        ),
+        now: parseOptionalString(body?.now, "now"),
+        eventJson: parseMetadataRecord(body?.eventJson)
+      },
+      true
+    );
+
+    return json({
+      ok: true,
+      milestone: "E11",
+      creatorEconomy: result
+    });
+  } catch (error) {
+    return creatorEconomyErrorResponse(error);
   }
 }
 
@@ -1222,7 +1563,7 @@ export async function lockDotCastPool(
 
     if (response.ok) {
       await refreshLivestreamPoolIfRequested(env, streamId, poolId, now);
-      return await applyGamificationIfSettled(response, env, now);
+      return await applySettlementHooksIfSettled(response, env, now);
     }
 
     return response;
@@ -1253,7 +1594,7 @@ export async function settleDotCastPool(
 
     if (response.ok) {
       await refreshLivestreamPoolIfRequested(env, streamId, poolId, now);
-      return await applyGamificationIfSettled(response, env, now);
+      return await applySettlementHooksIfSettled(response, env, now);
     }
 
     return response;
@@ -1290,7 +1631,7 @@ export async function applyDotCastPoolResolution(
 
     if (response.ok) {
       await refreshLivestreamPoolIfRequested(env, streamId, poolId, now);
-      return await applyGamificationIfSettled(response, env, now);
+      return await applySettlementHooksIfSettled(response, env, now);
     }
 
     return response;
@@ -1320,7 +1661,7 @@ export async function pollDotCastPoolResolution(
 
     if (response.ok) {
       await refreshLivestreamPoolIfRequested(env, streamId, poolId, now);
-      return await applyGamificationIfSettled(response, env, now);
+      return await applySettlementHooksIfSettled(response, env, now);
     }
 
     return response;
@@ -1444,6 +1785,7 @@ function parseCreatePoolPayload(body: DotCastCreatePoolRequest | null, env: Env)
   const market = parseMarketSnapshot(body?.market);
   const unit = parseStakeUnit(body?.unit ?? "points");
   const id = parseOptionalString(body?.id, "id") ?? randomPoolId(market.id, now);
+  const creator = parseCreatorAttribution(body);
 
   if (unit === "usdc" && !readUsdcPoolFundingStatus(env).ready) {
     throw new Error("usdc pools are disabled until the E6 pool funding rail is enabled");
@@ -1457,7 +1799,36 @@ function parseCreatePoolPayload(body: DotCastCreatePoolRequest | null, env: Env)
     entryClosesAt: parseRequiredString(body?.entryClosesAt, "entryClosesAt"),
     rake: parseRake(body?.rake ?? 0.05),
     minLiquidity: parseMinorUnits(body?.minLiquidity ?? 0, "minLiquidity", true),
+    ...(creator
+      ? {
+          originatingCreatorId: creator.creatorId,
+          creatorBrand: creator
+        }
+      : {}),
     now
+  };
+}
+
+function parseCreatorAttribution(
+  body: DotCastCreatePoolRequest | null
+): { creatorId: string; displayName: string; disclosureLabel: "Creator-originated" } | null {
+  const creatorId = parseNullableString(
+    body?.creator?.creatorId ?? body?.originatingCreatorId,
+    "creator.creatorId"
+  );
+
+  if (!creatorId) {
+    return null;
+  }
+
+  return {
+    creatorId,
+    displayName:
+      parseNullableString(
+        body?.creator?.displayName ?? body?.creatorDisplayName,
+        "creator.displayName"
+      ) ?? creatorId,
+    disclosureLabel: "Creator-originated"
   };
 }
 
@@ -1551,6 +1922,91 @@ function parseStakeUnit(value: unknown): StakeUnit {
   }
 
   throw new Error("unit must be points or usdc");
+}
+
+function parseOptionalCreatorTier(value: unknown): DotCastCreatorTier | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (value === "casual" || value === "verified" || value === "partner") {
+    return value;
+  }
+
+  throw new Error("creator tier must be casual, verified, or partner");
+}
+
+function parseOptionalCreatorStatus(value: unknown): DotCastCreatorStatus | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (value === "active" || value === "suspended" || value === "archived") {
+    return value;
+  }
+
+  throw new Error("creator status must be active, suspended, or archived");
+}
+
+function parseOptionalCreatorKycStatus(value: unknown): DotCastCreatorKycStatus | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (value === "unverified" || value === "verified" || value === "rejected") {
+    return value;
+  }
+
+  throw new Error("creator KYC status must be unverified, verified, or rejected");
+}
+
+function parseCreatorSeedMode(value: unknown): DotCastCreatorSeedMode {
+  if (value === "boost_winners" || value === "void_insurance" || value === "bonus_pool") {
+    return value;
+  }
+
+  throw new Error("creator seed mode must be boost_winners, void_insurance, or bonus_pool");
+}
+
+function parseResolutionBinding(value: unknown): DotCastResolutionBinding {
+  if (
+    value === "oracle_bound" ||
+    value === "optimistic" ||
+    value === "jury" ||
+    value === "unknown"
+  ) {
+    return value;
+  }
+
+  throw new Error("resolutionBinding must be oracle_bound, optimistic, jury, or unknown");
+}
+
+function parseCreatorNudgeRecipients(value: unknown): CreatorNudgeRecipient[] {
+  if (!Array.isArray(value)) {
+    throw new Error("recipients must be an array");
+  }
+
+  return value.map((candidate, index) => {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
+      throw new Error(`recipients[${index}] must be an object`);
+    }
+
+    const record = candidate as Record<string, unknown>;
+
+    return {
+      userId: parseRequiredString(record.userId, `recipients[${index}].userId`),
+      selfLimited: parseOptionalBoolean(record.selfLimited, `recipients[${index}].selfLimited`),
+      lossLimited: parseOptionalBoolean(record.lossLimited, `recipients[${index}].lossLimited`),
+      cooldownUntil: parseNullableString(
+        record.cooldownUntil,
+        `recipients[${index}].cooldownUntil`
+      ),
+      blockedByResponsiblePlay: parseOptionalBoolean(
+        record.blockedByResponsiblePlay,
+        `recipients[${index}].blockedByResponsiblePlay`
+      )
+    };
+  });
 }
 
 function parseSponsoredQuestionMarket(value: unknown): DotCastMarketSnapshot {
@@ -2090,7 +2546,7 @@ async function readDotCastPoolSnapshot(poolId: string, env: Env): Promise<DotCas
   return snapshot;
 }
 
-async function applyGamificationIfSettled(
+async function applySettlementHooksIfSettled(
   response: Response,
   env: Env,
   now?: string
@@ -2107,41 +2563,66 @@ async function applyGamificationIfSettled(
   }
 
   const snapshot = extractPoolSnapshot(body);
-  if (snapshot?.pool.unit !== "points" || snapshot.pool.status !== "settled") {
+  if (snapshot?.pool.status !== "settled") {
     return response;
   }
 
-  try {
-    const result = await applyDotCastGamificationSettlement(gamificationStore(env), env, snapshot, {
-      now: now ?? snapshot.updatedAt,
-      hasDatabase: true
-    });
+  const enriched: Record<string, unknown> = { ...body };
 
-    return json(
-      {
-        ...body,
-        gamification: summarizeGamificationResult(result)
-      },
-      response.status
-    );
+  try {
+    if (snapshot.pool.unit === "points") {
+      const result = await applyDotCastGamificationSettlement(
+        gamificationStore(env),
+        env,
+        snapshot,
+        {
+          now: now ?? snapshot.updatedAt,
+          hasDatabase: true
+        }
+      );
+      enriched.gamification = summarizeGamificationResult(result);
+    }
   } catch (error) {
     console.error("[dotCast] E8 gamification settlement apply failed", {
       poolId: snapshot.pool.id,
       error: error instanceof Error ? error.message : String(error)
     });
-    return json(
-      {
-        ...body,
-        gamification: {
-          milestone: "E8",
-          applied: false,
-          idempotent: false,
-          error: error instanceof Error ? error.message : "E8 gamification apply failed"
-        }
-      },
-      response.status
-    );
+    enriched.gamification = {
+      milestone: "E8",
+      applied: false,
+      idempotent: false,
+      error: error instanceof Error ? error.message : "E8 gamification apply failed"
+    };
   }
+
+  if (snapshot.pool.originatingCreatorId) {
+    try {
+      const result = await applyDotCastCreatorRakeShareSettlement(
+        creatorStore(env),
+        env,
+        {
+          snapshot,
+          now: now ?? snapshot.updatedAt
+        },
+        true
+      );
+      enriched.creatorEconomy = summarizeCreatorAccrualResult(result);
+    } catch (error) {
+      console.error("[dotCast] E11 creator rake-share apply failed", {
+        poolId: snapshot.pool.id,
+        creatorId: snapshot.pool.originatingCreatorId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+      enriched.creatorEconomy = {
+        milestone: "E11",
+        applied: false,
+        idempotent: false,
+        error: error instanceof Error ? error.message : "E11 creator rake-share apply failed"
+      };
+    }
+  }
+
+  return json(enriched, response.status);
 }
 
 function extractPoolSnapshot(body: Record<string, unknown>): DotCastPoolSnapshot | null {
@@ -2177,6 +2658,23 @@ function summarizeGamificationResult(
     ledgerEntries: result.ledger.length,
     pointsAwarded: result.settlement.pointsAwarded,
     freeEntriesGranted: result.freeEntries.length,
+    status: result.status
+  };
+}
+
+function summarizeCreatorAccrualResult(
+  result: Awaited<ReturnType<typeof applyDotCastCreatorRakeShareSettlement>>
+) {
+  return {
+    milestone: "E11",
+    applied: result.applied,
+    idempotent: result.idempotent,
+    creatorId: result.creator?.creatorId ?? null,
+    accrual: result.accrual,
+    balance: result.balance,
+    conservation: result.accrual
+      ? result.accrual.creatorShare + result.accrual.houseShare === result.accrual.totalRake
+      : null,
     status: result.status
   };
 }
@@ -2233,6 +2731,20 @@ function sponsoredQuestionStore(env: Env): D1DotCastSponsoredQuestionStore {
   }
 
   return new D1DotCastSponsoredQuestionStore(db);
+}
+
+function creatorStore(env: Env): D1DotCastCreatorStore {
+  const db = env.DOTCAST_DB ?? env.TRADING_DB;
+
+  if (!db) {
+    throw new DotCastCreatorEconomyError(
+      "CREATOR_ECONOMY_DB_NOT_CONFIGURED",
+      "E11 creator economy database is not configured",
+      503
+    );
+  }
+
+  return new D1DotCastCreatorStore(db);
 }
 
 function livestreamStore(env: Env): D1DotCastLivestreamStore {
@@ -2362,6 +2874,41 @@ function sponsoredQuestionErrorResponse(error: unknown): Response {
     {
       ok: false,
       milestone: "E10",
+      error: error instanceof Error ? error.message : "Invalid request"
+    },
+    400
+  );
+}
+
+function creatorEconomyErrorResponse(error: unknown): Response {
+  if (error instanceof DotCastCreatorEconomyError) {
+    return json(
+      {
+        ok: false,
+        milestone: "E11",
+        code: error.code,
+        error: error.message
+      },
+      error.status
+    );
+  }
+
+  if (error instanceof DotCastSettlementRailError) {
+    return json(
+      {
+        ok: false,
+        milestone: "E11",
+        code: error.code,
+        error: error.message
+      },
+      error.status
+    );
+  }
+
+  return json(
+    {
+      ok: false,
+      milestone: "E11",
       error: error instanceof Error ? error.message : "Invalid request"
     },
     400
