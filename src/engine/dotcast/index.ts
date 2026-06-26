@@ -5,4 +5,5 @@ export * from "./PoolLifecycle";
 export * from "./PoolSettlement";
 export * from "./RouterReferencePriceClient";
 export * from "./RouterResolutionClient";
+export * from "./SolanaUsdcSettlementRail";
 export * from "./types";

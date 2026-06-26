@@ -5,8 +5,12 @@ import {
   placeDotCastPoolEntry,
   pollDotCastPoolResolution,
   previewDotCastOdds,
+  readDotCastSettlementRailBalance,
+  readDotCastSettlementRailStatus,
+  recordDotCastDevnetDeposit,
   readDotCastPoolLiveOdds,
   readDotCastHealth,
+  requestDotCastDevnetWithdrawal,
   settleDotCastPool,
   simulateDotCastSettlement,
   voidDotCastPool
@@ -155,6 +159,83 @@ describe("dotCast gateway handlers", () => {
     expect(await response.json()).toMatchObject({
       ok: false,
       error: "usdc pools are disabled until the settlement rail is enabled"
+    });
+  });
+
+  it("handles E5 devnet USDC deposits and mock withdrawals through the gateway", async () => {
+    const env = envWithSettlementRailDb();
+    const statusResponse = readDotCastSettlementRailStatus(env);
+    const depositResponse = await recordDotCastDevnetDeposit(
+      jsonRequest("/api/dotcast/settlement-rail/deposits/devnet", {
+        userId: "user-gateway",
+        amount: 1_000_000,
+        txRef: "gateway-devnet-deposit",
+        confirmations: 1,
+        now: "2099-06-25T17:00:00.000Z"
+      }),
+      env
+    );
+    const balanceResponse = await readDotCastSettlementRailBalance("user-gateway", env);
+    const withdrawalResponse = await requestDotCastDevnetWithdrawal(
+      jsonRequest("/api/dotcast/settlement-rail/withdrawals/devnet", {
+        userId: "user-gateway",
+        amount: 250_000,
+        destination: "11111111111111111111111111111111",
+        idempotencyKey: "gateway-withdrawal",
+        now: "2099-06-25T17:01:00.000Z"
+      }),
+      env
+    );
+    const replayResponse = await requestDotCastDevnetWithdrawal(
+      jsonRequest("/api/dotcast/settlement-rail/withdrawals/devnet", {
+        userId: "user-gateway",
+        amount: 250_000,
+        destination: "11111111111111111111111111111111",
+        idempotencyKey: "gateway-withdrawal",
+        now: "2099-06-25T17:01:01.000Z"
+      }),
+      env
+    );
+
+    expect(statusResponse.status).toBe(200);
+    expect(await statusResponse.json()).toMatchObject({
+      ok: true,
+      milestone: "E5",
+      rail: { ready: true, signerMode: "mock" },
+      safeguards: {
+        privateKeysInRepo: false,
+        mainnetWithdrawals: "blocked-until-operator-approval"
+      }
+    });
+    expect(depositResponse.status).toBe(200);
+    expect(await depositResponse.json()).toMatchObject({
+      ok: true,
+      milestone: "E5",
+      status: "credited",
+      balance: { availableUsdc: 1_000_000 }
+    });
+    expect(balanceResponse.status).toBe(200);
+    expect(await balanceResponse.json()).toMatchObject({
+      ok: true,
+      balance: { userId: "user-gateway", availableUsdc: 1_000_000 }
+    });
+    expect(withdrawalResponse.status).toBe(200);
+    expect(await withdrawalResponse.json()).toMatchObject({
+      ok: true,
+      status: "signed",
+      broadcast: false,
+      idempotent: false,
+      transfer: {
+        signerMode: "mock",
+        mockSignature: expect.stringMatching(/^mock-solana-devnet-/)
+      },
+      balance: { availableUsdc: 750_000, pendingWithdrawalUsdc: 250_000 }
+    });
+    expect(replayResponse.status).toBe(200);
+    expect(await replayResponse.json()).toMatchObject({
+      ok: true,
+      idempotent: true,
+      balance: { availableUsdc: 750_000, pendingWithdrawalUsdc: 250_000 }
     });
   });
 
@@ -445,4 +526,132 @@ function envWithDotCastPool(handler: (request: Request) => Promise<Response> | R
       get: () => ({ fetch: handler }) as unknown as DurableObjectStub
     } as unknown as DurableObjectNamespace
   } as Env;
+}
+
+function envWithSettlementRailDb(): Env {
+  const d1 = new FakeSettlementRailD1();
+
+  return {
+    TRADING_DB: d1 as unknown as D1Database,
+    DOTCAST_SETTLEMENT_RAIL_MODE: "devnet",
+    DOTCAST_SOLANA_CLUSTER: "devnet",
+    DOTCAST_SETTLEMENT_SIGNER_MODE: "mock",
+    DOTCAST_DEPOSIT_CONFIRMATIONS_REQUIRED: "1",
+    DOTCAST_WITHDRAWAL_MAX_MINOR_UNITS: "1000000"
+  } as Env;
+}
+
+class FakeSettlementRailD1 {
+  readonly balances = new Map<string, Record<string, unknown>>();
+  readonly transfers = new Map<string, Record<string, unknown>>();
+  readonly events = new Map<string, Record<string, unknown>>();
+
+  prepare(query: string) {
+    return {
+      bind: (...params: unknown[]) => ({
+        first: async () => this.first(query, params),
+        all: async () => ({ results: this.all(query) }),
+        run: async () => {
+          this.run(query, params);
+          return { success: true };
+        }
+      })
+    };
+  }
+
+  private first(query: string, params: unknown[]): Record<string, unknown> | null {
+    if (query.includes("FROM dotcast_settlement_balances")) {
+      return this.balances.get(String(params[0])) ?? null;
+    }
+
+    if (query.includes("WHERE transfer_id = ?")) {
+      return this.transfers.get(String(params[0])) ?? null;
+    }
+
+    if (query.includes("WHERE tx_ref = ?")) {
+      return (
+        [...this.transfers.values()].find(
+          (transfer) => transfer.kind === "deposit" && transfer.tx_ref === params[0]
+        ) ?? null
+      );
+    }
+
+    return null;
+  }
+
+  private all(query: string): Record<string, unknown>[] {
+    if (query.includes("FROM dotcast_settlement_balances")) {
+      return [...this.balances.values()];
+    }
+
+    return [];
+  }
+
+  private run(query: string, params: unknown[]): void {
+    if (query.includes("INSERT INTO dotcast_settlement_balances")) {
+      this.balances.set(String(params[0]), {
+        user_id: params[0],
+        available_usdc: params[1],
+        pending_deposit_usdc: params[2],
+        pending_withdrawal_usdc: params[3],
+        updated_at: params[4]
+      });
+      return;
+    }
+
+    if (query.includes("INSERT INTO dotcast_settlement_transfers")) {
+      this.transfers.set(String(params[0]), {
+        transfer_id: params[0],
+        user_id: params[1],
+        kind: params[2],
+        status: params[3],
+        network: params[4],
+        cluster: params[5],
+        mint: params[6],
+        amount: params[7],
+        tx_ref: params[8],
+        destination: params[9],
+        signer_mode: params[10],
+        mock_signature: params[11],
+        requested_at: params[12],
+        updated_at: params[13],
+        event_json: params[14]
+      });
+      return;
+    }
+
+    if (query.includes("UPDATE dotcast_settlement_transfers")) {
+      const transferId = String(params[7]);
+      const existing = this.transfers.get(transferId) ?? {};
+      this.transfers.set(transferId, {
+        ...existing,
+        status: params[0],
+        tx_ref: params[1],
+        destination: params[2],
+        signer_mode: params[3],
+        mock_signature: params[4],
+        updated_at: params[5],
+        event_json: params[6]
+      });
+      return;
+    }
+
+    if (query.includes("INSERT OR IGNORE INTO dotcast_settlement_rail_events")) {
+      this.events.set(String(params[0]), {
+        event_id: params[0],
+        user_id: params[1],
+        event_type: params[2],
+        network: params[3],
+        cluster: params[4],
+        mint: params[5],
+        amount: params[6],
+        tx_ref: params[7],
+        withdrawal_id: params[8],
+        status: params[9],
+        reason: params[10],
+        event_json: params[11],
+        created_at: params[12]
+      });
+    }
+  }
 }

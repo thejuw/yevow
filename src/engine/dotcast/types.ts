@@ -102,6 +102,90 @@ export interface StakeBalance {
   locked: number;
 }
 
+export type DotCastSettlementRailMode = "disabled" | "devnet" | "mainnet";
+
+export type DotCastSolanaCluster = "devnet" | "mainnet-beta";
+
+export type DotCastSettlementSignerMode = "mock" | "external" | "unknown";
+
+export type DotCastSettlementRailEventType =
+  | "DEPOSIT_OBSERVED"
+  | "DEPOSIT_CREDITED"
+  | "DEPOSIT_REORGED"
+  | "WITHDRAWAL_REQUESTED"
+  | "WITHDRAWAL_SIGNED"
+  | "WITHDRAWAL_CONFIRMED"
+  | "WITHDRAWAL_FAILED"
+  | "RECONCILIATION";
+
+export type DotCastSettlementTransferKind = "deposit" | "withdrawal";
+
+export type DotCastSettlementTransferStatus =
+  | "observed"
+  | "credited"
+  | "reorged"
+  | "requested"
+  | "signed"
+  | "confirmed"
+  | "failed";
+
+export interface DotCastSettlementRailStatus {
+  mode: DotCastSettlementRailMode;
+  network: "solana-devnet" | "solana-mainnet-beta";
+  cluster: DotCastSolanaCluster;
+  mint: string;
+  decimals: 6;
+  signerMode: DotCastSettlementSignerMode;
+  depositConfirmationsRequired: number;
+  withdrawalMaxMinorUnits: number;
+  operatorWithdrawalsApproved: boolean;
+  ready: boolean;
+  operational: boolean;
+  guards: string[];
+}
+
+export interface DotCastSettlementBalance {
+  userId: string;
+  availableUsdc: number;
+  pendingDepositUsdc: number;
+  pendingWithdrawalUsdc: number;
+  updatedAt: string;
+}
+
+export interface DotCastSettlementTransfer {
+  transferId: string;
+  userId: string;
+  kind: DotCastSettlementTransferKind;
+  status: DotCastSettlementTransferStatus;
+  network: DotCastSettlementRailStatus["network"];
+  cluster: DotCastSolanaCluster;
+  mint: string;
+  amount: number;
+  txRef: string | null;
+  destination: string | null;
+  signerMode: DotCastSettlementSignerMode;
+  mockSignature: string | null;
+  requestedAt: string;
+  updatedAt: string;
+  eventJson: Record<string, unknown>;
+}
+
+export interface DotCastSettlementRailEvent {
+  eventId: string;
+  userId: string;
+  eventType: DotCastSettlementRailEventType;
+  network: DotCastSettlementRailStatus["network"];
+  cluster: DotCastSolanaCluster;
+  mint: string;
+  amount: number | null;
+  txRef: string | null;
+  withdrawalId: string | null;
+  status: DotCastSettlementTransferStatus | "reconciled" | null;
+  reason: string | null;
+  eventJson: Record<string, unknown>;
+  createdAt: string;
+}
+
 export type PointsLedgerReason =
   | "predict_correct"
   | "predict_incorrect"

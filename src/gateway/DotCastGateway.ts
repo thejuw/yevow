@@ -1,7 +1,15 @@
 import {
+  confirmMockWithdrawal,
+  creditDevnetDeposit,
+  D1DotCastSettlementRailStore,
+  DotCastSettlementRailError,
   fetchDotCastReferencePrice,
   impliedProb,
   previewPayout,
+  readSettlementBalance,
+  readSolanaUsdcSettlementRailStatus,
+  reconcileDevnetSettlementRail,
+  requestDevnetWithdrawal,
   settleParimutuel,
   type DotCastLiveOddsSnapshot,
   type DotCastMarketSnapshot,
@@ -72,7 +80,35 @@ interface DotCastPollResolutionRequest {
   now?: unknown;
 }
 
-export function readDotCastHealth(): Response {
+interface DotCastDevnetDepositRequest {
+  userId?: unknown;
+  amount?: unknown;
+  txRef?: unknown;
+  confirmations?: unknown;
+  now?: unknown;
+}
+
+interface DotCastDevnetWithdrawalRequest {
+  userId?: unknown;
+  amount?: unknown;
+  destination?: unknown;
+  idempotencyKey?: unknown;
+  now?: unknown;
+}
+
+interface DotCastConfirmWithdrawalRequest {
+  txRef?: unknown;
+  now?: unknown;
+}
+
+interface DotCastReconcileRailRequest {
+  custodiedAmount?: unknown;
+  now?: unknown;
+}
+
+export function readDotCastHealth(env?: Env): Response {
+  const settlementRail = env ? readSolanaUsdcSettlementRailStatus(env) : null;
+
   return json({
     ok: true,
     product: "dotCast",
@@ -83,7 +119,7 @@ export function readDotCastHealth(): Response {
       e2: "router-resolution-polling-ready",
       e3: "live-odds-reference-endpoint-ready",
       e4: "void-refund-core-ready",
-      e5: "settlement-rail-not-enabled",
+      e5: "solana-usdc-devnet-mock-rail-ready",
       e6: "points-layer-not-started",
       e7: "audit-ledger-core-ready",
       e8: "gamification-not-started",
@@ -93,12 +129,19 @@ export function readDotCastHealth(): Response {
       e12: "referrals-not-started",
       e13: "resolution-router-not-started",
       persistence: "durable-object-ready",
-      settlementRail: "not-enabled"
+      settlementRail: settlementRail?.ready ? "devnet-mock-ready" : "devnet-mock-code-ready"
     },
+    ...(settlementRail ? { settlementRail } : {}),
     routes: [
       "GET /api/dotcast/health",
       "POST /api/dotcast/preview",
       "POST /api/dotcast/settlement/simulate",
+      "GET /api/dotcast/settlement-rail/status",
+      "GET /api/dotcast/settlement-rail/balances/:userId",
+      "POST /api/dotcast/settlement-rail/deposits/devnet",
+      "POST /api/dotcast/settlement-rail/withdrawals/devnet",
+      "POST /api/dotcast/settlement-rail/withdrawals/:id/confirm",
+      "POST /api/dotcast/settlement-rail/reconcile/devnet",
       "POST /api/dotcast/pools",
       "GET /api/dotcast/pools/:id",
       "GET /api/dotcast/pools/:id/odds",
@@ -110,6 +153,129 @@ export function readDotCastHealth(): Response {
       "POST /api/dotcast/pools/:id/void"
     ]
   });
+}
+
+export function readDotCastSettlementRailStatus(env: Env): Response {
+  return json({
+    ok: true,
+    milestone: "E5",
+    rail: readSolanaUsdcSettlementRailStatus(env),
+    safeguards: {
+      privateKeysInRepo: false,
+      signer: "mock",
+      mainnetWithdrawals: "blocked-until-operator-approval"
+    }
+  });
+}
+
+export async function readDotCastSettlementRailBalance(
+  userId: string,
+  env: Env
+): Promise<Response> {
+  try {
+    const balance = await readSettlementBalance(
+      settlementRailStore(env),
+      parseRequiredString(userId, "userId")
+    );
+
+    return json({
+      ok: true,
+      milestone: "E5",
+      balance,
+      rail: readSolanaUsdcSettlementRailStatus(env)
+    });
+  } catch (error) {
+    return settlementRailErrorResponse(error);
+  }
+}
+
+export async function recordDotCastDevnetDeposit(request: Request, env: Env): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastDevnetDepositRequest>(request);
+    const result = await creditDevnetDeposit(settlementRailStore(env), env, {
+      userId: parseRequiredString(body?.userId, "userId"),
+      amount: parseMinorUnits(body?.amount, "amount"),
+      txRef: parseRequiredString(body?.txRef, "txRef"),
+      confirmations: parseOptionalMinorUnits(body?.confirmations, "confirmations") ?? 0,
+      now: parseOptionalString(body?.now, "now")
+    });
+
+    return json({
+      ok: true,
+      milestone: "E5",
+      ...result
+    });
+  } catch (error) {
+    return settlementRailErrorResponse(error);
+  }
+}
+
+export async function requestDotCastDevnetWithdrawal(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastDevnetWithdrawalRequest>(request);
+    const result = await requestDevnetWithdrawal(settlementRailStore(env), env, {
+      userId: parseRequiredString(body?.userId, "userId"),
+      amount: parseMinorUnits(body?.amount, "amount"),
+      destination: parseRequiredString(body?.destination, "destination"),
+      idempotencyKey: parseRequiredString(body?.idempotencyKey, "idempotencyKey"),
+      now: parseOptionalString(body?.now, "now")
+    });
+
+    return json({
+      ok: true,
+      milestone: "E5",
+      ...result
+    });
+  } catch (error) {
+    return settlementRailErrorResponse(error);
+  }
+}
+
+export async function confirmDotCastMockWithdrawal(
+  transferId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastConfirmWithdrawalRequest>(request);
+    const result = await confirmMockWithdrawal(settlementRailStore(env), env, {
+      transferId: parseRequiredString(transferId, "transferId"),
+      txRef: parseOptionalString(body?.txRef, "txRef"),
+      now: parseOptionalString(body?.now, "now")
+    });
+
+    return json({
+      ok: true,
+      milestone: "E5",
+      ...result
+    });
+  } catch (error) {
+    return settlementRailErrorResponse(error);
+  }
+}
+
+export async function reconcileDotCastDevnetSettlementRail(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastReconcileRailRequest>(request);
+    const result = await reconcileDevnetSettlementRail(settlementRailStore(env), env, {
+      custodiedAmount: parseMinorUnits(body?.custodiedAmount, "custodiedAmount", true),
+      now: parseOptionalString(body?.now, "now")
+    });
+
+    return json({
+      ok: true,
+      milestone: "E5",
+      reconciliation: result
+    });
+  } catch (error) {
+    return settlementRailErrorResponse(error);
+  }
 }
 
 export async function createDotCastPool(request: Request, env: Env): Promise<Response> {
@@ -601,6 +767,41 @@ async function proxyDotCastPoolRequest(
   );
 
   return withCors(response);
+}
+
+function settlementRailStore(env: Env): D1DotCastSettlementRailStore {
+  if (!env.TRADING_DB) {
+    throw new DotCastSettlementRailError(
+      "SETTLEMENT_DB_NOT_CONFIGURED",
+      "E5 settlement rail database is not configured",
+      503
+    );
+  }
+
+  return new D1DotCastSettlementRailStore(env.TRADING_DB);
+}
+
+function settlementRailErrorResponse(error: unknown): Response {
+  if (error instanceof DotCastSettlementRailError) {
+    return json(
+      {
+        ok: false,
+        milestone: "E5",
+        code: error.code,
+        error: error.message
+      },
+      error.status
+    );
+  }
+
+  return json(
+    {
+      ok: false,
+      milestone: "E5",
+      error: error instanceof Error ? error.message : "Invalid request"
+    },
+    400
+  );
 }
 
 function extractLiveOddsMarketId(body: Record<string, unknown>): string {

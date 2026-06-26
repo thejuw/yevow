@@ -43,14 +43,20 @@ import { handleTopologyCalibration } from "./gateway/AdminTopologyGateway";
 import { readMoltworkerHealth, updateMoltworkerHeartbeat } from "./gateway/MoltworkerGateway";
 import {
   applyDotCastPoolResolution,
+  confirmDotCastMockWithdrawal,
   createDotCastPool,
   lockDotCastPool,
   placeDotCastPoolEntry,
   pollDotCastPoolResolution,
   previewDotCastOdds,
+  readDotCastSettlementRailBalance,
+  readDotCastSettlementRailStatus,
+  reconcileDotCastDevnetSettlementRail,
+  recordDotCastDevnetDeposit,
   readDotCastPoolLiveOdds,
   readDotCastPool,
   readDotCastHealth,
+  requestDotCastDevnetWithdrawal,
   settleDotCastPool,
   simulateDotCastSettlement,
   voidDotCastPool
@@ -105,10 +111,28 @@ const gatewayRouter = new Hono<GatewayHono>();
 gatewayRouter.options("*", () => corsPreflight());
 
 gatewayRouter.get("/api/equity-deals", async (c) => readPrivateEquityDeals(c.env));
-gatewayRouter.get("/api/dotcast/health", () => readDotCastHealth());
+gatewayRouter.get("/api/dotcast/health", (c) => readDotCastHealth(c.env));
 gatewayRouter.post("/api/dotcast/preview", async (c) => previewDotCastOdds(c.req.raw));
 gatewayRouter.post("/api/dotcast/settlement/simulate", async (c) =>
   simulateDotCastSettlement(c.req.raw)
+);
+gatewayRouter.get("/api/dotcast/settlement-rail/status", (c) =>
+  readDotCastSettlementRailStatus(c.env)
+);
+gatewayRouter.get("/api/dotcast/settlement-rail/balances/:userId", async (c) =>
+  readDotCastSettlementRailBalance(c.req.param("userId"), c.env)
+);
+gatewayRouter.post("/api/dotcast/settlement-rail/deposits/devnet", async (c) =>
+  recordDotCastDevnetDeposit(c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/settlement-rail/withdrawals/devnet", async (c) =>
+  requestDotCastDevnetWithdrawal(c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/settlement-rail/withdrawals/:id/confirm", async (c) =>
+  confirmDotCastMockWithdrawal(c.req.param("id"), c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/settlement-rail/reconcile/devnet", async (c) =>
+  reconcileDotCastDevnetSettlementRail(c.req.raw, c.env)
 );
 gatewayRouter.post("/api/dotcast/pools", async (c) => createDotCastPool(c.req.raw, c.env));
 gatewayRouter.get("/api/dotcast/pools/:id", async (c) => readDotCastPool(c.req.param("id"), c.env));
