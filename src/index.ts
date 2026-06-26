@@ -50,6 +50,8 @@ import {
   completeDotCastRewardedStreamOnrampSession,
   confirmDotCastMockWithdrawal,
   confirmDotCastCreatorEconomyPayout,
+  classifyDotCastResolutionRouterRequest,
+  commitDotCastResolverRoute,
   createDotCastPool,
   createDotCastLivestreamSession,
   createDotCastReferralProgramCode,
@@ -65,6 +67,7 @@ import {
   pauseDotCastLivestream,
   placeDotCastPoolEntry,
   planDotCastCreatorNudges,
+  planDotCastResolverPanelRoute,
   pollDotCastPoolResolution,
   previewDotCastOdds,
   readDotCastGamificationUser,
@@ -72,6 +75,7 @@ import {
   readDotCastCreatorProfile,
   readDotCastReferralProgramStatus,
   readDotCastReferralProgramUser,
+  readDotCastResolutionRouterReadiness,
   readDotCastRewardedStreamOnrampStatus,
   readDotCastRewardedStreamUser,
   readDotCastSponsoredQuestionPlacement,
@@ -93,8 +97,11 @@ import {
   requestDotCastCreatorEconomyPayout,
   resumeDotCastLivestream,
   recordDotCastSponsoredQuestionPlacementBilling,
+  resolveDotCastAiPerceptionRoute,
+  revealDotCastResolverRoute,
   setDotCastLivestreamFeaturedPool,
   settleDotCastPool,
+  settleDotCastResolverPanelRoute,
   simulateDotCastSettlement,
   startDotCastRewardedStreamOnrampSession,
   startDotCastLivestream,
@@ -241,6 +248,27 @@ gatewayRouter.post("/api/dotcast/referrals/claims", async (c) =>
 );
 gatewayRouter.post("/api/dotcast/referrals/:id/qualify", async (c) =>
   applyDotCastReferralProgramQualification(c.req.param("id"), c.req.raw, c.env)
+);
+gatewayRouter.get("/api/dotcast/resolution-router/status", (c) =>
+  readDotCastResolutionRouterReadiness(c.env)
+);
+gatewayRouter.post("/api/dotcast/resolution-router/classify", async (c) =>
+  classifyDotCastResolutionRouterRequest(c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/resolution-router/ai-perception/resolve", async (c) =>
+  resolveDotCastAiPerceptionRoute(c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/resolution-router/resolvers/panel", async (c) =>
+  planDotCastResolverPanelRoute(c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/resolution-router/resolvers/commit", async (c) =>
+  commitDotCastResolverRoute(c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/resolution-router/resolvers/reveal", async (c) =>
+  revealDotCastResolverRoute(c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/resolution-router/resolvers/settle", async (c) =>
+  settleDotCastResolverPanelRoute(c.req.raw, c.env)
 );
 gatewayRouter.post("/api/dotcast/livestreams/webhooks/mux", async (c) =>
   handleMuxLivestreamWebhook(c.req.raw, c.env)

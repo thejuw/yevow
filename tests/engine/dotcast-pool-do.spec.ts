@@ -753,7 +753,7 @@ function fakeState(): DurableObjectState {
 }
 
 function createPayload(overrides: Record<string, unknown> = {}) {
-  return {
+  const payload = {
     id: "pool-do",
     market: {
       id: "kalshi:demo-do",
@@ -769,6 +769,49 @@ function createPayload(overrides: Record<string, unknown> = {}) {
     minLiquidity: 100,
     now,
     ...overrides
+  };
+
+  if (payload.unit === "usdc" && !payload.resolutionRoute) {
+    const payloadMarket = payload.market as { id: unknown };
+    return {
+      ...payload,
+      resolutionRoute: lockedRoute(String(payload.id), String(payloadMarket.id))
+    };
+  }
+
+  return payload;
+}
+
+function lockedRoute(poolId: string, marketId: string) {
+  return {
+    routeId: `route:${poolId}`,
+    marketId,
+    poolId,
+    tier: "hard_oracle",
+    status: "locked",
+    confidenceBps: 9400,
+    resolutionStatement: "Use the originating Kalshi market outcome.",
+    sources: [
+      {
+        kind: "router_market",
+        label: "Kalshi market outcome",
+        url: null,
+        required: true
+      }
+    ],
+    sourceAvailable: true,
+    autoResolvable: true,
+    reviewRequired: false,
+    pointsOnly: false,
+    blockedReason: null,
+    steeringPrompt: null,
+    feeBps: 0,
+    bondMinorUnits: 0,
+    panelSize: 0,
+    lockedAt: now,
+    classifierVersion: "test",
+    createdAt: now,
+    eventJson: {}
   };
 }
 

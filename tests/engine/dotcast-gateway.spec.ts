@@ -3,6 +3,7 @@ import {
   applyDotCastPoolResolution,
   archiveDotCastLivestream,
   attachDotCastLivestreamPool,
+  classifyDotCastResolutionRouterRequest,
   createDotCastPool,
   createDotCastLivestreamSession,
   detachDotCastLivestreamPool,
@@ -51,7 +52,43 @@ describe("dotCast gateway handlers", () => {
         e2: "router-resolution-polling-ready",
         e3: "live-odds-reference-endpoint-ready",
         livestreamEngine: "stream-spine-ready",
-        e13: "resolution-router-not-started"
+        e13: "resolution-router-code-ready"
+      }
+    });
+  });
+
+  it("classifies E13 resolution routes before pool creation", async () => {
+    const response = await classifyDotCastResolutionRouterRequest(
+      jsonRequest("/api/dotcast/resolution-router/classify", {
+        market: {
+          id: "kalshi:e13-gateway",
+          venue: "kalshi",
+          question: "Will the official event settle yes?",
+          status: "open",
+          closeTime: "2099-06-25T17:05:00.000Z",
+          expectedResolveAt: null,
+          referenceUrl: "https://kalshi.example/markets/e13"
+        },
+        unit: "usdc",
+        poolId: "pool-e13-gateway",
+        estimatedStake: 100_000,
+        now: "2099-06-25T17:00:00.000Z"
+      }),
+      {} as Env
+    );
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({
+      ok: true,
+      milestone: "E13",
+      resolutionRouter: {
+        canOpenRealMoney: true,
+        route: {
+          tier: "hard_oracle",
+          status: "locked",
+          marketId: "kalshi:e13-gateway"
+        }
       }
     });
   });

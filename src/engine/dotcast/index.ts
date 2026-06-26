@@ -7,6 +7,7 @@ export * from "./MuxLivestream";
 export * from "./Parimutuel";
 export * from "./PoolLifecycle";
 export * from "./PoolSettlement";
+export * from "./ResolutionRouter";
 export * from "./RouterReferencePriceClient";
 export * from "./RouterResolutionClient";
 export * from "./Referrals";

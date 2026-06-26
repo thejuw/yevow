@@ -6,6 +6,7 @@ import {
   creditDevnetDeposit,
   D1DotCastCreatorStore,
   D1DotCastReferralStore,
+  D1DotCastResolutionRouterStore,
   D1DotCastSettlementRailStore,
   D1DotCastGamificationStore,
   D1DotCastRewardedStreamStore,
@@ -15,6 +16,7 @@ import {
   DotCastCreatorEconomyError,
   DotCastReferralError,
   DotCastGamificationError,
+  DotCastResolutionRouterError,
   DotCastRewardedStreamError,
   DotCastSponsoredQuestionError,
   DotCastSettlementRailError,
@@ -32,6 +34,8 @@ import {
   onboardDotCastCreator,
   planCreatorPoolNudges,
   applyDotCastReferralQualification,
+  classifyDotCastResolutionRoute,
+  createDotCastResolverCommit,
   parseVerifiedMuxWebhook,
   previewPayout,
   readSettlementBalance,
@@ -41,6 +45,7 @@ import {
   readDotCastReferralUserSummary,
   readDotCastGamificationStatus,
   readDotCastGamificationUserSummary,
+  readDotCastResolutionRouterStatus,
   readDotCastRewardedStreamStatus,
   readDotCastRewardedStreamUserSummary,
   readDotCastSponsoredQuestionsStatus,
@@ -50,11 +55,16 @@ import {
   reconcileDevnetSettlementRail,
   recordDotCastCreatorPoolSeed,
   recordDotCastSponsoredQuestionBillingEvent,
+  prepareDotCastPoolResolutionRoute,
+  resolveDotCastAiPerception,
+  revealDotCastResolverCommit,
   releaseUsdcPoolEntryReservation,
   reserveUsdcPoolEntry,
   requestDevnetWithdrawal,
   requestDotCastCreatorPayout,
+  selectDotCastResolverPanel,
   settleParimutuel,
+  settleDotCastResolverPanel,
   type CreatorNudgeRecipient,
   startDotCastRewardedStreamSession,
   completeDotCastRewardedStreamSession,
@@ -64,7 +74,14 @@ import {
   type DotCastPoolSnapshot,
   type DotCastReferencePriceFetchResult,
   type DotCastResolutionOutcome,
+  type DotCastResolutionRoute,
+  type DotCastResolutionSource,
   type DotCastCreatorKycStatus,
+  type DotCastResolverAssignment,
+  type DotCastResolverCommit,
+  type DotCastResolverPanel,
+  type DotCastResolverProfile,
+  type DotCastResolverReveal,
   type DotCastCreatorSeedMode,
   type DotCastCreatorStatus,
   type DotCastCreatorTier,
@@ -103,9 +120,62 @@ interface DotCastCreatePoolRequest {
   entryClosesAt?: unknown;
   rake?: unknown;
   minLiquidity?: unknown;
+  resolutionRoute?: unknown;
+  streamId?: unknown;
+  estimatedStake?: unknown;
+  sourceBindings?: unknown;
   creator?: DotCastCreatorAttributionRequest;
   originatingCreatorId?: unknown;
   creatorDisplayName?: unknown;
+  now?: unknown;
+}
+
+interface DotCastResolutionClassifierRequest {
+  market?: Partial<DotCastMarketSnapshot>;
+  unit?: unknown;
+  poolId?: unknown;
+  streamId?: unknown;
+  estimatedStake?: unknown;
+  sourceBindings?: unknown;
+  now?: unknown;
+}
+
+interface DotCastAiPerceptionResolutionRequest {
+  route?: unknown;
+  poolId?: unknown;
+  modelConfidenceBps?: unknown;
+  predictedOutcome?: unknown;
+  evidenceRefs?: unknown;
+  now?: unknown;
+}
+
+interface DotCastResolverPanelRequest {
+  poolId?: unknown;
+  route?: unknown;
+  candidates?: unknown;
+  positionUserIds?: unknown;
+  estimatedStake?: unknown;
+  panelId?: unknown;
+  now?: unknown;
+}
+
+interface DotCastResolverCommitRequest {
+  assignment?: unknown;
+  outcome?: unknown;
+  salt?: unknown;
+  now?: unknown;
+}
+
+interface DotCastResolverRevealRequest {
+  commit?: unknown;
+  outcome?: unknown;
+  salt?: unknown;
+  now?: unknown;
+}
+
+interface DotCastResolverSettleRequest {
+  panel?: unknown;
+  reveals?: unknown;
   now?: unknown;
 }
 
@@ -361,6 +431,9 @@ export function readDotCastHealth(env?: Env): Response {
   const referrals = env
     ? readDotCastReferralStatus(env, Boolean(env.DOTCAST_DB ?? env.TRADING_DB))
     : null;
+  const resolutionRouter = env
+    ? readDotCastResolutionRouterStatus(env, Boolean(env.DOTCAST_DB ?? env.TRADING_DB))
+    : null;
 
   return json({
     ok: true,
@@ -384,7 +457,7 @@ export function readDotCastHealth(env?: Env): Response {
         : "sponsored-questions-code-ready",
       e11: creatorEconomy?.ready ? "creator-economy-ready" : "creator-economy-code-ready",
       e12: referrals?.ready ? "referrals-ready" : "referrals-code-ready",
-      e13: "resolution-router-not-started",
+      e13: resolutionRouter?.ready ? "resolution-router-ready" : "resolution-router-code-ready",
       persistence: "durable-object-ready",
       livestreamEngine: "stream-spine-ready",
       livestreamProvider: livestream?.ready ? "mux-livewire-ready" : "mux-livewire-code-ready",
@@ -400,6 +473,7 @@ export function readDotCastHealth(env?: Env): Response {
     ...(sponsoredQuestions ? { sponsoredQuestions } : {}),
     ...(creatorEconomy ? { creatorEconomy } : {}),
     ...(referrals ? { referrals } : {}),
+    ...(resolutionRouter ? { resolutionRouter } : {}),
     routes: [
       "GET /api/dotcast/health",
       "POST /api/dotcast/preview",
@@ -434,6 +508,13 @@ export function readDotCastHealth(env?: Env): Response {
       "GET /api/dotcast/referrals/users/:userId",
       "POST /api/dotcast/referrals/claims",
       "POST /api/dotcast/referrals/:id/qualify",
+      "GET /api/dotcast/resolution-router/status",
+      "POST /api/dotcast/resolution-router/classify",
+      "POST /api/dotcast/resolution-router/ai-perception/resolve",
+      "POST /api/dotcast/resolution-router/resolvers/panel",
+      "POST /api/dotcast/resolution-router/resolvers/commit",
+      "POST /api/dotcast/resolution-router/resolvers/reveal",
+      "POST /api/dotcast/resolution-router/resolvers/settle",
       "POST /api/dotcast/livestreams",
       "GET /api/dotcast/livestreams/:id",
       "GET /api/dotcast/livestreams/:id/playback",
@@ -1305,6 +1386,184 @@ export async function applyDotCastReferralProgramQualification(
   }
 }
 
+export function readDotCastResolutionRouterReadiness(env: Env): Response {
+  return json({
+    ok: true,
+    milestone: "E13",
+    resolutionRouter: readDotCastResolutionRouterStatus(
+      env,
+      Boolean(env.DOTCAST_DB ?? env.TRADING_DB)
+    )
+  });
+}
+
+export async function classifyDotCastResolutionRouterRequest(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastResolutionClassifierRequest>(request);
+    const now = parseOptionalString(body?.now, "now") ?? new Date().toISOString();
+    const route = classifyDotCastResolutionRoute(env, {
+      market: parseMarketSnapshot(body?.market),
+      unit: parseStakeUnit(body?.unit ?? "points"),
+      poolId: parseNullableString(body?.poolId, "poolId"),
+      streamId: parseNullableString(body?.streamId, "streamId"),
+      estimatedStakeMinorUnits: parseOptionalMinorUnits(body?.estimatedStake, "estimatedStake"),
+      sources: parseResolutionSources(body?.sourceBindings),
+      now
+    });
+
+    await maybePersistResolutionRoute(env, route);
+
+    return json({
+      ok: true,
+      milestone: "E13",
+      resolutionRouter: {
+        status: readDotCastResolutionRouterStatus(env, Boolean(env.DOTCAST_DB ?? env.TRADING_DB)),
+        route,
+        canOpenRealMoney: route.status === "locked"
+      }
+    });
+  } catch (error) {
+    return resolutionRouterErrorResponse(error);
+  }
+}
+
+export async function resolveDotCastAiPerceptionRoute(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastAiPerceptionResolutionRequest>(request);
+    const result = resolveDotCastAiPerception(env, {
+      route: parseResolutionRouteObject(body?.route, "route"),
+      poolId: parseNullableString(body?.poolId, "poolId"),
+      modelConfidenceBps: parseBps(body?.modelConfidenceBps, "modelConfidenceBps"),
+      predictedOutcome: parseResolutionOutcome(body?.predictedOutcome),
+      evidenceRefs: parseOptionalStringArray(body?.evidenceRefs, "evidenceRefs") ?? [],
+      now: parseOptionalString(body?.now, "now")
+    });
+
+    await maybePersistAiResolutionLog(env, result.log);
+    if (result.escalatedRoute) {
+      await maybePersistResolutionRoute(env, result.escalatedRoute);
+    }
+
+    return json({
+      ok: true,
+      milestone: "E13",
+      resolutionRouter: result
+    });
+  } catch (error) {
+    return resolutionRouterErrorResponse(error);
+  }
+}
+
+export async function planDotCastResolverPanelRoute(request: Request, env: Env): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastResolverPanelRequest>(request);
+    const panel = selectDotCastResolverPanel(env, {
+      poolId: parseRequiredString(body?.poolId, "poolId"),
+      route: parseResolutionRouteObject(body?.route, "route"),
+      candidates: parseResolverProfiles(body?.candidates),
+      positionUserIds: parseOptionalStringArray(body?.positionUserIds, "positionUserIds") ?? [],
+      estimatedStakeMinorUnits: parseOptionalMinorUnits(body?.estimatedStake, "estimatedStake"),
+      panelId: parseOptionalString(body?.panelId, "panelId"),
+      now: parseOptionalString(body?.now, "now")
+    });
+
+    await maybePersistResolverPanel(env, panel);
+
+    return json({
+      ok: true,
+      milestone: "E13",
+      resolutionRouter: {
+        panel,
+        payForCorrectness: true,
+        stakeExcluded: true,
+        commitRevealRequired: true
+      }
+    });
+  } catch (error) {
+    return resolutionRouterErrorResponse(error);
+  }
+}
+
+export async function commitDotCastResolverRoute(request: Request, env: Env): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastResolverCommitRequest>(request);
+    const commit = await createDotCastResolverCommit({
+      assignment: parseResolverAssignment(body?.assignment, "assignment"),
+      outcome: parseOutcome(body?.outcome),
+      salt: parseRequiredString(body?.salt, "salt"),
+      now: parseOptionalString(body?.now, "now")
+    });
+
+    await maybePersistResolverCommit(env, commit);
+
+    return json({
+      ok: true,
+      milestone: "E13",
+      resolutionRouter: {
+        commit,
+        answerHiddenUntilReveal: true
+      }
+    });
+  } catch (error) {
+    return resolutionRouterErrorResponse(error);
+  }
+}
+
+export async function revealDotCastResolverRoute(request: Request, env: Env): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastResolverRevealRequest>(request);
+    const reveal = await revealDotCastResolverCommit({
+      commit: parseResolverCommit(body?.commit, "commit"),
+      outcome: parseOutcome(body?.outcome),
+      salt: parseRequiredString(body?.salt, "salt"),
+      now: parseOptionalString(body?.now, "now")
+    });
+
+    await maybePersistResolverReveal(env, reveal);
+
+    return json({
+      ok: true,
+      milestone: "E13",
+      resolutionRouter: {
+        reveal,
+        commitVerified: true
+      }
+    });
+  } catch (error) {
+    return resolutionRouterErrorResponse(error);
+  }
+}
+
+export async function settleDotCastResolverPanelRoute(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastResolverSettleRequest>(request);
+    const settlement = settleDotCastResolverPanel({
+      panel: parseResolverPanel(body?.panel, "panel"),
+      reveals: parseResolverReveals(body?.reveals),
+      now: parseOptionalString(body?.now, "now")
+    });
+
+    await maybePersistResolverPayouts(env, settlement.payouts);
+
+    return json({
+      ok: true,
+      milestone: "E13",
+      resolutionRouter: settlement
+    });
+  } catch (error) {
+    return resolutionRouterErrorResponse(error);
+  }
+}
+
 export async function createDotCastLivestreamSession(
   request: Request,
   env: Env
@@ -1666,11 +1925,16 @@ export async function createDotCastPool(request: Request, env: Env): Promise<Res
     const body = await readJsonBody<DotCastCreatePoolRequest>(request);
     const payload = parseCreatePoolPayload(body, env);
     const poolId = payload.id;
+    await maybePersistResolutionRoute(env, payload.resolutionRoute);
     return await proxyDotCastPoolRequest(env, poolId, "/create", {
       method: "POST",
       body: JSON.stringify(payload)
     });
   } catch (error) {
+    if (error instanceof DotCastResolutionRouterError) {
+      return resolutionRouterErrorResponse(error);
+    }
+
     if (error instanceof DotCastUsdcPoolFundingError) {
       return settlementRailErrorResponse(error, "E6");
     }
@@ -2013,6 +2277,20 @@ function parseCreatePoolPayload(body: DotCastCreatePoolRequest | null, env: Env)
     throw new Error("usdc pools are disabled until the E6 pool funding rail is enabled");
   }
 
+  const resolutionRoute = prepareDotCastPoolResolutionRoute(env, {
+    market,
+    unit,
+    poolId: id,
+    streamId: parseNullableString(body?.streamId, "streamId"),
+    estimatedStakeMinorUnits: parseOptionalMinorUnits(body?.estimatedStake, "estimatedStake"),
+    sources: parseResolutionSources(body?.sourceBindings),
+    explicitRoute:
+      body?.resolutionRoute === undefined || body.resolutionRoute === null
+        ? null
+        : parseResolutionRouteObject(body.resolutionRoute, "resolutionRoute"),
+    now
+  });
+
   return {
     id,
     market,
@@ -2021,6 +2299,7 @@ function parseCreatePoolPayload(body: DotCastCreatePoolRequest | null, env: Env)
     entryClosesAt: parseRequiredString(body?.entryClosesAt, "entryClosesAt"),
     rake: parseRake(body?.rake ?? 0.05),
     minLiquidity: parseMinorUnits(body?.minLiquidity ?? 0, "minLiquidity", true),
+    resolutionRoute,
     ...(creator
       ? {
           originatingCreatorId: creator.creatorId,
@@ -2077,6 +2356,220 @@ function parseMarketSnapshot(value: DotCastCreatePoolRequest["market"]): DotCast
         : null,
     referenceUrl: typeof value.referenceUrl === "string" ? value.referenceUrl : undefined
   };
+}
+
+function parseResolutionRouteObject(value: unknown, label: string): DotCastResolutionRoute {
+  const record = parseObjectRecord(value, label);
+  const status = parseResolutionRouteStatus(record.status, `${label}.status`);
+
+  return {
+    routeId: parseRequiredString(record.routeId, `${label}.routeId`),
+    marketId: parseRequiredString(record.marketId, `${label}.marketId`),
+    poolId: parseNullableString(record.poolId, `${label}.poolId`),
+    tier: parseResolutionTier(record.tier, `${label}.tier`),
+    status,
+    confidenceBps: parseBps(record.confidenceBps, `${label}.confidenceBps`),
+    resolutionStatement: parseRequiredString(
+      record.resolutionStatement,
+      `${label}.resolutionStatement`
+    ),
+    sources: parseResolutionSources(record.sources) ?? [],
+    sourceAvailable: parseRequiredBoolean(record.sourceAvailable, `${label}.sourceAvailable`),
+    autoResolvable: parseRequiredBoolean(record.autoResolvable, `${label}.autoResolvable`),
+    reviewRequired: parseRequiredBoolean(record.reviewRequired, `${label}.reviewRequired`),
+    pointsOnly: parseRequiredBoolean(record.pointsOnly, `${label}.pointsOnly`),
+    blockedReason: parseNullableString(record.blockedReason, `${label}.blockedReason`),
+    steeringPrompt: parseNullableString(record.steeringPrompt, `${label}.steeringPrompt`),
+    feeBps: parseBps(record.feeBps, `${label}.feeBps`),
+    bondMinorUnits: parseMinorUnits(record.bondMinorUnits, `${label}.bondMinorUnits`, true),
+    panelSize: parseMinorUnits(record.panelSize, `${label}.panelSize`, true),
+    lockedAt:
+      status === "locked"
+        ? parseRequiredString(record.lockedAt, `${label}.lockedAt`)
+        : parseNullableString(record.lockedAt, `${label}.lockedAt`),
+    classifierVersion: parseRequiredString(record.classifierVersion, `${label}.classifierVersion`),
+    createdAt: parseRequiredString(record.createdAt, `${label}.createdAt`),
+    eventJson: parseMetadataRecord(record.eventJson)
+  };
+}
+
+function parseResolutionSources(value: unknown): DotCastResolutionSource[] | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (!Array.isArray(value)) {
+    throw new Error("sourceBindings/sources must be an array");
+  }
+
+  return value.map((item, index) => {
+    const record = parseObjectRecord(item, `sources[${index}]`);
+    return {
+      kind: parseResolutionSourceKind(record.kind, `sources[${index}].kind`),
+      label: parseRequiredString(record.label, `sources[${index}].label`),
+      url: parseNullableString(record.url, `sources[${index}].url`),
+      required: parseRequiredBoolean(record.required ?? true, `sources[${index}].required`)
+    };
+  });
+}
+
+function parseResolutionTier(value: unknown, label: string): DotCastResolutionRoute["tier"] {
+  if (
+    value === "hard_oracle" ||
+    value === "computed_oracle" ||
+    value === "ai_perception" ||
+    value === "optimistic_bonded" ||
+    value === "human_jury"
+  ) {
+    return value;
+  }
+
+  throw new Error(`${label} is not a valid E13 resolution tier`);
+}
+
+function parseResolutionRouteStatus(
+  value: unknown,
+  label: string
+): DotCastResolutionRoute["status"] {
+  if (
+    value === "locked" ||
+    value === "review_required" ||
+    value === "points_only" ||
+    value === "blocked"
+  ) {
+    return value;
+  }
+
+  throw new Error(`${label} is not a valid E13 route status`);
+}
+
+function parseResolutionSourceKind(value: unknown, label: string): DotCastResolutionSource["kind"] {
+  if (
+    value === "router_market" ||
+    value === "external_oracle" ||
+    value === "computed_feed" ||
+    value === "livestream_ai" ||
+    value === "resolver_network" ||
+    value === "manual_review"
+  ) {
+    return value;
+  }
+
+  throw new Error(`${label} is not a valid E13 source kind`);
+}
+
+function parseResolverProfiles(value: unknown): DotCastResolverProfile[] {
+  if (!Array.isArray(value)) {
+    throw new Error("candidates must be an array");
+  }
+
+  return value.map((item, index) => {
+    const record = parseObjectRecord(item, `candidates[${index}]`);
+    return {
+      resolverId: parseRequiredString(record.resolverId, `candidates[${index}].resolverId`),
+      identityHash: parseRequiredString(record.identityHash, `candidates[${index}].identityHash`),
+      reputationBps: parseBps(record.reputationBps, `candidates[${index}].reputationBps`),
+      bondAvailableMinorUnits: parseMinorUnits(
+        record.bondAvailableMinorUnits,
+        `candidates[${index}].bondAvailableMinorUnits`,
+        true
+      ),
+      stakeHeldPoolIds:
+        parseOptionalStringArray(
+          record.stakeHeldPoolIds,
+          `candidates[${index}].stakeHeldPoolIds`
+        ) ?? []
+    };
+  });
+}
+
+function parseResolverPanel(value: unknown, label: string): DotCastResolverPanel {
+  const record = parseObjectRecord(value, label);
+  return {
+    panelId: parseRequiredString(record.panelId, `${label}.panelId`),
+    poolId: parseRequiredString(record.poolId, `${label}.poolId`),
+    routeId: parseRequiredString(record.routeId, `${label}.routeId`),
+    tier: parseResolutionTier(record.tier, `${label}.tier`),
+    panelSize: parseMinorUnits(record.panelSize, `${label}.panelSize`),
+    estimatedStakeMinorUnits: parseMinorUnits(
+      record.estimatedStakeMinorUnits,
+      `${label}.estimatedStakeMinorUnits`,
+      true
+    ),
+    resolverFeeBps: parseBps(record.resolverFeeBps, `${label}.resolverFeeBps`),
+    assignments: parseResolverAssignments(record.assignments, `${label}.assignments`),
+    createdAt: parseRequiredString(record.createdAt, `${label}.createdAt`)
+  };
+}
+
+function parseResolverAssignments(value: unknown, label: string): DotCastResolverAssignment[] {
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} must be an array`);
+  }
+
+  return value.map((item, index) => parseResolverAssignment(item, `${label}[${index}]`));
+}
+
+function parseResolverAssignment(value: unknown, label: string): DotCastResolverAssignment {
+  const record = parseObjectRecord(value, label);
+  return {
+    assignmentId: parseRequiredString(record.assignmentId, `${label}.assignmentId`),
+    panelId: parseRequiredString(record.panelId, `${label}.panelId`),
+    poolId: parseRequiredString(record.poolId, `${label}.poolId`),
+    routeId: parseRequiredString(record.routeId, `${label}.routeId`),
+    resolverId: parseRequiredString(record.resolverId, `${label}.resolverId`),
+    identityHash: parseRequiredString(record.identityHash, `${label}.identityHash`),
+    reputationBps: parseBps(record.reputationBps, `${label}.reputationBps`),
+    bondMinorUnits: parseMinorUnits(record.bondMinorUnits, `${label}.bondMinorUnits`, true),
+    status: parseResolverAssignmentStatus(record.status, `${label}.status`),
+    assignedAt: parseRequiredString(record.assignedAt, `${label}.assignedAt`)
+  };
+}
+
+function parseResolverAssignmentStatus(
+  value: unknown,
+  label: string
+): DotCastResolverAssignment["status"] {
+  if (
+    value === "assigned" ||
+    value === "committed" ||
+    value === "revealed" ||
+    value === "paid" ||
+    value === "slashed"
+  ) {
+    return value;
+  }
+
+  throw new Error(`${label} is not a valid resolver assignment status`);
+}
+
+function parseResolverCommit(value: unknown, label: string): DotCastResolverCommit {
+  const record = parseObjectRecord(value, label);
+  return {
+    assignmentId: parseRequiredString(record.assignmentId, `${label}.assignmentId`),
+    panelId: parseRequiredString(record.panelId, `${label}.panelId`),
+    resolverId: parseRequiredString(record.resolverId, `${label}.resolverId`),
+    commitHash: parseRequiredString(record.commitHash, `${label}.commitHash`),
+    committedAt: parseRequiredString(record.committedAt, `${label}.committedAt`)
+  };
+}
+
+function parseResolverReveals(value: unknown): DotCastResolverReveal[] {
+  if (!Array.isArray(value)) {
+    throw new Error("reveals must be an array");
+  }
+
+  return value.map((item, index) => {
+    const record = parseObjectRecord(item, `reveals[${index}]`);
+    return {
+      assignmentId: parseRequiredString(record.assignmentId, `reveals[${index}].assignmentId`),
+      panelId: parseRequiredString(record.panelId, `reveals[${index}].panelId`),
+      resolverId: parseRequiredString(record.resolverId, `reveals[${index}].resolverId`),
+      outcome: parseOutcome(record.outcome),
+      salt: parseRequiredString(record.salt, `reveals[${index}].salt`),
+      revealedAt: parseRequiredString(record.revealedAt, `reveals[${index}].revealedAt`)
+    };
+  });
 }
 
 function parseSideTotals(value: DotCastPreviewRequest["pools"]): SideTotals {
@@ -2434,6 +2927,22 @@ function parseOptionalBoolean(value: unknown, label: string): boolean | undefine
   throw new Error(`${label} must be a boolean`);
 }
 
+function parseRequiredBoolean(value: unknown, label: string): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  throw new Error(`${label} must be a boolean`);
+}
+
+function parseBps(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > 10_000) {
+    throw new Error(`${label} must be an integer between 0 and 10000`);
+  }
+
+  return value;
+}
+
 function parseOptionalMinorUnits(value: unknown, label: string): number | undefined {
   if (value === undefined || value === null) {
     return undefined;
@@ -2513,6 +3022,14 @@ function parseJsonObject(rawBody: string): Record<string, unknown> {
   } catch {
     throw new Error("request body must be JSON");
   }
+}
+
+function parseObjectRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+
+  return value as Record<string, unknown>;
 }
 
 function parseMetadataRecord(value: unknown): Record<string, unknown> {
@@ -2997,6 +3514,77 @@ function referralStore(env: Env): D1DotCastReferralStore {
   return new D1DotCastReferralStore(db);
 }
 
+function resolutionRouterStore(env: Env): D1DotCastResolutionRouterStore {
+  const db = env.DOTCAST_DB ?? env.TRADING_DB;
+
+  if (!db) {
+    throw new DotCastResolutionRouterError(
+      "RESOLUTION_ROUTER_DB_NOT_CONFIGURED",
+      "E13 resolution router database is not configured",
+      503
+    );
+  }
+
+  return new D1DotCastResolutionRouterStore(db);
+}
+
+async function maybePersistResolutionRoute(
+  env: Env,
+  route: DotCastResolutionRoute | null | undefined
+): Promise<void> {
+  if (!route || !(env.DOTCAST_DB ?? env.TRADING_DB)) {
+    return;
+  }
+
+  await resolutionRouterStore(env).insertRoute(route);
+}
+
+async function maybePersistAiResolutionLog(
+  env: Env,
+  log: Parameters<D1DotCastResolutionRouterStore["appendAiResolutionLog"]>[0]
+): Promise<void> {
+  if (!(env.DOTCAST_DB ?? env.TRADING_DB)) {
+    return;
+  }
+
+  await resolutionRouterStore(env).appendAiResolutionLog(log);
+}
+
+async function maybePersistResolverPanel(env: Env, panel: DotCastResolverPanel): Promise<void> {
+  if (!(env.DOTCAST_DB ?? env.TRADING_DB)) {
+    return;
+  }
+
+  await resolutionRouterStore(env).insertResolverPanel(panel);
+}
+
+async function maybePersistResolverCommit(env: Env, commit: DotCastResolverCommit): Promise<void> {
+  if (!(env.DOTCAST_DB ?? env.TRADING_DB)) {
+    return;
+  }
+
+  await resolutionRouterStore(env).insertResolverCommit(commit);
+}
+
+async function maybePersistResolverReveal(env: Env, reveal: DotCastResolverReveal): Promise<void> {
+  if (!(env.DOTCAST_DB ?? env.TRADING_DB)) {
+    return;
+  }
+
+  await resolutionRouterStore(env).insertResolverReveal(reveal);
+}
+
+async function maybePersistResolverPayouts(
+  env: Env,
+  payouts: Parameters<D1DotCastResolutionRouterStore["insertResolverPayouts"]>[0]
+): Promise<void> {
+  if (!(env.DOTCAST_DB ?? env.TRADING_DB)) {
+    return;
+  }
+
+  await resolutionRouterStore(env).insertResolverPayouts(payouts);
+}
+
 function livestreamStore(env: Env): D1DotCastLivestreamStore {
   const db = env.DOTCAST_DB ?? env.TRADING_DB;
 
@@ -3182,6 +3770,29 @@ function referralErrorResponse(error: unknown): Response {
     {
       ok: false,
       milestone: "E12",
+      error: error instanceof Error ? error.message : "Invalid request"
+    },
+    400
+  );
+}
+
+function resolutionRouterErrorResponse(error: unknown): Response {
+  if (error instanceof DotCastResolutionRouterError) {
+    return json(
+      {
+        ok: false,
+        milestone: "E13",
+        code: error.code,
+        error: error.message
+      },
+      error.status
+    );
+  }
+
+  return json(
+    {
+      ok: false,
+      milestone: "E13",
       error: error instanceof Error ? error.message : "Invalid request"
     },
     400

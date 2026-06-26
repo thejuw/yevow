@@ -3,10 +3,12 @@ import type {
   DotCastEntry,
   DotCastMarketSnapshot,
   DotCastPool,
+  DotCastResolutionRoute,
   Side,
   StakeBalance,
   StakeUnit
 } from "./types";
+import { assertLockedRealMoneyResolutionRoute } from "./ResolutionRouter";
 
 export interface CreatePoolInput {
   id?: string;
@@ -18,6 +20,7 @@ export interface CreatePoolInput {
   minLiquidity: number;
   originatingCreatorId?: string | null;
   creatorBrand?: DotCastCreatorPoolBranding | null;
+  resolutionRoute?: DotCastResolutionRoute | null;
   now: string;
 }
 
@@ -73,6 +76,7 @@ export function createPoolFromMarket(input: CreatePoolInput): DotCastPool {
   }
 
   assertStakeUnit(input.unit);
+  assertLockedRealMoneyResolutionRoute(input.unit, input.resolutionRoute);
   assertRake(input.rake);
   assertNonNegativeInteger(input.minLiquidity, "minLiquidity");
 
@@ -93,6 +97,7 @@ export function createPoolFromMarket(input: CreatePoolInput): DotCastPool {
     createdAt,
     settledAt: null,
     outcome: null,
+    resolutionRoute: input.resolutionRoute ?? null,
     ...(input.originatingCreatorId
       ? {
           originatingCreatorId: input.originatingCreatorId,

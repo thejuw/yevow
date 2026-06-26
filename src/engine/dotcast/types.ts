@@ -31,6 +31,128 @@ export type DotCastCreatorSeedMode = "boost_winners" | "void_insurance" | "bonus
 
 export type DotCastResolutionBinding = "oracle_bound" | "optimistic" | "jury" | "unknown";
 
+export type DotCastResolutionTier =
+  | "hard_oracle"
+  | "computed_oracle"
+  | "ai_perception"
+  | "optimistic_bonded"
+  | "human_jury";
+
+export type DotCastResolutionRouteStatus = "locked" | "review_required" | "points_only" | "blocked";
+
+export type DotCastResolutionSourceKind =
+  | "router_market"
+  | "external_oracle"
+  | "computed_feed"
+  | "livestream_ai"
+  | "resolver_network"
+  | "manual_review";
+
+export interface DotCastResolutionSource {
+  kind: DotCastResolutionSourceKind;
+  label: string;
+  url: string | null;
+  required: boolean;
+}
+
+export interface DotCastResolutionRoute {
+  routeId: string;
+  marketId: string;
+  poolId: string | null;
+  tier: DotCastResolutionTier;
+  status: DotCastResolutionRouteStatus;
+  confidenceBps: number;
+  resolutionStatement: string;
+  sources: DotCastResolutionSource[];
+  sourceAvailable: boolean;
+  autoResolvable: boolean;
+  reviewRequired: boolean;
+  pointsOnly: boolean;
+  blockedReason: string | null;
+  steeringPrompt: string | null;
+  feeBps: number;
+  bondMinorUnits: number;
+  panelSize: number;
+  lockedAt: string | null;
+  classifierVersion: string;
+  createdAt: string;
+  eventJson: Record<string, unknown>;
+}
+
+export interface DotCastAiResolutionLog {
+  logId: string;
+  routeId: string;
+  poolId: string | null;
+  modelConfidenceBps: number;
+  predictedOutcome: DotCastResolutionOutcome;
+  action: "auto_resolved" | "escalated";
+  thresholdBps: number;
+  evidenceRefs: string[];
+  eventJson: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface DotCastResolverProfile {
+  resolverId: string;
+  identityHash: string;
+  reputationBps: number;
+  bondAvailableMinorUnits: number;
+  stakeHeldPoolIds: string[];
+}
+
+export interface DotCastResolverAssignment {
+  assignmentId: string;
+  panelId: string;
+  poolId: string;
+  routeId: string;
+  resolverId: string;
+  identityHash: string;
+  reputationBps: number;
+  bondMinorUnits: number;
+  status: "assigned" | "committed" | "revealed" | "paid" | "slashed";
+  assignedAt: string;
+}
+
+export interface DotCastResolverPanel {
+  panelId: string;
+  poolId: string;
+  routeId: string;
+  tier: DotCastResolutionTier;
+  panelSize: number;
+  estimatedStakeMinorUnits: number;
+  resolverFeeBps: number;
+  assignments: DotCastResolverAssignment[];
+  createdAt: string;
+}
+
+export interface DotCastResolverCommit {
+  assignmentId: string;
+  panelId: string;
+  resolverId: string;
+  commitHash: string;
+  committedAt: string;
+}
+
+export interface DotCastResolverReveal {
+  assignmentId: string;
+  panelId: string;
+  resolverId: string;
+  outcome: Side | "invalid";
+  salt: string;
+  revealedAt: string;
+}
+
+export interface DotCastResolverPayout {
+  assignmentId: string;
+  panelId: string;
+  resolverId: string;
+  matchedConsensus: boolean;
+  bondReturnedMinorUnits: number;
+  feePaidMinorUnits: number;
+  slashedBondMinorUnits: number;
+  createdAt: string;
+}
+
 export type DotCastReferralQualifier = "first_deposit" | "kyc_plus_first_entry";
 
 export type DotCastReferralQualificationEvent = DotCastReferralQualifier | "signup";
@@ -124,6 +246,7 @@ export interface DotCastPool {
   outcome: Side | "invalid" | null;
   originatingCreatorId?: string | null;
   creatorBrand?: DotCastCreatorPoolBranding | null;
+  resolutionRoute?: DotCastResolutionRoute | null;
 }
 
 export interface DotCastCreatorPoolBranding {

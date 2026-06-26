@@ -39,6 +39,40 @@ describe("dotCast pool lifecycle", () => {
     });
   });
 
+  it("requires a locked E13 resolution route before creating real-money pools", () => {
+    expect(() =>
+      createPoolFromMarket({
+        id: "pool-usdc-missing-route",
+        market: market(),
+        unit: "usdc",
+        entryClosesAt: close,
+        rake: 0.05,
+        minLiquidity: 100,
+        now
+      })
+    ).toThrow(/locked E13 resolution route/);
+
+    const pool = createPoolFromMarket({
+      id: "pool-usdc-route",
+      market: market(),
+      unit: "usdc",
+      entryClosesAt: close,
+      rake: 0.05,
+      minLiquidity: 100,
+      resolutionRoute: lockedRoute("pool-usdc-route"),
+      now
+    });
+
+    expect(pool).toMatchObject({
+      id: "pool-usdc-route",
+      unit: "usdc",
+      resolutionRoute: {
+        status: "locked",
+        tier: "hard_oracle"
+      }
+    });
+  });
+
   it("rejects non-open, stale, and late-lock market pools", () => {
     expect(() =>
       createPoolFromMarket({
@@ -466,6 +500,39 @@ function openPool(overrides: { minLiquidity?: number } = {}) {
     minLiquidity: overrides.minLiquidity ?? 100,
     now
   });
+}
+
+function lockedRoute(poolId: string) {
+  return {
+    routeId: `route:${poolId}`,
+    marketId: "kalshi:demo",
+    poolId,
+    tier: "hard_oracle" as const,
+    status: "locked" as const,
+    confidenceBps: 9400,
+    resolutionStatement: "Use the originating Kalshi market outcome.",
+    sources: [
+      {
+        kind: "router_market" as const,
+        label: "Kalshi market outcome",
+        url: null,
+        required: true
+      }
+    ],
+    sourceAvailable: true,
+    autoResolvable: true,
+    reviewRequired: false,
+    pointsOnly: false,
+    blockedReason: null,
+    steeringPrompt: null,
+    feeBps: 0,
+    bondMinorUnits: 0,
+    panelSize: 0,
+    lockedAt: now,
+    classifierVersion: "test",
+    createdAt: now,
+    eventJson: {}
+  };
 }
 
 function stakeBalance(overrides: Partial<StakeBalance> = {}): StakeBalance {
