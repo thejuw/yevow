@@ -1,6 +1,7 @@
 export interface Env {
   TRADING_ENGINE: DurableObjectNamespace;
   DOTCAST_POOL?: DurableObjectNamespace;
+  DOTCAST_LIVESTREAM?: DurableObjectNamespace;
   DOTCAST_ROUTER_RESOLUTION_URL?: string;
   DOTCAST_ROUTER_RESOLUTION_TOKEN?: string;
   DOTCAST_ROUTER_RESOLUTION_POLL_MS?: string;
@@ -16,8 +17,21 @@ export interface Env {
   DOTCAST_WITHDRAWAL_MAX_MINOR_UNITS?: string;
   DOTCAST_DEPOSIT_CONFIRMATIONS_REQUIRED?: string;
   DOTCAST_USDC_POOLS_ENABLED?: string;
+  MUX_TOKEN_ID?: string;
+  MUX_TOKEN_SECRET?: string;
+  MUX_WEBHOOK_SECRET?: string;
+  MUX_PLAYBACK_POLICY?: string;
+  MUX_LOW_LATENCY?: string;
+  MUX_RECORDING_ENABLED?: string;
+  MUX_RECONNECT_WINDOW_SECONDS?: string;
+  MUX_SIGNING_KEY_ID?: string;
+  MUX_SIGNING_PRIVATE_KEY?: string;
+  MUX_PLAYBACK_TOKEN_TTL_SECONDS?: string;
+  LIVESTREAM_PROVIDER?: string;
+  LIVESTREAM_CONTROL_LAYER?: string;
   INGEST_COORDINATOR?: DurableObjectNamespace;
   TRADING_DB: D1Database;
+  DOTCAST_DB?: D1Database;
   CONGRESS_DB?: D1Database;
   EQUITY_DB?: D1Database;
   CONFIG_STORE: KVNamespace;

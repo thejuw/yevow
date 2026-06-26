@@ -3,12 +3,19 @@ import {
   creditDevnetDeposit,
   D1DotCastSettlementRailStore,
   D1DotCastUsdcPoolFundingStore,
+  D1DotCastLivestreamStore,
   DotCastSettlementRailError,
+  DotCastLivestreamError,
   DotCastUsdcPoolFundingError,
+  buildMuxLivestreamRecord,
+  buildMuxPlaybackDescriptor,
+  createMuxLiveStream,
   fetchDotCastReferencePrice,
   impliedProb,
+  parseVerifiedMuxWebhook,
   previewPayout,
   readSettlementBalance,
+  readMuxLivestreamConfig,
   readSolanaUsdcSettlementRailStatus,
   readUsdcPoolFundingStatus,
   reconcileDevnetSettlementRail,
@@ -17,6 +24,7 @@ import {
   requestDevnetWithdrawal,
   settleParimutuel,
   type DotCastLiveOddsSnapshot,
+  type DotCastLivestreamMetadata,
   type DotCastMarketSnapshot,
   type DotCastPoolSnapshot,
   type DotCastReferencePriceFetchResult,
@@ -50,6 +58,28 @@ interface DotCastCreatePoolRequest {
   entryClosesAt?: unknown;
   rake?: unknown;
   minLiquidity?: unknown;
+  now?: unknown;
+}
+
+interface DotCastCreateLivestreamRequest {
+  streamId?: unknown;
+  hostId?: unknown;
+  title?: unknown;
+  now?: unknown;
+  metadata?: unknown;
+}
+
+interface DotCastAttachLivestreamPoolRequest {
+  poolId?: unknown;
+  marketId?: unknown;
+  question?: unknown;
+  unit?: unknown;
+  status?: unknown;
+  pinned?: unknown;
+  now?: unknown;
+}
+
+interface DotCastArchiveLivestreamRequest {
   now?: unknown;
 }
 
@@ -123,6 +153,7 @@ interface DotCastReconcileRailRequest {
 export function readDotCastHealth(env?: Env): Response {
   const settlementRail = env ? readSolanaUsdcSettlementRailStatus(env) : null;
   const usdcPoolFunding = env ? readUsdcPoolFundingStatus(env) : null;
+  const livestream = env ? readMuxLivestreamConfig(env) : null;
 
   return json({
     ok: true,
@@ -144,11 +175,14 @@ export function readDotCastHealth(env?: Env): Response {
       e12: "referrals-not-started",
       e13: "resolution-router-not-started",
       persistence: "durable-object-ready",
+      livestreamEngine: "stream-spine-ready",
+      livestreamProvider: livestream?.ready ? "mux-livewire-ready" : "mux-livewire-code-ready",
       settlementRail: settlementRail?.ready ? "devnet-mock-ready" : "devnet-mock-code-ready",
       usdcPoolFunding: usdcPoolFunding?.ready ? "devnet-ready" : "devnet-code-ready"
     },
     ...(settlementRail ? { settlementRail } : {}),
     ...(usdcPoolFunding ? { usdcPoolFunding } : {}),
+    ...(livestream ? { livestream } : {}),
     routes: [
       "GET /api/dotcast/health",
       "POST /api/dotcast/preview",
@@ -159,6 +193,20 @@ export function readDotCastHealth(env?: Env): Response {
       "POST /api/dotcast/settlement-rail/withdrawals/devnet",
       "POST /api/dotcast/settlement-rail/withdrawals/:id/confirm",
       "POST /api/dotcast/settlement-rail/reconcile/devnet",
+      "POST /api/dotcast/livestreams",
+      "GET /api/dotcast/livestreams/:id",
+      "GET /api/dotcast/livestreams/:id/playback",
+      "POST /api/dotcast/livestreams/:id/start",
+      "POST /api/dotcast/livestreams/:id/pause",
+      "POST /api/dotcast/livestreams/:id/resume",
+      "POST /api/dotcast/livestreams/:id/end",
+      "POST /api/dotcast/livestreams/:id/archive",
+      "POST /api/dotcast/livestreams/:id/pools",
+      "DELETE /api/dotcast/livestreams/:id/pools/:poolId",
+      "POST /api/dotcast/livestreams/:id/featured",
+      "POST /api/dotcast/livestreams/:id/presence",
+      "GET /api/dotcast/livestreams/:id/events",
+      "POST /api/dotcast/livestreams/webhooks/mux",
       "POST /api/dotcast/pools",
       "GET /api/dotcast/pools/:id",
       "GET /api/dotcast/pools/:id/odds",
@@ -293,6 +341,334 @@ export async function reconcileDotCastDevnetSettlementRail(
   } catch (error) {
     return settlementRailErrorResponse(error);
   }
+}
+
+export async function createDotCastLivestreamSession(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastCreateLivestreamRequest>(request);
+    const now = parseOptionalString(body?.now, "now") ?? new Date().toISOString();
+    const streamId = parseOptionalString(body?.streamId, "streamId") ?? `stream:${crypto.randomUUID()}`;
+    const hostId = parseRequiredString(body?.hostId, "hostId");
+    const title = parseRequiredString(body?.title, "title");
+    const metadata = parseMetadataRecord(body?.metadata);
+    const config = readMuxLivestreamConfig(env);
+    const mux = await createMuxLiveStream(env, {
+      streamId,
+      passthrough: streamId,
+      metadata
+    });
+    const record = buildMuxLivestreamRecord({
+      streamId,
+      hostId,
+      title,
+      mux,
+      config,
+      now,
+      metadata
+    });
+    const store = livestreamStore(env);
+
+    await store.upsertLivestream(record);
+    await store.appendEvent({
+      eventId: `dotcast:livestream:${streamId}:created`,
+      streamId,
+      muxLiveStreamId: record.muxLiveStreamId,
+      eventType: "DOTCAST_LIVESTREAM_CREATED",
+      status: record.status,
+      payload: {
+        provider: record.provider,
+        controlLayer: record.controlLayer,
+        muxLiveStreamId: record.muxLiveStreamId,
+        playbackId: record.playbackId,
+        playbackPolicy: record.playbackPolicy
+      },
+      createdAt: now
+    });
+
+    if (env.DOTCAST_LIVESTREAM) {
+      await proxyDotCastLivestreamRequest(env, streamId, "/create", {
+        method: "POST",
+        body: JSON.stringify({ hostId, title, status: "paused", now })
+      });
+    }
+
+    return json(
+      {
+        ok: true,
+        livestream: publicLivestream(record),
+        videoPlane: {
+          provider: "mux",
+          muxLiveStreamId: record.muxLiveStreamId,
+          playbackId: record.playbackId,
+          playbackPolicy: record.playbackPolicy,
+          lowLatency: record.lowLatency,
+          recordingEnabled: record.recordingEnabled,
+          reconnectWindowSeconds: record.reconnectWindowSeconds
+        },
+        controlPlane: {
+          gateway: "dotcast-worker",
+          controlLayer: record.controlLayer,
+          realtimeState: "durable-object-per-live-room"
+        },
+        hostIngest: {
+          rtmpUrl: record.ingestRtmpUrl,
+          streamKey: mux.streamKey,
+          warning: "Treat this stream key like a password. Never expose it to viewers."
+        },
+        viewerPlayback: await buildMuxPlaybackDescriptor(record, env, new Date(now))
+      },
+      201
+    );
+  } catch (error) {
+    return livestreamErrorResponse(error);
+  }
+}
+
+export async function readDotCastLivestream(
+  streamId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  if (env.DOTCAST_DB ?? env.TRADING_DB) {
+    try {
+      const record = await livestreamStore(env).getLivestream(streamId);
+
+      if (!record) {
+        return json({ ok: false, error: "dotCast livestream was not found" }, 404);
+      }
+
+      const pools = await livestreamStore(env).listPools(streamId);
+      const realtime = env.DOTCAST_LIVESTREAM
+        ? await readLivestreamRealtimeSnapshot(streamId, request, env)
+        : null;
+
+      return json({
+        ok: true,
+        livestream: {
+          metadata: publicLivestream(record),
+          pools,
+          realtime
+        }
+      });
+    } catch (error) {
+      return livestreamErrorResponse(error);
+    }
+  }
+
+  const search = new URL(request.url).search;
+  return proxyDotCastLivestreamRequest(env, streamId, `/${search}`, { method: "GET" });
+}
+
+export async function readDotCastLivestreamPlayback(
+  streamId: string,
+  env: Env
+): Promise<Response> {
+  try {
+    const record = await requireLivestreamRecord(streamId, env);
+
+    return json({
+      ok: true,
+      livestream: publicLivestream(record),
+      viewerPlayback: await buildMuxPlaybackDescriptor(record, env)
+    });
+  } catch (error) {
+    return livestreamErrorResponse(error);
+  }
+}
+
+export async function handleMuxLivestreamWebhook(request: Request, env: Env): Promise<Response> {
+  try {
+    const event = await parseVerifiedMuxWebhook(request, env);
+
+    if (!event.muxLiveStreamId) {
+      return json({ ok: true, ignored: true, reason: "Mux event has no live stream id" }, 202);
+    }
+
+    const store = livestreamStore(env);
+    const record = await store.getLivestreamByMuxId(event.muxLiveStreamId);
+
+    if (!record) {
+      return json({ ok: true, ignored: true, reason: "Mux live stream is unknown" }, 202);
+    }
+
+    const updated = await store.updateLivestreamFromWebhook(
+      record.streamId,
+      event,
+      event.createdAt
+    );
+
+    if (updated && env.DOTCAST_LIVESTREAM) {
+      await syncRealtimeLivestreamFromMuxWebhook(updated, event, env);
+    }
+
+    return json({
+      ok: true,
+      event: {
+        id: event.eventId,
+        type: event.eventType,
+        muxLiveStreamId: event.muxLiveStreamId,
+        status: event.metadataStatus
+      },
+      livestream: updated ? publicLivestream(updated) : null,
+      predictionSettlement: "not_triggered"
+    });
+  } catch (error) {
+    return livestreamErrorResponse(error);
+  }
+}
+
+export async function archiveDotCastLivestream(
+  streamId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const body = (await readJsonBody<DotCastArchiveLivestreamRequest>(request)) ?? {};
+    const now = parseOptionalString(body.now, "now") ?? new Date().toISOString();
+    const archived = await livestreamStore(env).archiveLivestream(streamId, now);
+
+    if (!archived) {
+      return json({ ok: false, error: "dotCast livestream was not found" }, 404);
+    }
+
+    if (env.DOTCAST_LIVESTREAM) {
+      await proxyDotCastLivestreamRequest(env, streamId, "/end", {
+        method: "POST",
+        body: JSON.stringify({ now })
+      });
+    }
+
+    return json({ ok: true, livestream: publicLivestream(archived) });
+  } catch (error) {
+    return livestreamErrorResponse(error);
+  }
+}
+
+export async function startDotCastLivestream(
+  streamId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  return proxyDotCastLivestreamRequest(env, streamId, "/start", {
+    method: "POST",
+    body: await request.text()
+  });
+}
+
+export async function pauseDotCastLivestream(
+  streamId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  return proxyDotCastLivestreamRequest(env, streamId, "/pause", {
+    method: "POST",
+    body: await request.text()
+  });
+}
+
+export async function resumeDotCastLivestream(
+  streamId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  return proxyDotCastLivestreamRequest(env, streamId, "/resume", {
+    method: "POST",
+    body: await request.text()
+  });
+}
+
+export async function endDotCastLivestream(
+  streamId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  return proxyDotCastLivestreamRequest(env, streamId, "/end", {
+    method: "POST",
+    body: await request.text()
+  });
+}
+
+export async function attachDotCastLivestreamPool(
+  streamId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const rawBody = await request.text();
+
+  if (env.DOTCAST_DB ?? env.TRADING_DB) {
+    try {
+      const body = parseJsonObject<DotCastAttachLivestreamPoolRequest>(rawBody);
+      const record = await livestreamStore(env).getLivestream(streamId);
+
+      if (!record) {
+        return json({ ok: false, error: "dotCast livestream was not found" }, 404);
+      }
+
+      const now = parseOptionalString(body.now, "now") ?? new Date().toISOString();
+      await livestreamStore(env).attachPool({
+        streamId,
+        poolId: parseRequiredString(body.poolId, "poolId"),
+        marketId: parseRequiredString(body.marketId, "marketId"),
+        question: parseRequiredString(body.question, "question"),
+        unit: parseStakeUnit(body.unit),
+        status: parsePoolStatus(body.status),
+        pinned: parseOptionalBoolean(body.pinned, "pinned") ?? false,
+        attachedAt: now,
+        updatedAt: now
+      });
+    } catch (error) {
+      return livestreamErrorResponse(error);
+    }
+  }
+
+  return proxyDotCastLivestreamRequest(env, streamId, "/pools", {
+    method: "POST",
+    body: rawBody
+  });
+}
+
+export async function detachDotCastLivestreamPool(
+  streamId: string,
+  poolId: string,
+  env: Env
+): Promise<Response> {
+  return proxyDotCastLivestreamRequest(env, streamId, `/pools/${encodeURIComponent(poolId)}`, {
+    method: "DELETE"
+  });
+}
+
+export async function setDotCastLivestreamFeaturedPool(
+  streamId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  return proxyDotCastLivestreamRequest(env, streamId, "/featured", {
+    method: "POST",
+    body: await request.text()
+  });
+}
+
+export async function recordDotCastLivestreamPresence(
+  streamId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  return proxyDotCastLivestreamRequest(env, streamId, "/presence", {
+    method: "POST",
+    body: await request.text()
+  });
+}
+
+export async function readDotCastLivestreamEvents(
+  streamId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const search = new URL(request.url).search;
+  return proxyDotCastLivestreamRequest(env, streamId, `/events${search}`, { method: "GET" });
 }
 
 export async function createDotCastPool(request: Request, env: Env): Promise<Response> {
@@ -774,6 +1150,117 @@ function parseRake(value: unknown): number {
   return rake;
 }
 
+function parsePoolStatus(value: unknown): "open" | "locked" | "resolving" | "settled" | "voided" {
+  if (
+    value === "locked" ||
+    value === "resolving" ||
+    value === "settled" ||
+    value === "voided"
+  ) {
+    return value;
+  }
+
+  return "open";
+}
+
+function parseJsonObject<T>(rawBody: string): T {
+  try {
+    const parsed = JSON.parse(rawBody) as unknown;
+
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("request body must be a JSON object");
+    }
+
+    return parsed as T;
+  } catch {
+    throw new Error("request body must be JSON");
+  }
+}
+
+function parseMetadataRecord(value: unknown): Record<string, unknown> {
+  if (value === undefined || value === null) {
+    return {};
+  }
+
+  if (typeof value === "object" && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+
+  throw new Error("metadata must be an object");
+}
+
+function publicLivestream(record: DotCastLivestreamMetadata): Record<string, unknown> {
+  return {
+    streamId: record.streamId,
+    provider: record.provider,
+    controlLayer: record.controlLayer,
+    muxLiveStreamId: record.muxLiveStreamId,
+    playbackId: record.playbackId,
+    playbackPolicy: record.playbackPolicy,
+    hostId: record.hostId,
+    title: record.title,
+    status: record.status,
+    muxStatus: record.muxStatus,
+    recordingAssetId: record.recordingAssetId,
+    recordingPlaybackId: record.recordingPlaybackId,
+    lowLatency: record.lowLatency,
+    recordingEnabled: record.recordingEnabled,
+    reconnectWindowSeconds: record.reconnectWindowSeconds,
+    ingest: {
+      rtmpUrl: record.ingestRtmpUrl,
+      streamKeyExposed: false
+    },
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    startedAt: record.startedAt,
+    stoppedAt: record.stoppedAt,
+    archivedAt: record.archivedAt,
+    metadata: record.metadata
+  };
+}
+
+async function readLivestreamRealtimeSnapshot(
+  streamId: string,
+  request: Request,
+  env: Env
+): Promise<unknown> {
+  const search = new URL(request.url).search;
+  const response = await proxyDotCastLivestreamRequest(env, streamId, `/${search}`, {
+    method: "GET"
+  });
+
+  if (!response.ok) {
+    return null;
+  }
+
+  return response.json();
+}
+
+async function syncRealtimeLivestreamFromMuxWebhook(
+  record: DotCastLivestreamMetadata,
+  event: { eventType: string; createdAt: string },
+  env: Env
+): Promise<void> {
+  if (event.eventType === "video.live_stream.active") {
+    await proxyDotCastLivestreamRequest(env, record.streamId, "/start", {
+      method: "POST",
+      body: JSON.stringify({
+        hostId: record.hostId,
+        title: record.title,
+        now: event.createdAt
+      })
+    });
+    return;
+  }
+
+  if (event.eventType === "video.live_stream.idle" || event.eventType === "video.live_stream.errored") {
+    await proxyDotCastLivestreamRequest(env, record.streamId, "/pause", {
+      method: "POST",
+      body: JSON.stringify({ now: event.createdAt })
+    });
+  }
+}
+
 async function proxyDotCastPoolRequest(
   env: Env,
   poolId: string,
@@ -794,6 +1281,35 @@ async function proxyDotCastPoolRequest(
         ...(init.headers ?? {})
       }
     })
+  );
+
+  return withCors(response);
+}
+
+async function proxyDotCastLivestreamRequest(
+  env: Env,
+  streamId: string,
+  pathname: string,
+  init: RequestInit
+): Promise<Response> {
+  if (!env.DOTCAST_LIVESTREAM) {
+    return json({ ok: false, error: "dotCast livestream storage is not configured" }, 503);
+  }
+
+  const objectId = env.DOTCAST_LIVESTREAM.idFromName(streamId);
+  const object = env.DOTCAST_LIVESTREAM.get(objectId);
+  const separator = pathname.includes("?") ? "&" : "?";
+  const response = await object.fetch(
+    new Request(
+      `https://dotcast.livestream${pathname}${separator}streamId=${encodeURIComponent(streamId)}`,
+      {
+        ...init,
+        headers: {
+          "content-type": "application/json;charset=UTF-8",
+          ...(init.headers ?? {})
+        }
+      }
+    )
   );
 
   return withCors(response);
@@ -882,6 +1398,37 @@ function settlementRailStore(env: Env): D1DotCastSettlementRailStore {
   return new D1DotCastSettlementRailStore(env.TRADING_DB);
 }
 
+function livestreamStore(env: Env): D1DotCastLivestreamStore {
+  const db = env.DOTCAST_DB ?? env.TRADING_DB;
+
+  if (!db) {
+    throw new DotCastLivestreamError(
+      "LIVESTREAM_DB_NOT_CONFIGURED",
+      "dotCast livestream metadata database is not configured",
+      503
+    );
+  }
+
+  return new D1DotCastLivestreamStore(db);
+}
+
+async function requireLivestreamRecord(
+  streamId: string,
+  env: Env
+): Promise<DotCastLivestreamMetadata> {
+  const record = await livestreamStore(env).getLivestream(streamId);
+
+  if (!record) {
+    throw new DotCastLivestreamError(
+      "LIVESTREAM_NOT_FOUND",
+      "dotCast livestream was not found",
+      404
+    );
+  }
+
+  return record;
+}
+
 function usdcPoolFundingStore(env: Env): D1DotCastUsdcPoolFundingStore {
   if (!env.TRADING_DB) {
     throw new DotCastUsdcPoolFundingError(
@@ -892,6 +1439,27 @@ function usdcPoolFundingStore(env: Env): D1DotCastUsdcPoolFundingStore {
   }
 
   return new D1DotCastUsdcPoolFundingStore(env.TRADING_DB);
+}
+
+function livestreamErrorResponse(error: unknown): Response {
+  if (error instanceof DotCastLivestreamError) {
+    return json(
+      {
+        ok: false,
+        code: error.code,
+        error: error.message
+      },
+      error.status
+    );
+  }
+
+  return json(
+    {
+      ok: false,
+      error: error instanceof Error ? error.message : "Invalid request"
+    },
+    400
+  );
 }
 
 function settlementRailErrorResponse(error: unknown, milestone = "E5"): Response {

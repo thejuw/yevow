@@ -4,7 +4,7 @@ import { ActiveTokenStore } from "./auth/JwtRevocation";
 import { ConfigManager } from "./ConfigManager";
 import { Logger } from "./Logger";
 import { TradingEngine } from "./TradingEngine";
-import { DotCastPool } from "./engine/dotcast";
+import { DotCastLivestream, DotCastPool } from "./engine/dotcast";
 import { evaluateRateLimit, ipRateLimitKey } from "./gateway/middleware/RateLimitMiddleware";
 import { adminUiResponse } from "./gateway/AdminUi";
 import { ACTIVE_TOKEN_PREFIX, ENGINE_HEALTH_TIMEOUT_MS } from "./gateway/GatewayConstants";
@@ -43,22 +43,36 @@ import { handleTopologyCalibration } from "./gateway/AdminTopologyGateway";
 import { readMoltworkerHealth, updateMoltworkerHeartbeat } from "./gateway/MoltworkerGateway";
 import {
   applyDotCastPoolResolution,
+  archiveDotCastLivestream,
   confirmDotCastMockWithdrawal,
   createDotCastPool,
+  createDotCastLivestreamSession,
+  endDotCastLivestream,
+  attachDotCastLivestreamPool,
+  detachDotCastLivestreamPool,
+  handleMuxLivestreamWebhook,
   lockDotCastPool,
+  pauseDotCastLivestream,
   placeDotCastPoolEntry,
   pollDotCastPoolResolution,
   previewDotCastOdds,
   readDotCastSettlementRailBalance,
   readDotCastSettlementRailStatus,
+  readDotCastLivestream,
+  readDotCastLivestreamEvents,
+  readDotCastLivestreamPlayback,
   reconcileDotCastDevnetSettlementRail,
   recordDotCastDevnetDeposit,
   readDotCastPoolLiveOdds,
   readDotCastPool,
   readDotCastHealth,
+  recordDotCastLivestreamPresence,
   requestDotCastDevnetWithdrawal,
+  resumeDotCastLivestream,
+  setDotCastLivestreamFeaturedPool,
   settleDotCastPool,
   simulateDotCastSettlement,
+  startDotCastLivestream,
   voidDotCastPool
 } from "./gateway/DotCastGateway";
 import {
@@ -104,7 +118,7 @@ import {
 } from "./gateway/PrivateEquityDealsGateway";
 import type { EdgeTopology, Env } from "./types";
 
-export { DotCastPool, TradingEngine };
+export { DotCastLivestream, DotCastPool, TradingEngine };
 
 const gatewayRouter = new Hono<GatewayHono>();
 
@@ -133,6 +147,48 @@ gatewayRouter.post("/api/dotcast/settlement-rail/withdrawals/:id/confirm", async
 );
 gatewayRouter.post("/api/dotcast/settlement-rail/reconcile/devnet", async (c) =>
   reconcileDotCastDevnetSettlementRail(c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/livestreams/webhooks/mux", async (c) =>
+  handleMuxLivestreamWebhook(c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/livestreams", async (c) =>
+  createDotCastLivestreamSession(c.req.raw, c.env)
+);
+gatewayRouter.get("/api/dotcast/livestreams/:id", async (c) =>
+  readDotCastLivestream(c.req.param("id"), c.req.raw, c.env)
+);
+gatewayRouter.get("/api/dotcast/livestreams/:id/playback", async (c) =>
+  readDotCastLivestreamPlayback(c.req.param("id"), c.env)
+);
+gatewayRouter.post("/api/dotcast/livestreams/:id/start", async (c) =>
+  startDotCastLivestream(c.req.param("id"), c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/livestreams/:id/pause", async (c) =>
+  pauseDotCastLivestream(c.req.param("id"), c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/livestreams/:id/resume", async (c) =>
+  resumeDotCastLivestream(c.req.param("id"), c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/livestreams/:id/end", async (c) =>
+  endDotCastLivestream(c.req.param("id"), c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/livestreams/:id/archive", async (c) =>
+  archiveDotCastLivestream(c.req.param("id"), c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/livestreams/:id/pools", async (c) =>
+  attachDotCastLivestreamPool(c.req.param("id"), c.req.raw, c.env)
+);
+gatewayRouter.delete("/api/dotcast/livestreams/:id/pools/:poolId", async (c) =>
+  detachDotCastLivestreamPool(c.req.param("id"), c.req.param("poolId"), c.env)
+);
+gatewayRouter.post("/api/dotcast/livestreams/:id/featured", async (c) =>
+  setDotCastLivestreamFeaturedPool(c.req.param("id"), c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/livestreams/:id/presence", async (c) =>
+  recordDotCastLivestreamPresence(c.req.param("id"), c.req.raw, c.env)
+);
+gatewayRouter.get("/api/dotcast/livestreams/:id/events", async (c) =>
+  readDotCastLivestreamEvents(c.req.param("id"), c.req.raw, c.env)
 );
 gatewayRouter.post("/api/dotcast/pools", async (c) => createDotCastPool(c.req.raw, c.env));
 gatewayRouter.get("/api/dotcast/pools/:id", async (c) => readDotCastPool(c.req.param("id"), c.env));

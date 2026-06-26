@@ -14,6 +14,10 @@ class_name = "TradingEngine"
 name = "DOTCAST_POOL"
 class_name = "DotCastPool"
 
+[[durable_objects.bindings]]
+name = "DOTCAST_LIVESTREAM"
+class_name = "DotCastLivestream"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["TradingEngine"]
@@ -22,12 +26,22 @@ new_sqlite_classes = ["TradingEngine"]
 tag = "v2_dotcast_pool"
 new_sqlite_classes = ["DotCastPool"]
 
+[[migrations]]
+tag = "v3_dotcast_livestream"
+new_sqlite_classes = ["DotCastLivestream"]
+
 [[d1_databases]]
 binding = "TRADING_DB"
 database_name = "TRADING_DB"
 database_id = "64fc2511-fd03-4c76-afd8-2fa671049c10"
 preview_database_id = "4c6c2cf3-e6e3-410a-afe1-b4e611a0e34f"
 migrations_dir = "migrations"
+
+[[d1_databases]]
+binding = "DOTCAST_DB"
+database_name = "DOTCAST_DB"
+database_id = "38b6ec43-80ae-47b0-9641-7f550feedfd5"
+migrations_dir = "migrations/dotcast"
 
 [[d1_databases]]
 binding = "CONGRESS_DB"

@@ -285,3 +285,127 @@ export interface DotCastPoolSnapshot {
   lastResolution: DotCastRouterResolution | null;
   updatedAt: string;
 }
+
+export type DotCastLivestreamStatus = "draft" | "live" | "paused" | "ended";
+
+export type DotCastLivestreamViewerRole = "viewer" | "host" | "moderator";
+
+export type DotCastLivestreamEventType =
+  | "STREAM_CREATED"
+  | "STREAM_STARTED"
+  | "STREAM_PAUSED"
+  | "STREAM_RESUMED"
+  | "STREAM_ENDED"
+  | "POOL_ATTACHED"
+  | "POOL_DETACHED"
+  | "FEATURED_POOL_CHANGED"
+  | "PRESENCE_HEARTBEAT";
+
+export interface DotCastLivestreamPool {
+  poolId: string;
+  marketId: string;
+  question: string;
+  unit: StakeUnit;
+  status: PoolStatus;
+  order: number;
+  pinned: boolean;
+  addedAt: string;
+  updatedAt: string;
+}
+
+export interface DotCastLivestreamViewerPresence {
+  viewerId: string;
+  role: DotCastLivestreamViewerRole;
+  firstSeenAt: string;
+  lastSeenAt: string;
+}
+
+export interface DotCastLivestreamSession {
+  id: string;
+  hostId: string;
+  title: string;
+  status: DotCastLivestreamStatus;
+  featuredPoolId: string | null;
+  viewerCount: number;
+  poolCount: number;
+  createdAt: string;
+  startedAt: string | null;
+  pausedAt: string | null;
+  endedAt: string | null;
+  updatedAt: string;
+}
+
+export interface DotCastLivestreamEvent {
+  id: number;
+  eventId: string;
+  streamId: string;
+  eventType: DotCastLivestreamEventType;
+  poolId: string | null;
+  viewerId: string | null;
+  payload: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface DotCastLivestreamSnapshot {
+  session: DotCastLivestreamSession;
+  pools: DotCastLivestreamPool[];
+  viewers: DotCastLivestreamViewerPresence[];
+  events: DotCastLivestreamEvent[];
+  updatedAt: string;
+}
+
+export type DotCastLivestreamProvider = "mux";
+
+export type DotCastLivestreamControlLayer = "livewire";
+
+export type DotCastMuxPlaybackPolicy = "public" | "signed";
+
+export type DotCastLivestreamMetadataStatus = "idle" | "live" | "errored" | "archived";
+
+export interface DotCastLivestreamMetadata {
+  streamId: string;
+  provider: DotCastLivestreamProvider;
+  controlLayer: DotCastLivestreamControlLayer;
+  muxLiveStreamId: string;
+  playbackId: string;
+  playbackPolicy: DotCastMuxPlaybackPolicy;
+  hostId: string;
+  title: string;
+  status: DotCastLivestreamMetadataStatus;
+  muxStatus: string;
+  recordingAssetId: string | null;
+  recordingPlaybackId: string | null;
+  lowLatency: boolean;
+  recordingEnabled: boolean;
+  reconnectWindowSeconds: number;
+  ingestRtmpUrl: string;
+  createdAt: string;
+  updatedAt: string;
+  startedAt: string | null;
+  stoppedAt: string | null;
+  archivedAt: string | null;
+  lastWebhookEventId: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface DotCastLivestreamPoolLink {
+  streamId: string;
+  poolId: string;
+  marketId: string;
+  question: string;
+  unit: StakeUnit;
+  status: PoolStatus;
+  pinned: boolean;
+  attachedAt: string;
+  updatedAt: string;
+}
+
+export interface DotCastLivestreamMetadataEvent {
+  eventId: string;
+  streamId: string;
+  muxLiveStreamId: string;
+  eventType: string;
+  status: DotCastLivestreamMetadataStatus | null;
+  payload: Record<string, unknown>;
+  createdAt: string;
+}
