@@ -9,6 +9,7 @@ export * from "./PoolLifecycle";
 export * from "./PoolSettlement";
 export * from "./RouterReferencePriceClient";
 export * from "./RouterResolutionClient";
+export * from "./Referrals";
 export * from "./RewardedStream";
 export * from "./SolanaUsdcSettlementRail";
 export * from "./SponsoredQuestions";

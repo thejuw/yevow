@@ -31,6 +31,28 @@ export type DotCastCreatorSeedMode = "boost_winners" | "void_insurance" | "bonus
 
 export type DotCastResolutionBinding = "oracle_bound" | "optimistic" | "jury" | "unknown";
 
+export type DotCastReferralQualifier = "first_deposit" | "kyc_plus_first_entry";
+
+export type DotCastReferralQualificationEvent = DotCastReferralQualifier | "signup";
+
+export type DotCastReferralCodeStatus = "active" | "disabled";
+
+export type DotCastReferralStatus = "claimed" | "qualified" | "rewarded" | "rejected";
+
+export type DotCastReferralRewardRole = "referrer" | "referred";
+
+export type DotCastReferralRewardStatus = "granted" | "suppressed";
+
+export type DotCastReferralAmlSeverity = "medium" | "high";
+
+export type DotCastReferralEventType =
+  | "REFERRAL_CODE_CREATED"
+  | "REFERRAL_CLAIMED"
+  | "REFERRAL_QUALIFIED"
+  | "REFERRAL_REWARDED"
+  | "REFERRAL_REJECTED"
+  | "REFERRAL_AML_FLAGGED";
+
 export type DotCastMarketStatus = "open" | "closed" | "settled" | "cancelled" | "voided";
 
 export type PoolStatus = "open" | "locked" | "resolving" | "settled" | "voided";
@@ -283,7 +305,7 @@ export interface PointsLedgerEntry {
 export interface FreeEntryCredit {
   id: string;
   userId: string;
-  grantReason: "streak_bonus" | "manual_grant" | "rewarded_stream" | "adjustment";
+  grantReason: "streak_bonus" | "manual_grant" | "rewarded_stream" | "referral" | "adjustment";
   poolId: string | null;
   grantedAt: string;
   expiresAt: string | null;
@@ -359,6 +381,82 @@ export interface DotCastRewardedStreamReward {
   pointsGranted: number;
   freeEntriesGranted: number;
   idempotencyKey: string;
+  eventJson: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface DotCastReferralCode {
+  code: string;
+  userId: string;
+  identityHash: string;
+  status: DotCastReferralCodeStatus;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DotCastReferralIdentityBinding {
+  userId: string;
+  identityHash: string;
+  walletAddress: string | null;
+  kycComplete: boolean;
+  firstEntryEarned: boolean;
+  firstDepositAt: string | null;
+  lastWithdrawalAt: string | null;
+  updatedAt: string;
+}
+
+export interface DotCastReferral {
+  referralId: string;
+  code: string | null;
+  referrerUserId: string;
+  referredUserId: string;
+  referrerIdentityHash: string;
+  referredIdentityHash: string;
+  qualifier: DotCastReferralQualifier;
+  status: DotCastReferralStatus;
+  qualifiedAt: string | null;
+  rejectedReason: string | null;
+  rewardBatchId: string | null;
+  idempotencyKey: string;
+  eventJson: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DotCastReferralReward {
+  rewardId: string;
+  referralId: string;
+  rewardBatchId: string;
+  userId: string;
+  role: DotCastReferralRewardRole;
+  status: DotCastReferralRewardStatus;
+  freeEntriesGranted: number;
+  suppressedReason: string | null;
+  creditIds: string[];
+  idempotencyKey: string;
+  eventJson: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface DotCastReferralAmlFlag {
+  flagId: string;
+  referrerUserId: string;
+  referredUserId: string;
+  clusterKey: string;
+  reason: "deposit_refer_withdraw_ring";
+  severity: DotCastReferralAmlSeverity;
+  relatedReferralIds: string[];
+  relatedIdentityHashes: string[];
+  eventJson: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface DotCastReferralEvent {
+  eventId: string;
+  referralId: string | null;
+  referrerUserId: string | null;
+  referredUserId: string | null;
+  eventType: DotCastReferralEventType;
   eventJson: Record<string, unknown>;
   createdAt: string;
 }

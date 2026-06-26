@@ -5,6 +5,7 @@ import {
   applyDotCastCreatorRakeShareSettlement,
   creditDevnetDeposit,
   D1DotCastCreatorStore,
+  D1DotCastReferralStore,
   D1DotCastSettlementRailStore,
   D1DotCastGamificationStore,
   D1DotCastRewardedStreamStore,
@@ -12,6 +13,7 @@ import {
   D1DotCastUsdcPoolFundingStore,
   D1DotCastLivestreamStore,
   DotCastCreatorEconomyError,
+  DotCastReferralError,
   DotCastGamificationError,
   DotCastRewardedStreamError,
   DotCastSponsoredQuestionError,
@@ -20,18 +22,23 @@ import {
   DotCastUsdcPoolFundingError,
   buildMuxLivestreamRecord,
   buildMuxPlaybackDescriptor,
+  claimDotCastReferral,
   createDotCastSponsoredQuestion,
+  createDotCastReferralCode,
   createMuxLiveStream,
   fetchDotCastReferencePrice,
   impliedProb,
   listDotCastSponsoredQuestionFeed,
   onboardDotCastCreator,
   planCreatorPoolNudges,
+  applyDotCastReferralQualification,
   parseVerifiedMuxWebhook,
   previewPayout,
   readSettlementBalance,
   readDotCastCreatorEconomyStatus,
   readDotCastCreatorSummary,
+  readDotCastReferralStatus,
+  readDotCastReferralUserSummary,
   readDotCastGamificationStatus,
   readDotCastGamificationUserSummary,
   readDotCastRewardedStreamStatus,
@@ -61,6 +68,7 @@ import {
   type DotCastCreatorSeedMode,
   type DotCastCreatorStatus,
   type DotCastCreatorTier,
+  type DotCastReferralQualificationEvent,
   type DotCastResolutionBinding,
   type DotCastSponsoredQuestionBillingEventType,
   type DotCastSponsoredQuestionPricingModel,
@@ -287,6 +295,44 @@ interface DotCastCreatorSeedRequest {
   eventJson?: unknown;
 }
 
+interface DotCastReferralCodeRequest {
+  userId?: unknown;
+  identityHash?: unknown;
+  walletAddress?: unknown;
+  code?: unknown;
+  now?: unknown;
+}
+
+interface DotCastReferralClaimRequest {
+  code?: unknown;
+  referrerUserId?: unknown;
+  referredUserId?: unknown;
+  referrerIdentityHash?: unknown;
+  referredIdentityHash?: unknown;
+  referredWalletAddress?: unknown;
+  idempotencyKey?: unknown;
+  eventJson?: unknown;
+  now?: unknown;
+}
+
+interface DotCastReferralQualificationRequest {
+  referredUserId?: unknown;
+  eventType?: unknown;
+  depositAmount?: unknown;
+  txRef?: unknown;
+  kycComplete?: unknown;
+  firstAdFundedEntryEarned?: unknown;
+  withdrawalAt?: unknown;
+  withdrawalWithinHours?: unknown;
+  depositWithdrawPattern?: unknown;
+  clusterKey?: unknown;
+  relatedReferralIds?: unknown;
+  relatedIdentityHashes?: unknown;
+  idempotencyKey?: unknown;
+  eventJson?: unknown;
+  now?: unknown;
+}
+
 interface DotCastSponsoredQuestionBillingRequest {
   eventType?: unknown;
   quantity?: unknown;
@@ -312,6 +358,9 @@ export function readDotCastHealth(env?: Env): Response {
   const creatorEconomy = env
     ? readDotCastCreatorEconomyStatus(env, Boolean(env.DOTCAST_DB ?? env.TRADING_DB))
     : null;
+  const referrals = env
+    ? readDotCastReferralStatus(env, Boolean(env.DOTCAST_DB ?? env.TRADING_DB))
+    : null;
 
   return json({
     ok: true,
@@ -334,7 +383,7 @@ export function readDotCastHealth(env?: Env): Response {
         ? "sponsored-questions-placement-ready"
         : "sponsored-questions-code-ready",
       e11: creatorEconomy?.ready ? "creator-economy-ready" : "creator-economy-code-ready",
-      e12: "referrals-not-started",
+      e12: referrals?.ready ? "referrals-ready" : "referrals-code-ready",
       e13: "resolution-router-not-started",
       persistence: "durable-object-ready",
       livestreamEngine: "stream-spine-ready",
@@ -350,6 +399,7 @@ export function readDotCastHealth(env?: Env): Response {
     ...(rewardedStream ? { rewardedStream } : {}),
     ...(sponsoredQuestions ? { sponsoredQuestions } : {}),
     ...(creatorEconomy ? { creatorEconomy } : {}),
+    ...(referrals ? { referrals } : {}),
     routes: [
       "GET /api/dotcast/health",
       "POST /api/dotcast/preview",
@@ -379,6 +429,11 @@ export function readDotCastHealth(env?: Env): Response {
       "POST /api/dotcast/creators/:id/payouts/:payoutId/confirm",
       "POST /api/dotcast/creators/:id/nudges/plan",
       "POST /api/dotcast/creators/:id/seeds",
+      "GET /api/dotcast/referrals/status",
+      "POST /api/dotcast/referrals/codes",
+      "GET /api/dotcast/referrals/users/:userId",
+      "POST /api/dotcast/referrals/claims",
+      "POST /api/dotcast/referrals/:id/qualify",
       "POST /api/dotcast/livestreams",
       "GET /api/dotcast/livestreams/:id",
       "GET /api/dotcast/livestreams/:id/playback",
@@ -1080,6 +1135,173 @@ export async function recordDotCastCreatorSeed(
     });
   } catch (error) {
     return creatorEconomyErrorResponse(error);
+  }
+}
+
+export function readDotCastReferralProgramStatus(env: Env): Response {
+  return json({
+    ok: true,
+    milestone: "E12",
+    referrals: readDotCastReferralStatus(env, Boolean(env.DOTCAST_DB ?? env.TRADING_DB))
+  });
+}
+
+export async function createDotCastReferralProgramCode(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastReferralCodeRequest>(request);
+    const result = await createDotCastReferralCode(
+      referralStore(env),
+      env,
+      {
+        userId: parseRequiredString(body?.userId, "userId"),
+        identityHash: parseRequiredString(body?.identityHash, "identityHash"),
+        walletAddress: parseNullableString(body?.walletAddress, "walletAddress"),
+        code: parseOptionalString(body?.code, "code"),
+        now: parseOptionalString(body?.now, "now")
+      },
+      true
+    );
+
+    return json(
+      {
+        ok: true,
+        milestone: "E12",
+        referrals: result
+      },
+      result.idempotent ? 200 : 201
+    );
+  } catch (error) {
+    return referralErrorResponse(error);
+  }
+}
+
+export async function readDotCastReferralProgramUser(
+  userId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const limit = parseOptionalQueryInteger(
+      new URL(request.url).searchParams.get("limit"),
+      "limit"
+    );
+    const summary = await readDotCastReferralUserSummary(
+      referralStore(env),
+      parseRequiredString(userId, "userId"),
+      limit ?? 25
+    );
+
+    return json({
+      ok: true,
+      milestone: "E12",
+      referrals: {
+        status: readDotCastReferralStatus(env, true),
+        summary
+      }
+    });
+  } catch (error) {
+    return referralErrorResponse(error);
+  }
+}
+
+export async function claimDotCastReferralProgram(request: Request, env: Env): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastReferralClaimRequest>(request);
+    const result = await claimDotCastReferral(
+      referralStore(env),
+      env,
+      {
+        code: parseOptionalString(body?.code, "code"),
+        referrerUserId: parseOptionalString(body?.referrerUserId, "referrerUserId"),
+        referredUserId: parseRequiredString(body?.referredUserId, "referredUserId"),
+        referrerIdentityHash: parseOptionalString(
+          body?.referrerIdentityHash,
+          "referrerIdentityHash"
+        ),
+        referredIdentityHash: parseRequiredString(
+          body?.referredIdentityHash,
+          "referredIdentityHash"
+        ),
+        referredWalletAddress: parseNullableString(
+          body?.referredWalletAddress,
+          "referredWalletAddress"
+        ),
+        idempotencyKey: parseOptionalString(body?.idempotencyKey, "idempotencyKey"),
+        eventJson: parseMetadataRecord(body?.eventJson),
+        now: parseOptionalString(body?.now, "now")
+      },
+      true
+    );
+
+    return json(
+      {
+        ok: true,
+        milestone: "E12",
+        referrals: result
+      },
+      result.idempotent ? 200 : 201
+    );
+  } catch (error) {
+    return referralErrorResponse(error);
+  }
+}
+
+export async function applyDotCastReferralProgramQualification(
+  referralId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastReferralQualificationRequest>(request);
+    const result = await applyDotCastReferralQualification(
+      referralStore(env),
+      env,
+      {
+        referralId: parseRequiredString(referralId, "referralId"),
+        referredUserId: parseOptionalString(body?.referredUserId, "referredUserId"),
+        eventType: parseOptionalReferralQualificationEvent(body?.eventType),
+        depositAmount: parseOptionalMinorUnits(body?.depositAmount, "depositAmount"),
+        txRef: parseOptionalString(body?.txRef, "txRef"),
+        kycComplete: parseOptionalBoolean(body?.kycComplete, "kycComplete"),
+        firstAdFundedEntryEarned: parseOptionalBoolean(
+          body?.firstAdFundedEntryEarned,
+          "firstAdFundedEntryEarned"
+        ),
+        withdrawalAt: parseNullableString(body?.withdrawalAt, "withdrawalAt"),
+        withdrawalWithinHours: parseOptionalSignedInteger(
+          body?.withdrawalWithinHours,
+          "withdrawalWithinHours"
+        ),
+        depositWithdrawPattern: parseOptionalBoolean(
+          body?.depositWithdrawPattern,
+          "depositWithdrawPattern"
+        ),
+        clusterKey: parseOptionalString(body?.clusterKey, "clusterKey"),
+        relatedReferralIds: parseOptionalStringArray(
+          body?.relatedReferralIds,
+          "relatedReferralIds"
+        ),
+        relatedIdentityHashes: parseOptionalStringArray(
+          body?.relatedIdentityHashes,
+          "relatedIdentityHashes"
+        ),
+        idempotencyKey: parseOptionalString(body?.idempotencyKey, "idempotencyKey"),
+        eventJson: parseMetadataRecord(body?.eventJson),
+        now: parseOptionalString(body?.now, "now")
+      },
+      true
+    );
+
+    return json({
+      ok: true,
+      milestone: "E12",
+      referrals: result
+    });
+  } catch (error) {
+    return referralErrorResponse(error);
   }
 }
 
@@ -1981,6 +2203,20 @@ function parseResolutionBinding(value: unknown): DotCastResolutionBinding {
   throw new Error("resolutionBinding must be oracle_bound, optimistic, jury, or unknown");
 }
 
+function parseOptionalReferralQualificationEvent(
+  value: unknown
+): DotCastReferralQualificationEvent | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (value === "signup" || value === "first_deposit" || value === "kyc_plus_first_entry") {
+    return value;
+  }
+
+  throw new Error("eventType must be signup, first_deposit, or kyc_plus_first_entry");
+}
+
 function parseCreatorNudgeRecipients(value: unknown): CreatorNudgeRecipient[] {
   if (!Array.isArray(value)) {
     throw new Error("recipients must be an array");
@@ -2747,6 +2983,20 @@ function creatorStore(env: Env): D1DotCastCreatorStore {
   return new D1DotCastCreatorStore(db);
 }
 
+function referralStore(env: Env): D1DotCastReferralStore {
+  const db = env.DOTCAST_DB ?? env.TRADING_DB;
+
+  if (!db) {
+    throw new DotCastReferralError(
+      "REFERRAL_DB_NOT_CONFIGURED",
+      "E12 referral database is not configured",
+      503
+    );
+  }
+
+  return new D1DotCastReferralStore(db);
+}
+
 function livestreamStore(env: Env): D1DotCastLivestreamStore {
   const db = env.DOTCAST_DB ?? env.TRADING_DB;
 
@@ -2909,6 +3159,29 @@ function creatorEconomyErrorResponse(error: unknown): Response {
     {
       ok: false,
       milestone: "E11",
+      error: error instanceof Error ? error.message : "Invalid request"
+    },
+    400
+  );
+}
+
+function referralErrorResponse(error: unknown): Response {
+  if (error instanceof DotCastReferralError) {
+    return json(
+      {
+        ok: false,
+        milestone: "E12",
+        code: error.code,
+        error: error.message
+      },
+      error.status
+    );
+  }
+
+  return json(
+    {
+      ok: false,
+      milestone: "E12",
       error: error instanceof Error ? error.message : "Invalid request"
     },
     400
