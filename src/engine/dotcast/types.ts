@@ -326,6 +326,75 @@ export interface DotCastRewardedStreamReward {
   createdAt: string;
 }
 
+export type DotCastSponsoredQuestionStatus =
+  | "pending_review"
+  | "active"
+  | "paused"
+  | "archived"
+  | "rejected";
+
+export type DotCastSponsoredQuestionPricingModel =
+  | "flat_fee"
+  | "cpm"
+  | "completed_prediction"
+  | "auction";
+
+export type DotCastSponsoredQuestionConflictStatus = "clear" | "blocked" | "pending";
+
+export interface DotCastSponsoredQuestionMarketSource {
+  id: string;
+  venue: "kalshi" | "polymarket";
+  question: string;
+  status: DotCastMarketStatus;
+  closeTime: string;
+  expectedResolveAt: string | null;
+  referenceUrl: string | null;
+}
+
+export interface DotCastSponsoredQuestion {
+  sponsorshipId: string;
+  sponsorId: string;
+  campaignId: string;
+  market: DotCastSponsoredQuestionMarketSource;
+  pricingModel: DotCastSponsoredQuestionPricingModel;
+  budgetMinorUnits: number;
+  placementPriority: number;
+  status: DotCastSponsoredQuestionStatus;
+  disclosureLabel: "Sponsored";
+  sponsorName: string;
+  brandColor: string | null;
+  logoUrl: string | null;
+  contextText: string | null;
+  conflictStatus: DotCastSponsoredQuestionConflictStatus;
+  conflictReasons: string[];
+  startsAt: string | null;
+  endsAt: string | null;
+  metadata: Record<string, unknown>;
+  integrityHash: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type DotCastSponsoredQuestionBillingEventType =
+  | "flat_fee_reserved"
+  | "impression"
+  | "completed_prediction"
+  | "auction_charge"
+  | "adjustment";
+
+export interface DotCastSponsoredQuestionBillingEvent {
+  billingEventId: string;
+  sponsorshipId: string;
+  sponsorId: string;
+  eventType: DotCastSponsoredQuestionBillingEventType;
+  pricingModel: DotCastSponsoredQuestionPricingModel;
+  quantity: number;
+  amountMinorUnits: number;
+  idempotencyKey: string;
+  eventJson: Record<string, unknown>;
+  createdAt: string;
+}
+
 export interface DotCastRouterResolution {
   marketId: string;
   outcome: DotCastResolutionOutcome;

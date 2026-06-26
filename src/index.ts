@@ -49,10 +49,12 @@ import {
   confirmDotCastMockWithdrawal,
   createDotCastPool,
   createDotCastLivestreamSession,
+  createDotCastSponsoredQuestionPlacement,
   endDotCastLivestream,
   attachDotCastLivestreamPool,
   detachDotCastLivestreamPool,
   handleMuxLivestreamWebhook,
+  listDotCastSponsoredQuestionPlacements,
   lockDotCastPool,
   pauseDotCastLivestream,
   placeDotCastPoolEntry,
@@ -61,6 +63,8 @@ import {
   readDotCastGamificationUser,
   readDotCastRewardedStreamOnrampStatus,
   readDotCastRewardedStreamUser,
+  readDotCastSponsoredQuestionPlacement,
+  readDotCastSponsoredQuestionPlacementStatus,
   readDotCastSettlementRailBalance,
   readDotCastSettlementRailStatus,
   readDotCastLivestream,
@@ -75,6 +79,7 @@ import {
   recordDotCastLivestreamPresence,
   requestDotCastDevnetWithdrawal,
   resumeDotCastLivestream,
+  recordDotCastSponsoredQuestionPlacementBilling,
   setDotCastLivestreamFeaturedPool,
   settleDotCastPool,
   simulateDotCastSettlement,
@@ -173,6 +178,21 @@ gatewayRouter.post("/api/dotcast/rewarded-streams/sessions", async (c) =>
 );
 gatewayRouter.post("/api/dotcast/rewarded-streams/sessions/:sessionId/complete", async (c) =>
   completeDotCastRewardedStreamOnrampSession(c.req.param("sessionId"), c.req.raw, c.env)
+);
+gatewayRouter.get("/api/dotcast/sponsored-questions/status", (c) =>
+  readDotCastSponsoredQuestionPlacementStatus(c.env)
+);
+gatewayRouter.get("/api/dotcast/sponsored-questions/feed", async (c) =>
+  listDotCastSponsoredQuestionPlacements(c.req.raw, c.env)
+);
+gatewayRouter.get("/api/dotcast/sponsored-questions/:id", async (c) =>
+  readDotCastSponsoredQuestionPlacement(c.req.param("id"), c.env)
+);
+gatewayRouter.post("/api/dotcast/sponsored-questions", async (c) =>
+  createDotCastSponsoredQuestionPlacement(c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/sponsored-questions/:id/billing-events", async (c) =>
+  recordDotCastSponsoredQuestionPlacementBilling(c.req.param("id"), c.req.raw, c.env)
 );
 gatewayRouter.post("/api/dotcast/livestreams/webhooks/mux", async (c) =>
   handleMuxLivestreamWebhook(c.req.raw, c.env)

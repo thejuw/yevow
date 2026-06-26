@@ -10,5 +10,6 @@ export * from "./RouterReferencePriceClient";
 export * from "./RouterResolutionClient";
 export * from "./RewardedStream";
 export * from "./SolanaUsdcSettlementRail";
+export * from "./SponsoredQuestions";
 export * from "./types";
 export * from "./UsdcPoolFunding";

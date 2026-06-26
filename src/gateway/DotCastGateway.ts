@@ -5,18 +5,22 @@ import {
   D1DotCastSettlementRailStore,
   D1DotCastGamificationStore,
   D1DotCastRewardedStreamStore,
+  D1DotCastSponsoredQuestionStore,
   D1DotCastUsdcPoolFundingStore,
   D1DotCastLivestreamStore,
   DotCastGamificationError,
   DotCastRewardedStreamError,
+  DotCastSponsoredQuestionError,
   DotCastSettlementRailError,
   DotCastLivestreamError,
   DotCastUsdcPoolFundingError,
   buildMuxLivestreamRecord,
   buildMuxPlaybackDescriptor,
+  createDotCastSponsoredQuestion,
   createMuxLiveStream,
   fetchDotCastReferencePrice,
   impliedProb,
+  listDotCastSponsoredQuestionFeed,
   parseVerifiedMuxWebhook,
   previewPayout,
   readSettlementBalance,
@@ -24,10 +28,12 @@ import {
   readDotCastGamificationUserSummary,
   readDotCastRewardedStreamStatus,
   readDotCastRewardedStreamUserSummary,
+  readDotCastSponsoredQuestionsStatus,
   readMuxLivestreamConfig,
   readSolanaUsdcSettlementRailStatus,
   readUsdcPoolFundingStatus,
   reconcileDevnetSettlementRail,
+  recordDotCastSponsoredQuestionBillingEvent,
   releaseUsdcPoolEntryReservation,
   reserveUsdcPoolEntry,
   requestDevnetWithdrawal,
@@ -40,6 +46,10 @@ import {
   type DotCastPoolSnapshot,
   type DotCastReferencePriceFetchResult,
   type DotCastResolutionOutcome,
+  type DotCastSponsoredQuestionBillingEventType,
+  type DotCastSponsoredQuestionPricingModel,
+  type DotCastSponsoredQuestionStatus,
+  type SponsoredQuestionIntegrityAttestation,
   type SettlementEntry,
   type Side,
   type SideTotals,
@@ -178,6 +188,38 @@ interface DotCastCompleteRewardedStreamRequest {
   now?: unknown;
 }
 
+interface DotCastCreateSponsoredQuestionRequest {
+  sponsorshipId?: unknown;
+  sponsorId?: unknown;
+  campaignId?: unknown;
+  market?: unknown;
+  pricingModel?: unknown;
+  budgetMinorUnits?: unknown;
+  placementPriority?: unknown;
+  sponsorName?: unknown;
+  brandColor?: unknown;
+  logoUrl?: unknown;
+  contextText?: unknown;
+  sponsorAliases?: unknown;
+  conflictTerms?: unknown;
+  relationshipToOutcome?: unknown;
+  attestation?: unknown;
+  status?: unknown;
+  startsAt?: unknown;
+  endsAt?: unknown;
+  now?: unknown;
+  metadata?: unknown;
+}
+
+interface DotCastSponsoredQuestionBillingRequest {
+  eventType?: unknown;
+  quantity?: unknown;
+  amountMinorUnits?: unknown;
+  idempotencyKey?: unknown;
+  now?: unknown;
+  eventJson?: unknown;
+}
+
 export function readDotCastHealth(env?: Env): Response {
   const settlementRail = env ? readSolanaUsdcSettlementRailStatus(env) : null;
   const usdcPoolFunding = env ? readUsdcPoolFundingStatus(env) : null;
@@ -187,6 +229,9 @@ export function readDotCastHealth(env?: Env): Response {
     : null;
   const rewardedStream = env
     ? readDotCastRewardedStreamStatus(env, Boolean(env.DOTCAST_DB ?? env.TRADING_DB))
+    : null;
+  const sponsoredQuestions = env
+    ? readDotCastSponsoredQuestionsStatus(env, Boolean(env.DOTCAST_DB ?? env.TRADING_DB))
     : null;
 
   return json({
@@ -206,7 +251,9 @@ export function readDotCastHealth(env?: Env): Response {
       e9: rewardedStream?.ready
         ? "rewarded-stream-onramp-ready"
         : "rewarded-stream-onramp-code-ready",
-      e10: "sponsored-questions-not-started",
+      e10: sponsoredQuestions?.ready
+        ? "sponsored-questions-placement-ready"
+        : "sponsored-questions-code-ready",
       e11: "creator-economy-not-started",
       e12: "referrals-not-started",
       e13: "resolution-router-not-started",
@@ -222,6 +269,7 @@ export function readDotCastHealth(env?: Env): Response {
     ...(livestream ? { livestream } : {}),
     ...(gamification ? { gamification } : {}),
     ...(rewardedStream ? { rewardedStream } : {}),
+    ...(sponsoredQuestions ? { sponsoredQuestions } : {}),
     routes: [
       "GET /api/dotcast/health",
       "POST /api/dotcast/preview",
@@ -238,6 +286,11 @@ export function readDotCastHealth(env?: Env): Response {
       "GET /api/dotcast/rewarded-streams/users/:userId",
       "POST /api/dotcast/rewarded-streams/sessions",
       "POST /api/dotcast/rewarded-streams/sessions/:sessionId/complete",
+      "GET /api/dotcast/sponsored-questions/status",
+      "GET /api/dotcast/sponsored-questions/feed",
+      "GET /api/dotcast/sponsored-questions/:id",
+      "POST /api/dotcast/sponsored-questions",
+      "POST /api/dotcast/sponsored-questions/:id/billing-events",
       "POST /api/dotcast/livestreams",
       "GET /api/dotcast/livestreams/:id",
       "GET /api/dotcast/livestreams/:id/playback",
@@ -530,6 +583,162 @@ export async function completeDotCastRewardedStreamOnrampSession(
     });
   } catch (error) {
     return rewardedStreamErrorResponse(error);
+  }
+}
+
+export function readDotCastSponsoredQuestionPlacementStatus(env: Env): Response {
+  return json({
+    ok: true,
+    milestone: "E10",
+    sponsoredQuestions: readDotCastSponsoredQuestionsStatus(
+      env,
+      Boolean(env.DOTCAST_DB ?? env.TRADING_DB)
+    )
+  });
+}
+
+export async function createDotCastSponsoredQuestionPlacement(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastCreateSponsoredQuestionRequest>(request);
+    const result = await createDotCastSponsoredQuestion(
+      sponsoredQuestionStore(env),
+      env,
+      {
+        sponsorshipId: parseOptionalString(body?.sponsorshipId, "sponsorshipId"),
+        sponsorId: parseRequiredString(body?.sponsorId, "sponsorId"),
+        campaignId: parseRequiredString(body?.campaignId, "campaignId"),
+        market: parseSponsoredQuestionMarket(body?.market),
+        pricingModel: parseSponsoredQuestionPricingModel(body?.pricingModel),
+        budgetMinorUnits: parseOptionalMinorUnits(body?.budgetMinorUnits, "budgetMinorUnits"),
+        placementPriority: parseOptionalSignedInteger(body?.placementPriority, "placementPriority"),
+        sponsorName: parseRequiredString(body?.sponsorName, "sponsorName"),
+        brandColor: parseNullableString(body?.brandColor, "brandColor"),
+        logoUrl: parseNullableString(body?.logoUrl, "logoUrl"),
+        contextText: parseNullableString(body?.contextText, "contextText"),
+        sponsorAliases: parseOptionalStringArray(body?.sponsorAliases, "sponsorAliases"),
+        conflictTerms: parseOptionalStringArray(body?.conflictTerms, "conflictTerms"),
+        relationshipToOutcome: parseSponsoredQuestionRelationship(body?.relationshipToOutcome),
+        attestation: parseSponsoredQuestionAttestation(body?.attestation),
+        status: parseOptionalSponsorshipStatus(body?.status),
+        startsAt: parseNullableString(body?.startsAt, "startsAt"),
+        endsAt: parseNullableString(body?.endsAt, "endsAt"),
+        now: parseOptionalString(body?.now, "now"),
+        metadata: parseMetadataRecord(body?.metadata)
+      },
+      true
+    );
+
+    return json(
+      {
+        ok: true,
+        milestone: "E10",
+        sponsoredQuestion: result
+      },
+      201
+    );
+  } catch (error) {
+    return sponsoredQuestionErrorResponse(error);
+  }
+}
+
+export async function listDotCastSponsoredQuestionPlacements(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const url = new URL(request.url);
+    const result = await listDotCastSponsoredQuestionFeed(
+      sponsoredQuestionStore(env),
+      env,
+      {
+        now: parseOptionalString(url.searchParams.get("now"), "now"),
+        limit: parseOptionalQueryInteger(url.searchParams.get("limit"), "limit")
+      },
+      true
+    );
+
+    return json({
+      ok: true,
+      milestone: "E10",
+      sponsoredQuestions: result
+    });
+  } catch (error) {
+    return sponsoredQuestionErrorResponse(error);
+  }
+}
+
+export async function readDotCastSponsoredQuestionPlacement(
+  sponsorshipId: string,
+  env: Env
+): Promise<Response> {
+  try {
+    const sponsorship = await sponsoredQuestionStore(env).getSponsorship(
+      parseRequiredString(sponsorshipId, "sponsorshipId")
+    );
+
+    if (!sponsorship) {
+      throw new DotCastSponsoredQuestionError(
+        "SPONSORED_QUESTION_NOT_FOUND",
+        "sponsored question was not found",
+        404
+      );
+    }
+
+    return json({
+      ok: true,
+      milestone: "E10",
+      sponsoredQuestion: sponsorship
+    });
+  } catch (error) {
+    return sponsoredQuestionErrorResponse(error);
+  }
+}
+
+export async function recordDotCastSponsoredQuestionPlacementBilling(
+  sponsorshipId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastSponsoredQuestionBillingRequest>(request);
+    const store = sponsoredQuestionStore(env);
+    const sponsorship = await store.getSponsorship(
+      parseRequiredString(sponsorshipId, "sponsorshipId")
+    );
+
+    if (!sponsorship) {
+      throw new DotCastSponsoredQuestionError(
+        "SPONSORED_QUESTION_NOT_FOUND",
+        "sponsored question was not found",
+        404
+      );
+    }
+
+    const result = await recordDotCastSponsoredQuestionBillingEvent(
+      store,
+      env,
+      {
+        sponsorship,
+        eventType: parseSponsoredQuestionBillingEventType(body?.eventType),
+        quantity: parseOptionalMinorUnits(body?.quantity, "quantity"),
+        amountMinorUnits: parseOptionalMinorUnits(body?.amountMinorUnits, "amountMinorUnits"),
+        idempotencyKey: parseOptionalString(body?.idempotencyKey, "idempotencyKey"),
+        now: parseOptionalString(body?.now, "now"),
+        eventJson: parseMetadataRecord(body?.eventJson)
+      },
+      true
+    );
+
+    return json({
+      ok: true,
+      milestone: "E10",
+      sponsoredQuestionBilling: result
+    });
+  } catch (error) {
+    return sponsoredQuestionErrorResponse(error);
   }
 }
 
@@ -1344,6 +1553,155 @@ function parseStakeUnit(value: unknown): StakeUnit {
   throw new Error("unit must be points or usdc");
 }
 
+function parseSponsoredQuestionMarket(value: unknown): DotCastMarketSnapshot {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("market is required");
+  }
+
+  const record = value as Record<string, unknown>;
+  const venue = record.venue;
+
+  if (venue !== "kalshi" && venue !== "polymarket") {
+    throw new Error("sponsored question market venue must be kalshi or polymarket");
+  }
+
+  return {
+    id: parseRequiredString(record.id, "market.id"),
+    venue,
+    question: parseRequiredString(record.question, "market.question"),
+    status: parseDotCastMarketStatus(record.status),
+    closeTime: parseRequiredString(record.closeTime ?? record.close_time, "market.closeTime"),
+    expectedResolveAt: parseNullableString(
+      record.expectedResolveAt ?? record.expected_resolve_at,
+      "market.expectedResolveAt"
+    ),
+    referenceUrl:
+      parseNullableString(record.referenceUrl ?? record.reference_url, "market.referenceUrl") ??
+      undefined
+  };
+}
+
+function parseDotCastMarketStatus(value: unknown): DotCastMarketSnapshot["status"] {
+  if (
+    value === "open" ||
+    value === "closed" ||
+    value === "settled" ||
+    value === "cancelled" ||
+    value === "voided"
+  ) {
+    return value;
+  }
+
+  throw new Error("market.status must be open, closed, settled, cancelled, or voided");
+}
+
+function parseSponsoredQuestionPricingModel(value: unknown): DotCastSponsoredQuestionPricingModel {
+  if (
+    value === "flat_fee" ||
+    value === "cpm" ||
+    value === "completed_prediction" ||
+    value === "auction"
+  ) {
+    return value;
+  }
+
+  throw new Error("pricingModel must be flat_fee, cpm, completed_prediction, or auction");
+}
+
+function parseSponsoredQuestionBillingEventType(
+  value: unknown
+): DotCastSponsoredQuestionBillingEventType {
+  if (
+    value === "flat_fee_reserved" ||
+    value === "impression" ||
+    value === "completed_prediction" ||
+    value === "auction_charge" ||
+    value === "adjustment"
+  ) {
+    return value;
+  }
+
+  throw new Error(
+    "eventType must be flat_fee_reserved, impression, completed_prediction, auction_charge, or adjustment"
+  );
+}
+
+function parseSponsoredQuestionRelationship(
+  value: unknown
+): "none" | "participant" | "issuer" | "candidate" | "organizer" | "other" | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (
+    value === "none" ||
+    value === "participant" ||
+    value === "issuer" ||
+    value === "candidate" ||
+    value === "organizer" ||
+    value === "other"
+  ) {
+    return value;
+  }
+
+  throw new Error("relationshipToOutcome is invalid");
+}
+
+function parseOptionalSponsorshipStatus(
+  value: unknown
+): DotCastSponsoredQuestionStatus | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (
+    value === "pending_review" ||
+    value === "active" ||
+    value === "paused" ||
+    value === "archived" ||
+    value === "rejected"
+  ) {
+    return value;
+  }
+
+  throw new Error("sponsored question status is invalid");
+}
+
+function parseSponsoredQuestionAttestation(
+  value: unknown
+): SponsoredQuestionIntegrityAttestation | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("attestation must be an object");
+  }
+
+  const record = value as Record<string, unknown>;
+
+  return {
+    noOutcomeInfluence: parseOptionalBoolean(
+      record.noOutcomeInfluence,
+      "attestation.noOutcomeInfluence"
+    ),
+    cosmeticOnly: parseOptionalBoolean(record.cosmeticOnly, "attestation.cosmeticOnly"),
+    noUserDataAccess: parseOptionalBoolean(record.noUserDataAccess, "attestation.noUserDataAccess")
+  };
+}
+
+function parseOptionalStringArray(value: unknown, label: string): string[] | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} must be an array of strings`);
+  }
+
+  return value.map((item, index) => parseRequiredString(item, `${label}[${index}]`));
+}
+
 function parseRequiredString(value: unknown, label: string): string {
   if (typeof value === "string" && value.trim().length > 0) {
     return value.trim();
@@ -1390,6 +1748,32 @@ function parseOptionalMinorUnits(value: unknown, label: string): number | undefi
   }
 
   return parseMinorUnits(value, label, true);
+}
+
+function parseOptionalSignedInteger(value: unknown, label: string): number | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (typeof value !== "number" || !Number.isSafeInteger(value)) {
+    throw new Error(`${label} must be a safe integer`);
+  }
+
+  return value;
+}
+
+function parseOptionalQueryInteger(value: string | null, label: string): number | undefined {
+  if (value === null || value.length === 0) {
+    return undefined;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error(`${label} must be a positive safe integer`);
+  }
+
+  return parsed;
 }
 
 function parseMinorUnits(value: unknown, label: string, allowZero = false): number {
@@ -1837,6 +2221,20 @@ function rewardedStreamStore(env: Env): D1DotCastRewardedStreamStore {
   return new D1DotCastRewardedStreamStore(db);
 }
 
+function sponsoredQuestionStore(env: Env): D1DotCastSponsoredQuestionStore {
+  const db = env.DOTCAST_DB ?? env.TRADING_DB;
+
+  if (!db) {
+    throw new DotCastSponsoredQuestionError(
+      "SPONSORED_QUESTION_DB_NOT_CONFIGURED",
+      "E10 sponsored question database is not configured",
+      503
+    );
+  }
+
+  return new D1DotCastSponsoredQuestionStore(db);
+}
+
 function livestreamStore(env: Env): D1DotCastLivestreamStore {
   const db = env.DOTCAST_DB ?? env.TRADING_DB;
 
@@ -1941,6 +2339,29 @@ function rewardedStreamErrorResponse(error: unknown): Response {
     {
       ok: false,
       milestone: "E9",
+      error: error instanceof Error ? error.message : "Invalid request"
+    },
+    400
+  );
+}
+
+function sponsoredQuestionErrorResponse(error: unknown): Response {
+  if (error instanceof DotCastSponsoredQuestionError) {
+    return json(
+      {
+        ok: false,
+        milestone: "E10",
+        code: error.code,
+        error: error.message
+      },
+      error.status
+    );
+  }
+
+  return json(
+    {
+      ok: false,
+      milestone: "E10",
       error: error instanceof Error ? error.message : "Invalid request"
     },
     400
