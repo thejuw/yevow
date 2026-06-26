@@ -1,4 +1,5 @@
 import type {
+  DotCastLiveOddsSnapshot,
   DotCastLivestreamEvent,
   DotCastLivestreamEventType,
   DotCastLivestreamPool,
@@ -10,10 +11,17 @@ import type {
   PoolStatus,
   StakeUnit
 } from "./types";
+import type { Env } from "../../types";
 
 const LIVESTREAM_STATE_KEY = "dotcast:livestream-state:v1";
 const MAX_EVENTS = 250;
 const PRESENCE_TTL_MS = 60_000;
+const SSE_RETRY_MS = 3_000;
+
+interface RealtimeClient {
+  clientId: string;
+  controller: ReadableStreamDefaultController<Uint8Array>;
+}
 
 interface LivestreamState {
   session: DotCastLivestreamSession;
@@ -59,8 +67,33 @@ interface TransitionPayload {
   now?: unknown;
 }
 
+interface PoolUpdatePayload {
+  poolId?: unknown;
+  now?: unknown;
+}
+
+interface RealtimePoolSnapshot {
+  poolId: string;
+  marketId: string;
+  question: string;
+  unit: StakeUnit;
+  attachedStatus: PoolStatus;
+  liveOdds: DotCastLiveOddsSnapshot | null;
+  pool: Record<string, unknown> | null;
+  settlement: unknown;
+  voidReason: unknown;
+  updatedAt: string;
+  error: string | null;
+}
+
 export class DotCastLivestream {
-  constructor(private readonly state: DurableObjectState) {}
+  private readonly realtimeClients = new Map<string, RealtimeClient>();
+  private readonly encoder = new TextEncoder();
+
+  constructor(
+    private readonly state: DurableObjectState,
+    private readonly env?: Env
+  ) {}
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -110,6 +143,14 @@ export class DotCastLivestream {
         return await this.readEvents(url.searchParams);
       }
 
+      if (request.method === "GET" && url.pathname === "/stream") {
+        return await this.stream(url.searchParams);
+      }
+
+      if (request.method === "POST" && url.pathname === "/pool-updates") {
+        return await this.pushPoolUpdate(request);
+      }
+
       return jsonResponse({ ok: false, error: "Not found" }, 404);
     } catch (error) {
       return jsonResponse({ ok: false, error: errorMessage(error) }, 400);
@@ -155,6 +196,7 @@ export class DotCastLivestream {
       status
     });
     await this.writeState(next);
+    await this.publishLatestEvent(next);
     return jsonResponse({ ok: true, created: true, ...decorateLivestream(next) }, 201);
   }
 
@@ -192,6 +234,7 @@ export class DotCastLivestream {
         { reason: "start_existing" }
       );
       await this.writeState(next);
+      await this.publishLatestEvent(next);
       return jsonResponse({ ok: true, created: false, ...decorateLivestream(next) });
     }
 
@@ -223,6 +266,7 @@ export class DotCastLivestream {
       title: session.title
     });
     await this.writeState(next);
+    await this.publishLatestEvent(next);
     return jsonResponse({ ok: true, created: true, ...decorateLivestream(next) }, 201);
   }
 
@@ -244,6 +288,7 @@ export class DotCastLivestream {
     };
     const next = appendEvent(this.withSession(state, session, now), "STREAM_PAUSED", now);
     await this.writeState(next);
+    await this.publishLatestEvent(next);
     return jsonResponse({ ok: true, ...decorateLivestream(next) });
   }
 
@@ -265,6 +310,7 @@ export class DotCastLivestream {
     };
     const next = appendEvent(this.withSession(state, session, now), "STREAM_RESUMED", now);
     await this.writeState(next);
+    await this.publishLatestEvent(next);
     return jsonResponse({ ok: true, ...decorateLivestream(next) });
   }
 
@@ -285,6 +331,7 @@ export class DotCastLivestream {
     };
     const next = appendEvent(this.withSession(state, session, now), "STREAM_ENDED", now);
     await this.writeState(next);
+    await this.publishLatestEvent(next);
     return jsonResponse({ ok: true, ...decorateLivestream(next) });
   }
 
@@ -333,6 +380,7 @@ export class DotCastLivestream {
     );
 
     await this.writeState(next);
+    await this.publishLatestEvent(next);
     return jsonResponse({ ok: true, pool, ...decorateLivestream(next) }, existing ? 200 : 201);
   }
 
@@ -368,6 +416,7 @@ export class DotCastLivestream {
     );
 
     await this.writeState(next);
+    await this.publishLatestEvent(next);
     return jsonResponse({ ok: true, detached: true, ...decorateLivestream(next) });
   }
 
@@ -393,6 +442,7 @@ export class DotCastLivestream {
       poolId
     );
     await this.writeState(next);
+    await this.publishLatestEvent(next);
     return jsonResponse({ ok: true, featuredPoolId: poolId, ...decorateLivestream(next) });
   }
 
@@ -438,6 +488,7 @@ export class DotCastLivestream {
     );
 
     await this.writeState(next);
+    await this.publishLatestEvent(next);
     return jsonResponse({ ok: true, viewer, ...decorateLivestream(next) });
   }
 
@@ -456,6 +507,71 @@ export class DotCastLivestream {
       events,
       cursor: events.at(-1)?.id ?? after,
       latestEventId: state.events.at(-1)?.id ?? 0
+    });
+  }
+
+  private async stream(searchParams: URLSearchParams): Promise<Response> {
+    const state = await this.requireState();
+    const now = parseOptionalString(searchParams.get("now"), "now") ?? new Date().toISOString();
+    const compacted = await this.compactPresence(state, now);
+    const once = searchParams.get("once") === "true";
+    let clientId: string | null = null;
+
+    const stream = new ReadableStream<Uint8Array>({
+      start: (controller) => {
+        clientId = `sse:${crypto.randomUUID()}`;
+        const client: RealtimeClient = { clientId, controller };
+
+        if (!once) {
+          this.realtimeClients.set(clientId, client);
+        }
+
+        this.enqueueSse(client, "livestream.ready", {
+          ok: true,
+          streamId: compacted.session.id,
+          clientId,
+          retryMs: SSE_RETRY_MS,
+          createdAt: now
+        });
+        void this.writeInitialRealtimeFrame(client, compacted, now, once);
+      },
+      cancel: () => {
+        if (clientId) {
+          this.realtimeClients.delete(clientId);
+        }
+      }
+    });
+
+    return new Response(stream, {
+      headers: {
+        "content-type": "text/event-stream;charset=UTF-8",
+        "cache-control": "no-cache, no-transform",
+        connection: "keep-alive",
+        "x-accel-buffering": "no"
+      }
+    });
+  }
+
+  private async pushPoolUpdate(request: Request): Promise<Response> {
+    const body = await readJson<PoolUpdatePayload>(request);
+    const state = await this.requireState();
+    const poolId = parseRequiredString(body.poolId, "poolId");
+    const pool = state.pools[poolId];
+
+    if (!pool) {
+      return jsonResponse({ ok: false, error: "pool is not attached to livestream" }, 404);
+    }
+
+    const now = parseOptionalString(body.now, "now") ?? new Date().toISOString();
+    const poolOdds = await this.readPoolRealtimeSnapshot(pool);
+    this.broadcastPoolRealtimeFrame(state, poolOdds, now);
+
+    return jsonResponse({
+      ok: true,
+      streamId: state.session.id,
+      poolId,
+      poolOdds,
+      clientCount: this.realtimeClients.size
     });
   }
 
@@ -517,6 +633,197 @@ export class DotCastLivestream {
   private async writeState(state: LivestreamState): Promise<void> {
     await this.state.storage.put(LIVESTREAM_STATE_KEY, normalizeState(state));
   }
+
+  private async writeInitialRealtimeFrame(
+    client: RealtimeClient,
+    state: LivestreamState,
+    now: string,
+    once: boolean
+  ): Promise<void> {
+    try {
+      this.enqueueSse(client, "livestream.snapshot", {
+        ok: true,
+        type: "livestream.snapshot",
+        streamId: state.session.id,
+        cursor: state.events.at(-1)?.id ?? 0,
+        latestEventId: state.events.at(-1)?.id ?? 0,
+        livestream: decorateLivestream(state).livestream,
+        poolOdds: await this.readAttachedPoolRealtimeSnapshots(state),
+        createdAt: now
+      });
+
+      if (once) {
+        client.controller.close();
+      }
+    } catch {
+      this.realtimeClients.delete(client.clientId);
+      try {
+        client.controller.close();
+      } catch {
+        // Client already disconnected.
+      }
+    }
+  }
+
+  private async publishLatestEvent(state: LivestreamState): Promise<void> {
+    const event = state.events.at(-1);
+
+    if (!event || this.realtimeClients.size === 0) {
+      return;
+    }
+
+    const poolOdds =
+      event.poolId && state.pools[event.poolId]
+        ? await this.readPoolRealtimeSnapshot(state.pools[event.poolId])
+        : null;
+
+    this.broadcastLivestreamEventFrame(state, event, poolOdds);
+  }
+
+  private broadcastLivestreamEventFrame(
+    state: LivestreamState,
+    event: DotCastLivestreamEvent,
+    poolOdds: RealtimePoolSnapshot | null
+  ): void {
+    const frame = {
+      ok: true,
+      type: "livestream.event",
+      streamId: state.session.id,
+      cursor: event.id,
+      latestEventId: state.events.at(-1)?.id ?? event.id,
+      event,
+      livestream: decorateLivestream(state).livestream,
+      poolOdds,
+      createdAt: event.createdAt
+    };
+
+    for (const client of this.realtimeClients.values()) {
+      this.enqueueSse(client, "livestream.event", frame, event.id);
+    }
+  }
+
+  private broadcastPoolRealtimeFrame(
+    state: LivestreamState,
+    poolOdds: RealtimePoolSnapshot,
+    now: string
+  ): void {
+    const latestEventId = state.events.at(-1)?.id ?? 0;
+    const frame = {
+      ok: true,
+      type: "livestream.pool_odds",
+      streamId: state.session.id,
+      cursor: latestEventId,
+      latestEventId,
+      poolOdds,
+      createdAt: now
+    };
+
+    for (const client of this.realtimeClients.values()) {
+      this.enqueueSse(client, "livestream.pool_odds", frame, latestEventId);
+    }
+  }
+
+  private async readAttachedPoolRealtimeSnapshots(
+    state: LivestreamState
+  ): Promise<RealtimePoolSnapshot[]> {
+    return Promise.all(orderedPools(state.pools).map((pool) => this.readPoolRealtimeSnapshot(pool)));
+  }
+
+  private async readPoolRealtimeSnapshot(
+    pool: DotCastLivestreamPool
+  ): Promise<RealtimePoolSnapshot> {
+    if (!this.env?.DOTCAST_POOL) {
+      return {
+        ...baseRealtimePool(pool),
+        liveOdds: null,
+        pool: null,
+        settlement: null,
+        voidReason: null,
+        updatedAt: pool.updatedAt,
+        error: "dotCast pool storage is not configured"
+      };
+    }
+
+    try {
+      const objectId = this.env.DOTCAST_POOL.idFromName(pool.poolId);
+      const object = this.env.DOTCAST_POOL.get(objectId);
+      const response = await object.fetch(new Request("https://dotcast.pool/odds"));
+
+      if (!response.ok) {
+        return {
+          ...baseRealtimePool(pool),
+          liveOdds: null,
+          pool: null,
+          settlement: null,
+          voidReason: null,
+          updatedAt: pool.updatedAt,
+          error: `pool odds fetch failed with status ${response.status}`
+        };
+      }
+
+      const body = parseRecord(await response.json());
+      const snapshot = parseRecord(body.snapshot);
+
+      return {
+        ...baseRealtimePool(pool),
+        liveOdds: parseNullableRecord(body.liveOdds) as DotCastLiveOddsSnapshot | null,
+        pool: parseNullableRecord(snapshot.pool),
+        settlement: snapshot.settlement ?? null,
+        voidReason: snapshot.voidReason ?? null,
+        updatedAt: parseOptionalString(snapshot.updatedAt, "snapshot.updatedAt") ?? pool.updatedAt,
+        error: null
+      };
+    } catch (error) {
+      return {
+        ...baseRealtimePool(pool),
+        liveOdds: null,
+        pool: null,
+        settlement: null,
+        voidReason: null,
+        updatedAt: pool.updatedAt,
+        error: errorMessage(error)
+      };
+    }
+  }
+
+  private enqueueSse(
+    client: RealtimeClient,
+    eventName: string,
+    payload: Record<string, unknown>,
+    id?: number
+  ): void {
+    try {
+      client.controller.enqueue(this.encoder.encode(formatSse(eventName, payload, id)));
+    } catch {
+      this.realtimeClients.delete(client.clientId);
+    }
+  }
+}
+
+function baseRealtimePool(pool: DotCastLivestreamPool) {
+  return {
+    poolId: pool.poolId,
+    marketId: pool.marketId,
+    question: pool.question,
+    unit: pool.unit,
+    attachedStatus: pool.status
+  };
+}
+
+function formatSse(
+  eventName: string,
+  payload: Record<string, unknown>,
+  id?: number
+): string {
+  const lines = [`event: ${eventName}`];
+
+  if (id !== undefined) {
+    lines.unshift(`id: ${id}`);
+  }
+
+  lines.push(`retry: ${SSE_RETRY_MS}`);
+  lines.push(`data: ${JSON.stringify(payload)}`);
+  return `${lines.join("\n")}\n\n`;
 }
 
 function appendEvent(
@@ -686,6 +993,22 @@ function parseViewerRole(value: unknown): DotCastLivestreamViewerRole {
   }
 
   return "viewer";
+}
+
+function parseRecord(value: unknown): Record<string, unknown> {
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+
+  return {};
+}
+
+function parseNullableRecord(value: unknown): Record<string, unknown> | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  return parseRecord(value);
 }
 
 function parseRequiredString(value: unknown, label: string): string {

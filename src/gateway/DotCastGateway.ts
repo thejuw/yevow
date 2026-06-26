@@ -89,6 +89,7 @@ interface DotCastPlaceEntryRequest {
   amount?: unknown;
   now?: unknown;
   entryId?: unknown;
+  streamId?: unknown;
 }
 
 interface ParsedDotCastPlaceEntry {
@@ -102,11 +103,13 @@ interface ParsedDotCastPlaceEntry {
 interface DotCastSettlePoolRequest {
   outcome?: unknown;
   now?: unknown;
+  streamId?: unknown;
 }
 
 interface DotCastVoidPoolRequest {
   reason?: unknown;
   now?: unknown;
+  streamId?: unknown;
 }
 
 interface DotCastRouterResolutionRequest {
@@ -118,10 +121,12 @@ interface DotCastRouterResolutionRequest {
   source?: unknown;
   now?: unknown;
   maxGraceMs?: unknown;
+  streamId?: unknown;
 }
 
 interface DotCastPollResolutionRequest {
   now?: unknown;
+  streamId?: unknown;
 }
 
 interface DotCastDevnetDepositRequest {
@@ -177,6 +182,7 @@ export function readDotCastHealth(env?: Env): Response {
       persistence: "durable-object-ready",
       livestreamEngine: "stream-spine-ready",
       livestreamProvider: livestream?.ready ? "mux-livewire-ready" : "mux-livewire-code-ready",
+      livestreamRealtime: "sse-odds-results-ready",
       settlementRail: settlementRail?.ready ? "devnet-mock-ready" : "devnet-mock-code-ready",
       usdcPoolFunding: usdcPoolFunding?.ready ? "devnet-ready" : "devnet-code-ready"
     },
@@ -206,6 +212,8 @@ export function readDotCastHealth(env?: Env): Response {
       "POST /api/dotcast/livestreams/:id/featured",
       "POST /api/dotcast/livestreams/:id/presence",
       "GET /api/dotcast/livestreams/:id/events",
+      "GET /api/dotcast/livestreams/:id/stream",
+      "POST /api/dotcast/livestreams/:id/pools/:poolId/refresh",
       "POST /api/dotcast/livestreams/webhooks/mux",
       "POST /api/dotcast/pools",
       "GET /api/dotcast/pools/:id",
@@ -600,7 +608,7 @@ export async function attachDotCastLivestreamPool(
 
   if (env.DOTCAST_DB ?? env.TRADING_DB) {
     try {
-      const body = parseJsonObject<DotCastAttachLivestreamPoolRequest>(rawBody);
+      const body: DotCastAttachLivestreamPoolRequest = parseJsonObject(rawBody);
       const record = await livestreamStore(env).getLivestream(streamId);
 
       if (!record) {
@@ -671,12 +679,42 @@ export async function readDotCastLivestreamEvents(
   return proxyDotCastLivestreamRequest(env, streamId, `/events${search}`, { method: "GET" });
 }
 
+export async function streamDotCastLivestreamRealtime(
+  streamId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const search = new URL(request.url).search;
+  return proxyDotCastLivestreamRequest(env, streamId, `/stream${search}`, {
+    method: "GET",
+    headers: {
+      accept: request.headers.get("accept") ?? "text/event-stream"
+    }
+  });
+}
+
+export async function refreshDotCastLivestreamPool(
+  streamId: string,
+  poolId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  const body = await readJsonBody<{ now?: unknown }>(request);
+  return proxyDotCastLivestreamRequest(env, streamId, "/pool-updates", {
+    method: "POST",
+    body: JSON.stringify({
+      poolId,
+      now: parseOptionalString(body?.now, "now")
+    })
+  });
+}
+
 export async function createDotCastPool(request: Request, env: Env): Promise<Response> {
   try {
     const body = await readJsonBody<DotCastCreatePoolRequest>(request);
     const payload = parseCreatePoolPayload(body, env);
     const poolId = payload.id;
-    return proxyDotCastPoolRequest(env, poolId, "/create", {
+    return await proxyDotCastPoolRequest(env, poolId, "/create", {
       method: "POST",
       body: JSON.stringify(payload)
     });
@@ -710,7 +748,7 @@ export async function readDotCastPoolLiveOdds(
   }
 
   try {
-    const body = (await response.clone().json()) as Record<string, unknown>;
+    const body = await response.clone().json<Record<string, unknown>>();
     const marketId = extractLiveOddsMarketId(body);
     const referencePrice = await fetchDotCastReferencePrice(
       env,
@@ -750,16 +788,21 @@ export async function placeDotCastPoolEntry(
       now: parseOptionalString(body?.now, "now"),
       entryId: parseOptionalString(body?.entryId, "entryId") ?? randomId("entry")
     };
+    const streamId = parseOptionalString(body?.streamId, "streamId");
     const poolUnit = await readDotCastPoolUnit(poolId, env);
+    const response =
+      poolUnit === "usdc"
+        ? await placeDotCastUsdcPoolEntry(poolId, payload, env)
+        : await proxyDotCastPoolRequest(env, poolId, "/entries", {
+            method: "POST",
+            body: JSON.stringify(payload)
+          });
 
-    if (poolUnit === "usdc") {
-      return placeDotCastUsdcPoolEntry(poolId, payload, env);
+    if (response.ok) {
+      await refreshLivestreamPoolIfRequested(env, streamId, poolId, payload.now);
     }
 
-    return proxyDotCastPoolRequest(env, poolId, "/entries", {
-      method: "POST",
-      body: JSON.stringify(payload)
-    });
+    return response;
   } catch (error) {
     if (error instanceof DotCastUsdcPoolFundingError) {
       return settlementRailErrorResponse(error, "E6");
@@ -778,13 +821,21 @@ export async function lockDotCastPool(
   env: Env
 ): Promise<Response> {
   try {
-    const body = await readJsonBody<{ now?: unknown }>(request);
-    return proxyDotCastPoolRequest(env, poolId, "/lock", {
+    const body = await readJsonBody<{ now?: unknown; streamId?: unknown }>(request);
+    const now = parseOptionalString(body?.now, "now");
+    const streamId = parseOptionalString(body?.streamId, "streamId");
+    const response = await proxyDotCastPoolRequest(env, poolId, "/lock", {
       method: "POST",
       body: JSON.stringify({
-        now: parseOptionalString(body?.now, "now")
+        now
       })
     });
+
+    if (response.ok) {
+      await refreshLivestreamPoolIfRequested(env, streamId, poolId, now);
+    }
+
+    return response;
   } catch (error) {
     return json(
       { ok: false, error: error instanceof Error ? error.message : "Invalid request" },
@@ -800,13 +851,21 @@ export async function settleDotCastPool(
 ): Promise<Response> {
   try {
     const body = await readJsonBody<DotCastSettlePoolRequest>(request);
-    return proxyDotCastPoolRequest(env, poolId, "/settle", {
+    const now = parseOptionalString(body?.now, "now");
+    const streamId = parseOptionalString(body?.streamId, "streamId");
+    const response = await proxyDotCastPoolRequest(env, poolId, "/settle", {
       method: "POST",
       body: JSON.stringify({
         outcome: parseOutcome(body?.outcome),
-        now: parseOptionalString(body?.now, "now")
+        now
       })
     });
+
+    if (response.ok) {
+      await refreshLivestreamPoolIfRequested(env, streamId, poolId, now);
+    }
+
+    return response;
   } catch (error) {
     return json(
       { ok: false, error: error instanceof Error ? error.message : "Invalid request" },
@@ -822,7 +881,9 @@ export async function applyDotCastPoolResolution(
 ): Promise<Response> {
   try {
     const body = await readJsonBody<DotCastRouterResolutionRequest>(request);
-    return proxyDotCastPoolRequest(env, poolId, "/resolution", {
+    const now = parseOptionalString(body?.now, "now");
+    const streamId = parseOptionalString(body?.streamId, "streamId");
+    const response = await proxyDotCastPoolRequest(env, poolId, "/resolution", {
       method: "POST",
       body: JSON.stringify({
         marketId: parseRequiredString(body?.marketId, "resolution.marketId"),
@@ -831,10 +892,16 @@ export async function applyDotCastPoolResolution(
         fetchedAt: parseOptionalString(body?.fetchedAt, "resolution.fetchedAt"),
         stale: parseOptionalBoolean(body?.stale, "resolution.stale") ?? false,
         source: parseOptionalVenue(body?.source, "resolution.source"),
-        now: parseOptionalString(body?.now, "now"),
+        now,
         maxGraceMs: parseOptionalMinorUnits(body?.maxGraceMs, "maxGraceMs")
       })
     });
+
+    if (response.ok) {
+      await refreshLivestreamPoolIfRequested(env, streamId, poolId, now);
+    }
+
+    return response;
   } catch (error) {
     return json(
       { ok: false, error: error instanceof Error ? error.message : "Invalid request" },
@@ -850,12 +917,20 @@ export async function pollDotCastPoolResolution(
 ): Promise<Response> {
   try {
     const body = await readJsonBody<DotCastPollResolutionRequest>(request);
-    return proxyDotCastPoolRequest(env, poolId, "/poll-resolution", {
+    const now = parseOptionalString(body?.now, "now");
+    const streamId = parseOptionalString(body?.streamId, "streamId");
+    const response = await proxyDotCastPoolRequest(env, poolId, "/poll-resolution", {
       method: "POST",
       body: JSON.stringify({
-        now: parseOptionalString(body?.now, "now")
+        now
       })
     });
+
+    if (response.ok) {
+      await refreshLivestreamPoolIfRequested(env, streamId, poolId, now);
+    }
+
+    return response;
   } catch (error) {
     return json(
       { ok: false, error: error instanceof Error ? error.message : "Invalid request" },
@@ -871,13 +946,21 @@ export async function voidDotCastPool(
 ): Promise<Response> {
   try {
     const body = await readJsonBody<DotCastVoidPoolRequest>(request);
-    return proxyDotCastPoolRequest(env, poolId, "/void", {
+    const now = parseOptionalString(body?.now, "now");
+    const streamId = parseOptionalString(body?.streamId, "streamId");
+    const response = await proxyDotCastPoolRequest(env, poolId, "/void", {
       method: "POST",
       body: JSON.stringify({
         reason: parseVoidReason(body?.reason),
-        now: parseOptionalString(body?.now, "now")
+        now
       })
     });
+
+    if (response.ok) {
+      await refreshLivestreamPoolIfRequested(env, streamId, poolId, now);
+    }
+
+    return response;
   } catch (error) {
     return json(
       { ok: false, error: error instanceof Error ? error.message : "Invalid request" },
@@ -1163,7 +1246,7 @@ function parsePoolStatus(value: unknown): "open" | "locked" | "resolving" | "set
   return "open";
 }
 
-function parseJsonObject<T>(rawBody: string): T {
+function parseJsonObject(rawBody: string): Record<string, unknown> {
   try {
     const parsed = JSON.parse(rawBody) as unknown;
 
@@ -1171,7 +1254,7 @@ function parseJsonObject<T>(rawBody: string): T {
       throw new Error("request body must be a JSON object");
     }
 
-    return parsed as T;
+    return parsed as Record<string, unknown>;
   } catch {
     throw new Error("request body must be JSON");
   }
@@ -1273,13 +1356,12 @@ async function proxyDotCastPoolRequest(
 
   const objectId = env.DOTCAST_POOL.idFromName(poolId);
   const object = env.DOTCAST_POOL.get(objectId);
+  const headers = new Headers(init.headers);
+  headers.set("content-type", "application/json;charset=UTF-8");
   const response = await object.fetch(
     new Request(`https://dotcast.pool${pathname}`, {
       ...init,
-      headers: {
-        "content-type": "application/json;charset=UTF-8",
-        ...(init.headers ?? {})
-      }
+      headers
     })
   );
 
@@ -1299,20 +1381,51 @@ async function proxyDotCastLivestreamRequest(
   const objectId = env.DOTCAST_LIVESTREAM.idFromName(streamId);
   const object = env.DOTCAST_LIVESTREAM.get(objectId);
   const separator = pathname.includes("?") ? "&" : "?";
+  const headers = new Headers(init.headers);
+  headers.set("content-type", "application/json;charset=UTF-8");
   const response = await object.fetch(
     new Request(
       `https://dotcast.livestream${pathname}${separator}streamId=${encodeURIComponent(streamId)}`,
       {
         ...init,
-        headers: {
-          "content-type": "application/json;charset=UTF-8",
-          ...(init.headers ?? {})
-        }
+        headers
       }
     )
   );
 
   return withCors(response);
+}
+
+async function refreshLivestreamPoolIfRequested(
+  env: Env,
+  streamId: string | undefined,
+  poolId: string,
+  now?: string
+): Promise<void> {
+  if (!streamId) {
+    return;
+  }
+
+  try {
+    const response = await proxyDotCastLivestreamRequest(env, streamId, "/pool-updates", {
+      method: "POST",
+      body: JSON.stringify({ poolId, now })
+    });
+
+    if (!response.ok) {
+      console.error("[dotCast] livestream pool refresh failed", {
+        streamId,
+        poolId,
+        status: response.status
+      });
+    }
+  } catch (error) {
+    console.error("[dotCast] livestream pool refresh failed", {
+      streamId,
+      poolId,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
 }
 
 async function placeDotCastUsdcPoolEntry(
@@ -1353,7 +1466,7 @@ async function placeDotCastUsdcPoolEntry(
     return response;
   }
 
-  const body = (await response.json()) as Record<string, unknown>;
+  const body = await response.json<Record<string, unknown>>();
   return json(
     {
       ...body,
@@ -1376,7 +1489,7 @@ async function readDotCastPoolUnit(poolId: string, env: Env): Promise<StakeUnit>
     throw new Error(`pool read failed before entry placement: ${response.status}`);
   }
 
-  const body = (await response.json()) as { snapshot?: Partial<DotCastPoolSnapshot> };
+  const body = await response.json<{ snapshot?: Partial<DotCastPoolSnapshot> }>();
   const unit = body.snapshot?.pool?.unit;
 
   if (unit !== "points" && unit !== "usdc") {

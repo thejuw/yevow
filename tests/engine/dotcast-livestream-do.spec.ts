@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DotCastLivestream } from "../../src/engine/dotcast";
+import type { Env } from "../../src/types";
 
 const streamId = "stream-live-test";
 const now = "2099-06-25T17:00:00.000Z";
@@ -201,10 +202,69 @@ describe("dotCast livestream durable object", () => {
       events: [{ id: 2, eventType: "POOL_ATTACHED", poolId: "pool-cursor" }]
     });
   });
+
+  it("serves E8 one-shot SSE snapshots with attached pool odds", async () => {
+    const object = createObject(fakeEnvWithPoolOdds("pool-live"));
+    await startLivestream(object);
+    await attachPool(object, "pool-live");
+
+    const response = await object.fetch(getRequest("/stream?once=true"));
+    const text = await response.text();
+    const frames = sseDataFrames(text);
+
+    expect(response.headers.get("content-type")).toContain("text/event-stream");
+    expect(text).toContain("event: livestream.ready");
+    expect(text).toContain("event: livestream.snapshot");
+    expect(frames[1]).toMatchObject({
+      ok: true,
+      type: "livestream.snapshot",
+      streamId,
+      poolOdds: [
+        {
+          poolId: "pool-live",
+          liveOdds: {
+            poolId: "pool-live",
+            odds: { yes: 0.6, no: 0.4 }
+          },
+          pool: {
+            id: "pool-live",
+            status: "open"
+          },
+          error: null
+        }
+      ]
+    });
+  });
+
+  it("pushes E8 pool odds refresh frames for attached pools", async () => {
+    const object = createObject(fakeEnvWithPoolOdds("pool-refresh"));
+    await startLivestream(object);
+    await attachPool(object, "pool-refresh");
+
+    const response = await object.fetch(
+      jsonRequest("/pool-updates", {
+        poolId: "pool-refresh",
+        now: "2099-06-25T17:02:00.000Z"
+      })
+    );
+    const body = await jsonBody(response);
+
+    expect(body).toMatchObject({
+      ok: true,
+      streamId,
+      poolId: "pool-refresh",
+      poolOdds: {
+        liveOdds: {
+          poolId: "pool-refresh",
+          totalStaked: 100
+        }
+      }
+    });
+  });
 });
 
-function createObject() {
-  return new DotCastLivestream(fakeState());
+function createObject(env?: Env) {
+  return new DotCastLivestream(fakeState(), env);
 }
 
 async function startLivestream(object: DotCastLivestream): Promise<void> {
@@ -213,6 +273,19 @@ async function startLivestream(object: DotCastLivestream): Promise<void> {
       hostId: "host-1",
       title: "Orbital nails the next on-air call?",
       now
+    })
+  );
+}
+
+async function attachPool(object: DotCastLivestream, poolId: string): Promise<void> {
+  await object.fetch(
+    jsonRequest("/pools", {
+      poolId,
+      marketId: `kalshi:${poolId}`,
+      question: "Will E8 push odds?",
+      unit: "points",
+      status: "open",
+      now: "2099-06-25T17:01:00.000Z"
     })
   );
 }
@@ -252,7 +325,69 @@ async function jsonBody(response: Response) {
   return (await response.json()) as Record<string, unknown>;
 }
 
+function sseDataFrames(text: string): Record<string, unknown>[] {
+  return text
+    .split("\n")
+    .filter((line) => line.startsWith("data: "))
+    .map((line) => JSON.parse(line.slice("data: ".length)) as Record<string, unknown>);
+}
+
 function eventTypes(body: Record<string, unknown>): string[] {
   const livestream = body.livestream as { events?: { eventType?: string }[] } | undefined;
   return livestream?.events?.map((event) => event.eventType ?? "") ?? [];
+}
+
+function fakeEnvWithPoolOdds(poolId: string): Env {
+  const poolObject = {
+    fetch: async () =>
+      Response.json({
+        ok: true,
+        liveOdds: {
+          poolId,
+          marketId: `kalshi:${poolId}`,
+          status: "open",
+          unit: "points",
+          odds: { yes: 0.6, no: 0.4 },
+          pools: { yes: 60, no: 40 },
+          totalStaked: 100,
+          entryCount: 2,
+          updatedAt: "2099-06-25T17:01:00.000Z",
+          previews: { yes: {}, no: {} },
+          hypothetical: null
+        },
+        snapshot: {
+          pool: {
+            id: poolId,
+            marketId: `kalshi:${poolId}`,
+            venue: "kalshi",
+            unit: "points",
+            question: "Will E8 push odds?",
+            status: "open",
+            entryOpensAt: now,
+            entryClosesAt: "2099-06-25T17:30:00.000Z",
+            expectedResolveAt: null,
+            rake: 0,
+            pools: { yes: 60, no: 40 },
+            minLiquidity: 0,
+            createdAt: now,
+            settledAt: null,
+            outcome: null
+          },
+          entries: [],
+          balances: {},
+          houseLedger: [],
+          settlement: null,
+          voidReason: null,
+          lastResolution: null,
+          updatedAt: "2099-06-25T17:01:00.000Z"
+        }
+      })
+  };
+
+  return {
+    DOTCAST_POOL: {
+      idFromName: () => "pool-object-id",
+      get: () => poolObject
+    }
+  } as unknown as Env;
 }

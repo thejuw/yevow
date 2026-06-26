@@ -1,14 +1,14 @@
 import { Hono, type Context } from "hono";
 import { AuthManager } from "./AuthManager";
 import { ActiveTokenStore } from "./auth/JwtRevocation";
-import { ConfigManager } from "./ConfigManager";
+import type { ConfigManager } from "./ConfigManager";
 import { Logger } from "./Logger";
 import { TradingEngine } from "./TradingEngine";
 import { DotCastLivestream, DotCastPool } from "./engine/dotcast";
 import { evaluateRateLimit, ipRateLimitKey } from "./gateway/middleware/RateLimitMiddleware";
 import { adminUiResponse } from "./gateway/AdminUi";
 import { ACTIVE_TOKEN_PREFIX, ENGINE_HEALTH_TIMEOUT_MS } from "./gateway/GatewayConstants";
-import type { AuthenticatedAdmin, LoginRequest } from "./gateway/AdminModels";
+import type { LoginRequest } from "./gateway/AdminModels";
 import { gatewayRuntime, type GatewayHono } from "./gateway/GatewayRuntime";
 import { gatewayCatalogResponse } from "./gateway/RouteCatalog";
 import { readAgentTrace, readAttribution } from "./gateway/AdminAnalyticsGateway";
@@ -61,6 +61,7 @@ import {
   readDotCastLivestream,
   readDotCastLivestreamEvents,
   readDotCastLivestreamPlayback,
+  refreshDotCastLivestreamPool,
   reconcileDotCastDevnetSettlementRail,
   recordDotCastDevnetDeposit,
   readDotCastPoolLiveOdds,
@@ -73,6 +74,7 @@ import {
   settleDotCastPool,
   simulateDotCastSettlement,
   startDotCastLivestream,
+  streamDotCastLivestreamRealtime,
   voidDotCastPool
 } from "./gateway/DotCastGateway";
 import {
@@ -90,7 +92,7 @@ import {
   createStrategyVersion,
   readStrategyVault
 } from "./gateway/StrategyVaultGateway";
-import { placementColo, topologyTelemetry } from "./gateway/Topology";
+import { topologyTelemetry } from "./gateway/Topology";
 import {
   backfillCongressOptions,
   handleCongressScheduled,
@@ -189,6 +191,12 @@ gatewayRouter.post("/api/dotcast/livestreams/:id/presence", async (c) =>
 );
 gatewayRouter.get("/api/dotcast/livestreams/:id/events", async (c) =>
   readDotCastLivestreamEvents(c.req.param("id"), c.req.raw, c.env)
+);
+gatewayRouter.get("/api/dotcast/livestreams/:id/stream", async (c) =>
+  streamDotCastLivestreamRealtime(c.req.param("id"), c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/livestreams/:id/pools/:poolId/refresh", async (c) =>
+  refreshDotCastLivestreamPool(c.req.param("id"), c.req.param("poolId"), c.req.raw, c.env)
 );
 gatewayRouter.post("/api/dotcast/pools", async (c) => createDotCastPool(c.req.raw, c.env));
 gatewayRouter.get("/api/dotcast/pools/:id", async (c) => readDotCastPool(c.req.param("id"), c.env));
@@ -314,7 +322,9 @@ export default {
     const topology = scheduledTopology(controller);
     const logger = new Logger(
       env.TRADING_DB,
-      (promise) => ctx.waitUntil(promise),
+      (promise) => {
+        ctx.waitUntil(promise);
+      },
       "gateway-scheduler"
     );
 
