@@ -746,6 +746,7 @@ function parseLedgerReason(value: unknown): PointsLedgerReason {
     value === "streak_bonus" ||
     value === "free_entry_grant" ||
     value === "free_entry_redeem" ||
+    value === "rewarded_stream" ||
     value === "adjustment"
   ) {
     return value;
@@ -758,7 +759,7 @@ function parseGrantReason(value: unknown): FreeEntryCredit["grantReason"] {
   if (
     value === "streak_bonus" ||
     value === "manual_grant" ||
-    value === "rewarded_ad" ||
+    value === "rewarded_stream" ||
     value === "adjustment"
   ) {
     return value;

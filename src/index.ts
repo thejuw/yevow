@@ -45,6 +45,7 @@ import {
   applyDotCastGamificationForPool,
   applyDotCastPoolResolution,
   archiveDotCastLivestream,
+  completeDotCastRewardedStreamOnrampSession,
   confirmDotCastMockWithdrawal,
   createDotCastPool,
   createDotCastLivestreamSession,
@@ -58,6 +59,8 @@ import {
   pollDotCastPoolResolution,
   previewDotCastOdds,
   readDotCastGamificationUser,
+  readDotCastRewardedStreamOnrampStatus,
+  readDotCastRewardedStreamUser,
   readDotCastSettlementRailBalance,
   readDotCastSettlementRailStatus,
   readDotCastLivestream,
@@ -75,6 +78,7 @@ import {
   setDotCastLivestreamFeaturedPool,
   settleDotCastPool,
   simulateDotCastSettlement,
+  startDotCastRewardedStreamOnrampSession,
   startDotCastLivestream,
   streamDotCastLivestreamRealtime,
   voidDotCastPool
@@ -157,6 +161,18 @@ gatewayRouter.get("/api/dotcast/gamification/users/:userId", async (c) =>
 );
 gatewayRouter.post("/api/dotcast/gamification/pools/:id/apply", async (c) =>
   applyDotCastGamificationForPool(c.req.param("id"), c.req.raw, c.env)
+);
+gatewayRouter.get("/api/dotcast/rewarded-streams/status", (c) =>
+  readDotCastRewardedStreamOnrampStatus(c.env)
+);
+gatewayRouter.get("/api/dotcast/rewarded-streams/users/:userId", async (c) =>
+  readDotCastRewardedStreamUser(c.req.param("userId"), c.env)
+);
+gatewayRouter.post("/api/dotcast/rewarded-streams/sessions", async (c) =>
+  startDotCastRewardedStreamOnrampSession(c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/rewarded-streams/sessions/:sessionId/complete", async (c) =>
+  completeDotCastRewardedStreamOnrampSession(c.req.param("sessionId"), c.req.raw, c.env)
 );
 gatewayRouter.post("/api/dotcast/livestreams/webhooks/mux", async (c) =>
   handleMuxLivestreamWebhook(c.req.raw, c.env)

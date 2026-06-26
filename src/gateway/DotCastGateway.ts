@@ -4,9 +4,11 @@ import {
   creditDevnetDeposit,
   D1DotCastSettlementRailStore,
   D1DotCastGamificationStore,
+  D1DotCastRewardedStreamStore,
   D1DotCastUsdcPoolFundingStore,
   D1DotCastLivestreamStore,
   DotCastGamificationError,
+  DotCastRewardedStreamError,
   DotCastSettlementRailError,
   DotCastLivestreamError,
   DotCastUsdcPoolFundingError,
@@ -20,6 +22,8 @@ import {
   readSettlementBalance,
   readDotCastGamificationStatus,
   readDotCastGamificationUserSummary,
+  readDotCastRewardedStreamStatus,
+  readDotCastRewardedStreamUserSummary,
   readMuxLivestreamConfig,
   readSolanaUsdcSettlementRailStatus,
   readUsdcPoolFundingStatus,
@@ -28,6 +32,8 @@ import {
   reserveUsdcPoolEntry,
   requestDevnetWithdrawal,
   settleParimutuel,
+  startDotCastRewardedStreamSession,
+  completeDotCastRewardedStreamSession,
   type DotCastLiveOddsSnapshot,
   type DotCastLivestreamMetadata,
   type DotCastMarketSnapshot,
@@ -160,12 +166,27 @@ interface DotCastReconcileRailRequest {
   now?: unknown;
 }
 
+interface DotCastStartRewardedStreamRequest {
+  userId?: unknown;
+  streamId?: unknown;
+  sessionId?: unknown;
+  now?: unknown;
+}
+
+interface DotCastCompleteRewardedStreamRequest {
+  watchedSeconds?: unknown;
+  now?: unknown;
+}
+
 export function readDotCastHealth(env?: Env): Response {
   const settlementRail = env ? readSolanaUsdcSettlementRailStatus(env) : null;
   const usdcPoolFunding = env ? readUsdcPoolFundingStatus(env) : null;
   const livestream = env ? readMuxLivestreamConfig(env) : null;
   const gamification = env
     ? readDotCastGamificationStatus(env, Boolean(env.DOTCAST_DB ?? env.TRADING_DB))
+    : null;
+  const rewardedStream = env
+    ? readDotCastRewardedStreamStatus(env, Boolean(env.DOTCAST_DB ?? env.TRADING_DB))
     : null;
 
   return json({
@@ -182,7 +203,9 @@ export function readDotCastHealth(env?: Env): Response {
       e6: "usdc-pool-funding-devnet-ready",
       e7: "audit-ledger-core-ready",
       e8: gamification?.ready ? "gamification-ledger-ready" : "gamification-code-ready",
-      e9: "rewarded-ad-onramp-not-started",
+      e9: rewardedStream?.ready
+        ? "rewarded-stream-onramp-ready"
+        : "rewarded-stream-onramp-code-ready",
       e10: "sponsored-questions-not-started",
       e11: "creator-economy-not-started",
       e12: "referrals-not-started",
@@ -198,6 +221,7 @@ export function readDotCastHealth(env?: Env): Response {
     ...(usdcPoolFunding ? { usdcPoolFunding } : {}),
     ...(livestream ? { livestream } : {}),
     ...(gamification ? { gamification } : {}),
+    ...(rewardedStream ? { rewardedStream } : {}),
     routes: [
       "GET /api/dotcast/health",
       "POST /api/dotcast/preview",
@@ -210,6 +234,10 @@ export function readDotCastHealth(env?: Env): Response {
       "POST /api/dotcast/settlement-rail/reconcile/devnet",
       "GET /api/dotcast/gamification/users/:userId",
       "POST /api/dotcast/gamification/pools/:id/apply",
+      "GET /api/dotcast/rewarded-streams/status",
+      "GET /api/dotcast/rewarded-streams/users/:userId",
+      "POST /api/dotcast/rewarded-streams/sessions",
+      "POST /api/dotcast/rewarded-streams/sessions/:sessionId/complete",
       "POST /api/dotcast/livestreams",
       "GET /api/dotcast/livestreams/:id",
       "GET /api/dotcast/livestreams/:id/playback",
@@ -401,6 +429,107 @@ export async function applyDotCastGamificationForPool(
     });
   } catch (error) {
     return gamificationErrorResponse(error);
+  }
+}
+
+export function readDotCastRewardedStreamOnrampStatus(env: Env): Response {
+  return json({
+    ok: true,
+    milestone: "E9",
+    rewardedStream: readDotCastRewardedStreamStatus(env, Boolean(env.DOTCAST_DB ?? env.TRADING_DB))
+  });
+}
+
+export async function readDotCastRewardedStreamUser(userId: string, env: Env): Promise<Response> {
+  try {
+    const summary = await readDotCastRewardedStreamUserSummary(
+      rewardedStreamStore(env),
+      env,
+      parseRequiredString(userId, "userId"),
+      true
+    );
+
+    return json({
+      ok: true,
+      milestone: "E9",
+      rewardedStream: summary
+    });
+  } catch (error) {
+    return rewardedStreamErrorResponse(error);
+  }
+}
+
+export async function startDotCastRewardedStreamOnrampSession(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastStartRewardedStreamRequest>(request);
+    const streamId = parseRequiredString(body?.streamId, "streamId");
+    const stream = await requireLivestreamRecord(streamId, env);
+    const result = await startDotCastRewardedStreamSession(
+      rewardedStreamStore(env),
+      env,
+      {
+        userId: parseRequiredString(body?.userId, "userId"),
+        stream,
+        sessionId: parseOptionalString(body?.sessionId, "sessionId"),
+        now: parseOptionalString(body?.now, "now")
+      },
+      true
+    );
+
+    return json(
+      {
+        ok: true,
+        milestone: "E9",
+        rewardedStream: result
+      },
+      result.idempotent ? 200 : 201
+    );
+  } catch (error) {
+    return rewardedStreamErrorResponse(error);
+  }
+}
+
+export async function completeDotCastRewardedStreamOnrampSession(
+  sessionId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastCompleteRewardedStreamRequest>(request);
+    const store = rewardedStreamStore(env);
+    const session = await store.getSession(parseRequiredString(sessionId, "sessionId"));
+
+    if (!session) {
+      throw new DotCastRewardedStreamError(
+        "REWARDED_STREAM_SESSION_NOT_FOUND",
+        "rewarded stream session was not found",
+        404
+      );
+    }
+
+    const stream = await requireLivestreamRecord(session.streamId, env);
+    const result = await completeDotCastRewardedStreamSession(
+      store,
+      env,
+      {
+        session,
+        stream,
+        watchedSeconds: parseOptionalMinorUnits(body?.watchedSeconds, "watchedSeconds"),
+        now: parseOptionalString(body?.now, "now")
+      },
+      true
+    );
+
+    return json({
+      ok: true,
+      milestone: "E9",
+      rewardedStream: result
+    });
+  } catch (error) {
+    return rewardedStreamErrorResponse(error);
   }
 }
 
@@ -1694,6 +1823,20 @@ function gamificationStore(env: Env): D1DotCastGamificationStore {
   return new D1DotCastGamificationStore(db);
 }
 
+function rewardedStreamStore(env: Env): D1DotCastRewardedStreamStore {
+  const db = env.DOTCAST_DB ?? env.TRADING_DB;
+
+  if (!db) {
+    throw new DotCastRewardedStreamError(
+      "REWARDED_STREAM_DB_NOT_CONFIGURED",
+      "E9 rewarded stream database is not configured",
+      503
+    );
+  }
+
+  return new D1DotCastRewardedStreamStore(db);
+}
+
 function livestreamStore(env: Env): D1DotCastLivestreamStore {
   const db = env.DOTCAST_DB ?? env.TRADING_DB;
 
@@ -1775,6 +1918,29 @@ function gamificationErrorResponse(error: unknown): Response {
     {
       ok: false,
       milestone: "E8",
+      error: error instanceof Error ? error.message : "Invalid request"
+    },
+    400
+  );
+}
+
+function rewardedStreamErrorResponse(error: unknown): Response {
+  if (error instanceof DotCastRewardedStreamError) {
+    return json(
+      {
+        ok: false,
+        milestone: "E9",
+        code: error.code,
+        error: error.message
+      },
+      error.status
+    );
+  }
+
+  return json(
+    {
+      ok: false,
+      milestone: "E9",
       error: error instanceof Error ? error.message : "Invalid request"
     },
     400

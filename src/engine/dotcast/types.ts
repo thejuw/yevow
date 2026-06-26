@@ -228,6 +228,7 @@ export type PointsLedgerReason =
   | "streak_bonus"
   | "free_entry_grant"
   | "free_entry_redeem"
+  | "rewarded_stream"
   | "adjustment";
 
 export interface PointsLedgerEntry {
@@ -245,7 +246,7 @@ export interface PointsLedgerEntry {
 export interface FreeEntryCredit {
   id: string;
   userId: string;
-  grantReason: "streak_bonus" | "manual_grant" | "rewarded_ad" | "adjustment";
+  grantReason: "streak_bonus" | "manual_grant" | "rewarded_stream" | "adjustment";
   poolId: string | null;
   grantedAt: string;
   expiresAt: string | null;
@@ -279,6 +280,46 @@ export interface DotCastGamificationSettlement {
   correctEntries: number;
   incorrectEntries: number;
   pointsAwarded: number;
+  freeEntriesGranted: number;
+  idempotencyKey: string;
+  eventJson: Record<string, unknown>;
+  createdAt: string;
+}
+
+export type DotCastRewardedStreamSessionStatus = "started" | "completed" | "invalidated";
+
+export interface DotCastRewardedStreamSession {
+  sessionId: string;
+  userId: string;
+  streamId: string;
+  status: DotCastRewardedStreamSessionStatus;
+  startedAt: string;
+  completedAt: string | null;
+  watchedSeconds: number;
+  requiredWatchSeconds: number;
+  streamStartedAt: string;
+  streamStoppedAt: string | null;
+  rewardId: string | null;
+  eventJson: Record<string, unknown>;
+}
+
+export interface DotCastRewardedStreamProgress {
+  userId: string;
+  completedStreams: number;
+  cycleCompletedStreams: number;
+  rewardCycles: number;
+  pointsEarned: number;
+  freeEntriesEarned: number;
+  updatedAt: string;
+}
+
+export interface DotCastRewardedStreamReward {
+  rewardId: string;
+  userId: string;
+  cycleNumber: number;
+  completedSessionId: string;
+  completedStreams: number;
+  pointsGranted: number;
   freeEntriesGranted: number;
   idempotencyKey: string;
   eventJson: Record<string, unknown>;
