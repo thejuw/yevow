@@ -45,6 +45,8 @@ import {
   applyDotCastGamificationForPool,
   applyDotCastCreatorRakeShareForPool,
   applyDotCastReferralProgramQualification,
+  applyDotCastResolverAdminActionRoute,
+  applyDotCastResolverPanelTimeoutRoute,
   applyDotCastResolutionReviewDecisionRoute,
   applyDotCastPoolResolution,
   archiveDotCastLivestream,
@@ -78,6 +80,8 @@ import {
   readDotCastReferralProgramUser,
   readDotCastResolutionRouterReadiness,
   readDotCastResolverProfileRoute,
+  listDotCastResolutionReviewQueueRoute,
+  listDotCastResolutionReviewsRoute,
   readDotCastRewardedStreamOnrampStatus,
   readDotCastRewardedStreamUser,
   readDotCastSponsoredQuestionPlacement,
@@ -261,8 +265,17 @@ gatewayRouter.post("/api/dotcast/resolution-router/resolvers/profiles", async (c
 gatewayRouter.get("/api/dotcast/resolution-router/resolvers/profiles/:id", async (c) =>
   readDotCastResolverProfileRoute(c.req.param("id"), c.req.raw, c.env)
 );
+gatewayRouter.post("/api/dotcast/resolution-router/resolvers/profiles/:id/admin", async (c) =>
+  applyDotCastResolverAdminActionRoute(c.req.param("id"), c.req.raw, c.env)
+);
 gatewayRouter.post("/api/dotcast/resolution-router/classify", async (c) =>
   classifyDotCastResolutionRouterRequest(c.req.raw, c.env)
+);
+gatewayRouter.get("/api/dotcast/resolution-router/reviews/queue", async (c) =>
+  listDotCastResolutionReviewQueueRoute(c.req.raw, c.env)
+);
+gatewayRouter.get("/api/dotcast/resolution-router/reviews", async (c) =>
+  listDotCastResolutionReviewsRoute(c.req.raw, c.env)
 );
 gatewayRouter.post("/api/dotcast/resolution-router/reviews/decision", async (c) =>
   applyDotCastResolutionReviewDecisionRoute(c.req.raw, c.env)
@@ -278,6 +291,9 @@ gatewayRouter.post("/api/dotcast/resolution-router/resolvers/commit", async (c) 
 );
 gatewayRouter.post("/api/dotcast/resolution-router/resolvers/reveal", async (c) =>
   revealDotCastResolverRoute(c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/resolution-router/resolvers/timeout", async (c) =>
+  applyDotCastResolverPanelTimeoutRoute(c.req.raw, c.env)
 );
 gatewayRouter.post("/api/dotcast/resolution-router/resolvers/settle", async (c) =>
   settleDotCastResolverPanelRoute(c.req.raw, c.env)

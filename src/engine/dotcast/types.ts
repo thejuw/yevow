@@ -144,6 +144,15 @@ export interface DotCastResolverReputationEvent {
   createdAt: string;
 }
 
+export type DotCastResolverAdminAction =
+  | "activate"
+  | "suspend"
+  | "archive"
+  | "adjust_bond"
+  | "adjust_reputation";
+
+export type DotCastResolverTimeoutPhase = "commit" | "reveal";
+
 export interface DotCastResolverAssignment {
   assignmentId: string;
   panelId: string;

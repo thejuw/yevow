@@ -36,8 +36,10 @@ import {
   onboardDotCastCreator,
   planCreatorPoolNudges,
   applyDotCastReferralQualification,
+  applyDotCastResolverAdminAction,
   classifyDotCastResolutionRoute,
   createDotCastResolverCommit,
+  evaluateDotCastResolverPanelTimeout,
   parseVerifiedMuxWebhook,
   previewPayout,
   readSettlementBalance,
@@ -81,10 +83,13 @@ import {
   type DotCastResolutionSource,
   type DotCastCreatorKycStatus,
   type DotCastResolverAssignment,
+  type DotCastResolverAdminAction,
   type DotCastResolverCommit,
   type DotCastResolverPanel,
   type DotCastResolverProfile,
+  type DotCastResolverRegistryProfile,
   type DotCastResolverStatus,
+  type DotCastResolverTimeoutPhase,
   type DotCastResolverReveal,
   type DotCastCreatorSeedMode,
   type DotCastCreatorStatus,
@@ -203,6 +208,16 @@ interface DotCastResolverProfileRequest {
   now?: unknown;
 }
 
+interface DotCastResolverAdminActionRequest {
+  action?: unknown;
+  adminId?: unknown;
+  bondDeltaMinorUnits?: unknown;
+  reputationDeltaBps?: unknown;
+  reason?: unknown;
+  metadata?: unknown;
+  now?: unknown;
+}
+
 interface DotCastResolutionReviewDecisionRequest {
   routeId?: unknown;
   route?: unknown;
@@ -215,6 +230,13 @@ interface DotCastResolutionReviewDecisionRequest {
   steeringPrompt?: unknown;
   metadata?: unknown;
   reviewId?: unknown;
+  now?: unknown;
+}
+
+interface DotCastResolverTimeoutRequest {
+  panelId?: unknown;
+  panel?: unknown;
+  phase?: unknown;
   now?: unknown;
 }
 
@@ -559,12 +581,16 @@ export function readDotCastHealth(env?: Env): Response {
       "GET /api/dotcast/resolution-router/status",
       "POST /api/dotcast/resolution-router/resolvers/profiles",
       "GET /api/dotcast/resolution-router/resolvers/profiles/:id",
+      "POST /api/dotcast/resolution-router/resolvers/profiles/:id/admin",
       "POST /api/dotcast/resolution-router/classify",
+      "GET /api/dotcast/resolution-router/reviews/queue",
+      "GET /api/dotcast/resolution-router/reviews",
       "POST /api/dotcast/resolution-router/reviews/decision",
       "POST /api/dotcast/resolution-router/ai-perception/resolve",
       "POST /api/dotcast/resolution-router/resolvers/panel",
       "POST /api/dotcast/resolution-router/resolvers/commit",
       "POST /api/dotcast/resolution-router/resolvers/reveal",
+      "POST /api/dotcast/resolution-router/resolvers/timeout",
       "POST /api/dotcast/resolution-router/resolvers/settle",
       "POST /api/dotcast/livestreams",
       "GET /api/dotcast/livestreams/:id",
@@ -1517,6 +1543,108 @@ export async function readDotCastResolverProfileRoute(
   }
 }
 
+export async function applyDotCastResolverAdminActionRoute(
+  resolverId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastResolverAdminActionRequest>(request);
+    const store = resolutionRouterStore(env);
+    const profile = await requireResolverProfile(
+      env,
+      parseRequiredString(resolverId, "resolverId")
+    );
+    const result = applyDotCastResolverAdminAction({
+      profile,
+      action: parseResolverAdminAction(body?.action),
+      adminId: parseNullableString(body?.adminId, "adminId"),
+      bondDeltaMinorUnits: parseOptionalSignedInteger(
+        body?.bondDeltaMinorUnits,
+        "bondDeltaMinorUnits"
+      ),
+      reputationDeltaBps: parseOptionalSignedInteger(
+        body?.reputationDeltaBps,
+        "reputationDeltaBps"
+      ),
+      reason: parseNullableString(body?.reason, "reason"),
+      metadata: parseMetadataRecord(body?.metadata),
+      now: parseOptionalString(body?.now, "now")
+    });
+
+    await store.updateResolverProfile(result.profile);
+    if (result.bondLedgerEntry) {
+      await store.appendResolverBondLedgerEntry(result.bondLedgerEntry);
+    }
+    if (result.reputationEvent) {
+      await store.appendResolverReputationEvent(result.reputationEvent);
+    }
+
+    return json({
+      ok: true,
+      milestone: "E13",
+      resolutionRouter: {
+        ...result,
+        bondLedger: await store.listResolverBondLedger(result.profile.resolverId, 25)
+      }
+    });
+  } catch (error) {
+    return resolutionRouterErrorResponse(error);
+  }
+}
+
+export async function listDotCastResolutionReviewQueueRoute(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const url = new URL(request.url);
+    const store = resolutionRouterStore(env);
+    const routes = await store.listReviewQueue({
+      status: parseOptionalResolutionRouteStatus(url.searchParams.get("status"), "status"),
+      tier: parseOptionalResolutionTier(url.searchParams.get("tier"), "tier"),
+      limit: parseOptionalQueryInteger(url.searchParams.get("limit"), "limit")
+    });
+
+    return json({
+      ok: true,
+      milestone: "E13",
+      resolutionRouter: {
+        routes,
+        count: routes.length
+      }
+    });
+  } catch (error) {
+    return resolutionRouterErrorResponse(error);
+  }
+}
+
+export async function listDotCastResolutionReviewsRoute(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const url = new URL(request.url);
+    const store = resolutionRouterStore(env);
+    const reviews = await store.listResolutionReviews({
+      routeId: parseOptionalString(url.searchParams.get("routeId"), "routeId"),
+      status: parseOptionalResolutionReviewStatus(url.searchParams.get("status"), "status"),
+      limit: parseOptionalQueryInteger(url.searchParams.get("limit"), "limit")
+    });
+
+    return json({
+      ok: true,
+      milestone: "E13",
+      resolutionRouter: {
+        reviews,
+        count: reviews.length
+      }
+    });
+  } catch (error) {
+    return resolutionRouterErrorResponse(error);
+  }
+}
+
 export async function applyDotCastResolutionReviewDecisionRoute(
   request: Request,
   env: Env
@@ -1548,6 +1676,40 @@ export async function applyDotCastResolutionReviewDecisionRoute(
       ok: true,
       milestone: "E13",
       resolutionRouter: result
+    });
+  } catch (error) {
+    return resolutionRouterErrorResponse(error);
+  }
+}
+
+export async function applyDotCastResolverPanelTimeoutRoute(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastResolverTimeoutRequest>(request);
+    const store = resolutionRouterStore(env);
+    const panelId = parseOptionalString(body?.panelId, "panelId");
+    const panel = panelId
+      ? await requireResolverPanel(env, panelId)
+      : parseResolverPanel(body?.panel, "panel");
+    const result = evaluateDotCastResolverPanelTimeout({
+      panel,
+      phase: parseResolverTimeoutPhase(body?.phase),
+      commits: await store.listResolverCommits(panel.panelId),
+      reveals: await store.listResolverReveals(panel.panelId),
+      now: parseOptionalString(body?.now, "now")
+    });
+
+    await store.insertResolverPayouts(result.payouts);
+
+    return json({
+      ok: true,
+      milestone: "E13",
+      resolutionRouter: {
+        ...result,
+        panelId: panel.panelId
+      }
     });
   } catch (error) {
     return resolutionRouterErrorResponse(error);
@@ -2650,6 +2812,17 @@ function parseResolutionTier(value: unknown, label: string): DotCastResolutionRo
   throw new Error(`${label} is not a valid E13 resolution tier`);
 }
 
+function parseOptionalResolutionTier(
+  value: unknown,
+  label: string
+): DotCastResolutionRoute["tier"] | undefined {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+
+  return parseResolutionTier(value, label);
+}
+
 function parseResolutionRouteStatus(
   value: unknown,
   label: string
@@ -2664,6 +2837,17 @@ function parseResolutionRouteStatus(
   }
 
   throw new Error(`${label} is not a valid E13 route status`);
+}
+
+function parseOptionalResolutionRouteStatus(
+  value: unknown,
+  label: string
+): DotCastResolutionRoute["status"] | undefined {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+
+  return parseResolutionRouteStatus(value, label);
 }
 
 function parseResolutionSourceKind(value: unknown, label: string): DotCastResolutionSource["kind"] {
@@ -2724,6 +2908,45 @@ function parseResolutionReviewAction(value: unknown): DotCastResolutionReviewAct
   }
 
   throw new Error("review action must be approve, deny, or reshape");
+}
+
+function parseOptionalResolutionReviewStatus(
+  value: unknown,
+  label: string
+): "queued" | "approved" | "denied" | "reshaped" | undefined {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+
+  if (value === "queued" || value === "approved" || value === "denied" || value === "reshaped") {
+    return value;
+  }
+
+  throw new Error(`${label} must be queued, approved, denied, or reshaped`);
+}
+
+function parseResolverAdminAction(value: unknown): DotCastResolverAdminAction {
+  if (
+    value === "activate" ||
+    value === "suspend" ||
+    value === "archive" ||
+    value === "adjust_bond" ||
+    value === "adjust_reputation"
+  ) {
+    return value;
+  }
+
+  throw new Error(
+    "resolver admin action must be activate, suspend, archive, adjust_bond, or adjust_reputation"
+  );
+}
+
+function parseResolverTimeoutPhase(value: unknown): DotCastResolverTimeoutPhase {
+  if (value === "commit" || value === "reveal") {
+    return value;
+  }
+
+  throw new Error("resolver timeout phase must be commit or reveal");
 }
 
 function parseResolverPanel(value: unknown, label: string): DotCastResolverPanel {
@@ -3863,7 +4086,7 @@ async function requireResolutionRoute(env: Env, routeId: string): Promise<DotCas
 async function requireResolverProfile(
   env: Env,
   resolverId: string
-): Promise<DotCastResolverProfile> {
+): Promise<DotCastResolverRegistryProfile> {
   const profile = await resolutionRouterStore(env).getResolverProfile(resolverId);
 
   if (!profile) {

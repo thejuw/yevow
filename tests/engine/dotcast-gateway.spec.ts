@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   applyDotCastPoolResolution,
+  applyDotCastResolverAdminActionRoute,
+  applyDotCastResolverPanelTimeoutRoute,
   applyDotCastResolutionReviewDecisionRoute,
   archiveDotCastLivestream,
   attachDotCastLivestreamPool,
@@ -11,6 +13,8 @@ import {
   detachDotCastLivestreamPool,
   endDotCastLivestream,
   handleMuxLivestreamWebhook,
+  listDotCastResolutionReviewQueueRoute,
+  listDotCastResolutionReviewsRoute,
   planDotCastResolverPanelRoute,
   placeDotCastPoolEntry,
   pauseDotCastLivestream,
@@ -185,6 +189,193 @@ describe("dotCast gateway handlers", () => {
     expect([...d1.routes.values()].map((row) => row.status)).toEqual(
       expect.arrayContaining(["review_required", "locked", "blocked"])
     );
+
+    const queue = await listDotCastResolutionReviewQueueRoute(
+      jsonRequest("/api/dotcast/resolution-router/reviews/queue?status=review_required"),
+      env
+    );
+    const queueBody = (await queue.json()) as Record<string, unknown>;
+    const reviews = await listDotCastResolutionReviewsRoute(
+      jsonRequest(`/api/dotcast/resolution-router/reviews?routeId=${route.routeId}&limit=10`),
+      env
+    );
+    const reviewsBody = (await reviews.json()) as Record<string, unknown>;
+
+    expect(queue.status).toBe(200);
+    expect(queueBody).toMatchObject({
+      resolutionRouter: {
+        count: 2,
+        routes: expect.arrayContaining([
+          expect.objectContaining({ routeId: "route:pool-e13-review" }),
+          expect.objectContaining({ status: "review_required" })
+        ])
+      }
+    });
+    expect(reviews.status).toBe(200);
+    expect(reviewsBody).toMatchObject({
+      resolutionRouter: {
+        count: 3,
+        reviews: expect.arrayContaining([
+          expect.objectContaining({ status: "approved" }),
+          expect.objectContaining({ status: "denied" }),
+          expect.objectContaining({ status: "reshaped" })
+        ])
+      }
+    });
+  });
+
+  it("applies E13 resolver admin controls with auditable bond and reputation events", async () => {
+    const d1 = new FakeResolutionRouterD1();
+    const env = { TRADING_DB: d1 as unknown as D1Database } as Env;
+
+    await upsertDotCastResolverProfileRoute(
+      jsonRequest("/api/dotcast/resolution-router/resolvers/profiles", {
+        resolverId: "resolver-admin",
+        identityHash: "identity-admin",
+        reputationBps: 7500,
+        bondAvailableMinorUnits: 100_000,
+        stakeHeldPoolIds: [],
+        now: "2099-06-25T16:00:00.000Z"
+      }),
+      env
+    );
+
+    const suspended = await applyDotCastResolverAdminActionRoute(
+      "resolver-admin",
+      jsonRequest("/api/dotcast/resolution-router/resolvers/profiles/resolver-admin/admin", {
+        action: "suspend",
+        adminId: "operator-1",
+        reason: "manual risk review",
+        now: "2099-06-25T16:05:00.000Z"
+      }),
+      env
+    );
+    const bondAdjusted = await applyDotCastResolverAdminActionRoute(
+      "resolver-admin",
+      jsonRequest("/api/dotcast/resolution-router/resolvers/profiles/resolver-admin/admin", {
+        action: "adjust_bond",
+        adminId: "operator-1",
+        bondDeltaMinorUnits: -25_000,
+        reason: "bond correction",
+        now: "2099-06-25T16:06:00.000Z"
+      }),
+      env
+    );
+    const reputationAdjusted = await applyDotCastResolverAdminActionRoute(
+      "resolver-admin",
+      jsonRequest("/api/dotcast/resolution-router/resolvers/profiles/resolver-admin/admin", {
+        action: "adjust_reputation",
+        adminId: "operator-1",
+        reputationDeltaBps: 250,
+        reason: "manual accuracy credit",
+        now: "2099-06-25T16:07:00.000Z"
+      }),
+      env
+    );
+    const profile = await readDotCastResolverProfileRoute(
+      "resolver-admin",
+      jsonRequest("/api/dotcast/resolution-router/resolvers/profiles/resolver-admin?limit=10"),
+      env
+    );
+    const profileBody = (await profile.json()) as Record<string, unknown>;
+
+    expect(suspended.status).toBe(200);
+    expect(bondAdjusted.status).toBe(200);
+    expect(reputationAdjusted.status).toBe(200);
+    expect(profileBody).toMatchObject({
+      resolutionRouter: {
+        profile: {
+          resolverId: "resolver-admin",
+          status: "suspended",
+          bondAvailableMinorUnits: 75_000,
+          reputationBps: 7750
+        },
+        bondLedger: expect.arrayContaining([
+          expect.objectContaining({
+            eventType: "manual_adjustment",
+            deltaMinorUnits: -25_000,
+            balanceAfterMinorUnits: 75_000
+          })
+        ])
+      }
+    });
+    expect([...d1.reputationEvents.values()]).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          resolver_id: "resolver-admin",
+          reason: "manual_adjustment",
+          new_reputation_bps: 7750
+        })
+      ])
+    );
+  });
+
+  it("slashes E13 resolver panel commit timeouts without unlocking mainnet flows", async () => {
+    const d1 = new FakeResolutionRouterD1();
+    const route = lockedE13Route("pool-e13-timeout", "dotcast:e13-timeout");
+    d1.seedRoute(route);
+    const env = { TRADING_DB: d1 as unknown as D1Database } as Env;
+
+    for (const candidate of resolverCandidates()) {
+      await upsertDotCastResolverProfileRoute(
+        jsonRequest("/api/dotcast/resolution-router/resolvers/profiles", {
+          ...candidate,
+          now: "2099-06-25T16:55:00.000Z"
+        }),
+        env
+      );
+    }
+
+    const panelResponse = await planDotCastResolverPanelRoute(
+      jsonRequest("/api/dotcast/resolution-router/resolvers/panel", {
+        poolId: "pool-e13-timeout",
+        route,
+        panelId: "panel-e13-timeout",
+        now: "2099-06-25T17:00:00.000Z"
+      }),
+      env
+    );
+    const panelBody = (await panelResponse.json()) as Record<string, unknown>;
+    const panel = (panelBody.resolutionRouter as { panel: { assignments: unknown[] } }).panel;
+    const assignments = panel.assignments as Array<Record<string, unknown>>;
+
+    await commitDotCastResolverRoute(
+      jsonRequest("/api/dotcast/resolution-router/resolvers/commit", {
+        assignmentId: String(assignments[0].assignmentId),
+        outcome: "yes",
+        salt: "salt-0",
+        now: "2099-06-25T17:01:00.000Z"
+      }),
+      env
+    );
+
+    const timeout = await applyDotCastResolverPanelTimeoutRoute(
+      jsonRequest("/api/dotcast/resolution-router/resolvers/timeout", {
+        panelId: "panel-e13-timeout",
+        phase: "commit",
+        now: "2099-06-25T17:10:00.000Z"
+      }),
+      env
+    );
+    const timeoutBody = (await timeout.json()) as Record<string, unknown>;
+
+    expect(timeout.status).toBe(200);
+    expect(timeoutBody).toMatchObject({
+      resolutionRouter: {
+        phase: "commit",
+        panelId: "panel-e13-timeout",
+        timedOutAssignmentIds: [
+          String(assignments[1].assignmentId),
+          String(assignments[2].assignmentId)
+        ]
+      }
+    });
+    expect(d1.assignments.get(String(assignments[0].assignmentId))?.status).toBe("committed");
+    expect(d1.assignments.get(String(assignments[1].assignmentId))?.status).toBe("slashed");
+    expect(d1.assignments.get(String(assignments[2].assignmentId))?.status).toBe("slashed");
+    expect(
+      [...d1.bondLedger.values()].filter((row) => row.event_type === "bond_slashed")
+    ).toHaveLength(2);
   });
 
   it("settles pools from DB-backed E13 resolver consensus", async () => {
@@ -1605,6 +1796,10 @@ class FakeResolutionRouterD1 {
   }
 
   private first(query: string, params: unknown[]): Record<string, unknown> | null {
+    if (query.includes("FROM dotcast_resolver_payouts")) {
+      return this.payouts.get(`${String(params[0])}:${String(params[1])}`) ?? null;
+    }
+
     if (query.includes("FROM dotcast_resolution_routes")) {
       return this.routes.get(String(params[0])) ?? null;
     }
@@ -1637,6 +1832,24 @@ class FakeResolutionRouterD1 {
   }
 
   private all(query: string, params: unknown[]): Record<string, unknown>[] {
+    if (query.includes("FROM dotcast_resolution_routes")) {
+      const status = String(params[0]);
+      const hasTierFilter = query.includes("AND tier = ?");
+      const tier = hasTierFilter ? String(params[1]) : null;
+      return [...this.routes.values()].filter(
+        (row) => row.status === status && (!tier || row.tier === tier)
+      );
+    }
+
+    if (query.includes("FROM dotcast_resolution_reviews")) {
+      let paramIndex = 0;
+      const routeId = query.includes("route_id = ?") ? String(params[paramIndex++]) : null;
+      const status = query.includes("status = ?") ? String(params[paramIndex++]) : null;
+      return [...this.reviews.values()].filter(
+        (row) => (!routeId || row.route_id === routeId) && (!status || row.status === status)
+      );
+    }
+
     if (query.includes("FROM dotcast_resolver_profiles")) {
       return [...this.resolverProfiles.values()].filter((row) => row.status === "active");
     }
@@ -1647,6 +1860,10 @@ class FakeResolutionRouterD1 {
 
     if (query.includes("FROM dotcast_resolver_assignments")) {
       return [...this.assignments.values()].filter((row) => row.panel_id === params[0]);
+    }
+
+    if (query.includes("FROM dotcast_resolver_commits")) {
+      return [...this.commits.values()].filter((row) => row.panel_id === params[0]);
     }
 
     if (query.includes("FROM dotcast_resolver_reveals")) {
