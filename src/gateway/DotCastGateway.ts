@@ -146,6 +146,8 @@ interface DotCastAiPerceptionResolutionRequest {
   modelConfidenceBps?: unknown;
   predictedOutcome?: unknown;
   evidenceRefs?: unknown;
+  settlePool?: unknown;
+  streamId?: unknown;
   now?: unknown;
 }
 
@@ -160,6 +162,7 @@ interface DotCastResolverPanelRequest {
 }
 
 interface DotCastResolverCommitRequest {
+  assignmentId?: unknown;
   assignment?: unknown;
   outcome?: unknown;
   salt?: unknown;
@@ -167,6 +170,7 @@ interface DotCastResolverCommitRequest {
 }
 
 interface DotCastResolverRevealRequest {
+  assignmentId?: unknown;
   commit?: unknown;
   outcome?: unknown;
   salt?: unknown;
@@ -174,9 +178,22 @@ interface DotCastResolverRevealRequest {
 }
 
 interface DotCastResolverSettleRequest {
+  panelId?: unknown;
   panel?: unknown;
+  route?: unknown;
   reveals?: unknown;
+  settlePool?: unknown;
+  streamId?: unknown;
   now?: unknown;
+}
+
+interface ApplyE13OutcomeToPoolInput {
+  poolId: string;
+  route: DotCastResolutionRoute;
+  outcome: Side | "invalid";
+  now: string;
+  streamId?: string;
+  sourceKind: "ai_perception_auto" | "resolver_consensus";
 }
 
 interface DotCastCreateLivestreamRequest {
@@ -1436,13 +1453,16 @@ export async function resolveDotCastAiPerceptionRoute(
 ): Promise<Response> {
   try {
     const body = await readJsonBody<DotCastAiPerceptionResolutionRequest>(request);
+    const route = parseResolutionRouteObject(body?.route, "route");
+    const poolId = parseNullableString(body?.poolId, "poolId") ?? route.poolId;
+    const now = parseOptionalString(body?.now, "now");
     const result = resolveDotCastAiPerception(env, {
-      route: parseResolutionRouteObject(body?.route, "route"),
-      poolId: parseNullableString(body?.poolId, "poolId"),
+      route,
+      poolId,
       modelConfidenceBps: parseBps(body?.modelConfidenceBps, "modelConfidenceBps"),
       predictedOutcome: parseResolutionOutcome(body?.predictedOutcome),
       evidenceRefs: parseOptionalStringArray(body?.evidenceRefs, "evidenceRefs") ?? [],
-      now: parseOptionalString(body?.now, "now")
+      now
     });
 
     await maybePersistAiResolutionLog(env, result.log);
@@ -1450,10 +1470,28 @@ export async function resolveDotCastAiPerceptionRoute(
       await maybePersistResolutionRoute(env, result.escalatedRoute);
     }
 
+    const poolResolution =
+      parseOptionalBoolean(body?.settlePool, "settlePool") === true &&
+      result.status === "auto_resolved" &&
+      result.outcome !== "pending" &&
+      poolId
+        ? await applyE13OutcomeToPool(env, {
+            poolId,
+            route,
+            outcome: result.outcome,
+            now: now ?? result.log.createdAt,
+            streamId: parseOptionalString(body?.streamId, "streamId"),
+            sourceKind: "ai_perception_auto"
+          })
+        : null;
+
     return json({
       ok: true,
       milestone: "E13",
-      resolutionRouter: result
+      resolutionRouter: {
+        ...result,
+        poolResolution
+      }
     });
   } catch (error) {
     return resolutionRouterErrorResponse(error);
@@ -1493,8 +1531,12 @@ export async function planDotCastResolverPanelRoute(request: Request, env: Env):
 export async function commitDotCastResolverRoute(request: Request, env: Env): Promise<Response> {
   try {
     const body = await readJsonBody<DotCastResolverCommitRequest>(request);
+    const assignmentId = parseOptionalString(body?.assignmentId, "assignmentId");
+    const assignment = assignmentId
+      ? await requireResolverAssignment(env, assignmentId)
+      : parseResolverAssignment(body?.assignment, "assignment");
     const commit = await createDotCastResolverCommit({
-      assignment: parseResolverAssignment(body?.assignment, "assignment"),
+      assignment,
       outcome: parseOutcome(body?.outcome),
       salt: parseRequiredString(body?.salt, "salt"),
       now: parseOptionalString(body?.now, "now")
@@ -1518,8 +1560,12 @@ export async function commitDotCastResolverRoute(request: Request, env: Env): Pr
 export async function revealDotCastResolverRoute(request: Request, env: Env): Promise<Response> {
   try {
     const body = await readJsonBody<DotCastResolverRevealRequest>(request);
+    const assignmentId = parseOptionalString(body?.assignmentId, "assignmentId");
+    const commit = assignmentId
+      ? await requireResolverCommit(env, assignmentId)
+      : parseResolverCommit(body?.commit, "commit");
     const reveal = await revealDotCastResolverCommit({
-      commit: parseResolverCommit(body?.commit, "commit"),
+      commit,
       outcome: parseOutcome(body?.outcome),
       salt: parseRequiredString(body?.salt, "salt"),
       now: parseOptionalString(body?.now, "now")
@@ -1546,18 +1592,46 @@ export async function settleDotCastResolverPanelRoute(
 ): Promise<Response> {
   try {
     const body = await readJsonBody<DotCastResolverSettleRequest>(request);
+    const now = parseOptionalString(body?.now, "now") ?? new Date().toISOString();
+    const panelId = parseOptionalString(body?.panelId, "panelId");
+    const panel = panelId
+      ? await requireResolverPanel(env, panelId)
+      : parseResolverPanel(body?.panel, "panel");
+    const reveals = panelId
+      ? await resolutionRouterStore(env).listResolverReveals(panelId)
+      : parseResolverReveals(body?.reveals);
     const settlement = settleDotCastResolverPanel({
-      panel: parseResolverPanel(body?.panel, "panel"),
-      reveals: parseResolverReveals(body?.reveals),
-      now: parseOptionalString(body?.now, "now")
+      panel,
+      reveals,
+      now
     });
 
     await maybePersistResolverPayouts(env, settlement.payouts);
 
+    const route = body?.route
+      ? parseResolutionRouteObject(body.route, "route")
+      : await requireResolutionRoute(env, panel.routeId);
+    const poolResolution =
+      parseOptionalBoolean(body?.settlePool, "settlePool") === true
+        ? await applyE13OutcomeToPool(env, {
+            poolId: panel.poolId,
+            route,
+            outcome: settlement.consensusOutcome,
+            now,
+            streamId: parseOptionalString(body?.streamId, "streamId"),
+            sourceKind: "resolver_consensus"
+          })
+        : null;
+
     return json({
       ok: true,
       milestone: "E13",
-      resolutionRouter: settlement
+      resolutionRouter: {
+        ...settlement,
+        panel,
+        route,
+        poolResolution
+      }
     });
   } catch (error) {
     return resolutionRouterErrorResponse(error);
@@ -3274,6 +3348,57 @@ async function readDotCastPoolUnit(poolId: string, env: Env): Promise<StakeUnit>
   return unit;
 }
 
+async function applyE13OutcomeToPool(
+  env: Env,
+  input: ApplyE13OutcomeToPoolInput
+): Promise<Record<string, unknown>> {
+  if (input.route.status !== "locked") {
+    throw new DotCastResolutionRouterError(
+      "RESOLUTION_ROUTE_NOT_LOCKED",
+      "E13 route must be locked before it can settle a pool",
+      409
+    );
+  }
+
+  if (input.route.poolId && input.route.poolId !== input.poolId) {
+    throw new DotCastResolutionRouterError(
+      "RESOLUTION_ROUTE_POOL_MISMATCH",
+      "E13 route poolId does not match the target pool",
+      409
+    );
+  }
+
+  const response = await proxyDotCastPoolRequest(env, input.poolId, "/resolution", {
+    method: "POST",
+    body: JSON.stringify({
+      marketId: input.route.marketId,
+      outcome: input.outcome,
+      resolvedAt: input.now,
+      fetchedAt: input.now,
+      stale: false,
+      source: "dotcast",
+      now: input.now
+    })
+  });
+  const settledResponse = response.ok
+    ? await applySettlementHooksIfSettled(response, env, input.now)
+    : response;
+
+  if (settledResponse.ok) {
+    await refreshLivestreamPoolIfRequested(env, input.streamId, input.poolId, input.now);
+  }
+
+  return {
+    ok: settledResponse.ok,
+    status: settledResponse.status,
+    sourceKind: input.sourceKind,
+    routeId: input.route.routeId,
+    poolId: input.poolId,
+    outcome: input.outcome,
+    response: await safeJsonResponse(settledResponse)
+  };
+}
+
 async function readDotCastPoolSnapshot(poolId: string, env: Env): Promise<DotCastPoolSnapshot> {
   const response = await proxyDotCastPoolRequest(env, poolId, "/", { method: "GET" });
 
@@ -3391,6 +3516,14 @@ function extractPoolSnapshot(body: Record<string, unknown>): DotCastPoolSnapshot
   }
 
   return null;
+}
+
+async function safeJsonResponse(response: Response): Promise<Record<string, unknown> | null> {
+  try {
+    return await response.clone().json<Record<string, unknown>>();
+  } catch {
+    return null;
+  }
 }
 
 function summarizeGamificationResult(
@@ -3526,6 +3659,68 @@ function resolutionRouterStore(env: Env): D1DotCastResolutionRouterStore {
   }
 
   return new D1DotCastResolutionRouterStore(db);
+}
+
+async function requireResolutionRoute(env: Env, routeId: string): Promise<DotCastResolutionRoute> {
+  const route = await resolutionRouterStore(env).getRoute(routeId);
+
+  if (!route) {
+    throw new DotCastResolutionRouterError(
+      "RESOLUTION_ROUTE_NOT_FOUND",
+      "E13 resolution route was not found",
+      404
+    );
+  }
+
+  return route;
+}
+
+async function requireResolverPanel(env: Env, panelId: string): Promise<DotCastResolverPanel> {
+  const panel = await resolutionRouterStore(env).getResolverPanel(panelId);
+
+  if (!panel) {
+    throw new DotCastResolutionRouterError(
+      "RESOLVER_PANEL_NOT_FOUND",
+      "E13 resolver panel was not found",
+      404
+    );
+  }
+
+  return panel;
+}
+
+async function requireResolverAssignment(
+  env: Env,
+  assignmentId: string
+): Promise<DotCastResolverAssignment> {
+  const assignment = await resolutionRouterStore(env).getResolverAssignment(assignmentId);
+
+  if (!assignment) {
+    throw new DotCastResolutionRouterError(
+      "RESOLVER_ASSIGNMENT_NOT_FOUND",
+      "E13 resolver assignment was not found",
+      404
+    );
+  }
+
+  return assignment;
+}
+
+async function requireResolverCommit(
+  env: Env,
+  assignmentId: string
+): Promise<DotCastResolverCommit> {
+  const commit = await resolutionRouterStore(env).getResolverCommit(assignmentId);
+
+  if (!commit) {
+    throw new DotCastResolutionRouterError(
+      "RESOLVER_COMMIT_NOT_FOUND",
+      "E13 resolver commit was not found",
+      404
+    );
+  }
+
+  return commit;
 }
 
 async function maybePersistResolutionRoute(

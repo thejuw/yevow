@@ -4,11 +4,13 @@ import {
   archiveDotCastLivestream,
   attachDotCastLivestreamPool,
   classifyDotCastResolutionRouterRequest,
+  commitDotCastResolverRoute,
   createDotCastPool,
   createDotCastLivestreamSession,
   detachDotCastLivestreamPool,
   endDotCastLivestream,
   handleMuxLivestreamWebhook,
+  planDotCastResolverPanelRoute,
   placeDotCastPoolEntry,
   pauseDotCastLivestream,
   pollDotCastPoolResolution,
@@ -23,9 +25,11 @@ import {
   readDotCastPoolLiveOdds,
   readDotCastHealth,
   requestDotCastDevnetWithdrawal,
+  revealDotCastResolverRoute,
   resumeDotCastLivestream,
   setDotCastLivestreamFeaturedPool,
   settleDotCastPool,
+  settleDotCastResolverPanelRoute,
   simulateDotCastSettlement,
   startDotCastLivestream,
   voidDotCastPool
@@ -91,6 +95,146 @@ describe("dotCast gateway handlers", () => {
         }
       }
     });
+  });
+
+  it("settles pools from DB-backed E13 resolver consensus", async () => {
+    const d1 = new FakeResolutionRouterD1();
+    const route = lockedE13Route("pool-e13-consensus", "dotcast:e13-consensus");
+    const poolCalls: Array<{ path: string; body: Record<string, unknown> }> = [];
+    d1.seedRoute(route);
+
+    const env = {
+      TRADING_DB: d1 as unknown as D1Database,
+      DOTCAST_POOL: {
+        idFromName: (name: string) => ({ name }) as unknown as DurableObjectId,
+        get: () =>
+          ({
+            fetch: async (request: Request) => {
+              const url = new URL(request.url);
+              const body = await request.json<Record<string, unknown>>();
+              poolCalls.push({ path: url.pathname, body });
+              return Response.json({
+                ok: true,
+                action: "settled",
+                reason: "DEFINITIVE_OUTCOME",
+                snapshot: {
+                  pool: {
+                    id: "pool-e13-consensus",
+                    marketId: route.marketId,
+                    unit: "usdc",
+                    status: "settled",
+                    outcome: body.outcome
+                  },
+                  entries: [],
+                  balances: {},
+                  houseLedger: [],
+                  settlement: {
+                    id: "settlement:pool-e13-consensus:yes",
+                    poolId: "pool-e13-consensus",
+                    outcome: body.outcome,
+                    totalStaked: 0,
+                    payoutTotal: 0,
+                    rakeAmount: 0,
+                    createdAt: body.now
+                  },
+                  voidReason: null,
+                  lastResolution: body,
+                  updatedAt: body.now
+                }
+              });
+            }
+          }) as unknown as DurableObjectStub
+      } as unknown as DurableObjectNamespace
+    } as Env;
+
+    const panelResponse = await planDotCastResolverPanelRoute(
+      jsonRequest("/api/dotcast/resolution-router/resolvers/panel", {
+        poolId: "pool-e13-consensus",
+        route,
+        panelId: "panel-e13-consensus",
+        candidates: resolverCandidates(),
+        now: "2099-06-25T17:00:00.000Z"
+      }),
+      env
+    );
+    const panelBody = (await panelResponse.json()) as Record<string, unknown>;
+    const panel = (panelBody.resolutionRouter as { panel: { assignments: unknown[] } }).panel;
+    const assignments = panel.assignments as Array<Record<string, unknown>>;
+
+    expect(panelResponse.status).toBe(200);
+    expect(assignments).toHaveLength(3);
+
+    for (const [index, assignment] of assignments.entries()) {
+      const assignmentId = String(assignment.assignmentId);
+      await commitDotCastResolverRoute(
+        jsonRequest("/api/dotcast/resolution-router/resolvers/commit", {
+          assignmentId,
+          outcome: index < 2 ? "yes" : "no",
+          salt: `salt-${index}`,
+          now: `2099-06-25T17:0${index}:00.000Z`
+        }),
+        env
+      );
+      await revealDotCastResolverRoute(
+        jsonRequest("/api/dotcast/resolution-router/resolvers/reveal", {
+          assignmentId,
+          outcome: index < 2 ? "yes" : "no",
+          salt: `salt-${index}`,
+          now: `2099-06-25T17:1${index}:00.000Z`
+        }),
+        env
+      );
+    }
+
+    const settled = await settleDotCastResolverPanelRoute(
+      jsonRequest("/api/dotcast/resolution-router/resolvers/settle", {
+        panelId: "panel-e13-consensus",
+        settlePool: true,
+        now: "2099-06-25T17:20:00.000Z"
+      }),
+      env
+    );
+    const settledBody = (await settled.json()) as Record<string, unknown>;
+
+    expect(settled.status).toBe(200);
+    expect(settledBody).toMatchObject({
+      ok: true,
+      milestone: "E13",
+      resolutionRouter: {
+        consensusOutcome: "yes",
+        poolResolution: {
+          ok: true,
+          sourceKind: "resolver_consensus",
+          outcome: "yes",
+          response: {
+            action: "settled",
+            snapshot: {
+              pool: {
+                id: "pool-e13-consensus",
+                status: "settled",
+                outcome: "yes"
+              }
+            }
+          }
+        }
+      }
+    });
+    expect(poolCalls).toEqual([
+      {
+        path: "/resolution",
+        body: {
+          marketId: "dotcast:e13-consensus",
+          outcome: "yes",
+          resolvedAt: "2099-06-25T17:20:00.000Z",
+          fetchedAt: "2099-06-25T17:20:00.000Z",
+          stale: false,
+          source: "dotcast",
+          now: "2099-06-25T17:20:00.000Z"
+        }
+      }
+    ]);
+    expect(d1.assignments.get(String(assignments[0].assignmentId))?.status).toBe("paid");
+    expect(d1.assignments.get(String(assignments[2].assignmentId))?.status).toBe("slashed");
   });
 
   it("previews live odds and payout from integer minor-unit pools", async () => {
@@ -1221,6 +1365,266 @@ function livestreamRow(overrides: Record<string, unknown> = {}): Record<string, 
     last_webhook_event_id: null,
     metadata_json: "{}",
     ...overrides
+  };
+}
+
+function lockedE13Route(poolId: string, marketId: string): Record<string, unknown> {
+  return {
+    routeId: `route:${poolId}`,
+    marketId,
+    poolId,
+    tier: "optimistic_bonded",
+    status: "locked",
+    confidenceBps: 9100,
+    resolutionStatement: "Resolve by bonded resolver consensus.",
+    sources: [
+      {
+        kind: "resolver_network",
+        label: "dotCast resolver network",
+        url: null,
+        required: true
+      }
+    ],
+    sourceAvailable: true,
+    autoResolvable: false,
+    reviewRequired: false,
+    pointsOnly: false,
+    blockedReason: null,
+    steeringPrompt: null,
+    feeBps: 200,
+    bondMinorUnits: 50_000,
+    panelSize: 3,
+    lockedAt: "2099-06-25T17:00:00.000Z",
+    classifierVersion: "test",
+    createdAt: "2099-06-25T17:00:00.000Z",
+    eventJson: {}
+  };
+}
+
+function resolverCandidates(): Array<Record<string, unknown>> {
+  return [
+    resolverCandidate("resolver-a", "identity-a", 9000),
+    resolverCandidate("resolver-b", "identity-b", 8500),
+    resolverCandidate("resolver-c", "identity-c", 8000)
+  ];
+}
+
+function resolverCandidate(
+  resolverId: string,
+  identityHash: string,
+  reputationBps: number
+): Record<string, unknown> {
+  return {
+    resolverId,
+    identityHash,
+    reputationBps,
+    bondAvailableMinorUnits: 100_000,
+    stakeHeldPoolIds: []
+  };
+}
+
+class FakeResolutionRouterD1 {
+  readonly routes = new Map<string, Record<string, unknown>>();
+  readonly panels = new Map<string, Record<string, unknown>>();
+  readonly assignments = new Map<string, Record<string, unknown>>();
+  readonly commits = new Map<string, Record<string, unknown>>();
+  readonly reveals = new Map<string, Record<string, unknown>>();
+  readonly payouts = new Map<string, Record<string, unknown>>();
+
+  seedRoute(route: Record<string, unknown>): void {
+    this.routes.set(String(route.routeId), routeRow(route));
+  }
+
+  prepare(query: string) {
+    return {
+      bind: (...params: unknown[]) => ({
+        first: async () => this.first(query, params),
+        all: async () => ({ results: this.all(query, params) }),
+        run: async () => {
+          this.run(query, params);
+          return { success: true };
+        }
+      })
+    };
+  }
+
+  private first(query: string, params: unknown[]): Record<string, unknown> | null {
+    if (query.includes("FROM dotcast_resolution_routes")) {
+      return this.routes.get(String(params[0])) ?? null;
+    }
+
+    if (query.includes("FROM dotcast_resolver_panels")) {
+      return this.panels.get(String(params[0])) ?? null;
+    }
+
+    if (query.includes("FROM dotcast_resolver_assignments")) {
+      return this.assignments.get(String(params[0])) ?? null;
+    }
+
+    if (query.includes("FROM dotcast_resolver_commits")) {
+      return this.commits.get(String(params[0])) ?? null;
+    }
+
+    return null;
+  }
+
+  private all(query: string, params: unknown[]): Record<string, unknown>[] {
+    if (query.includes("FROM dotcast_resolver_assignments")) {
+      return [...this.assignments.values()].filter((row) => row.panel_id === params[0]);
+    }
+
+    if (query.includes("FROM dotcast_resolver_reveals")) {
+      return [...this.reveals.values()].filter((row) => row.panel_id === params[0]);
+    }
+
+    return [];
+  }
+
+  private run(query: string, params: unknown[]): void {
+    if (query.includes("INSERT OR IGNORE INTO dotcast_resolution_routes")) {
+      if (!this.routes.has(String(params[0]))) {
+        this.routes.set(String(params[0]), routeParamsToRow(params));
+      }
+      return;
+    }
+
+    if (query.includes("INSERT OR IGNORE INTO dotcast_resolver_panels")) {
+      if (!this.panels.has(String(params[0]))) {
+        this.panels.set(String(params[0]), {
+          panel_id: params[0],
+          pool_id: params[1],
+          route_id: params[2],
+          tier: params[3],
+          panel_size: params[4],
+          estimated_stake_minor_units: params[5],
+          resolver_fee_bps: params[6],
+          created_at: params[7]
+        });
+      }
+      return;
+    }
+
+    if (query.includes("INSERT OR IGNORE INTO dotcast_resolver_assignments")) {
+      if (!this.assignments.has(String(params[0]))) {
+        this.assignments.set(String(params[0]), {
+          assignment_id: params[0],
+          panel_id: params[1],
+          pool_id: params[2],
+          route_id: params[3],
+          resolver_id: params[4],
+          identity_hash: params[5],
+          reputation_bps: params[6],
+          bond_minor_units: params[7],
+          status: params[8],
+          assigned_at: params[9]
+        });
+      }
+      return;
+    }
+
+    if (query.includes("INSERT OR IGNORE INTO dotcast_resolver_commits")) {
+      if (!this.commits.has(String(params[0]))) {
+        this.commits.set(String(params[0]), {
+          assignment_id: params[0],
+          panel_id: params[1],
+          resolver_id: params[2],
+          commit_hash: params[3],
+          committed_at: params[4]
+        });
+      }
+      return;
+    }
+
+    if (query.includes("INSERT OR IGNORE INTO dotcast_resolver_reveals")) {
+      if (!this.reveals.has(String(params[0]))) {
+        this.reveals.set(String(params[0]), {
+          assignment_id: params[0],
+          panel_id: params[1],
+          resolver_id: params[2],
+          outcome: params[3],
+          salt: params[4],
+          revealed_at: params[5]
+        });
+      }
+      return;
+    }
+
+    if (query.includes("INSERT OR IGNORE INTO dotcast_resolver_payouts")) {
+      const key = `${String(params[0])}:${String(params[1])}`;
+      if (!this.payouts.has(key)) {
+        this.payouts.set(key, {
+          assignment_id: params[0],
+          panel_id: params[1],
+          resolver_id: params[2],
+          matched_consensus: params[3],
+          bond_returned_minor_units: params[4],
+          fee_paid_minor_units: params[5],
+          slashed_bond_minor_units: params[6],
+          created_at: params[7]
+        });
+      }
+      return;
+    }
+
+    if (query.includes("UPDATE dotcast_resolver_assignments")) {
+      const assignmentId = String(params[1]);
+      const existing = this.assignments.get(assignmentId);
+      if (existing) {
+        this.assignments.set(assignmentId, { ...existing, status: params[0] });
+      }
+    }
+  }
+}
+
+function routeParamsToRow(params: unknown[]): Record<string, unknown> {
+  return {
+    route_id: params[0],
+    market_id: params[1],
+    pool_id: params[2],
+    tier: params[3],
+    status: params[4],
+    confidence_bps: params[5],
+    resolution_statement: params[6],
+    sources_json: params[7],
+    source_available: params[8],
+    auto_resolvable: params[9],
+    review_required: params[10],
+    points_only: params[11],
+    blocked_reason: params[12],
+    steering_prompt: params[13],
+    fee_bps: params[14],
+    bond_minor_units: params[15],
+    panel_size: params[16],
+    locked_at: params[17],
+    classifier_version: params[18],
+    event_json: params[19],
+    created_at: params[20]
+  };
+}
+
+function routeRow(route: Record<string, unknown>): Record<string, unknown> {
+  return {
+    route_id: route.routeId,
+    market_id: route.marketId,
+    pool_id: route.poolId,
+    tier: route.tier,
+    status: route.status,
+    confidence_bps: route.confidenceBps,
+    resolution_statement: route.resolutionStatement,
+    sources_json: JSON.stringify(route.sources),
+    source_available: route.sourceAvailable ? 1 : 0,
+    auto_resolvable: route.autoResolvable ? 1 : 0,
+    review_required: route.reviewRequired ? 1 : 0,
+    points_only: route.pointsOnly ? 1 : 0,
+    blocked_reason: route.blockedReason,
+    steering_prompt: route.steeringPrompt,
+    fee_bps: route.feeBps,
+    bond_minor_units: route.bondMinorUnits,
+    panel_size: route.panelSize,
+    locked_at: route.lockedAt,
+    classifier_version: route.classifierVersion,
+    event_json: JSON.stringify(route.eventJson),
+    created_at: route.createdAt
   };
 }
 

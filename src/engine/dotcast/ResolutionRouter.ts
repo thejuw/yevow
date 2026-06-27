@@ -111,8 +111,13 @@ export interface DotCastResolverPanelSettlement {
 }
 
 export interface DotCastResolutionRouterStore {
+  getRoute(routeId: string): Promise<DotCastResolutionRoute | null>;
   insertRoute(route: DotCastResolutionRoute): Promise<void>;
   appendAiResolutionLog(log: DotCastAiResolutionLog): Promise<void>;
+  getResolverPanel(panelId: string): Promise<DotCastResolverPanel | null>;
+  getResolverAssignment(assignmentId: string): Promise<DotCastResolverAssignment | null>;
+  getResolverCommit(assignmentId: string): Promise<DotCastResolverCommit | null>;
+  listResolverReveals(panelId: string): Promise<DotCastResolverReveal[]>;
   insertResolverPanel(panel: DotCastResolverPanel): Promise<void>;
   insertResolverCommit(commit: DotCastResolverCommit): Promise<void>;
   insertResolverReveal(reveal: DotCastResolverReveal): Promise<void>;
@@ -199,6 +204,23 @@ const SUBJECTIVE_TERMS = [
 export class D1DotCastResolutionRouterStore implements DotCastResolutionRouterStore {
   constructor(private readonly db: D1Database) {}
 
+  async getRoute(routeId: string): Promise<DotCastResolutionRoute | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT route_id, market_id, pool_id, tier, status, confidence_bps,
+                resolution_statement, sources_json, source_available, auto_resolvable,
+                review_required, points_only, blocked_reason, steering_prompt, fee_bps,
+                bond_minor_units, panel_size, locked_at, classifier_version, event_json,
+                created_at
+         FROM dotcast_resolution_routes
+         WHERE route_id = ?`
+      )
+      .bind(routeId)
+      .first<Record<string, unknown>>();
+
+    return row ? routeFromRow(row) : null;
+  }
+
   async insertRoute(route: DotCastResolutionRoute): Promise<void> {
     await this.db
       .prepare(
@@ -234,6 +256,89 @@ export class D1DotCastResolutionRouterStore implements DotCastResolutionRouterSt
         log.createdAt
       )
       .run();
+  }
+
+  async getResolverPanel(panelId: string): Promise<DotCastResolverPanel | null> {
+    const panelRow = await this.db
+      .prepare(
+        `SELECT panel_id, pool_id, route_id, tier, panel_size, estimated_stake_minor_units,
+                resolver_fee_bps, created_at
+         FROM dotcast_resolver_panels
+         WHERE panel_id = ?`
+      )
+      .bind(panelId)
+      .first<Record<string, unknown>>();
+
+    if (!panelRow) {
+      return null;
+    }
+
+    const assignments = await this.db
+      .prepare(
+        `SELECT assignment_id, panel_id, pool_id, route_id, resolver_id, identity_hash,
+                reputation_bps, bond_minor_units, status, assigned_at
+         FROM dotcast_resolver_assignments
+         WHERE panel_id = ?
+         ORDER BY assigned_at ASC, assignment_id ASC`
+      )
+      .bind(panelId)
+      .all<Record<string, unknown>>();
+
+    return {
+      panelId: requireText(panelRow.panel_id, "panel_id"),
+      poolId: requireText(panelRow.pool_id, "pool_id"),
+      routeId: requireText(panelRow.route_id, "route_id"),
+      tier: parseTier(panelRow.tier),
+      panelSize: requireInteger(panelRow.panel_size, "panel_size"),
+      estimatedStakeMinorUnits: requireInteger(
+        panelRow.estimated_stake_minor_units,
+        "estimated_stake_minor_units"
+      ),
+      resolverFeeBps: requireInteger(panelRow.resolver_fee_bps, "resolver_fee_bps"),
+      assignments: (assignments.results ?? []).map(assignmentFromRow),
+      createdAt: requireText(panelRow.created_at, "created_at")
+    };
+  }
+
+  async getResolverAssignment(assignmentId: string): Promise<DotCastResolverAssignment | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT assignment_id, panel_id, pool_id, route_id, resolver_id, identity_hash,
+                reputation_bps, bond_minor_units, status, assigned_at
+         FROM dotcast_resolver_assignments
+         WHERE assignment_id = ?`
+      )
+      .bind(assignmentId)
+      .first<Record<string, unknown>>();
+
+    return row ? assignmentFromRow(row) : null;
+  }
+
+  async getResolverCommit(assignmentId: string): Promise<DotCastResolverCommit | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT assignment_id, panel_id, resolver_id, commit_hash, committed_at
+         FROM dotcast_resolver_commits
+         WHERE assignment_id = ?`
+      )
+      .bind(assignmentId)
+      .first<Record<string, unknown>>();
+
+    return row ? commitFromRow(row) : null;
+  }
+
+  async listResolverReveals(panelId: string): Promise<DotCastResolverReveal[]> {
+    const result = await this.db
+      .prepare(
+        `SELECT assignment_id, panel_id, resolver_id, outcome, salt, revealed_at
+         FROM dotcast_resolver_reveals
+         WHERE panel_id = ?
+         ORDER BY revealed_at ASC, assignment_id ASC`
+      )
+      .bind(panelId)
+      .all<Record<string, unknown>>();
+
+    return (result.results ?? []).map(revealFromRow);
   }
 
   async insertResolverPanel(panel: DotCastResolverPanel): Promise<void> {
@@ -295,6 +400,7 @@ export class D1DotCastResolutionRouterStore implements DotCastResolutionRouterSt
         commit.committedAt
       )
       .run();
+    await this.updateResolverAssignmentStatus(commit.assignmentId, "committed");
   }
 
   async insertResolverReveal(reveal: DotCastResolverReveal): Promise<void> {
@@ -313,6 +419,7 @@ export class D1DotCastResolutionRouterStore implements DotCastResolutionRouterSt
         reveal.revealedAt
       )
       .run();
+    await this.updateResolverAssignmentStatus(reveal.assignmentId, "revealed");
   }
 
   async insertResolverPayouts(payouts: DotCastResolverPayout[]): Promise<void> {
@@ -335,7 +442,25 @@ export class D1DotCastResolutionRouterStore implements DotCastResolutionRouterSt
           payout.createdAt
         )
         .run();
+      await this.updateResolverAssignmentStatus(
+        payout.assignmentId,
+        payout.matchedConsensus ? "paid" : "slashed"
+      );
     }
+  }
+
+  private async updateResolverAssignmentStatus(
+    assignmentId: string,
+    status: DotCastResolverAssignment["status"]
+  ): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE dotcast_resolver_assignments
+         SET status = ?
+         WHERE assignment_id = ?`
+      )
+      .bind(status, assignmentId)
+      .run();
   }
 }
 
@@ -820,6 +945,68 @@ function normalizeExplicitRoute(
   return { ...route, poolId: route.poolId ?? poolId };
 }
 
+function routeFromRow(row: Record<string, unknown>): DotCastResolutionRoute {
+  return {
+    routeId: requireText(row.route_id, "route_id"),
+    marketId: requireText(row.market_id, "market_id"),
+    poolId: nullableText(row.pool_id),
+    tier: parseTier(row.tier),
+    status: parseRouteStatus(row.status),
+    confidenceBps: requireInteger(row.confidence_bps, "confidence_bps"),
+    resolutionStatement: requireText(row.resolution_statement, "resolution_statement"),
+    sources: parseSources(row.sources_json),
+    sourceAvailable: row.source_available === 1,
+    autoResolvable: row.auto_resolvable === 1,
+    reviewRequired: row.review_required === 1,
+    pointsOnly: row.points_only === 1,
+    blockedReason: nullableText(row.blocked_reason),
+    steeringPrompt: nullableText(row.steering_prompt),
+    feeBps: requireInteger(row.fee_bps, "fee_bps"),
+    bondMinorUnits: requireInteger(row.bond_minor_units, "bond_minor_units"),
+    panelSize: requireInteger(row.panel_size, "panel_size"),
+    lockedAt: nullableText(row.locked_at),
+    classifierVersion: requireText(row.classifier_version, "classifier_version"),
+    createdAt: requireText(row.created_at, "created_at"),
+    eventJson: parseRecord(row.event_json, "event_json")
+  };
+}
+
+function assignmentFromRow(row: Record<string, unknown>): DotCastResolverAssignment {
+  return {
+    assignmentId: requireText(row.assignment_id, "assignment_id"),
+    panelId: requireText(row.panel_id, "panel_id"),
+    poolId: requireText(row.pool_id, "pool_id"),
+    routeId: requireText(row.route_id, "route_id"),
+    resolverId: requireText(row.resolver_id, "resolver_id"),
+    identityHash: requireText(row.identity_hash, "identity_hash"),
+    reputationBps: requireInteger(row.reputation_bps, "reputation_bps"),
+    bondMinorUnits: requireInteger(row.bond_minor_units, "bond_minor_units"),
+    status: parseAssignmentStatus(row.status),
+    assignedAt: requireText(row.assigned_at, "assigned_at")
+  };
+}
+
+function commitFromRow(row: Record<string, unknown>): DotCastResolverCommit {
+  return {
+    assignmentId: requireText(row.assignment_id, "assignment_id"),
+    panelId: requireText(row.panel_id, "panel_id"),
+    resolverId: requireText(row.resolver_id, "resolver_id"),
+    commitHash: requireText(row.commit_hash, "commit_hash"),
+    committedAt: requireText(row.committed_at, "committed_at")
+  };
+}
+
+function revealFromRow(row: Record<string, unknown>): DotCastResolverReveal {
+  return {
+    assignmentId: requireText(row.assignment_id, "assignment_id"),
+    panelId: requireText(row.panel_id, "panel_id"),
+    resolverId: requireText(row.resolver_id, "resolver_id"),
+    outcome: parseResolvedOutcome(row.outcome),
+    salt: requireText(row.salt, "salt"),
+    revealedAt: requireText(row.revealed_at, "revealed_at")
+  };
+}
+
 function routeParams(route: DotCastResolutionRoute): unknown[] {
   return [
     route.routeId,
@@ -844,6 +1031,178 @@ function routeParams(route: DotCastResolutionRoute): unknown[] {
     JSON.stringify(route.eventJson),
     route.createdAt
   ];
+}
+
+function parseSources(value: unknown): DotCastResolutionSource[] {
+  const parsed = parseJson(value, "sources_json");
+
+  if (!Array.isArray(parsed)) {
+    throw new DotCastResolutionRouterError(
+      "RESOLUTION_ROUTE_ROW_INVALID",
+      "resolution route sources_json must decode to an array",
+      500
+    );
+  }
+
+  return parsed.map((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new DotCastResolutionRouterError(
+        "RESOLUTION_ROUTE_ROW_INVALID",
+        `resolution route source ${index} must be an object`,
+        500
+      );
+    }
+
+    const source = item as Record<string, unknown>;
+    return {
+      kind: parseSourceKind(source.kind),
+      label: requireText(source.label, `sources[${index}].label`),
+      url: nullableText(source.url),
+      required: source.required === true
+    };
+  });
+}
+
+function parseRecord(value: unknown, label: string): Record<string, unknown> {
+  const parsed = parseJson(value, label);
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {};
+  }
+
+  return parsed as Record<string, unknown>;
+}
+
+function parseJson(value: unknown, label: string): unknown {
+  if (typeof value !== "string") {
+    throw new DotCastResolutionRouterError(
+      "RESOLUTION_ROUTE_ROW_INVALID",
+      `${label} must be stored as JSON text`,
+      500
+    );
+  }
+
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    throw new DotCastResolutionRouterError(
+      "RESOLUTION_ROUTE_ROW_INVALID",
+      `${label} must be valid JSON`,
+      500
+    );
+  }
+}
+
+function parseTier(value: unknown): DotCastResolutionTier {
+  if (
+    value === "hard_oracle" ||
+    value === "computed_oracle" ||
+    value === "ai_perception" ||
+    value === "optimistic_bonded" ||
+    value === "human_jury"
+  ) {
+    return value;
+  }
+
+  throw new DotCastResolutionRouterError(
+    "RESOLUTION_ROUTE_ROW_INVALID",
+    "stored resolution tier is invalid",
+    500
+  );
+}
+
+function parseRouteStatus(value: unknown): DotCastResolutionRoute["status"] {
+  if (
+    value === "locked" ||
+    value === "review_required" ||
+    value === "points_only" ||
+    value === "blocked"
+  ) {
+    return value;
+  }
+
+  throw new DotCastResolutionRouterError(
+    "RESOLUTION_ROUTE_ROW_INVALID",
+    "stored resolution route status is invalid",
+    500
+  );
+}
+
+function parseSourceKind(value: unknown): DotCastResolutionSource["kind"] {
+  if (
+    value === "router_market" ||
+    value === "external_oracle" ||
+    value === "computed_feed" ||
+    value === "livestream_ai" ||
+    value === "resolver_network" ||
+    value === "manual_review"
+  ) {
+    return value;
+  }
+
+  throw new DotCastResolutionRouterError(
+    "RESOLUTION_ROUTE_ROW_INVALID",
+    "stored resolution source kind is invalid",
+    500
+  );
+}
+
+function parseAssignmentStatus(value: unknown): DotCastResolverAssignment["status"] {
+  if (
+    value === "assigned" ||
+    value === "committed" ||
+    value === "revealed" ||
+    value === "paid" ||
+    value === "slashed"
+  ) {
+    return value;
+  }
+
+  throw new DotCastResolutionRouterError(
+    "RESOLUTION_ROUTE_ROW_INVALID",
+    "stored resolver assignment status is invalid",
+    500
+  );
+}
+
+function parseResolvedOutcome(value: unknown): Side | "invalid" {
+  if (value === "yes" || value === "no" || value === "invalid") {
+    return value;
+  }
+
+  throw new DotCastResolutionRouterError(
+    "RESOLUTION_ROUTE_ROW_INVALID",
+    "stored resolver reveal outcome is invalid",
+    500
+  );
+}
+
+function requireText(value: unknown, label: string): string {
+  if (typeof value === "string" && value.length > 0) {
+    return value;
+  }
+
+  throw new DotCastResolutionRouterError(
+    "RESOLUTION_ROUTE_ROW_INVALID",
+    `${label} is missing from stored E13 row`,
+    500
+  );
+}
+
+function nullableText(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function requireInteger(value: unknown, label: string): number {
+  if (typeof value === "number" && Number.isSafeInteger(value)) {
+    return value;
+  }
+
+  throw new DotCastResolutionRouterError(
+    "RESOLUTION_ROUTE_ROW_INVALID",
+    `${label} must be an integer in stored E13 row`,
+    500
+  );
 }
 
 function fallbackSources(tier: DotCastResolutionTier): DotCastResolutionSource[] {
