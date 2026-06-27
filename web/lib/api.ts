@@ -24,6 +24,14 @@ import type {
   CongressTickerHierarchyResponse,
   CongressTransactionsResponse,
   DiagnosticsResponse,
+  DotCastGenericStatusResponse,
+  DotCastHealthResponse,
+  DotCastLivestreamCreateResponse,
+  DotCastLivestreamReadResponse,
+  DotCastResolutionReviewQueueResponse,
+  DotCastResolutionReviewsResponse,
+  DotCastResolutionRouterStatusResponse,
+  DotCastSettlementRailStatusResponse,
   ExecutionQualityResponse,
   GlobalRiskConfig,
   JsonRecord,
@@ -87,6 +95,226 @@ export async function readPrivateEquityDeals(
   apiBase = DEFAULT_API_BASE
 ): Promise<PrivateEquityDealsResponse> {
   return apiFetch<PrivateEquityDealsResponse>(apiBase, "/api/equity-deals", "");
+}
+
+export async function readDotCastHealth(
+  apiBase = DEFAULT_API_BASE
+): Promise<DotCastHealthResponse> {
+  return apiFetch<DotCastHealthResponse>(apiBase, "/api/dotcast/health", "", {
+    allowErrorBody: true
+  });
+}
+
+export async function readDotCastSettlementRailStatus(
+  apiBase = DEFAULT_API_BASE
+): Promise<DotCastSettlementRailStatusResponse> {
+  return apiFetch<DotCastSettlementRailStatusResponse>(
+    apiBase,
+    "/api/dotcast/settlement-rail/status",
+    "",
+    {
+      allowErrorBody: true
+    }
+  );
+}
+
+export async function readDotCastRewardedStreamStatus(
+  apiBase = DEFAULT_API_BASE
+): Promise<DotCastGenericStatusResponse> {
+  return apiFetch<DotCastGenericStatusResponse>(
+    apiBase,
+    "/api/dotcast/rewarded-streams/status",
+    "",
+    {
+      allowErrorBody: true
+    }
+  );
+}
+
+export async function readDotCastSponsoredQuestionsStatus(
+  apiBase = DEFAULT_API_BASE
+): Promise<DotCastGenericStatusResponse> {
+  return apiFetch<DotCastGenericStatusResponse>(
+    apiBase,
+    "/api/dotcast/sponsored-questions/status",
+    "",
+    {
+      allowErrorBody: true
+    }
+  );
+}
+
+export async function readDotCastCreatorEconomyStatus(
+  apiBase = DEFAULT_API_BASE
+): Promise<DotCastGenericStatusResponse> {
+  return apiFetch<DotCastGenericStatusResponse>(apiBase, "/api/dotcast/creators/status", "", {
+    allowErrorBody: true
+  });
+}
+
+export async function readDotCastReferralStatus(
+  apiBase = DEFAULT_API_BASE
+): Promise<DotCastGenericStatusResponse> {
+  return apiFetch<DotCastGenericStatusResponse>(apiBase, "/api/dotcast/referrals/status", "", {
+    allowErrorBody: true
+  });
+}
+
+export async function readDotCastResolutionRouterStatus(
+  apiBase = DEFAULT_API_BASE
+): Promise<DotCastResolutionRouterStatusResponse> {
+  return apiFetch<DotCastResolutionRouterStatusResponse>(
+    apiBase,
+    "/api/dotcast/resolution-router/status",
+    "",
+    {
+      allowErrorBody: true
+    }
+  );
+}
+
+export async function readDotCastResolutionReviewQueue(
+  apiBase = DEFAULT_API_BASE,
+  limit = 10,
+  status?: string
+): Promise<DotCastResolutionReviewQueueResponse> {
+  const search = new URLSearchParams({ limit: String(limit) });
+  if (status) {
+    search.set("status", status);
+  }
+
+  return apiFetch<DotCastResolutionReviewQueueResponse>(
+    apiBase,
+    `/api/dotcast/resolution-router/reviews/queue?${search.toString()}`,
+    "",
+    {
+      allowErrorBody: true
+    }
+  );
+}
+
+export async function readDotCastResolutionReviews(
+  apiBase = DEFAULT_API_BASE,
+  limit = 10,
+  status?: string
+): Promise<DotCastResolutionReviewsResponse> {
+  const search = new URLSearchParams({ limit: String(limit) });
+  if (status) {
+    search.set("status", status);
+  }
+
+  return apiFetch<DotCastResolutionReviewsResponse>(
+    apiBase,
+    `/api/dotcast/resolution-router/reviews?${search.toString()}`,
+    "",
+    {
+      allowErrorBody: true
+    }
+  );
+}
+
+export async function createDotCastLivestream(
+  apiBase: string,
+  payload: { streamId?: string; hostId: string; title: string; metadata?: JsonRecord }
+): Promise<DotCastLivestreamCreateResponse> {
+  return apiFetch<DotCastLivestreamCreateResponse>(apiBase, "/api/dotcast/livestreams", "", {
+    method: "POST",
+    body: JSON.stringify(payload),
+    allowErrorBody: true
+  });
+}
+
+export async function readDotCastLivestream(
+  apiBase: string,
+  streamId: string
+): Promise<DotCastLivestreamReadResponse> {
+  return apiFetch<DotCastLivestreamReadResponse>(
+    apiBase,
+    `/api/dotcast/livestreams/${encodeURIComponent(streamId)}`,
+    "",
+    {
+      allowErrorBody: true
+    }
+  );
+}
+
+export async function readDotCastLivestreamPlayback(
+  apiBase: string,
+  streamId: string
+): Promise<DotCastLivestreamCreateResponse> {
+  return apiFetch<DotCastLivestreamCreateResponse>(
+    apiBase,
+    `/api/dotcast/livestreams/${encodeURIComponent(streamId)}/playback`,
+    "",
+    {
+      allowErrorBody: true
+    }
+  );
+}
+
+export async function updateDotCastLivestreamState(
+  apiBase: string,
+  streamId: string,
+  action: "start" | "pause" | "resume" | "end" | "archive"
+): Promise<DotCastGenericStatusResponse> {
+  return apiFetch<DotCastGenericStatusResponse>(
+    apiBase,
+    `/api/dotcast/livestreams/${encodeURIComponent(streamId)}/${action}`,
+    "",
+    {
+      method: "POST",
+      body: JSON.stringify({ now: new Date().toISOString() }),
+      allowErrorBody: true
+    }
+  );
+}
+
+export async function attachDotCastLivestreamPool(
+  apiBase: string,
+  streamId: string,
+  payload: {
+    poolId: string;
+    marketId: string;
+    question: string;
+    unit: "cash" | "points";
+    status?: string;
+    pinned?: boolean;
+  }
+): Promise<DotCastGenericStatusResponse> {
+  return apiFetch<DotCastGenericStatusResponse>(
+    apiBase,
+    `/api/dotcast/livestreams/${encodeURIComponent(streamId)}/pools`,
+    "",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+      allowErrorBody: true
+    }
+  );
+}
+
+export async function applyDotCastResolverAdminAction(
+  apiBase: string,
+  resolverId: string,
+  payload: {
+    action: "activate" | "suspend" | "archive" | "adjust_bond" | "adjust_reputation";
+    adminId?: string;
+    bondDeltaMinorUnits?: number;
+    reputationDeltaBps?: number;
+    reason?: string;
+    metadata?: JsonRecord;
+  }
+): Promise<DotCastGenericStatusResponse> {
+  return apiFetch<DotCastGenericStatusResponse>(
+    apiBase,
+    `/api/dotcast/resolution-router/resolvers/profiles/${encodeURIComponent(resolverId)}/admin`,
+    "",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+      allowErrorBody: true
+    }
+  );
 }
 
 export async function readConfig(

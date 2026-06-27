@@ -1055,7 +1055,13 @@ export interface CongressTransaction {
   option_type?: "CALL" | "PUT" | string | null;
   option_strike?: number | null;
   option_expiration_date?: string | null;
-  option_exposure?: "BULLISH" | "BEARISH" | "INCOME_OR_CLOSING" | "HEDGE_OR_PROTECTION" | string | null;
+  option_exposure?:
+    | "BULLISH"
+    | "BEARISH"
+    | "INCOME_OR_CLOSING"
+    | "HEDGE_OR_PROTECTION"
+    | string
+    | null;
   option_intensity?: "HIGH" | "MEDIUM" | "LOW" | string | null;
   option_is_leap?: number | null;
   created_at: string;
@@ -1395,4 +1401,163 @@ export interface PrivateEquityDealsResponse {
   count: number;
   deals: PrivateEquityDeal[];
   error?: string;
+}
+
+export interface DotCastReadinessBlock {
+  enabled?: boolean;
+  ready?: boolean;
+  guards?: string[];
+  [key: string]: unknown;
+}
+
+export interface DotCastSettlementRailStatus extends DotCastReadinessBlock {
+  mode?: string;
+  network?: string;
+  cluster?: string;
+  mint?: string;
+  decimals?: number;
+  signerMode?: string;
+  operatorWithdrawalsApproved?: boolean;
+  operational?: boolean;
+}
+
+export interface DotCastHealthResponse {
+  ok: boolean;
+  product: "dotCast";
+  engine: string;
+  milestones: Record<string, string>;
+  settlementRail?: DotCastSettlementRailStatus;
+  usdcPoolFunding?: DotCastReadinessBlock;
+  livestream?: DotCastReadinessBlock;
+  gamification?: DotCastReadinessBlock;
+  rewardedStream?: DotCastReadinessBlock;
+  sponsoredQuestions?: DotCastReadinessBlock;
+  creatorEconomy?: DotCastReadinessBlock;
+  referrals?: DotCastReadinessBlock;
+  resolutionRouter?: DotCastReadinessBlock;
+  routes?: string[];
+}
+
+export interface DotCastSettlementRailStatusResponse {
+  ok: boolean;
+  milestone: "E5";
+  rail: DotCastSettlementRailStatus;
+  safeguards?: JsonRecord;
+  error?: string;
+}
+
+export interface DotCastResolutionRouterStatusResponse {
+  ok: boolean;
+  milestone: "E13";
+  resolutionRouter: DotCastReadinessBlock;
+  error?: string;
+}
+
+export interface DotCastResolutionRoute {
+  routeId: string;
+  marketId: string;
+  poolId: string;
+  tier: string;
+  status: string;
+  confidenceBps: number;
+  resolutionStatement: string;
+  sourceAvailable: boolean;
+  autoResolvable: boolean;
+  reviewRequired: boolean;
+  pointsOnly: boolean;
+  blockedReason: string | null;
+  feeBps: number;
+  bondMinorUnits: number;
+  panelSize: number;
+  classifierVersion: string;
+  createdAt: string;
+  sources?: JsonRecord[];
+  eventJson?: JsonRecord;
+}
+
+export interface DotCastResolutionReview {
+  reviewId: string;
+  routeId: string;
+  poolId: string;
+  marketId: string;
+  status: string;
+  reviewerId: string;
+  decisionJson?: JsonRecord;
+  createdAt: string;
+}
+
+export interface DotCastResolutionReviewQueueResponse {
+  ok: boolean;
+  milestone: "E13";
+  resolutionRouter: {
+    routes: DotCastResolutionRoute[];
+    count: number;
+  };
+  error?: string;
+}
+
+export interface DotCastResolutionReviewsResponse {
+  ok: boolean;
+  milestone: "E13";
+  resolutionRouter: {
+    reviews: DotCastResolutionReview[];
+    count: number;
+  };
+  error?: string;
+}
+
+export interface DotCastLivestreamMetadata {
+  streamId: string;
+  provider: string;
+  controlLayer: string;
+  muxLiveStreamId?: string | null;
+  playbackId?: string | null;
+  playbackPolicy?: string;
+  hostId: string;
+  title: string;
+  status: string;
+  muxStatus?: string | null;
+  lowLatency?: boolean;
+  recordingEnabled?: boolean;
+  reconnectWindowSeconds?: number;
+  startedAt?: string | null;
+  stoppedAt?: string | null;
+  archivedAt?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+  metadata?: JsonRecord;
+}
+
+export interface DotCastLivestreamCreateResponse {
+  ok: boolean;
+  livestream: DotCastLivestreamMetadata;
+  videoPlane?: JsonRecord;
+  controlPlane?: JsonRecord;
+  hostIngest?: {
+    rtmpUrl: string;
+    streamKey: string;
+    warning?: string;
+  };
+  viewerPlayback?: {
+    playbackPolicy: string;
+    playbackUrl: string;
+    token?: string;
+    playbackId?: string;
+  };
+  error?: string;
+}
+
+export interface DotCastLivestreamReadResponse {
+  ok: boolean;
+  livestream: {
+    metadata: DotCastLivestreamMetadata;
+    pools?: JsonRecord[];
+    realtime?: JsonRecord | null;
+  };
+  error?: string;
+}
+
+export interface DotCastGenericStatusResponse {
+  ok: boolean;
+  [key: string]: unknown;
 }
