@@ -2,15 +2,21 @@ import type {
   DotCastAiResolutionLog,
   DotCastMarketSnapshot,
   DotCastResolutionOutcome,
+  DotCastResolutionReview,
+  DotCastResolutionReviewAction,
   DotCastResolutionRoute,
   DotCastResolutionSource,
   DotCastResolutionTier,
   DotCastResolverAssignment,
+  DotCastResolverBondLedgerEntry,
   DotCastResolverCommit,
   DotCastResolverPanel,
   DotCastResolverPayout,
   DotCastResolverProfile,
+  DotCastResolverRegistryProfile,
+  DotCastResolverReputationEvent,
   DotCastResolverReveal,
+  DotCastResolverStatus,
   Side,
   StakeUnit
 } from "./types";
@@ -110,10 +116,49 @@ export interface DotCastResolverPanelSettlement {
   payouts: DotCastResolverPayout[];
 }
 
+export interface UpsertDotCastResolverProfileInput {
+  resolverId: string;
+  identityHash: string;
+  displayName?: string | null;
+  reputationBps?: number;
+  bondAvailableMinorUnits?: number;
+  stakeHeldPoolIds?: string[];
+  status?: DotCastResolverStatus;
+  metadata?: Record<string, unknown>;
+  now?: string;
+}
+
+export interface ApplyDotCastResolutionReviewDecisionInput {
+  route: DotCastResolutionRoute;
+  action: DotCastResolutionReviewAction;
+  reviewerId?: string | null;
+  reviewId?: string;
+  resolutionStatement?: string | null;
+  sources?: DotCastResolutionSource[];
+  blockedReason?: string | null;
+  steeringPrompt?: string | null;
+  metadata?: Record<string, unknown>;
+  now?: string;
+}
+
+export interface DotCastResolutionReviewDecisionResult {
+  review: DotCastResolutionReview;
+  resultingRoute: DotCastResolutionRoute | null;
+  canOpenRealMoney: boolean;
+}
+
 export interface DotCastResolutionRouterStore {
   getRoute(routeId: string): Promise<DotCastResolutionRoute | null>;
   insertRoute(route: DotCastResolutionRoute): Promise<void>;
   appendAiResolutionLog(log: DotCastAiResolutionLog): Promise<void>;
+  getResolverProfile(resolverId: string): Promise<DotCastResolverRegistryProfile | null>;
+  listResolverProfiles(limit?: number): Promise<DotCastResolverRegistryProfile[]>;
+  upsertResolverProfile(profile: DotCastResolverRegistryProfile): Promise<void>;
+  listResolverBondLedger(
+    resolverId: string,
+    limit?: number
+  ): Promise<DotCastResolverBondLedgerEntry[]>;
+  insertResolutionReview(review: DotCastResolutionReview): Promise<void>;
   getResolverPanel(panelId: string): Promise<DotCastResolverPanel | null>;
   getResolverAssignment(assignmentId: string): Promise<DotCastResolverAssignment | null>;
   getResolverCommit(assignmentId: string): Promise<DotCastResolverCommit | null>;
@@ -145,6 +190,9 @@ const DEFAULT_HIGH_STAKES_PANEL_SIZE = 7;
 const DEFAULT_RESOLVER_MIN_BOND_MINOR_UNITS = 50_000;
 const DEFAULT_RESOLVER_HIGH_STAKES_MIN_BOND_MINOR_UNITS = 250_000;
 const DEFAULT_RESOLVER_FEE_BPS = 200;
+const DEFAULT_RESOLVER_REPUTATION_BPS = 7500;
+const RESOLVER_REPUTATION_CORRECT_DELTA_BPS = 100;
+const RESOLVER_REPUTATION_MISS_DELTA_BPS = -250;
 
 const HARD_ORACLE_TERMS = [
   "official",
@@ -254,6 +302,169 @@ export class D1DotCastResolutionRouterStore implements DotCastResolutionRouterSt
         JSON.stringify(log.evidenceRefs),
         JSON.stringify(log.eventJson),
         log.createdAt
+      )
+      .run();
+  }
+
+  async getResolverProfile(resolverId: string): Promise<DotCastResolverRegistryProfile | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT resolver_id, identity_hash, status, display_name, reputation_bps,
+                bond_available_minor_units, stake_held_pool_ids_json, metadata_json,
+                created_at, updated_at
+         FROM dotcast_resolver_profiles
+         WHERE resolver_id = ?`
+      )
+      .bind(resolverId)
+      .first<Record<string, unknown>>();
+
+    return row ? resolverProfileFromRow(row) : null;
+  }
+
+  async listResolverProfiles(limit = 100): Promise<DotCastResolverRegistryProfile[]> {
+    const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
+    const result = await this.db
+      .prepare(
+        `SELECT resolver_id, identity_hash, status, display_name, reputation_bps,
+                bond_available_minor_units, stake_held_pool_ids_json, metadata_json,
+                created_at, updated_at
+         FROM dotcast_resolver_profiles
+         WHERE status = 'active'
+         ORDER BY reputation_bps DESC, bond_available_minor_units DESC, updated_at DESC
+         LIMIT ?`
+      )
+      .bind(safeLimit)
+      .all<Record<string, unknown>>();
+
+    return (result.results ?? []).map(resolverProfileFromRow);
+  }
+
+  async upsertResolverProfile(profile: DotCastResolverRegistryProfile): Promise<void> {
+    const existing = await this.getResolverProfile(profile.resolverId);
+
+    await this.db
+      .prepare(
+        `INSERT INTO dotcast_resolver_profiles (
+           resolver_id, identity_hash, status, display_name, reputation_bps,
+           bond_available_minor_units, stake_held_pool_ids_json, metadata_json,
+           created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(resolver_id) DO UPDATE SET
+           identity_hash = excluded.identity_hash,
+           status = excluded.status,
+           display_name = excluded.display_name,
+           reputation_bps = excluded.reputation_bps,
+           bond_available_minor_units = excluded.bond_available_minor_units,
+           stake_held_pool_ids_json = excluded.stake_held_pool_ids_json,
+           metadata_json = excluded.metadata_json,
+           updated_at = excluded.updated_at`
+      )
+      .bind(
+        profile.resolverId,
+        profile.identityHash,
+        profile.status,
+        profile.displayName,
+        profile.reputationBps,
+        profile.bondAvailableMinorUnits,
+        JSON.stringify(profile.stakeHeldPoolIds),
+        JSON.stringify(profile.metadata),
+        profile.createdAt,
+        profile.updatedAt
+      )
+      .run();
+
+    if (!existing) {
+      await this.insertResolverBondLedgerEntry({
+        entryId: `dotcast:e13:resolver-onboarded:${profile.resolverId}:${Date.parse(
+          profile.createdAt
+        )}`,
+        resolverId: profile.resolverId,
+        assignmentId: null,
+        panelId: null,
+        eventType: "resolver_onboarded",
+        deltaMinorUnits: 0,
+        balanceAfterMinorUnits: 0,
+        eventJson: {
+          identityHash: profile.identityHash,
+          status: profile.status
+        },
+        createdAt: profile.createdAt
+      });
+
+      if (profile.bondAvailableMinorUnits > 0) {
+        await this.insertResolverBondLedgerEntry({
+          entryId: `dotcast:e13:bond-deposit:${profile.resolverId}:${Date.parse(
+            profile.createdAt
+          )}`,
+          resolverId: profile.resolverId,
+          assignmentId: null,
+          panelId: null,
+          eventType: "bond_deposited",
+          deltaMinorUnits: profile.bondAvailableMinorUnits,
+          balanceAfterMinorUnits: profile.bondAvailableMinorUnits,
+          eventJson: {
+            source: "resolver_onboarding"
+          },
+          createdAt: profile.createdAt
+        });
+      }
+    } else if (existing.bondAvailableMinorUnits !== profile.bondAvailableMinorUnits) {
+      const deltaMinorUnits = profile.bondAvailableMinorUnits - existing.bondAvailableMinorUnits;
+      await this.insertResolverBondLedgerEntry({
+        entryId: `dotcast:e13:bond-adjustment:${profile.resolverId}:${Date.parse(
+          profile.updatedAt
+        )}`,
+        resolverId: profile.resolverId,
+        assignmentId: null,
+        panelId: null,
+        eventType: deltaMinorUnits > 0 ? "bond_deposited" : "manual_adjustment",
+        deltaMinorUnits,
+        balanceAfterMinorUnits: profile.bondAvailableMinorUnits,
+        eventJson: {
+          previousBalanceMinorUnits: existing.bondAvailableMinorUnits,
+          source: "resolver_profile_upsert"
+        },
+        createdAt: profile.updatedAt
+      });
+    }
+  }
+
+  async listResolverBondLedger(
+    resolverId: string,
+    limit = 100
+  ): Promise<DotCastResolverBondLedgerEntry[]> {
+    const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
+    const result = await this.db
+      .prepare(
+        `SELECT entry_id, resolver_id, assignment_id, panel_id, event_type, delta_minor_units,
+                balance_after_minor_units, event_json, created_at
+         FROM dotcast_resolver_bond_ledger
+         WHERE resolver_id = ?
+         ORDER BY created_at DESC, entry_id DESC
+         LIMIT ?`
+      )
+      .bind(resolverId, safeLimit)
+      .all<Record<string, unknown>>();
+
+    return (result.results ?? []).map(resolverBondLedgerFromRow);
+  }
+
+  async insertResolutionReview(review: DotCastResolutionReview): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT OR IGNORE INTO dotcast_resolution_reviews (
+           review_id, route_id, pool_id, market_id, status, reviewer_id, decision_json, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .bind(
+        review.reviewId,
+        review.routeId,
+        review.poolId,
+        review.marketId,
+        review.status,
+        review.reviewerId,
+        JSON.stringify(review.decisionJson),
+        review.createdAt
       )
       .run();
   }
@@ -382,6 +593,22 @@ export class D1DotCastResolutionRouterStore implements DotCastResolutionRouterSt
           assignment.assignedAt
         )
         .run();
+
+      await this.ensureResolverProfileForAssignment(assignment);
+      await this.applyResolverBondDelta({
+        entryId: `dotcast:e13:bond-lock:${assignment.assignmentId}`,
+        resolverId: assignment.resolverId,
+        assignmentId: assignment.assignmentId,
+        panelId: assignment.panelId,
+        eventType: "assignment_locked",
+        deltaMinorUnits: -assignment.bondMinorUnits,
+        eventJson: {
+          poolId: assignment.poolId,
+          routeId: assignment.routeId,
+          identityHash: assignment.identityHash
+        },
+        createdAt: assignment.assignedAt
+      });
     }
   }
 
@@ -446,6 +673,7 @@ export class D1DotCastResolutionRouterStore implements DotCastResolutionRouterSt
         payout.assignmentId,
         payout.matchedConsensus ? "paid" : "slashed"
       );
+      await this.applyResolverPayoutAccounting(payout);
     }
   }
 
@@ -460,6 +688,254 @@ export class D1DotCastResolutionRouterStore implements DotCastResolutionRouterSt
          WHERE assignment_id = ?`
       )
       .bind(status, assignmentId)
+      .run();
+  }
+
+  private async ensureResolverProfileForAssignment(
+    assignment: DotCastResolverAssignment
+  ): Promise<void> {
+    const existing = await this.getResolverProfile(assignment.resolverId);
+
+    if (existing) {
+      return;
+    }
+
+    await this.upsertResolverProfile({
+      resolverId: assignment.resolverId,
+      identityHash: assignment.identityHash,
+      status: "active",
+      displayName: null,
+      reputationBps: assignment.reputationBps,
+      bondAvailableMinorUnits: assignment.bondMinorUnits,
+      stakeHeldPoolIds: [],
+      metadata: {
+        createdFromAssignmentId: assignment.assignmentId,
+        createdFromPanelId: assignment.panelId
+      },
+      createdAt: assignment.assignedAt,
+      updatedAt: assignment.assignedAt
+    });
+  }
+
+  private async applyResolverPayoutAccounting(payout: DotCastResolverPayout): Promise<void> {
+    const assignment = await this.getResolverAssignment(payout.assignmentId);
+
+    if (!assignment) {
+      throw new DotCastResolutionRouterError(
+        "RESOLVER_ASSIGNMENT_NOT_FOUND",
+        "resolver payout accounting requires the persisted assignment",
+        404
+      );
+    }
+
+    if (payout.matchedConsensus) {
+      if (payout.bondReturnedMinorUnits > 0) {
+        await this.applyResolverBondDelta({
+          entryId: `dotcast:e13:bond-release:${payout.assignmentId}`,
+          resolverId: payout.resolverId,
+          assignmentId: payout.assignmentId,
+          panelId: payout.panelId,
+          eventType: "bond_released",
+          deltaMinorUnits: payout.bondReturnedMinorUnits,
+          eventJson: {
+            matchedConsensus: true
+          },
+          createdAt: payout.createdAt
+        });
+      }
+
+      if (payout.feePaidMinorUnits > 0) {
+        await this.applyResolverBondDelta({
+          entryId: `dotcast:e13:fee-credit:${payout.assignmentId}`,
+          resolverId: payout.resolverId,
+          assignmentId: payout.assignmentId,
+          panelId: payout.panelId,
+          eventType: "fee_credited",
+          deltaMinorUnits: payout.feePaidMinorUnits,
+          eventJson: {
+            matchedConsensus: true
+          },
+          createdAt: payout.createdAt
+        });
+      }
+    } else {
+      await this.applyResolverBondDelta({
+        entryId: `dotcast:e13:bond-slash:${payout.assignmentId}`,
+        resolverId: payout.resolverId,
+        assignmentId: payout.assignmentId,
+        panelId: payout.panelId,
+        eventType: "bond_slashed",
+        deltaMinorUnits: 0,
+        eventJson: {
+          matchedConsensus: false,
+          slashedBondMinorUnits: payout.slashedBondMinorUnits
+        },
+        createdAt: payout.createdAt
+      });
+    }
+
+    await this.applyResolverReputationDelta(assignment, payout.matchedConsensus, payout.createdAt);
+  }
+
+  private async applyResolverBondDelta(
+    entry: Omit<DotCastResolverBondLedgerEntry, "balanceAfterMinorUnits">
+  ): Promise<void> {
+    if (await this.bondLedgerEntryExists(entry.entryId)) {
+      return;
+    }
+
+    const profile = await this.getResolverProfile(entry.resolverId);
+
+    if (!profile) {
+      throw new DotCastResolutionRouterError(
+        "RESOLVER_PROFILE_NOT_FOUND",
+        "resolver bond ledger requires a registered resolver profile",
+        404
+      );
+    }
+
+    const balanceAfter = profile.bondAvailableMinorUnits + entry.deltaMinorUnits;
+
+    if (balanceAfter < 0) {
+      throw new DotCastResolutionRouterError(
+        "RESOLVER_BOND_INSUFFICIENT",
+        "resolver does not have enough available bond for this E13 assignment",
+        409
+      );
+    }
+
+    await this.db
+      .prepare(
+        `UPDATE dotcast_resolver_profiles
+         SET bond_available_minor_units = ?, updated_at = ?
+         WHERE resolver_id = ?`
+      )
+      .bind(balanceAfter, entry.createdAt, entry.resolverId)
+      .run();
+
+    await this.insertResolverBondLedgerEntry({
+      ...entry,
+      balanceAfterMinorUnits: balanceAfter
+    });
+  }
+
+  private async applyResolverReputationDelta(
+    assignment: DotCastResolverAssignment,
+    matchedConsensus: boolean,
+    now: string
+  ): Promise<void> {
+    const eventId = `dotcast:e13:reputation:${assignment.assignmentId}`;
+
+    if (await this.reputationEventExists(eventId)) {
+      return;
+    }
+
+    const profile = await this.getResolverProfile(assignment.resolverId);
+
+    if (!profile) {
+      throw new DotCastResolutionRouterError(
+        "RESOLVER_PROFILE_NOT_FOUND",
+        "resolver reputation accounting requires a registered resolver profile",
+        404
+      );
+    }
+
+    const deltaBps = matchedConsensus
+      ? RESOLVER_REPUTATION_CORRECT_DELTA_BPS
+      : RESOLVER_REPUTATION_MISS_DELTA_BPS;
+    const newReputationBps = clampBps(profile.reputationBps + deltaBps);
+
+    await this.db
+      .prepare(
+        `UPDATE dotcast_resolver_profiles
+         SET reputation_bps = ?, updated_at = ?
+         WHERE resolver_id = ?`
+      )
+      .bind(newReputationBps, now, assignment.resolverId)
+      .run();
+
+    await this.insertResolverReputationEvent({
+      eventId,
+      resolverId: assignment.resolverId,
+      assignmentId: assignment.assignmentId,
+      panelId: assignment.panelId,
+      previousReputationBps: profile.reputationBps,
+      newReputationBps,
+      deltaBps,
+      reason: matchedConsensus ? "settlement_consensus_match" : "settlement_consensus_miss",
+      eventJson: {
+        poolId: assignment.poolId,
+        routeId: assignment.routeId,
+        matchedConsensus
+      },
+      createdAt: now
+    });
+  }
+
+  private async bondLedgerEntryExists(entryId: string): Promise<boolean> {
+    const row = await this.db
+      .prepare(`SELECT entry_id FROM dotcast_resolver_bond_ledger WHERE entry_id = ?`)
+      .bind(entryId)
+      .first<Record<string, unknown>>();
+
+    return Boolean(row);
+  }
+
+  private async reputationEventExists(eventId: string): Promise<boolean> {
+    const row = await this.db
+      .prepare(`SELECT event_id FROM dotcast_resolver_reputation_events WHERE event_id = ?`)
+      .bind(eventId)
+      .first<Record<string, unknown>>();
+
+    return Boolean(row);
+  }
+
+  private async insertResolverBondLedgerEntry(
+    entry: DotCastResolverBondLedgerEntry
+  ): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT OR IGNORE INTO dotcast_resolver_bond_ledger (
+           entry_id, resolver_id, assignment_id, panel_id, event_type, delta_minor_units,
+           balance_after_minor_units, event_json, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .bind(
+        entry.entryId,
+        entry.resolverId,
+        entry.assignmentId,
+        entry.panelId,
+        entry.eventType,
+        entry.deltaMinorUnits,
+        entry.balanceAfterMinorUnits,
+        JSON.stringify(entry.eventJson),
+        entry.createdAt
+      )
+      .run();
+  }
+
+  private async insertResolverReputationEvent(
+    event: DotCastResolverReputationEvent
+  ): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT OR IGNORE INTO dotcast_resolver_reputation_events (
+           event_id, resolver_id, assignment_id, panel_id, previous_reputation_bps,
+           new_reputation_bps, delta_bps, reason, event_json, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .bind(
+        event.eventId,
+        event.resolverId,
+        event.assignmentId,
+        event.panelId,
+        event.previousReputationBps,
+        event.newReputationBps,
+        event.deltaBps,
+        event.reason,
+        JSON.stringify(event.eventJson),
+        event.createdAt
+      )
       .run();
   }
 }
@@ -526,6 +1002,65 @@ export function readDotCastResolutionRouterStatus(
     resolverHighStakesMinBondMinorUnits,
     resolverFeeBps,
     guards
+  };
+}
+
+export function buildDotCastResolverRegistryProfile(
+  input: UpsertDotCastResolverProfileInput
+): DotCastResolverRegistryProfile {
+  const now = input.now ?? new Date().toISOString();
+  const reputationBps = input.reputationBps ?? DEFAULT_RESOLVER_REPUTATION_BPS;
+  const bondAvailableMinorUnits = input.bondAvailableMinorUnits ?? 0;
+
+  assertBps(reputationBps, "reputationBps");
+  assertNonNegativeInteger(bondAvailableMinorUnits, "bondAvailableMinorUnits");
+
+  return {
+    resolverId: requireNonEmptyInput(input.resolverId, "resolverId"),
+    identityHash: requireNonEmptyInput(input.identityHash, "identityHash"),
+    status: input.status ?? "active",
+    displayName: input.displayName?.trim() || null,
+    reputationBps,
+    bondAvailableMinorUnits,
+    stakeHeldPoolIds: uniqueStrings(input.stakeHeldPoolIds ?? []),
+    metadata: input.metadata ?? {},
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+export function applyDotCastResolutionReviewDecision(
+  input: ApplyDotCastResolutionReviewDecisionInput
+): DotCastResolutionReviewDecisionResult {
+  const now = input.now ?? new Date().toISOString();
+  const reviewId =
+    input.reviewId ??
+    `dotcast:e13:review:${input.route.routeId}:${input.action}:${Date.parse(now)}`;
+  const metadata = input.metadata ?? {};
+  const resultingRoute = buildReviewedRoute(input, now);
+  const status = reviewStatusForAction(input.action);
+  const review: DotCastResolutionReview = {
+    reviewId,
+    routeId: input.route.routeId,
+    poolId: input.route.poolId,
+    marketId: input.route.marketId,
+    status,
+    reviewerId: input.reviewerId?.trim() || null,
+    decisionJson: {
+      action: input.action,
+      originalStatus: input.route.status,
+      resultingRouteId: resultingRoute?.routeId ?? null,
+      blockedReason: input.blockedReason ?? null,
+      steeringPrompt: input.steeringPrompt ?? null,
+      metadata
+    },
+    createdAt: now
+  };
+
+  return {
+    review,
+    resultingRoute,
+    canOpenRealMoney: resultingRoute?.status === "locked"
   };
 }
 
@@ -924,6 +1459,95 @@ export function settleDotCastResolverPanel(
   };
 }
 
+function buildReviewedRoute(
+  input: ApplyDotCastResolutionReviewDecisionInput,
+  now: string
+): DotCastResolutionRoute {
+  const resolutionStatement = input.resolutionStatement?.trim() || input.route.resolutionStatement;
+  const sources = input.sources && input.sources.length > 0 ? input.sources : input.route.sources;
+  const reviewEvent = {
+    operatorReview: {
+      action: input.action,
+      reviewerId: input.reviewerId ?? null,
+      reviewedAt: now,
+      metadata: input.metadata ?? {}
+    }
+  };
+
+  if (input.action === "approve") {
+    if (sources.length === 0) {
+      throw new DotCastResolutionRouterError(
+        "RESOLUTION_REVIEW_SOURCE_REQUIRED",
+        "operator approval requires at least one E13 resolution source",
+        422
+      );
+    }
+
+    return {
+      ...input.route,
+      routeId: reviewedRouteId(input.route.routeId, "approved", now),
+      status: "locked",
+      confidenceBps: Math.max(input.route.confidenceBps, 8000),
+      resolutionStatement,
+      sources,
+      sourceAvailable: true,
+      autoResolvable: false,
+      reviewRequired: false,
+      pointsOnly: false,
+      blockedReason: null,
+      steeringPrompt: null,
+      lockedAt: now,
+      createdAt: now,
+      eventJson: {
+        ...input.route.eventJson,
+        ...reviewEvent
+      }
+    };
+  }
+
+  if (input.action === "deny") {
+    return {
+      ...input.route,
+      routeId: reviewedRouteId(input.route.routeId, "denied", now),
+      status: "blocked",
+      autoResolvable: false,
+      reviewRequired: true,
+      pointsOnly: false,
+      blockedReason: input.blockedReason ?? "operator denied the E13 resolution route",
+      steeringPrompt: input.steeringPrompt ?? input.route.steeringPrompt,
+      lockedAt: null,
+      createdAt: now,
+      eventJson: {
+        ...input.route.eventJson,
+        ...reviewEvent
+      }
+    };
+  }
+
+  return {
+    ...input.route,
+    routeId: reviewedRouteId(input.route.routeId, "reshaped", now),
+    status: "review_required",
+    confidenceBps: Math.min(input.route.confidenceBps, 7900),
+    resolutionStatement,
+    sources,
+    sourceAvailable: sources.length > 0,
+    autoResolvable: false,
+    reviewRequired: true,
+    pointsOnly: false,
+    blockedReason: null,
+    steeringPrompt:
+      input.steeringPrompt ??
+      "Review the reshaped E13 route before opening this market to real-money pools.",
+    lockedAt: null,
+    createdAt: now,
+    eventJson: {
+      ...input.route.eventJson,
+      ...reviewEvent
+    }
+  };
+}
+
 function normalizeExplicitRoute(
   route: DotCastResolutionRoute,
   marketId: string,
@@ -968,6 +1592,41 @@ function routeFromRow(row: Record<string, unknown>): DotCastResolutionRoute {
     classifierVersion: requireText(row.classifier_version, "classifier_version"),
     createdAt: requireText(row.created_at, "created_at"),
     eventJson: parseRecord(row.event_json, "event_json")
+  };
+}
+
+function resolverProfileFromRow(row: Record<string, unknown>): DotCastResolverRegistryProfile {
+  return {
+    resolverId: requireText(row.resolver_id, "resolver_id"),
+    identityHash: requireText(row.identity_hash, "identity_hash"),
+    status: parseResolverStatus(row.status),
+    displayName: nullableText(row.display_name),
+    reputationBps: requireInteger(row.reputation_bps, "reputation_bps"),
+    bondAvailableMinorUnits: requireInteger(
+      row.bond_available_minor_units,
+      "bond_available_minor_units"
+    ),
+    stakeHeldPoolIds: parseStringArray(row.stake_held_pool_ids_json, "stake_held_pool_ids_json"),
+    metadata: parseRecord(row.metadata_json, "metadata_json"),
+    createdAt: requireText(row.created_at, "created_at"),
+    updatedAt: requireText(row.updated_at, "updated_at")
+  };
+}
+
+function resolverBondLedgerFromRow(row: Record<string, unknown>): DotCastResolverBondLedgerEntry {
+  return {
+    entryId: requireText(row.entry_id, "entry_id"),
+    resolverId: requireText(row.resolver_id, "resolver_id"),
+    assignmentId: nullableText(row.assignment_id),
+    panelId: nullableText(row.panel_id),
+    eventType: parseResolverBondLedgerEventType(row.event_type),
+    deltaMinorUnits: requireInteger(row.delta_minor_units, "delta_minor_units"),
+    balanceAfterMinorUnits: requireInteger(
+      row.balance_after_minor_units,
+      "balance_after_minor_units"
+    ),
+    eventJson: parseRecord(row.event_json, "event_json"),
+    createdAt: requireText(row.created_at, "created_at")
   };
 }
 
@@ -1073,6 +1732,30 @@ function parseRecord(value: unknown, label: string): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
+function parseStringArray(value: unknown, label: string): string[] {
+  const parsed = parseJson(value, label);
+
+  if (!Array.isArray(parsed)) {
+    throw new DotCastResolutionRouterError(
+      "RESOLUTION_ROUTE_ROW_INVALID",
+      `${label} must decode to an array`,
+      500
+    );
+  }
+
+  return parsed.map((item, index) => {
+    if (typeof item !== "string") {
+      throw new DotCastResolutionRouterError(
+        "RESOLUTION_ROUTE_ROW_INVALID",
+        `${label}[${index}] must be a string`,
+        500
+      );
+    }
+
+    return item;
+  });
+}
+
 function parseJson(value: unknown, label: string): unknown {
   if (typeof value !== "string") {
     throw new DotCastResolutionRouterError(
@@ -1143,6 +1826,40 @@ function parseSourceKind(value: unknown): DotCastResolutionSource["kind"] {
   throw new DotCastResolutionRouterError(
     "RESOLUTION_ROUTE_ROW_INVALID",
     "stored resolution source kind is invalid",
+    500
+  );
+}
+
+function parseResolverStatus(value: unknown): DotCastResolverStatus {
+  if (value === "active" || value === "suspended" || value === "archived") {
+    return value;
+  }
+
+  throw new DotCastResolutionRouterError(
+    "RESOLUTION_ROUTE_ROW_INVALID",
+    "stored resolver status is invalid",
+    500
+  );
+}
+
+function parseResolverBondLedgerEventType(
+  value: unknown
+): DotCastResolverBondLedgerEntry["eventType"] {
+  if (
+    value === "resolver_onboarded" ||
+    value === "bond_deposited" ||
+    value === "assignment_locked" ||
+    value === "bond_released" ||
+    value === "bond_slashed" ||
+    value === "fee_credited" ||
+    value === "manual_adjustment"
+  ) {
+    return value;
+  }
+
+  throw new DotCastResolutionRouterError(
+    "RESOLUTION_ROUTE_ROW_INVALID",
+    "stored resolver bond ledger event type is invalid",
     500
   );
 }
@@ -1224,6 +1941,24 @@ function routeIdFor(marketId: string, poolId: string | null, now: string): strin
   return `dotcast:e13:route:${poolId ?? marketId}:${Date.parse(now)}`;
 }
 
+function reviewedRouteId(routeId: string, action: "approved" | "denied" | "reshaped", now: string) {
+  return `${routeId}:review:${action}:${Date.parse(now)}`;
+}
+
+function reviewStatusForAction(
+  action: DotCastResolutionReviewAction
+): DotCastResolutionReview["status"] {
+  if (action === "approve") {
+    return "approved";
+  }
+
+  if (action === "deny") {
+    return "denied";
+  }
+
+  return "reshaped";
+}
+
 function panelSizeForStake(
   status: DotCastResolutionRouterStatus,
   estimatedStakeMinorUnits: number
@@ -1293,6 +2028,34 @@ async function resolverCommitHash(outcome: Side | "invalid", salt: string): Prom
 
 function includesAny(value: string, terms: string[]): boolean {
   return terms.some((term) => value.includes(term));
+}
+
+function requireNonEmptyInput(value: string, label: string): string {
+  const trimmed = value.trim();
+
+  if (trimmed.length === 0) {
+    throw new DotCastResolutionRouterError("INVALID_RESOLVER_PROFILE", `${label} is required`, 400);
+  }
+
+  return trimmed;
+}
+
+function assertNonNegativeInteger(value: number, label: string): void {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new DotCastResolutionRouterError(
+      "INVALID_RESOLVER_PROFILE",
+      `${label} must be a non-negative integer`,
+      400
+    );
+  }
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))];
+}
+
+function clampBps(value: number): number {
+  return Math.max(0, Math.min(10_000, value));
 }
 
 function readBps(value: string | undefined, fallback: number): number {

@@ -28,6 +28,8 @@ import {
   createDotCastSponsoredQuestion,
   createDotCastReferralCode,
   createMuxLiveStream,
+  applyDotCastResolutionReviewDecision,
+  buildDotCastResolverRegistryProfile,
   fetchDotCastReferencePrice,
   impliedProb,
   listDotCastSponsoredQuestionFeed,
@@ -74,6 +76,7 @@ import {
   type DotCastPoolSnapshot,
   type DotCastReferencePriceFetchResult,
   type DotCastResolutionOutcome,
+  type DotCastResolutionReviewAction,
   type DotCastResolutionRoute,
   type DotCastResolutionSource,
   type DotCastCreatorKycStatus,
@@ -81,6 +84,7 @@ import {
   type DotCastResolverCommit,
   type DotCastResolverPanel,
   type DotCastResolverProfile,
+  type DotCastResolverStatus,
   type DotCastResolverReveal,
   type DotCastCreatorSeedMode,
   type DotCastCreatorStatus,
@@ -184,6 +188,33 @@ interface DotCastResolverSettleRequest {
   reveals?: unknown;
   settlePool?: unknown;
   streamId?: unknown;
+  now?: unknown;
+}
+
+interface DotCastResolverProfileRequest {
+  resolverId?: unknown;
+  identityHash?: unknown;
+  displayName?: unknown;
+  reputationBps?: unknown;
+  bondAvailableMinorUnits?: unknown;
+  stakeHeldPoolIds?: unknown;
+  status?: unknown;
+  metadata?: unknown;
+  now?: unknown;
+}
+
+interface DotCastResolutionReviewDecisionRequest {
+  routeId?: unknown;
+  route?: unknown;
+  action?: unknown;
+  reviewerId?: unknown;
+  resolutionStatement?: unknown;
+  sourceBindings?: unknown;
+  sources?: unknown;
+  blockedReason?: unknown;
+  steeringPrompt?: unknown;
+  metadata?: unknown;
+  reviewId?: unknown;
   now?: unknown;
 }
 
@@ -526,7 +557,10 @@ export function readDotCastHealth(env?: Env): Response {
       "POST /api/dotcast/referrals/claims",
       "POST /api/dotcast/referrals/:id/qualify",
       "GET /api/dotcast/resolution-router/status",
+      "POST /api/dotcast/resolution-router/resolvers/profiles",
+      "GET /api/dotcast/resolution-router/resolvers/profiles/:id",
       "POST /api/dotcast/resolution-router/classify",
+      "POST /api/dotcast/resolution-router/reviews/decision",
       "POST /api/dotcast/resolution-router/ai-perception/resolve",
       "POST /api/dotcast/resolution-router/resolvers/panel",
       "POST /api/dotcast/resolution-router/resolvers/commit",
@@ -1414,6 +1448,112 @@ export function readDotCastResolutionRouterReadiness(env: Env): Response {
   });
 }
 
+export async function upsertDotCastResolverProfileRoute(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastResolverProfileRequest>(request);
+    const profile = buildDotCastResolverRegistryProfile({
+      resolverId: parseRequiredString(body?.resolverId, "resolverId"),
+      identityHash: parseRequiredString(body?.identityHash, "identityHash"),
+      displayName: parseNullableString(body?.displayName, "displayName"),
+      reputationBps:
+        body?.reputationBps === undefined || body.reputationBps === null
+          ? undefined
+          : parseBps(body.reputationBps, "reputationBps"),
+      bondAvailableMinorUnits:
+        body?.bondAvailableMinorUnits === undefined || body.bondAvailableMinorUnits === null
+          ? undefined
+          : parseMinorUnits(body.bondAvailableMinorUnits, "bondAvailableMinorUnits", true),
+      stakeHeldPoolIds: parseOptionalStringArray(body?.stakeHeldPoolIds, "stakeHeldPoolIds"),
+      status: parseOptionalResolverStatus(body?.status),
+      metadata: parseMetadataRecord(body?.metadata),
+      now: parseOptionalString(body?.now, "now")
+    });
+    const store = resolutionRouterStore(env);
+
+    await store.upsertResolverProfile(profile);
+
+    return json(
+      {
+        ok: true,
+        milestone: "E13",
+        resolutionRouter: {
+          profile,
+          bondLedger: await store.listResolverBondLedger(profile.resolverId, 25)
+        }
+      },
+      201
+    );
+  } catch (error) {
+    return resolutionRouterErrorResponse(error);
+  }
+}
+
+export async function readDotCastResolverProfileRoute(
+  resolverId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const store = resolutionRouterStore(env);
+    const profile = await requireResolverProfile(
+      env,
+      parseRequiredString(resolverId, "resolverId")
+    );
+    const limit = parseQueryLimit(request, 50);
+
+    return json({
+      ok: true,
+      milestone: "E13",
+      resolutionRouter: {
+        profile,
+        bondLedger: await store.listResolverBondLedger(profile.resolverId, limit)
+      }
+    });
+  } catch (error) {
+    return resolutionRouterErrorResponse(error);
+  }
+}
+
+export async function applyDotCastResolutionReviewDecisionRoute(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastResolutionReviewDecisionRequest>(request);
+    const routeId = parseOptionalString(body?.routeId, "routeId");
+    const route = body?.route
+      ? parseResolutionRouteObject(body.route, "route")
+      : await requireResolutionRoute(env, parseRequiredString(routeId, "routeId"));
+    const result = applyDotCastResolutionReviewDecision({
+      route,
+      action: parseResolutionReviewAction(body?.action),
+      reviewerId: parseNullableString(body?.reviewerId, "reviewerId"),
+      reviewId: parseOptionalString(body?.reviewId, "reviewId"),
+      resolutionStatement: parseNullableString(body?.resolutionStatement, "resolutionStatement"),
+      sources: parseResolutionSources(body?.sources ?? body?.sourceBindings),
+      blockedReason: parseNullableString(body?.blockedReason, "blockedReason"),
+      steeringPrompt: parseNullableString(body?.steeringPrompt, "steeringPrompt"),
+      metadata: parseMetadataRecord(body?.metadata),
+      now: parseOptionalString(body?.now, "now")
+    });
+    const store = resolutionRouterStore(env);
+
+    await maybePersistResolutionRoute(env, result.resultingRoute);
+    await store.insertResolutionReview(result.review);
+
+    return json({
+      ok: true,
+      milestone: "E13",
+      resolutionRouter: result
+    });
+  } catch (error) {
+    return resolutionRouterErrorResponse(error);
+  }
+}
+
 export async function classifyDotCastResolutionRouterRequest(
   request: Request,
   env: Env
@@ -1501,23 +1641,32 @@ export async function resolveDotCastAiPerceptionRoute(
 export async function planDotCastResolverPanelRoute(request: Request, env: Env): Promise<Response> {
   try {
     const body = await readJsonBody<DotCastResolverPanelRequest>(request);
+    const store = resolutionRouterStore(env);
+    const candidates =
+      body?.candidates === undefined || body.candidates === null
+        ? await store.listResolverProfiles()
+        : parseResolverProfiles(body.candidates);
     const panel = selectDotCastResolverPanel(env, {
       poolId: parseRequiredString(body?.poolId, "poolId"),
       route: parseResolutionRouteObject(body?.route, "route"),
-      candidates: parseResolverProfiles(body?.candidates),
+      candidates,
       positionUserIds: parseOptionalStringArray(body?.positionUserIds, "positionUserIds") ?? [],
       estimatedStakeMinorUnits: parseOptionalMinorUnits(body?.estimatedStake, "estimatedStake"),
       panelId: parseOptionalString(body?.panelId, "panelId"),
       now: parseOptionalString(body?.now, "now")
     });
 
-    await maybePersistResolverPanel(env, panel);
+    await store.insertResolverPanel(panel);
 
     return json({
       ok: true,
       milestone: "E13",
       resolutionRouter: {
         panel,
+        candidateSource:
+          body?.candidates === undefined || body.candidates === null
+            ? "resolver_registry"
+            : "request",
         payForCorrectness: true,
         stakeExcluded: true,
         commitRevealRequired: true
@@ -2557,6 +2706,26 @@ function parseResolverProfiles(value: unknown): DotCastResolverProfile[] {
   });
 }
 
+function parseOptionalResolverStatus(value: unknown): DotCastResolverStatus | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (value === "active" || value === "suspended" || value === "archived") {
+    return value;
+  }
+
+  throw new Error("resolver status must be active, suspended, or archived");
+}
+
+function parseResolutionReviewAction(value: unknown): DotCastResolutionReviewAction {
+  if (value === "approve" || value === "deny" || value === "reshape") {
+    return value;
+  }
+
+  throw new Error("review action must be approve, deny, or reshape");
+}
+
 function parseResolverPanel(value: unknown, label: string): DotCastResolverPanel {
   const record = parseObjectRecord(value, label);
   return {
@@ -2987,6 +3156,22 @@ function parseNullableString(value: unknown, label: string): string | null {
   }
 
   return parseOptionalString(value, label) ?? null;
+}
+
+function parseQueryLimit(request: Request, fallback: number): number {
+  const raw = new URL(request.url).searchParams.get("limit");
+
+  if (!raw) {
+    return fallback;
+  }
+
+  const parsed = Number(raw);
+
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new Error("limit must be a positive integer");
+  }
+
+  return Math.min(parsed, 500);
 }
 
 function parseOptionalBoolean(value: unknown, label: string): boolean | undefined {
@@ -3673,6 +3858,23 @@ async function requireResolutionRoute(env: Env, routeId: string): Promise<DotCas
   }
 
   return route;
+}
+
+async function requireResolverProfile(
+  env: Env,
+  resolverId: string
+): Promise<DotCastResolverProfile> {
+  const profile = await resolutionRouterStore(env).getResolverProfile(resolverId);
+
+  if (!profile) {
+    throw new DotCastResolutionRouterError(
+      "RESOLVER_PROFILE_NOT_FOUND",
+      "E13 resolver profile was not found",
+      404
+    );
+  }
+
+  return profile;
 }
 
 async function requireResolverPanel(env: Env, panelId: string): Promise<DotCastResolverPanel> {

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   applyDotCastPoolResolution,
+  applyDotCastResolutionReviewDecisionRoute,
   archiveDotCastLivestream,
   attachDotCastLivestreamPool,
   classifyDotCastResolutionRouterRequest,
@@ -24,6 +25,7 @@ import {
   recordDotCastLivestreamPresence,
   readDotCastPoolLiveOdds,
   readDotCastHealth,
+  readDotCastResolverProfileRoute,
   requestDotCastDevnetWithdrawal,
   revealDotCastResolverRoute,
   resumeDotCastLivestream,
@@ -32,6 +34,7 @@ import {
   settleDotCastResolverPanelRoute,
   simulateDotCastSettlement,
   startDotCastLivestream,
+  upsertDotCastResolverProfileRoute,
   voidDotCastPool
 } from "../../src/gateway/DotCastGateway";
 import type { Env } from "../../src/types";
@@ -97,6 +100,93 @@ describe("dotCast gateway handlers", () => {
     });
   });
 
+  it("records E13 operator review decisions as append-only reviewed routes", async () => {
+    const d1 = new FakeResolutionRouterD1();
+    const route = {
+      ...lockedE13Route("pool-e13-review", "dotcast:e13-review"),
+      routeId: "route:pool-e13-review",
+      status: "review_required",
+      confidenceBps: 6200,
+      sourceAvailable: false,
+      autoResolvable: false,
+      reviewRequired: true,
+      lockedAt: null
+    };
+    d1.seedRoute(route);
+    const env = { TRADING_DB: d1 as unknown as D1Database } as Env;
+
+    const approved = await applyDotCastResolutionReviewDecisionRoute(
+      jsonRequest("/api/dotcast/resolution-router/reviews/decision", {
+        routeId: route.routeId,
+        action: "approve",
+        reviewerId: "operator-1",
+        resolutionStatement: "Resolve from the operator-approved scoreboard source.",
+        sourceBindings: [
+          {
+            kind: "external_oracle",
+            label: "Official scoreboard",
+            url: "https://example.com/scoreboard",
+            required: true
+          }
+        ],
+        now: "2099-06-25T17:30:00.000Z"
+      }),
+      env
+    );
+    const approvedBody = (await approved.json()) as Record<string, unknown>;
+
+    expect(approved.status).toBe(200);
+    expect(approvedBody).toMatchObject({
+      ok: true,
+      milestone: "E13",
+      resolutionRouter: {
+        review: {
+          status: "approved",
+          reviewerId: "operator-1"
+        },
+        resultingRoute: {
+          status: "locked",
+          lockedAt: "2099-06-25T17:30:00.000Z",
+          reviewRequired: false
+        },
+        canOpenRealMoney: true
+      }
+    });
+
+    const denied = await applyDotCastResolutionReviewDecisionRoute(
+      jsonRequest("/api/dotcast/resolution-router/reviews/decision", {
+        routeId: route.routeId,
+        action: "deny",
+        reviewerId: "operator-1",
+        blockedReason: "Source could not be verified.",
+        now: "2099-06-25T17:31:00.000Z"
+      }),
+      env
+    );
+    const reshaped = await applyDotCastResolutionReviewDecisionRoute(
+      jsonRequest("/api/dotcast/resolution-router/reviews/decision", {
+        routeId: route.routeId,
+        action: "reshape",
+        reviewerId: "operator-1",
+        resolutionStatement: "Resolve only if the official scoreboard publishes by close.",
+        steeringPrompt: "Ask the creator to confirm the official source before launch.",
+        now: "2099-06-25T17:32:00.000Z"
+      }),
+      env
+    );
+
+    expect(denied.status).toBe(200);
+    expect(reshaped.status).toBe(200);
+    expect([...d1.reviews.values()].map((row) => row.status)).toEqual([
+      "approved",
+      "denied",
+      "reshaped"
+    ]);
+    expect([...d1.routes.values()].map((row) => row.status)).toEqual(
+      expect.arrayContaining(["review_required", "locked", "blocked"])
+    );
+  });
+
   it("settles pools from DB-backed E13 resolver consensus", async () => {
     const d1 = new FakeResolutionRouterD1();
     const route = lockedE13Route("pool-e13-consensus", "dotcast:e13-consensus");
@@ -147,12 +237,21 @@ describe("dotCast gateway handlers", () => {
       } as unknown as DurableObjectNamespace
     } as Env;
 
+    for (const candidate of resolverCandidates()) {
+      await upsertDotCastResolverProfileRoute(
+        jsonRequest("/api/dotcast/resolution-router/resolvers/profiles", {
+          ...candidate,
+          now: "2099-06-25T16:55:00.000Z"
+        }),
+        env
+      );
+    }
+
     const panelResponse = await planDotCastResolverPanelRoute(
       jsonRequest("/api/dotcast/resolution-router/resolvers/panel", {
         poolId: "pool-e13-consensus",
         route,
         panelId: "panel-e13-consensus",
-        candidates: resolverCandidates(),
         now: "2099-06-25T17:00:00.000Z"
       }),
       env
@@ -202,6 +301,9 @@ describe("dotCast gateway handlers", () => {
       milestone: "E13",
       resolutionRouter: {
         consensusOutcome: "yes",
+        panel: {
+          panelId: "panel-e13-consensus"
+        },
         poolResolution: {
           ok: true,
           sourceKind: "resolver_consensus",
@@ -235,6 +337,56 @@ describe("dotCast gateway handlers", () => {
     ]);
     expect(d1.assignments.get(String(assignments[0].assignmentId))?.status).toBe("paid");
     expect(d1.assignments.get(String(assignments[2].assignmentId))?.status).toBe("slashed");
+
+    const matchedResolverIds = assignments
+      .slice(0, 2)
+      .map((assignment) => String(assignment.resolverId));
+    const missedResolverId = String(assignments[2].resolverId);
+    const matchedProfiles = matchedResolverIds.map((resolverId) =>
+      d1.resolverProfiles.get(resolverId)
+    );
+    const missedProfile = d1.resolverProfiles.get(missedResolverId);
+
+    expect(panelBody).toMatchObject({
+      resolutionRouter: {
+        candidateSource: "resolver_registry"
+      }
+    });
+    expect(matchedProfiles).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ bond_available_minor_units: 100_000 }),
+        expect.objectContaining({ bond_available_minor_units: 100_000 })
+      ])
+    );
+    expect(missedProfile).toMatchObject({
+      bond_available_minor_units: 50_000
+    });
+    expect(
+      [...d1.bondLedger.values()].filter((row) => row.event_type === "bond_slashed")
+    ).toHaveLength(1);
+
+    const profileResponse = await readDotCastResolverProfileRoute(
+      missedResolverId,
+      jsonRequest(`/api/dotcast/resolution-router/resolvers/profiles/${missedResolverId}?limit=10`),
+      env
+    );
+    const profileBody = (await profileResponse.json()) as Record<string, unknown>;
+
+    expect(profileResponse.status).toBe(200);
+    expect(profileBody).toMatchObject({
+      milestone: "E13",
+      resolutionRouter: {
+        profile: {
+          resolverId: missedResolverId,
+          reputationBps: Number(missedProfile?.reputation_bps)
+        },
+        bondLedger: expect.arrayContaining([
+          expect.objectContaining({
+            eventType: "bond_slashed"
+          })
+        ])
+      }
+    });
   });
 
   it("previews live odds and payout from integer minor-unit pools", async () => {
@@ -1430,6 +1582,10 @@ class FakeResolutionRouterD1 {
   readonly commits = new Map<string, Record<string, unknown>>();
   readonly reveals = new Map<string, Record<string, unknown>>();
   readonly payouts = new Map<string, Record<string, unknown>>();
+  readonly resolverProfiles = new Map<string, Record<string, unknown>>();
+  readonly bondLedger = new Map<string, Record<string, unknown>>();
+  readonly reputationEvents = new Map<string, Record<string, unknown>>();
+  readonly reviews = new Map<string, Record<string, unknown>>();
 
   seedRoute(route: Record<string, unknown>): void {
     this.routes.set(String(route.routeId), routeRow(route));
@@ -1453,6 +1609,18 @@ class FakeResolutionRouterD1 {
       return this.routes.get(String(params[0])) ?? null;
     }
 
+    if (query.includes("FROM dotcast_resolver_profiles")) {
+      return this.resolverProfiles.get(String(params[0])) ?? null;
+    }
+
+    if (query.includes("FROM dotcast_resolver_bond_ledger")) {
+      return this.bondLedger.get(String(params[0])) ?? null;
+    }
+
+    if (query.includes("FROM dotcast_resolver_reputation_events")) {
+      return this.reputationEvents.get(String(params[0])) ?? null;
+    }
+
     if (query.includes("FROM dotcast_resolver_panels")) {
       return this.panels.get(String(params[0])) ?? null;
     }
@@ -1469,6 +1637,14 @@ class FakeResolutionRouterD1 {
   }
 
   private all(query: string, params: unknown[]): Record<string, unknown>[] {
+    if (query.includes("FROM dotcast_resolver_profiles")) {
+      return [...this.resolverProfiles.values()].filter((row) => row.status === "active");
+    }
+
+    if (query.includes("FROM dotcast_resolver_bond_ledger")) {
+      return [...this.bondLedger.values()].filter((row) => row.resolver_id === params[0]);
+    }
+
     if (query.includes("FROM dotcast_resolver_assignments")) {
       return [...this.assignments.values()].filter((row) => row.panel_id === params[0]);
     }
@@ -1484,6 +1660,73 @@ class FakeResolutionRouterD1 {
     if (query.includes("INSERT OR IGNORE INTO dotcast_resolution_routes")) {
       if (!this.routes.has(String(params[0]))) {
         this.routes.set(String(params[0]), routeParamsToRow(params));
+      }
+      return;
+    }
+
+    if (query.includes("INSERT INTO dotcast_resolver_profiles")) {
+      this.resolverProfiles.set(String(params[0]), {
+        resolver_id: params[0],
+        identity_hash: params[1],
+        status: params[2],
+        display_name: params[3],
+        reputation_bps: params[4],
+        bond_available_minor_units: params[5],
+        stake_held_pool_ids_json: params[6],
+        metadata_json: params[7],
+        created_at: params[8],
+        updated_at: params[9]
+      });
+      return;
+    }
+
+    if (query.includes("INSERT OR IGNORE INTO dotcast_resolver_bond_ledger")) {
+      if (!this.bondLedger.has(String(params[0]))) {
+        this.bondLedger.set(String(params[0]), {
+          entry_id: params[0],
+          resolver_id: params[1],
+          assignment_id: params[2],
+          panel_id: params[3],
+          event_type: params[4],
+          delta_minor_units: params[5],
+          balance_after_minor_units: params[6],
+          event_json: params[7],
+          created_at: params[8]
+        });
+      }
+      return;
+    }
+
+    if (query.includes("INSERT OR IGNORE INTO dotcast_resolver_reputation_events")) {
+      if (!this.reputationEvents.has(String(params[0]))) {
+        this.reputationEvents.set(String(params[0]), {
+          event_id: params[0],
+          resolver_id: params[1],
+          assignment_id: params[2],
+          panel_id: params[3],
+          previous_reputation_bps: params[4],
+          new_reputation_bps: params[5],
+          delta_bps: params[6],
+          reason: params[7],
+          event_json: params[8],
+          created_at: params[9]
+        });
+      }
+      return;
+    }
+
+    if (query.includes("INSERT OR IGNORE INTO dotcast_resolution_reviews")) {
+      if (!this.reviews.has(String(params[0]))) {
+        this.reviews.set(String(params[0]), {
+          review_id: params[0],
+          route_id: params[1],
+          pool_id: params[2],
+          market_id: params[3],
+          status: params[4],
+          reviewer_id: params[5],
+          decision_json: params[6],
+          created_at: params[7]
+        });
       }
       return;
     }
@@ -1561,6 +1804,32 @@ class FakeResolutionRouterD1 {
           fee_paid_minor_units: params[5],
           slashed_bond_minor_units: params[6],
           created_at: params[7]
+        });
+      }
+      return;
+    }
+
+    if (query.includes("UPDATE dotcast_resolver_profiles") && query.includes("bond_available")) {
+      const resolverId = String(params[2]);
+      const existing = this.resolverProfiles.get(resolverId);
+      if (existing) {
+        this.resolverProfiles.set(resolverId, {
+          ...existing,
+          bond_available_minor_units: params[0],
+          updated_at: params[1]
+        });
+      }
+      return;
+    }
+
+    if (query.includes("UPDATE dotcast_resolver_profiles") && query.includes("reputation_bps")) {
+      const resolverId = String(params[2]);
+      const existing = this.resolverProfiles.get(resolverId);
+      if (existing) {
+        this.resolverProfiles.set(resolverId, {
+          ...existing,
+          reputation_bps: params[0],
+          updated_at: params[1]
         });
       }
       return;

@@ -100,6 +100,50 @@ export interface DotCastResolverProfile {
   stakeHeldPoolIds: string[];
 }
 
+export type DotCastResolverStatus = "active" | "suspended" | "archived";
+
+export interface DotCastResolverRegistryProfile extends DotCastResolverProfile {
+  status: DotCastResolverStatus;
+  displayName: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type DotCastResolverBondLedgerEventType =
+  | "resolver_onboarded"
+  | "bond_deposited"
+  | "assignment_locked"
+  | "bond_released"
+  | "bond_slashed"
+  | "fee_credited"
+  | "manual_adjustment";
+
+export interface DotCastResolverBondLedgerEntry {
+  entryId: string;
+  resolverId: string;
+  assignmentId: string | null;
+  panelId: string | null;
+  eventType: DotCastResolverBondLedgerEventType;
+  deltaMinorUnits: number;
+  balanceAfterMinorUnits: number;
+  eventJson: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface DotCastResolverReputationEvent {
+  eventId: string;
+  resolverId: string;
+  assignmentId: string | null;
+  panelId: string | null;
+  previousReputationBps: number;
+  newReputationBps: number;
+  deltaBps: number;
+  reason: "settlement_consensus_match" | "settlement_consensus_miss" | "manual_adjustment";
+  eventJson: Record<string, unknown>;
+  createdAt: string;
+}
+
 export interface DotCastResolverAssignment {
   assignmentId: string;
   panelId: string;
@@ -150,6 +194,21 @@ export interface DotCastResolverPayout {
   bondReturnedMinorUnits: number;
   feePaidMinorUnits: number;
   slashedBondMinorUnits: number;
+  createdAt: string;
+}
+
+export type DotCastResolutionReviewStatus = "queued" | "approved" | "denied" | "reshaped";
+
+export type DotCastResolutionReviewAction = "approve" | "deny" | "reshape";
+
+export interface DotCastResolutionReview {
+  reviewId: string;
+  routeId: string;
+  poolId: string | null;
+  marketId: string;
+  status: DotCastResolutionReviewStatus;
+  reviewerId: string | null;
+  decisionJson: Record<string, unknown>;
   createdAt: string;
 }
 

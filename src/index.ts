@@ -45,6 +45,7 @@ import {
   applyDotCastGamificationForPool,
   applyDotCastCreatorRakeShareForPool,
   applyDotCastReferralProgramQualification,
+  applyDotCastResolutionReviewDecisionRoute,
   applyDotCastPoolResolution,
   archiveDotCastLivestream,
   completeDotCastRewardedStreamOnrampSession,
@@ -76,6 +77,7 @@ import {
   readDotCastReferralProgramStatus,
   readDotCastReferralProgramUser,
   readDotCastResolutionRouterReadiness,
+  readDotCastResolverProfileRoute,
   readDotCastRewardedStreamOnrampStatus,
   readDotCastRewardedStreamUser,
   readDotCastSponsoredQuestionPlacement,
@@ -106,6 +108,7 @@ import {
   startDotCastRewardedStreamOnrampSession,
   startDotCastLivestream,
   streamDotCastLivestreamRealtime,
+  upsertDotCastResolverProfileRoute,
   voidDotCastPool
 } from "./gateway/DotCastGateway";
 import {
@@ -252,8 +255,17 @@ gatewayRouter.post("/api/dotcast/referrals/:id/qualify", async (c) =>
 gatewayRouter.get("/api/dotcast/resolution-router/status", (c) =>
   readDotCastResolutionRouterReadiness(c.env)
 );
+gatewayRouter.post("/api/dotcast/resolution-router/resolvers/profiles", async (c) =>
+  upsertDotCastResolverProfileRoute(c.req.raw, c.env)
+);
+gatewayRouter.get("/api/dotcast/resolution-router/resolvers/profiles/:id", async (c) =>
+  readDotCastResolverProfileRoute(c.req.param("id"), c.req.raw, c.env)
+);
 gatewayRouter.post("/api/dotcast/resolution-router/classify", async (c) =>
   classifyDotCastResolutionRouterRequest(c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/resolution-router/reviews/decision", async (c) =>
+  applyDotCastResolutionReviewDecisionRoute(c.req.raw, c.env)
 );
 gatewayRouter.post("/api/dotcast/resolution-router/ai-perception/resolve", async (c) =>
   resolveDotCastAiPerceptionRoute(c.req.raw, c.env)
