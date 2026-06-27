@@ -80,6 +80,7 @@ import {
   readDotCastCreatorProfile,
   readDotCastReferralProgramStatus,
   readDotCastReferralProgramUser,
+  readDotCastResolutionOpsReportRoute,
   readDotCastResolutionRouterReadiness,
   readDotCastResolverProfileRoute,
   listDotCastResolutionReviewQueueRoute,
@@ -261,6 +262,9 @@ gatewayRouter.post("/api/dotcast/referrals/:id/qualify", async (c) =>
 );
 gatewayRouter.get("/api/dotcast/resolution-router/status", (c) =>
   readDotCastResolutionRouterReadiness(c.env)
+);
+gatewayRouter.get("/api/dotcast/resolution-router/ops", async (c) =>
+  readDotCastResolutionOpsReportRoute(c.req.raw, c.env)
 );
 gatewayRouter.post("/api/dotcast/resolution-router/resolvers/profiles", async (c) =>
   upsertDotCastResolverProfileRoute(c.req.raw, c.env)

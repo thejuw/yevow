@@ -30,6 +30,7 @@ import type {
   DotCastLivestreamReadResponse,
   DotCastResolutionChallengeResponse,
   DotCastResolutionChallengesResponse,
+  DotCastResolutionOpsResponse,
   DotCastResolutionReviewQueueResponse,
   DotCastResolutionReviewsResponse,
   DotCastResolutionRouterStatusResponse,
@@ -168,6 +169,22 @@ export async function readDotCastResolutionRouterStatus(
   return apiFetch<DotCastResolutionRouterStatusResponse>(
     apiBase,
     "/api/dotcast/resolution-router/status",
+    "",
+    {
+      allowErrorBody: true
+    }
+  );
+}
+
+export async function readDotCastResolutionOps(
+  apiBase = DEFAULT_API_BASE,
+  limit = 10
+): Promise<DotCastResolutionOpsResponse> {
+  const search = new URLSearchParams({ limit: String(limit) });
+
+  return apiFetch<DotCastResolutionOpsResponse>(
+    apiBase,
+    `/api/dotcast/resolution-router/ops?${search.toString()}`,
     "",
     {
       allowErrorBody: true

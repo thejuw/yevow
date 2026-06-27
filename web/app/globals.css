@@ -4222,6 +4222,10 @@ output {
   gap: 10px;
 }
 
+.dotcast-wide-panel {
+  grid-column: 1 / -1;
+}
+
 .dotcast-panel-title {
   min-height: 30px;
   display: flex;
@@ -4288,6 +4292,69 @@ output {
 
 .dotcast-readiness-card div {
   color: var(--green);
+}
+
+.dotcast-ops-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.dotcast-ops-list {
+  display: grid;
+  gap: 8px;
+}
+
+.dotcast-ops-title {
+  color: var(--muted);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.dotcast-ops-row {
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) auto minmax(150px, 0.7fr);
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--line-cold);
+  border-radius: 7px;
+  padding: 9px;
+  background: rgba(255, 255, 255, 0.024);
+}
+
+.dotcast-ops-row div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.dotcast-ops-row strong,
+.dotcast-ops-row span,
+.dotcast-ops-row small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.dotcast-ops-row strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.dotcast-ops-row span,
+.dotcast-ops-row small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.dotcast-ops-row code {
+  border: 1px solid var(--line-cold);
+  border-radius: 6px;
+  padding: 5px 7px;
+  color: var(--gold);
+  font-size: 11px;
 }
 
 .dotcast-timestamp {
@@ -4756,7 +4823,8 @@ output {
   .dotcast-studio-grid,
   .dotcast-resolution-grid,
   .dotcast-live-grid,
-  .dotcast-two-column {
+  .dotcast-two-column,
+  .dotcast-ops-columns {
     grid-template-columns: 1fr;
   }
 
@@ -4802,6 +4870,7 @@ output {
   .dotcast-queue-row,
   .dotcast-review-row,
   .dotcast-challenge-row,
+  .dotcast-ops-row,
   .dotcast-pot-row,
   .dotcast-credential-row,
   .dotcast-secret-row,

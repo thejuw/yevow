@@ -6,6 +6,7 @@ import {
   creditDevnetDeposit,
   D1DotCastCreatorStore,
   D1DotCastReferralStore,
+  D1DotCastResolutionOpsReportStore,
   D1DotCastResolutionRouterStore,
   D1DotCastSettlementRailStore,
   D1DotCastUsdcBondFundingStore,
@@ -610,6 +611,7 @@ export function readDotCastHealth(env?: Env): Response {
       "POST /api/dotcast/referrals/claims",
       "POST /api/dotcast/referrals/:id/qualify",
       "GET /api/dotcast/resolution-router/status",
+      "GET /api/dotcast/resolution-router/ops",
       "POST /api/dotcast/resolution-router/resolvers/profiles",
       "GET /api/dotcast/resolution-router/resolvers/profiles/:id",
       "POST /api/dotcast/resolution-router/resolvers/profiles/:id/admin",
@@ -1506,6 +1508,27 @@ export function readDotCastResolutionRouterReadiness(env: Env): Response {
       Boolean(env.DOTCAST_DB ?? env.TRADING_DB)
     )
   });
+}
+
+export async function readDotCastResolutionOpsReportRoute(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const url = new URL(request.url);
+    const report = await resolutionOpsReportStore(env).readReport({
+      limit: parseOptionalQueryInteger(url.searchParams.get("limit"), "limit") ?? 10,
+      now: parseOptionalString(url.searchParams.get("now"), "now")
+    });
+
+    return json({
+      ok: true,
+      milestone: "E13",
+      resolutionOps: report
+    });
+  } catch (error) {
+    return resolutionRouterErrorResponse(error);
+  }
 }
 
 export async function upsertDotCastResolverProfileRoute(
@@ -4417,6 +4440,28 @@ function resolutionRouterStore(env: Env): D1DotCastResolutionRouterStore {
   }
 
   return new D1DotCastResolutionRouterStore(db);
+}
+
+function resolutionOpsReportStore(env: Env): D1DotCastResolutionOpsReportStore {
+  const resolutionDb = env.DOTCAST_DB ?? env.TRADING_DB;
+
+  if (!resolutionDb) {
+    throw new DotCastResolutionRouterError(
+      "RESOLUTION_ROUTER_DB_NOT_CONFIGURED",
+      "E13 resolution router database is not configured",
+      503
+    );
+  }
+
+  if (!env.TRADING_DB) {
+    throw new DotCastResolutionRouterError(
+      "RESOLUTION_BOND_DB_NOT_CONFIGURED",
+      "E13 USDC bond reporting database is not configured",
+      503
+    );
+  }
+
+  return new D1DotCastResolutionOpsReportStore(resolutionDb, env.TRADING_DB);
 }
 
 async function requireResolutionRoute(env: Env, routeId: string): Promise<DotCastResolutionRoute> {

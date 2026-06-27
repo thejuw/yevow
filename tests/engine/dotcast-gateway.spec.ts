@@ -32,6 +32,7 @@ import {
   recordDotCastLivestreamPresence,
   readDotCastPoolLiveOdds,
   readDotCastHealth,
+  readDotCastResolutionOpsReportRoute,
   readDotCastResolverProfileRoute,
   requestDotCastDevnetWithdrawal,
   revealDotCastResolverRoute,
@@ -705,6 +706,122 @@ describe("dotCast gateway handlers", () => {
           expect.objectContaining({
             eventType: "bond_slashed"
           })
+        ])
+      }
+    });
+  });
+
+  it("reports E13 resolver panel ops and USDC bond reconciliation", async () => {
+    const d1 = new FakeResolutionRouterD1();
+    const route = lockedE13Route("pool-e13-ops", "dotcast:e13-ops");
+    d1.seedRoute(route);
+    const env = e13DevnetEnv(d1);
+
+    for (const candidate of resolverCandidates()) {
+      d1.seedSettlementBalance(String(candidate.resolverId), 100_000);
+      await upsertDotCastResolverProfileRoute(
+        jsonRequest("/api/dotcast/resolution-router/resolvers/profiles", {
+          ...candidate,
+          now: "2099-06-25T16:55:00.000Z"
+        }),
+        env
+      );
+    }
+
+    const panelResponse = await planDotCastResolverPanelRoute(
+      jsonRequest("/api/dotcast/resolution-router/resolvers/panel", {
+        poolId: "pool-e13-ops",
+        route,
+        panelId: "panel-e13-ops",
+        now: "2099-06-25T17:00:00.000Z"
+      }),
+      env
+    );
+    const panelBody = (await panelResponse.json()) as Record<string, unknown>;
+    const assignments = (panelBody.resolutionRouter as { panel: { assignments: unknown[] } }).panel
+      .assignments as Array<Record<string, unknown>>;
+
+    for (const [index, assignment] of assignments.entries()) {
+      const assignmentId = String(assignment.assignmentId);
+      const outcome = index < 2 ? "yes" : "no";
+      await commitDotCastResolverRoute(
+        jsonRequest("/api/dotcast/resolution-router/resolvers/commit", {
+          assignmentId,
+          outcome,
+          salt: `ops-${index}`,
+          now: `2099-06-25T17:0${index}:00.000Z`
+        }),
+        env
+      );
+      await revealDotCastResolverRoute(
+        jsonRequest("/api/dotcast/resolution-router/resolvers/reveal", {
+          assignmentId,
+          outcome,
+          salt: `ops-${index}`,
+          now: `2099-06-25T17:1${index}:00.000Z`
+        }),
+        env
+      );
+    }
+
+    await settleDotCastResolverPanelRoute(
+      jsonRequest("/api/dotcast/resolution-router/resolvers/settle", {
+        panelId: "panel-e13-ops",
+        now: "2099-06-25T17:20:00.000Z"
+      }),
+      env
+    );
+    d1.balances.set("mismatch-owner", {
+      user_id: "mismatch-owner",
+      available_usdc: 0,
+      pending_deposit_usdc: 0,
+      pending_withdrawal_usdc: 0,
+      locked_pool_usdc: 0,
+      locked_bond_usdc: 12_345,
+      updated_at: "2099-06-25T17:21:00.000Z"
+    });
+
+    const response = await readDotCastResolutionOpsReportRoute(
+      jsonRequest("/api/dotcast/resolution-router/ops?limit=5"),
+      env
+    );
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({
+      ok: true,
+      milestone: "E13",
+      resolutionOps: {
+        panels: {
+          summary: {
+            panelCount: 1,
+            assignmentCount: 3,
+            paidCount: 2,
+            slashedCount: 1
+          },
+          recent: expect.arrayContaining([
+            expect.objectContaining({ panelId: "panel-e13-ops", revealCount: 3 })
+          ])
+        },
+        bonds: {
+          summary: {
+            lockCount: 3,
+            releasedCount: 2,
+            slashedCount: 1
+          },
+          reconciliation: {
+            mismatchCount: 1,
+            rows: expect.arrayContaining([
+              expect.objectContaining({
+                ownerId: "mismatch-owner",
+                deltaMinorUnits: 12_345
+              })
+            ])
+          }
+        },
+        flags: expect.arrayContaining([
+          "bond_reconciliation_mismatch",
+          "resolver_or_bond_slashes_present"
         ])
       }
     });
@@ -2135,6 +2252,12 @@ class FakeResolutionRouterD1 {
 
   prepare(query: string) {
     return {
+      first: async () => this.first(query, []),
+      all: async () => ({ results: this.all(query, []) }),
+      run: async () => {
+        this.run(query, []);
+        return { success: true };
+      },
       bind: (...params: unknown[]) => ({
         first: async () => this.first(query, params),
         all: async () => ({ results: this.all(query, params) }),
@@ -2147,6 +2270,27 @@ class FakeResolutionRouterD1 {
   }
 
   private first(query: string, params: unknown[]): Record<string, unknown> | null {
+    if (
+      query.includes("COUNT(*) AS panel_count") &&
+      query.includes("FROM dotcast_resolver_panels")
+    ) {
+      return { panel_count: this.panels.size };
+    }
+
+    if (
+      query.includes("COUNT(*) AS assignment_count") &&
+      query.includes("FROM dotcast_resolver_assignments")
+    ) {
+      return this.assignmentOpsSummary();
+    }
+
+    if (
+      query.includes("COUNT(*) AS lock_count") &&
+      query.includes("FROM dotcast_usdc_bond_locks")
+    ) {
+      return this.bondOpsSummary();
+    }
+
     if (query.includes("FROM dotcast_resolver_payouts")) {
       return this.payouts.get(`${String(params[0])}:${String(params[1])}`) ?? null;
     }
@@ -2167,11 +2311,14 @@ class FakeResolutionRouterD1 {
       return this.reputationEvents.get(String(params[0])) ?? null;
     }
 
-    if (query.includes("FROM dotcast_resolver_panels")) {
+    if (query.includes("FROM dotcast_resolver_panels") && query.includes("WHERE panel_id = ?")) {
       return this.panels.get(String(params[0])) ?? null;
     }
 
-    if (query.includes("FROM dotcast_resolver_assignments")) {
+    if (
+      query.includes("FROM dotcast_resolver_assignments") &&
+      query.includes("WHERE assignment_id = ?")
+    ) {
       return this.assignments.get(String(params[0])) ?? null;
     }
 
@@ -2187,7 +2334,7 @@ class FakeResolutionRouterD1 {
       return this.balances.get(String(params[0])) ?? null;
     }
 
-    if (query.includes("FROM dotcast_usdc_bond_locks")) {
+    if (query.includes("FROM dotcast_usdc_bond_locks") && query.includes("WHERE lock_id = ?")) {
       return this.bondLocks.get(String(params[0])) ?? null;
     }
 
@@ -2195,6 +2342,10 @@ class FakeResolutionRouterD1 {
   }
 
   private all(query: string, params: unknown[]): Record<string, unknown>[] {
+    if (query.includes("FROM dotcast_resolution_challenges") && query.includes("GROUP BY status")) {
+      return this.challengeOpsSummary();
+    }
+
     if (query.includes("FROM dotcast_resolution_routes")) {
       const status = String(params[0]);
       const hasTierFilter = query.includes("AND tier = ?");
@@ -2230,6 +2381,10 @@ class FakeResolutionRouterD1 {
       return [...this.bondLedger.values()].filter((row) => row.resolver_id === params[0]);
     }
 
+    if (query.includes("FROM dotcast_resolver_panels p") && query.includes("GROUP BY p.panel_id")) {
+      return this.panelOpsRows(Number(params[0] ?? 10));
+    }
+
     if (query.includes("FROM dotcast_resolver_assignments")) {
       return [...this.assignments.values()].filter((row) => row.panel_id === params[0]);
     }
@@ -2242,7 +2397,222 @@ class FakeResolutionRouterD1 {
       return [...this.reveals.values()].filter((row) => row.panel_id === params[0]);
     }
 
+    if (
+      query.includes("FROM dotcast_usdc_bond_locks") &&
+      query.includes("GROUP BY purpose, status")
+    ) {
+      return this.bondPurposeStatusRows();
+    }
+
+    if (query.includes("FROM dotcast_usdc_bond_events") && query.includes("GROUP BY event_type")) {
+      return this.bondEventSummaryRows();
+    }
+
+    if (query.includes("WITH owners AS")) {
+      return this.bondReconciliationRows(Number(params[0] ?? 10));
+    }
+
+    if (query.includes("FROM dotcast_usdc_bond_events")) {
+      return [...this.bondEvents.values()]
+        .sort(
+          (left, right) =>
+            String(right.created_at).localeCompare(String(left.created_at)) ||
+            String(right.event_id).localeCompare(String(left.event_id))
+        )
+        .slice(0, Number(params[0] ?? 10));
+    }
+
     return [];
+  }
+
+  private assignmentOpsSummary(): Record<string, unknown> {
+    const assignments = [...this.assignments.values()];
+
+    return {
+      assignment_count: assignments.length,
+      assigned_count: assignments.filter((row) => row.status === "assigned").length,
+      committed_count: assignments.filter((row) => row.status === "committed").length,
+      revealed_count: assignments.filter((row) => row.status === "revealed").length,
+      paid_count: assignments.filter((row) => row.status === "paid").length,
+      slashed_count: assignments.filter((row) => row.status === "slashed").length,
+      assigned_bond_minor_units: assignments.reduce(
+        (total, row) => total + Number(row.bond_minor_units ?? 0),
+        0
+      )
+    };
+  }
+
+  private bondOpsSummary(): Record<string, unknown> {
+    const locks = [...this.bondLocks.values()];
+
+    return {
+      lock_count: locks.length,
+      locked_count: locks.filter((row) => row.status === "locked").length,
+      released_count: locks.filter((row) => row.status === "released").length,
+      slashed_count: locks.filter((row) => row.status === "slashed").length,
+      locked_minor_units: sumRows(
+        locks.filter((row) => row.status === "locked"),
+        "amount"
+      ),
+      released_credit_minor_units: sumRows(
+        locks.filter((row) => row.status === "released"),
+        "credit"
+      ),
+      slashed_minor_units: sumRows(
+        locks.filter((row) => row.status === "slashed"),
+        "amount"
+      )
+    };
+  }
+
+  private panelOpsRows(limit: number): Record<string, unknown>[] {
+    return [...this.panels.values()]
+      .sort(
+        (left, right) =>
+          String(right.created_at).localeCompare(String(left.created_at)) ||
+          String(right.panel_id).localeCompare(String(left.panel_id))
+      )
+      .slice(0, limit)
+      .map((panel) => {
+        const panelId = panel.panel_id;
+        const assignments = [...this.assignments.values()].filter(
+          (row) => row.panel_id === panelId
+        );
+        const commits = [...this.commits.values()].filter((row) => row.panel_id === panelId);
+        const reveals = [...this.reveals.values()].filter((row) => row.panel_id === panelId);
+        const payouts = [...this.payouts.values()].filter((row) => row.panel_id === panelId);
+
+        return {
+          panel_id: panel.panel_id,
+          pool_id: panel.pool_id,
+          route_id: panel.route_id,
+          tier: panel.tier,
+          panel_size: panel.panel_size,
+          created_at: panel.created_at,
+          assignment_count: assignments.length,
+          assigned_count: assignments.filter((row) => row.status === "assigned").length,
+          committed_count: assignments.filter((row) => row.status === "committed").length,
+          revealed_count: assignments.filter((row) => row.status === "revealed").length,
+          paid_count: assignments.filter((row) => row.status === "paid").length,
+          slashed_count: assignments.filter((row) => row.status === "slashed").length,
+          commit_count: commits.length,
+          reveal_count: reveals.length,
+          payout_count: payouts.length,
+          matched_payout_count: payouts.filter((row) => Number(row.matched_consensus) === 1).length,
+          missed_payout_count: payouts.filter((row) => Number(row.matched_consensus) === 0).length,
+          assigned_bond_minor_units: sumRows(assignments, "bond_minor_units"),
+          returned_bond_minor_units: sumRows(payouts, "bond_returned_minor_units"),
+          slashed_bond_minor_units: sumRows(payouts, "slashed_bond_minor_units"),
+          fee_paid_minor_units: sumRows(payouts, "fee_paid_minor_units")
+        };
+      });
+  }
+
+  private bondPurposeStatusRows(): Record<string, unknown>[] {
+    const groups = new Map<string, Record<string, unknown>>();
+
+    for (const lock of this.bondLocks.values()) {
+      const key = `${String(lock.purpose)}:${String(lock.status)}`;
+      const existing = groups.get(key) ?? {
+        purpose: lock.purpose,
+        status: lock.status,
+        lock_count: 0,
+        amount_minor_units: 0
+      };
+      existing.lock_count = Number(existing.lock_count) + 1;
+      existing.amount_minor_units = Number(existing.amount_minor_units) + Number(lock.amount ?? 0);
+      groups.set(key, existing);
+    }
+
+    return [...groups.values()].sort((left, right) =>
+      `${String(left.purpose)}:${String(left.status)}`.localeCompare(
+        `${String(right.purpose)}:${String(right.status)}`
+      )
+    );
+  }
+
+  private bondEventSummaryRows(): Record<string, unknown>[] {
+    const groups = new Map<string, Record<string, unknown>>();
+
+    for (const event of this.bondEvents.values()) {
+      const key = String(event.event_type);
+      const existing = groups.get(key) ?? {
+        event_type: event.event_type,
+        event_count: 0,
+        amount_minor_units: 0,
+        credit_minor_units: 0
+      };
+      existing.event_count = Number(existing.event_count) + 1;
+      existing.amount_minor_units = Number(existing.amount_minor_units) + Number(event.amount ?? 0);
+      existing.credit_minor_units = Number(existing.credit_minor_units) + Number(event.credit ?? 0);
+      groups.set(key, existing);
+    }
+
+    return [...groups.values()].sort((left, right) =>
+      String(left.event_type).localeCompare(String(right.event_type))
+    );
+  }
+
+  private bondReconciliationRows(limit: number): Record<string, unknown>[] {
+    const ownerIds = new Set<string>();
+
+    for (const [userId, balance] of this.balances) {
+      if (Number(balance.locked_bond_usdc ?? 0) !== 0) {
+        ownerIds.add(userId);
+      }
+    }
+
+    for (const lock of this.bondLocks.values()) {
+      ownerIds.add(String(lock.owner_id));
+    }
+
+    return [...ownerIds]
+      .map((ownerId) => {
+        const balance = this.balances.get(ownerId);
+        const locks = [...this.bondLocks.values()].filter((lock) => lock.owner_id === ownerId);
+        const expectedLocked = locks
+          .filter((lock) => lock.status === "locked")
+          .reduce((total, lock) => total + Number(lock.amount ?? 0), 0);
+        const ledgerLocked = Number(balance?.locked_bond_usdc ?? 0);
+
+        return {
+          owner_id: ownerId,
+          available_usdc: Number(balance?.available_usdc ?? 0),
+          ledger_locked_bond_usdc: ledgerLocked,
+          expected_locked_bond_usdc: expectedLocked,
+          delta_minor_units: ledgerLocked - expectedLocked,
+          lock_count: locks.length,
+          locked_count: locks.filter((lock) => lock.status === "locked").length,
+          released_count: locks.filter((lock) => lock.status === "released").length,
+          slashed_count: locks.filter((lock) => lock.status === "slashed").length
+        };
+      })
+      .sort(
+        (left, right) =>
+          Math.abs(Number(right.delta_minor_units)) - Math.abs(Number(left.delta_minor_units)) ||
+          Number(right.locked_count) - Number(left.locked_count) ||
+          String(left.owner_id).localeCompare(String(right.owner_id))
+      )
+      .slice(0, limit);
+  }
+
+  private challengeOpsSummary(): Record<string, unknown>[] {
+    const groups = new Map<string, Record<string, unknown>>();
+
+    for (const challenge of this.challenges.values()) {
+      const key = String(challenge.status);
+      const existing = groups.get(key) ?? {
+        status: challenge.status,
+        challenge_count: 0,
+        bond_minor_units: 0
+      };
+      existing.challenge_count = Number(existing.challenge_count) + 1;
+      existing.bond_minor_units =
+        Number(existing.bond_minor_units) + Number(challenge.bond_minor_units ?? 0);
+      groups.set(key, existing);
+    }
+
+    return [...groups.values()];
   }
 
   private run(query: string, params: unknown[]): void {
@@ -2565,6 +2935,10 @@ function routeParamsToRow(params: unknown[]): Record<string, unknown> {
     event_json: params[19],
     created_at: params[20]
   };
+}
+
+function sumRows(rows: Array<Record<string, unknown>>, key: string): number {
+  return rows.reduce((total, row) => total + Number(row[key] ?? 0), 0);
 }
 
 function routeRow(route: Record<string, unknown>): Record<string, unknown> {

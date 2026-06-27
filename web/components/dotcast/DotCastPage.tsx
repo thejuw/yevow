@@ -43,6 +43,7 @@ import {
   readDotCastLivestreamPlayback,
   readDotCastReferralStatus,
   readDotCastResolutionChallenges,
+  readDotCastResolutionOps,
   readDotCastResolutionReviewQueue,
   readDotCastResolutionReviews,
   readDotCastResolutionRouterStatus,
@@ -57,6 +58,7 @@ import type {
   DotCastLivestreamCreateResponse,
   DotCastLivestreamReadResponse,
   DotCastResolutionChallenge,
+  DotCastResolutionOpsResponse,
   DotCastResolutionReview,
   DotCastResolutionRoute,
   DotCastResolutionRouterStatusResponse,
@@ -178,6 +180,7 @@ export default function DotCastPage({ view }: DotCastPageProps) {
   const [queue, setQueue] = useState<DotCastResolutionRoute[]>([]);
   const [reviews, setReviews] = useState<DotCastResolutionReview[]>([]);
   const [challenges, setChallenges] = useState<DotCastResolutionChallenge[]>([]);
+  const [resolutionOps, setResolutionOps] = useState<DotCastResolutionOpsResponse | null>(null);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -195,7 +198,8 @@ export default function DotCastPage({ view }: DotCastPageProps) {
         resolution,
         reviewQueue,
         reviewList,
-        challengeList
+        challengeList,
+        ops
       ] = await Promise.all([
         readDotCastHealth(apiBase),
         readDotCastSettlementRailStatus(apiBase),
@@ -206,13 +210,15 @@ export default function DotCastPage({ view }: DotCastPageProps) {
         readDotCastResolutionRouterStatus(apiBase),
         readDotCastResolutionReviewQueue(apiBase, 8),
         readDotCastResolutionReviews(apiBase, 8),
-        readDotCastResolutionChallenges(apiBase, 8)
+        readDotCastResolutionChallenges(apiBase, 8),
+        readDotCastResolutionOps(apiBase, 8)
       ]);
 
       setStatus({ health, rail, rewarded, sponsored, creator, referrals, resolution });
       setQueue(reviewQueue.resolutionRouter?.routes ?? []);
       setReviews(reviewList.resolutionRouter?.reviews ?? []);
       setChallenges(challengeList.resolutionRouter?.challenges ?? []);
+      setResolutionOps(ops.ok ? ops : null);
       setLastUpdated(new Date().toISOString());
       setLoadState("READY");
     } catch (nextError) {
@@ -337,6 +343,7 @@ export default function DotCastPage({ view }: DotCastPageProps) {
           queue={queue}
           reviews={reviews}
           challenges={challenges}
+          ops={resolutionOps}
           status={status}
           onRefresh={() => void refresh()}
         />
@@ -894,6 +901,7 @@ function ResolutionDashboard({
   queue,
   reviews,
   challenges,
+  ops,
   status,
   onRefresh
 }: {
@@ -901,6 +909,7 @@ function ResolutionDashboard({
   queue: DotCastResolutionRoute[];
   reviews: DotCastResolutionReview[];
   challenges: DotCastResolutionChallenge[];
+  ops: DotCastResolutionOpsResponse | null;
   status: StatusBundle;
   onRefresh: () => void;
 }) {
@@ -1063,6 +1072,8 @@ function ResolutionDashboard({
         </div>
       </div>
 
+      <ResolutionOpsPanel ops={ops} />
+
       <div className="dotcast-command-panel glass">
         <div className="dotcast-panel-title">
           <ShieldCheck size={17} />
@@ -1214,6 +1225,126 @@ function ResolutionDashboard({
       </div>
       <ReviewsPanel reviews={reviews} />
     </section>
+  );
+}
+
+function ResolutionOpsPanel({ ops }: { ops: DotCastResolutionOpsResponse | null }) {
+  const report = ops?.resolutionOps;
+  const panelSummary = report?.panels.summary;
+  const bondSummary = report?.bonds.summary;
+  const challengeSummary = report?.challenges.summary;
+  const reconciliationRows = report?.bonds.reconciliation.rows ?? [];
+  const recentPanels = report?.panels.recent ?? [];
+  const recentEvents = report?.bonds.recentEvents ?? [];
+
+  return (
+    <div className="dotcast-command-panel glass dotcast-wide-panel">
+      <div className="dotcast-panel-title">
+        <Gauge size={17} />
+        Resolver Ops
+        <code>{report?.flags.length ? report.flags.join(" / ") : "balanced"}</code>
+      </div>
+      {report ? (
+        <>
+          <div className="dotcast-trust-grid">
+            <MetricCard
+              label="Panels"
+              value={compact.format(panelSummary?.panelCount ?? 0)}
+              detail={`${compact.format(panelSummary?.assignmentCount ?? 0)} assignments`}
+            />
+            <MetricCard
+              label="Resolved"
+              value={`${compact.format(panelSummary?.paidCount ?? 0)} / ${compact.format(
+                panelSummary?.slashedCount ?? 0
+              )}`}
+              detail="paid / slashed assignments"
+            />
+            <MetricCard
+              label="Bond Locks"
+              value={compact.format(bondSummary?.lockCount ?? 0)}
+              detail={`${currency.format((bondSummary?.lockedMinorUnits ?? 0) / 100)} locked`}
+            />
+            <MetricCard
+              label="Reconcile"
+              value={compact.format(report.bonds.reconciliation.mismatchCount)}
+              detail={`${compact.format(challengeSummary?.openCount ?? 0)} open challenges`}
+            />
+          </div>
+
+          <div className="dotcast-ops-columns">
+            <div className="dotcast-ops-list">
+              <div className="dotcast-ops-title">Recent Panels</div>
+              {recentPanels.length ? (
+                recentPanels.slice(0, 5).map((panel) => (
+                  <div className="dotcast-ops-row" key={panel.panelId}>
+                    <div>
+                      <strong>{panel.panelId}</strong>
+                      <span>{panel.poolId}</span>
+                    </div>
+                    <code>
+                      {panel.revealCount}/{panel.assignmentCount}
+                    </code>
+                    <small>
+                      slash {currency.format(panel.slashedBondMinorUnits / 100)} · fee{" "}
+                      {currency.format(panel.feePaidMinorUnits / 100)}
+                    </small>
+                  </div>
+                ))
+              ) : (
+                <EmptyState
+                  label="No resolver panels recorded."
+                  icon={<ClipboardList size={22} />}
+                />
+              )}
+            </div>
+
+            <div className="dotcast-ops-list">
+              <div className="dotcast-ops-title">Bond Reconciliation</div>
+              {reconciliationRows.length ? (
+                reconciliationRows.slice(0, 5).map((row) => (
+                  <div className="dotcast-ops-row" key={row.ownerId}>
+                    <div>
+                      <strong>{row.ownerId}</strong>
+                      <span>
+                        ledger {currency.format(row.ledgerLockedBondUsdc / 100)} · locks{" "}
+                        {currency.format(row.expectedLockedBondUsdc / 100)}
+                      </span>
+                    </div>
+                    <code>{currency.format(row.deltaMinorUnits / 100)}</code>
+                    <small>
+                      {row.lockedCount} locked · {row.releasedCount} released · {row.slashedCount}{" "}
+                      slashed
+                    </small>
+                  </div>
+                ))
+              ) : (
+                <EmptyState label="No bond owners recorded." icon={<Coins size={22} />} />
+              )}
+            </div>
+          </div>
+
+          <div className="dotcast-ops-list">
+            <div className="dotcast-ops-title">Recent Bond Events</div>
+            {recentEvents.length ? (
+              recentEvents.slice(0, 6).map((event) => (
+                <div className="dotcast-ops-row" key={event.eventId}>
+                  <div>
+                    <strong>{event.eventType}</strong>
+                    <span>{event.ownerId}</span>
+                  </div>
+                  <code>{currency.format(event.amount / 100)}</code>
+                  <small>{event.reason ?? event.purpose}</small>
+                </div>
+              ))
+            ) : (
+              <EmptyState label="No USDC bond events recorded." icon={<Coins size={22} />} />
+            )}
+          </div>
+        </>
+      ) : (
+        <EmptyState label="E13 ops report unavailable." icon={<Gauge size={22} />} />
+      )}
+    </div>
   );
 }
 

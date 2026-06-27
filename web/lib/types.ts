@@ -1536,6 +1536,122 @@ export interface DotCastResolutionChallengesResponse {
   error?: string;
 }
 
+export interface DotCastResolverPanelOpsRow {
+  panelId: string;
+  poolId: string;
+  routeId: string;
+  tier: string;
+  panelSize: number;
+  assignmentCount: number;
+  assignedCount: number;
+  committedCount: number;
+  revealedCount: number;
+  paidCount: number;
+  slashedCount: number;
+  commitCount: number;
+  revealCount: number;
+  payoutCount: number;
+  matchedPayoutCount: number;
+  missedPayoutCount: number;
+  assignedBondMinorUnits: number;
+  returnedBondMinorUnits: number;
+  slashedBondMinorUnits: number;
+  feePaidMinorUnits: number;
+  createdAt: string;
+}
+
+export interface DotCastUsdcBondReconciliationRow {
+  ownerId: string;
+  availableUsdc: number;
+  ledgerLockedBondUsdc: number;
+  expectedLockedBondUsdc: number;
+  deltaMinorUnits: number;
+  lockCount: number;
+  lockedCount: number;
+  releasedCount: number;
+  slashedCount: number;
+}
+
+export interface DotCastUsdcBondEventOpsRow {
+  eventId: string;
+  lockId: string;
+  purpose: string;
+  ownerId: string;
+  routeId: string | null;
+  poolId: string | null;
+  panelId: string | null;
+  assignmentId: string | null;
+  challengeId: string | null;
+  eventType: string;
+  amount: number;
+  credit: number;
+  status: string;
+  reason: string | null;
+  createdAt: string;
+}
+
+export interface DotCastResolutionOpsResponse {
+  ok: boolean;
+  milestone: "E13";
+  resolutionOps: {
+    generatedAt: string;
+    limit: number;
+    panels: {
+      summary: {
+        panelCount: number;
+        assignmentCount: number;
+        assignedCount: number;
+        committedCount: number;
+        revealedCount: number;
+        paidCount: number;
+        slashedCount: number;
+        assignedBondMinorUnits: number;
+      };
+      recent: DotCastResolverPanelOpsRow[];
+    };
+    bonds: {
+      summary: {
+        lockCount: number;
+        lockedCount: number;
+        releasedCount: number;
+        slashedCount: number;
+        lockedMinorUnits: number;
+        releasedCreditMinorUnits: number;
+        slashedMinorUnits: number;
+        byPurposeStatus: Array<{
+          purpose: string;
+          status: string;
+          count: number;
+          amountMinorUnits: number;
+        }>;
+        events: Array<{
+          eventType: string;
+          count: number;
+          amountMinorUnits: number;
+          creditMinorUnits: number;
+        }>;
+      };
+      reconciliation: {
+        mismatchCount: number;
+        rows: DotCastUsdcBondReconciliationRow[];
+      };
+      recentEvents: DotCastUsdcBondEventOpsRow[];
+    };
+    challenges: {
+      summary: {
+        openCount: number;
+        acceptedCount: number;
+        rejectedCount: number;
+        expiredCount: number;
+        withdrawnCount: number;
+        bondMinorUnits: number;
+      };
+    };
+    flags: string[];
+  };
+  error?: string;
+}
+
 export interface DotCastResolutionChallengeResponse {
   ok: boolean;
   milestone: "E13";
