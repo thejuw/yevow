@@ -64,7 +64,9 @@ import {
   detachDotCastLivestreamPool,
   handleMuxLivestreamWebhook,
   claimDotCastReferralProgram,
+  decideDotCastResolutionChallengeRoute,
   listDotCastSponsoredQuestionPlacements,
+  listDotCastResolutionChallengesRoute,
   onboardDotCastCreatorProfile,
   lockDotCastPool,
   pauseDotCastLivestream,
@@ -99,6 +101,7 @@ import {
   readDotCastPool,
   readDotCastHealth,
   recordDotCastLivestreamPresence,
+  openDotCastResolutionChallengeRoute,
   requestDotCastDevnetWithdrawal,
   requestDotCastCreatorEconomyPayout,
   resumeDotCastLivestream,
@@ -279,6 +282,15 @@ gatewayRouter.get("/api/dotcast/resolution-router/reviews", async (c) =>
 );
 gatewayRouter.post("/api/dotcast/resolution-router/reviews/decision", async (c) =>
   applyDotCastResolutionReviewDecisionRoute(c.req.raw, c.env)
+);
+gatewayRouter.get("/api/dotcast/resolution-router/challenges", async (c) =>
+  listDotCastResolutionChallengesRoute(c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/resolution-router/challenges", async (c) =>
+  openDotCastResolutionChallengeRoute(c.req.raw, c.env)
+);
+gatewayRouter.post("/api/dotcast/resolution-router/challenges/:id/decision", async (c) =>
+  decideDotCastResolutionChallengeRoute(c.req.param("id"), c.req.raw, c.env)
 );
 gatewayRouter.post("/api/dotcast/resolution-router/ai-perception/resolve", async (c) =>
   resolveDotCastAiPerceptionRoute(c.req.raw, c.env)

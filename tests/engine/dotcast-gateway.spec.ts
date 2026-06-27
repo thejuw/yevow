@@ -10,11 +10,14 @@ import {
   commitDotCastResolverRoute,
   createDotCastPool,
   createDotCastLivestreamSession,
+  decideDotCastResolutionChallengeRoute,
   detachDotCastLivestreamPool,
   endDotCastLivestream,
   handleMuxLivestreamWebhook,
+  listDotCastResolutionChallengesRoute,
   listDotCastResolutionReviewQueueRoute,
   listDotCastResolutionReviewsRoute,
+  openDotCastResolutionChallengeRoute,
   planDotCastResolverPanelRoute,
   placeDotCastPoolEntry,
   pauseDotCastLivestream,
@@ -222,6 +225,103 @@ describe("dotCast gateway handlers", () => {
         ])
       }
     });
+  });
+
+  it("opens and decides E13 optimistic resolution challenges inside the challenge window", async () => {
+    const d1 = new FakeResolutionRouterD1();
+    const route = {
+      ...lockedE13Route("pool-e13-challenge", "dotcast:e13-challenge"),
+      routeId: "route:pool-e13-challenge",
+      tier: "optimistic_bonded",
+      feeBps: 200,
+      bondMinorUnits: 50_000,
+      panelSize: 3,
+      createdAt: "2099-06-25T17:00:00.000Z",
+      eventJson: { optimisticProposal: true }
+    };
+    d1.seedRoute(route);
+    const env = {
+      TRADING_DB: d1 as unknown as D1Database,
+      DOTCAST_RESOLUTION_CHALLENGE_WINDOW_SECONDS: "900"
+    } as Env;
+
+    const opened = await openDotCastResolutionChallengeRoute(
+      jsonRequest("/api/dotcast/resolution-router/challenges", {
+        routeId: route.routeId,
+        challengerId: "operator-challenge-1",
+        reason: "Scoreboard evidence conflicts with the optimistic proposal.",
+        evidenceRefs: ["mux-clip:scoreboard-17"],
+        now: "2099-06-25T17:05:00.000Z"
+      }),
+      env
+    );
+    const openedBody = (await opened.json()) as Record<string, unknown>;
+    const challenge = (openedBody.resolutionRouter as Record<string, unknown>).challenge as Record<
+      string,
+      unknown
+    >;
+
+    expect(opened.status).toBe(201);
+    expect(openedBody).toMatchObject({
+      milestone: "E13",
+      resolutionRouter: {
+        challenge: {
+          routeId: route.routeId,
+          status: "open",
+          challengerId: "operator-challenge-1",
+          challengeWindowClosesAt: "2099-06-25T17:15:00.000Z"
+        }
+      }
+    });
+
+    const listed = await listDotCastResolutionChallengesRoute(
+      jsonRequest("/api/dotcast/resolution-router/challenges?status=open&limit=10"),
+      env
+    );
+    const listedBody = (await listed.json()) as Record<string, unknown>;
+
+    expect(listed.status).toBe(200);
+    expect(listedBody).toMatchObject({
+      resolutionRouter: {
+        count: 1,
+        challenges: [expect.objectContaining({ status: "open" })]
+      }
+    });
+
+    const decided = await decideDotCastResolutionChallengeRoute(
+      String(challenge.challengeId),
+      jsonRequest(`/api/dotcast/resolution-router/challenges/${challenge.challengeId}/decision`, {
+        action: "accept",
+        decisionBy: "operator-1",
+        reason: "Evidence was verified before the challenge window closed.",
+        now: "2099-06-25T17:10:00.000Z"
+      }),
+      env
+    );
+    const decidedBody = (await decided.json()) as Record<string, unknown>;
+
+    expect(decided.status).toBe(200);
+    expect(decidedBody).toMatchObject({
+      resolutionRouter: {
+        challenge: {
+          status: "accepted",
+          decisionBy: "operator-1",
+          decidedAt: "2099-06-25T17:10:00.000Z"
+        }
+      }
+    });
+
+    const late = await openDotCastResolutionChallengeRoute(
+      jsonRequest("/api/dotcast/resolution-router/challenges", {
+        routeId: route.routeId,
+        challengerId: "operator-too-late",
+        reason: "Attempt outside the window.",
+        now: "2099-06-25T17:20:00.000Z"
+      }),
+      env
+    );
+
+    expect(late.status).toBe(409);
   });
 
   it("applies E13 resolver admin controls with auditable bond and reputation events", async () => {
@@ -1777,6 +1877,7 @@ class FakeResolutionRouterD1 {
   readonly bondLedger = new Map<string, Record<string, unknown>>();
   readonly reputationEvents = new Map<string, Record<string, unknown>>();
   readonly reviews = new Map<string, Record<string, unknown>>();
+  readonly challenges = new Map<string, Record<string, unknown>>();
 
   seedRoute(route: Record<string, unknown>): void {
     this.routes.set(String(route.routeId), routeRow(route));
@@ -1828,6 +1929,10 @@ class FakeResolutionRouterD1 {
       return this.commits.get(String(params[0])) ?? null;
     }
 
+    if (query.includes("FROM dotcast_resolution_challenges")) {
+      return this.challenges.get(String(params[0])) ?? null;
+    }
+
     return null;
   }
 
@@ -1846,6 +1951,15 @@ class FakeResolutionRouterD1 {
       const routeId = query.includes("route_id = ?") ? String(params[paramIndex++]) : null;
       const status = query.includes("status = ?") ? String(params[paramIndex++]) : null;
       return [...this.reviews.values()].filter(
+        (row) => (!routeId || row.route_id === routeId) && (!status || row.status === status)
+      );
+    }
+
+    if (query.includes("FROM dotcast_resolution_challenges")) {
+      let paramIndex = 0;
+      const routeId = query.includes("route_id = ?") ? String(params[paramIndex++]) : null;
+      const status = query.includes("status = ?") ? String(params[paramIndex++]) : null;
+      return [...this.challenges.values()].filter(
         (row) => (!routeId || row.route_id === routeId) && (!status || row.status === status)
       );
     }
@@ -1943,6 +2057,45 @@ class FakeResolutionRouterD1 {
           reviewer_id: params[5],
           decision_json: params[6],
           created_at: params[7]
+        });
+      }
+      return;
+    }
+
+    if (query.includes("INSERT OR IGNORE INTO dotcast_resolution_challenges")) {
+      if (!this.challenges.has(String(params[0]))) {
+        this.challenges.set(String(params[0]), {
+          challenge_id: params[0],
+          route_id: params[1],
+          pool_id: params[2],
+          market_id: params[3],
+          challenger_id: params[4],
+          status: params[5],
+          reason: params[6],
+          evidence_refs_json: params[7],
+          bond_minor_units: params[8],
+          opened_at: params[9],
+          challenge_window_closes_at: params[10],
+          decided_at: params[11],
+          decision_by: params[12],
+          decision_json: params[13],
+          event_json: params[14]
+        });
+      }
+      return;
+    }
+
+    if (query.includes("UPDATE dotcast_resolution_challenges")) {
+      const challengeId = String(params[5]);
+      const existing = this.challenges.get(challengeId);
+      if (existing) {
+        this.challenges.set(challengeId, {
+          ...existing,
+          status: params[0],
+          decided_at: params[1],
+          decision_by: params[2],
+          decision_json: params[3],
+          event_json: params[4]
         });
       }
       return;

@@ -210,6 +210,15 @@ export type DotCastResolutionReviewStatus = "queued" | "approved" | "denied" | "
 
 export type DotCastResolutionReviewAction = "approve" | "deny" | "reshape";
 
+export type DotCastResolutionChallengeStatus =
+  | "open"
+  | "accepted"
+  | "rejected"
+  | "expired"
+  | "withdrawn";
+
+export type DotCastResolutionChallengeDecisionAction = "accept" | "reject" | "expire";
+
 export interface DotCastResolutionReview {
   reviewId: string;
   routeId: string;
@@ -219,6 +228,24 @@ export interface DotCastResolutionReview {
   reviewerId: string | null;
   decisionJson: Record<string, unknown>;
   createdAt: string;
+}
+
+export interface DotCastResolutionChallenge {
+  challengeId: string;
+  routeId: string;
+  poolId: string | null;
+  marketId: string;
+  challengerId: string;
+  status: DotCastResolutionChallengeStatus;
+  reason: string;
+  evidenceRefs: string[];
+  bondMinorUnits: number;
+  openedAt: string;
+  challengeWindowClosesAt: string;
+  decidedAt: string | null;
+  decisionBy: string | null;
+  decisionJson: Record<string, unknown>;
+  eventJson: Record<string, unknown>;
 }
 
 export type DotCastReferralQualifier = "first_deposit" | "kyc_plus_first_entry";

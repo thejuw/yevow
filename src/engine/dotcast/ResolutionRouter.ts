@@ -1,6 +1,8 @@
 import type {
   DotCastAiResolutionLog,
   DotCastMarketSnapshot,
+  DotCastResolutionChallenge,
+  DotCastResolutionChallengeDecisionAction,
   DotCastResolutionOutcome,
   DotCastResolutionReview,
   DotCastResolutionReviewAction,
@@ -33,6 +35,7 @@ export interface DotCastResolutionRouterEnv {
   DOTCAST_RESOLVER_MIN_BOND_MINOR_UNITS?: string;
   DOTCAST_RESOLVER_HIGH_STAKES_MIN_BOND_MINOR_UNITS?: string;
   DOTCAST_RESOLVER_FEE_BPS?: string;
+  DOTCAST_RESOLUTION_CHALLENGE_WINDOW_SECONDS?: string;
 }
 
 export interface DotCastResolutionRouterStatus {
@@ -47,6 +50,7 @@ export interface DotCastResolutionRouterStatus {
   resolverMinBondMinorUnits: number;
   resolverHighStakesMinBondMinorUnits: number;
   resolverFeeBps: number;
+  challengeWindowSeconds: number;
   guards: string[];
 }
 
@@ -165,6 +169,27 @@ export interface DotCastResolutionReviewDecisionResult {
   canOpenRealMoney: boolean;
 }
 
+export interface OpenDotCastResolutionChallengeInput {
+  route: DotCastResolutionRoute;
+  challengerId: string;
+  reason: string;
+  evidenceRefs?: string[];
+  bondMinorUnits?: number;
+  challengeId?: string;
+  windowSeconds?: number;
+  now?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface DecideDotCastResolutionChallengeInput {
+  challenge: DotCastResolutionChallenge;
+  action: DotCastResolutionChallengeDecisionAction;
+  decisionBy?: string | null;
+  reason?: string | null;
+  metadata?: Record<string, unknown>;
+  now?: string;
+}
+
 export interface ApplyDotCastResolverAdminActionInput {
   profile: DotCastResolverRegistryProfile;
   action: DotCastResolverAdminAction;
@@ -196,6 +221,12 @@ export interface DotCastResolutionReviewFilters {
   limit?: number;
 }
 
+export interface DotCastResolutionChallengeFilters {
+  routeId?: string;
+  status?: DotCastResolutionChallenge["status"];
+  limit?: number;
+}
+
 export interface DotCastResolutionRouterStore {
   getRoute(routeId: string): Promise<DotCastResolutionRoute | null>;
   listReviewQueue(filters?: DotCastResolutionReviewQueueFilters): Promise<DotCastResolutionRoute[]>;
@@ -215,6 +246,12 @@ export interface DotCastResolutionRouterStore {
   listResolutionReviews(
     filters?: DotCastResolutionReviewFilters
   ): Promise<DotCastResolutionReview[]>;
+  insertResolutionChallenge(challenge: DotCastResolutionChallenge): Promise<void>;
+  updateResolutionChallenge(challenge: DotCastResolutionChallenge): Promise<void>;
+  getResolutionChallenge(challengeId: string): Promise<DotCastResolutionChallenge | null>;
+  listResolutionChallenges(
+    filters?: DotCastResolutionChallengeFilters
+  ): Promise<DotCastResolutionChallenge[]>;
   getResolverPanel(panelId: string): Promise<DotCastResolverPanel | null>;
   getResolverAssignment(assignmentId: string): Promise<DotCastResolverAssignment | null>;
   getResolverCommit(assignmentId: string): Promise<DotCastResolverCommit | null>;
@@ -248,6 +285,7 @@ const DEFAULT_RESOLVER_MIN_BOND_MINOR_UNITS = 50_000;
 const DEFAULT_RESOLVER_HIGH_STAKES_MIN_BOND_MINOR_UNITS = 250_000;
 const DEFAULT_RESOLVER_FEE_BPS = 200;
 const DEFAULT_RESOLVER_REPUTATION_BPS = 7500;
+const DEFAULT_RESOLUTION_CHALLENGE_WINDOW_SECONDS = 900;
 const RESOLVER_REPUTATION_CORRECT_DELTA_BPS = 100;
 const RESOLVER_REPUTATION_MISS_DELTA_BPS = -250;
 
@@ -630,6 +668,92 @@ export class D1DotCastResolutionRouterStore implements DotCastResolutionRouterSt
       .all<Record<string, unknown>>();
 
     return (result.results ?? []).map(reviewFromRow);
+  }
+
+  async insertResolutionChallenge(challenge: DotCastResolutionChallenge): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT OR IGNORE INTO dotcast_resolution_challenges (
+           challenge_id, route_id, pool_id, market_id, challenger_id, status, reason,
+           evidence_refs_json, bond_minor_units, opened_at, challenge_window_closes_at,
+           decided_at, decision_by, decision_json, event_json
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .bind(...challengeParams(challenge))
+      .run();
+  }
+
+  async updateResolutionChallenge(challenge: DotCastResolutionChallenge): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE dotcast_resolution_challenges
+         SET status = ?,
+             decided_at = ?,
+             decision_by = ?,
+             decision_json = ?,
+             event_json = ?
+         WHERE challenge_id = ?`
+      )
+      .bind(
+        challenge.status,
+        challenge.decidedAt,
+        challenge.decisionBy,
+        JSON.stringify(challenge.decisionJson),
+        JSON.stringify(challenge.eventJson),
+        challenge.challengeId
+      )
+      .run();
+  }
+
+  async getResolutionChallenge(challengeId: string): Promise<DotCastResolutionChallenge | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT challenge_id, route_id, pool_id, market_id, challenger_id, status, reason,
+                evidence_refs_json, bond_minor_units, opened_at, challenge_window_closes_at,
+                decided_at, decision_by, decision_json, event_json
+         FROM dotcast_resolution_challenges
+         WHERE challenge_id = ?`
+      )
+      .bind(challengeId)
+      .first<Record<string, unknown>>();
+
+    return row ? challengeFromRow(row) : null;
+  }
+
+  async listResolutionChallenges(
+    filters: DotCastResolutionChallengeFilters = {}
+  ): Promise<DotCastResolutionChallenge[]> {
+    const safeLimit = boundedLimit(filters.limit, 100);
+    const clauses: string[] = [];
+    const params: unknown[] = [];
+    let query = `SELECT challenge_id, route_id, pool_id, market_id, challenger_id, status, reason,
+                        evidence_refs_json, bond_minor_units, opened_at, challenge_window_closes_at,
+                        decided_at, decision_by, decision_json, event_json
+                 FROM dotcast_resolution_challenges`;
+
+    if (filters.routeId) {
+      clauses.push("route_id = ?");
+      params.push(filters.routeId);
+    }
+
+    if (filters.status) {
+      clauses.push("status = ?");
+      params.push(filters.status);
+    }
+
+    if (clauses.length > 0) {
+      query += ` WHERE ${clauses.join(" AND ")}`;
+    }
+
+    query += " ORDER BY opened_at DESC, challenge_id DESC LIMIT ?";
+    params.push(safeLimit);
+
+    const result = await this.db
+      .prepare(query)
+      .bind(...params)
+      .all<Record<string, unknown>>();
+
+    return (result.results ?? []).map(challengeFromRow);
   }
 
   async getResolverPanel(panelId: string): Promise<DotCastResolverPanel | null> {
@@ -1169,6 +1293,13 @@ export function readDotCastResolutionRouterStatus(
     DEFAULT_RESOLVER_HIGH_STAKES_MIN_BOND_MINOR_UNITS
   );
   const resolverFeeBps = readBps(env.DOTCAST_RESOLVER_FEE_BPS, DEFAULT_RESOLVER_FEE_BPS);
+  const challengeWindowSeconds = Math.max(
+    60,
+    readNonNegativeInteger(
+      env.DOTCAST_RESOLUTION_CHALLENGE_WINDOW_SECONDS,
+      DEFAULT_RESOLUTION_CHALLENGE_WINDOW_SECONDS
+    )
+  );
   const guards: string[] = [];
 
   if (!enabled) {
@@ -1195,6 +1326,7 @@ export function readDotCastResolutionRouterStatus(
     resolverMinBondMinorUnits,
     resolverHighStakesMinBondMinorUnits,
     resolverFeeBps,
+    challengeWindowSeconds,
     guards
   };
 }
@@ -1255,6 +1387,135 @@ export function applyDotCastResolutionReviewDecision(
     review,
     resultingRoute,
     canOpenRealMoney: resultingRoute?.status === "locked"
+  };
+}
+
+export function openDotCastResolutionChallenge(
+  input: OpenDotCastResolutionChallengeInput
+): DotCastResolutionChallenge {
+  const now = input.now ?? new Date().toISOString();
+  const windowSeconds = Math.max(
+    60,
+    Math.floor(input.windowSeconds ?? DEFAULT_RESOLUTION_CHALLENGE_WINDOW_SECONDS)
+  );
+  const openedAtMs = Date.parse(now);
+
+  if (!Number.isFinite(openedAtMs)) {
+    throw new DotCastResolutionRouterError(
+      "RESOLUTION_CHALLENGE_TIME_INVALID",
+      "challenge timestamp is invalid",
+      422
+    );
+  }
+
+  if (input.route.tier !== "optimistic_bonded") {
+    throw new DotCastResolutionRouterError(
+      "RESOLUTION_CHALLENGE_ROUTE_INELIGIBLE",
+      "only optimistic bonded E13 routes can be challenged",
+      409
+    );
+  }
+
+  if (input.route.status === "blocked" || input.route.status === "points_only") {
+    throw new DotCastResolutionRouterError(
+      "RESOLUTION_CHALLENGE_ROUTE_CLOSED",
+      "blocked or points-only E13 routes cannot be challenged",
+      409
+    );
+  }
+
+  const routeCreatedAtMs = Date.parse(input.route.createdAt);
+  const routeWindowClosesAtMs =
+    Number.isFinite(routeCreatedAtMs) && routeCreatedAtMs > 0
+      ? routeCreatedAtMs + windowSeconds * 1000
+      : openedAtMs + windowSeconds * 1000;
+
+  if (openedAtMs > routeWindowClosesAtMs) {
+    throw new DotCastResolutionRouterError(
+      "RESOLUTION_CHALLENGE_WINDOW_CLOSED",
+      "the E13 optimistic challenge window has closed",
+      409
+    );
+  }
+
+  const challengeWindowClosesAt = new Date(routeWindowClosesAtMs).toISOString();
+  const challengerId = requireNonEmptyInput(input.challengerId, "challengerId");
+  const reason = requireNonEmptyInput(input.reason, "reason");
+  const evidenceRefs = uniqueStrings(input.evidenceRefs ?? []);
+  const bondMinorUnits = input.bondMinorUnits ?? Math.max(0, input.route.bondMinorUnits);
+
+  assertNonNegativeInteger(bondMinorUnits, "bondMinorUnits");
+
+  return {
+    challengeId:
+      input.challengeId ??
+      `dotcast:e13:challenge:${input.route.routeId}:${challengerId}:${Date.parse(now)}`,
+    routeId: input.route.routeId,
+    poolId: input.route.poolId,
+    marketId: input.route.marketId,
+    challengerId,
+    status: "open",
+    reason,
+    evidenceRefs,
+    bondMinorUnits,
+    openedAt: now,
+    challengeWindowClosesAt,
+    decidedAt: null,
+    decisionBy: null,
+    decisionJson: {},
+    eventJson: {
+      routeTier: input.route.tier,
+      routeStatus: input.route.status,
+      routeCreatedAt: input.route.createdAt,
+      metadata: input.metadata ?? {}
+    }
+  };
+}
+
+export function decideDotCastResolutionChallenge(
+  input: DecideDotCastResolutionChallengeInput
+): DotCastResolutionChallenge {
+  const now = input.now ?? new Date().toISOString();
+
+  if (input.challenge.status !== "open") {
+    throw new DotCastResolutionRouterError(
+      "RESOLUTION_CHALLENGE_ALREADY_DECIDED",
+      "only open E13 challenges can be decided",
+      409
+    );
+  }
+
+  const closesAtMs = Date.parse(input.challenge.challengeWindowClosesAt);
+  const nowMs = Date.parse(now);
+
+  if (input.action !== "expire" && Number.isFinite(closesAtMs) && nowMs > closesAtMs) {
+    throw new DotCastResolutionRouterError(
+      "RESOLUTION_CHALLENGE_WINDOW_CLOSED",
+      "E13 challenge decisions after the window must use expire",
+      409
+    );
+  }
+
+  const status = challengeStatusForDecision(input.action);
+  return {
+    ...input.challenge,
+    status,
+    decidedAt: now,
+    decisionBy: input.decisionBy?.trim() || null,
+    decisionJson: {
+      action: input.action,
+      reason: input.reason ?? null,
+      metadata: input.metadata ?? {}
+    },
+    eventJson: {
+      ...input.challenge.eventJson,
+      lastDecision: {
+        action: input.action,
+        decisionBy: input.decisionBy ?? null,
+        reason: input.reason ?? null,
+        at: now
+      }
+    }
   };
 }
 
@@ -1965,6 +2226,29 @@ function reviewFromRow(row: Record<string, unknown>): DotCastResolutionReview {
   };
 }
 
+function challengeFromRow(row: Record<string, unknown>): DotCastResolutionChallenge {
+  return {
+    challengeId: requireText(row.challenge_id, "challenge_id"),
+    routeId: requireText(row.route_id, "route_id"),
+    poolId: nullableText(row.pool_id),
+    marketId: requireText(row.market_id, "market_id"),
+    challengerId: requireText(row.challenger_id, "challenger_id"),
+    status: parseChallengeStatus(row.status),
+    reason: requireText(row.reason, "reason"),
+    evidenceRefs: parseStringArray(row.evidence_refs_json, "evidence_refs_json"),
+    bondMinorUnits: requireInteger(row.bond_minor_units, "bond_minor_units"),
+    openedAt: requireText(row.opened_at, "opened_at"),
+    challengeWindowClosesAt: requireText(
+      row.challenge_window_closes_at,
+      "challenge_window_closes_at"
+    ),
+    decidedAt: nullableText(row.decided_at),
+    decisionBy: nullableText(row.decision_by),
+    decisionJson: parseRecord(row.decision_json, "decision_json"),
+    eventJson: parseRecord(row.event_json, "event_json")
+  };
+}
+
 function assignmentFromRow(row: Record<string, unknown>): DotCastResolverAssignment {
   return {
     assignmentId: requireText(row.assignment_id, "assignment_id"),
@@ -2024,6 +2308,26 @@ function routeParams(route: DotCastResolutionRoute): unknown[] {
     route.classifierVersion,
     JSON.stringify(route.eventJson),
     route.createdAt
+  ];
+}
+
+function challengeParams(challenge: DotCastResolutionChallenge): unknown[] {
+  return [
+    challenge.challengeId,
+    challenge.routeId,
+    challenge.poolId,
+    challenge.marketId,
+    challenge.challengerId,
+    challenge.status,
+    challenge.reason,
+    JSON.stringify(challenge.evidenceRefs),
+    challenge.bondMinorUnits,
+    challenge.openedAt,
+    challenge.challengeWindowClosesAt,
+    challenge.decidedAt,
+    challenge.decisionBy,
+    JSON.stringify(challenge.decisionJson),
+    JSON.stringify(challenge.eventJson)
   ];
 }
 
@@ -2211,6 +2515,24 @@ function parseReviewStatus(value: unknown): DotCastResolutionReview["status"] {
   );
 }
 
+function parseChallengeStatus(value: unknown): DotCastResolutionChallenge["status"] {
+  if (
+    value === "open" ||
+    value === "accepted" ||
+    value === "rejected" ||
+    value === "expired" ||
+    value === "withdrawn"
+  ) {
+    return value;
+  }
+
+  throw new DotCastResolutionRouterError(
+    "RESOLUTION_ROUTE_ROW_INVALID",
+    "stored resolution challenge status is invalid",
+    500
+  );
+}
+
 function parseAssignmentStatus(value: unknown): DotCastResolverAssignment["status"] {
   if (
     value === "assigned" ||
@@ -2304,6 +2626,20 @@ function reviewStatusForAction(
   }
 
   return "reshaped";
+}
+
+function challengeStatusForDecision(
+  action: DotCastResolutionChallengeDecisionAction
+): DotCastResolutionChallenge["status"] {
+  if (action === "accept") {
+    return "accepted";
+  }
+
+  if (action === "reject") {
+    return "rejected";
+  }
+
+  return "expired";
 }
 
 function panelSizeForStake(

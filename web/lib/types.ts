@@ -1456,7 +1456,7 @@ export interface DotCastResolutionRouterStatusResponse {
 export interface DotCastResolutionRoute {
   routeId: string;
   marketId: string;
-  poolId: string;
+  poolId: string | null;
   tier: string;
   status: string;
   confidenceBps: number;
@@ -1466,9 +1466,11 @@ export interface DotCastResolutionRoute {
   reviewRequired: boolean;
   pointsOnly: boolean;
   blockedReason: string | null;
+  steeringPrompt?: string | null;
   feeBps: number;
   bondMinorUnits: number;
   panelSize: number;
+  lockedAt?: string | null;
   classifierVersion: string;
   createdAt: string;
   sources?: JsonRecord[];
@@ -1484,6 +1486,24 @@ export interface DotCastResolutionReview {
   reviewerId: string;
   decisionJson?: JsonRecord;
   createdAt: string;
+}
+
+export interface DotCastResolutionChallenge {
+  challengeId: string;
+  routeId: string;
+  poolId: string | null;
+  marketId: string;
+  challengerId: string;
+  status: "open" | "accepted" | "rejected" | "expired" | "withdrawn";
+  reason: string;
+  evidenceRefs: string[];
+  bondMinorUnits: number;
+  openedAt: string;
+  challengeWindowClosesAt: string;
+  decidedAt: string | null;
+  decisionBy: string | null;
+  decisionJson?: JsonRecord;
+  eventJson?: JsonRecord;
 }
 
 export interface DotCastResolutionReviewQueueResponse {
@@ -1502,6 +1522,26 @@ export interface DotCastResolutionReviewsResponse {
   resolutionRouter: {
     reviews: DotCastResolutionReview[];
     count: number;
+  };
+  error?: string;
+}
+
+export interface DotCastResolutionChallengesResponse {
+  ok: boolean;
+  milestone: "E13";
+  resolutionRouter: {
+    challenges: DotCastResolutionChallenge[];
+    count: number;
+  };
+  error?: string;
+}
+
+export interface DotCastResolutionChallengeResponse {
+  ok: boolean;
+  milestone: "E13";
+  resolutionRouter: {
+    challenge: DotCastResolutionChallenge;
+    challengeWindowSeconds?: number;
   };
   error?: string;
 }

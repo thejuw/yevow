@@ -4191,6 +4191,12 @@ output {
   padding: 8px;
 }
 
+.dotcast-alert.success {
+  border-color: rgba(102, 227, 161, 0.3);
+  color: #c7f9dd;
+  background: rgba(102, 227, 161, 0.08);
+}
+
 .dotcast-operator-grid,
 .dotcast-studio-grid,
 .dotcast-resolution-grid {
@@ -4431,6 +4437,68 @@ output {
   font-family: "SFMono-Regular", Consolas, monospace;
   font-size: 11px;
   text-align: right;
+}
+
+.dotcast-queue-actions,
+.dotcast-challenge-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.dotcast-queue-actions {
+  grid-column: 1 / -1;
+}
+
+.dotcast-queue-actions button,
+.dotcast-challenge-actions button {
+  min-height: 30px;
+  text-transform: capitalize;
+}
+
+.dotcast-challenge-list {
+  display: grid;
+  gap: 8px;
+}
+
+.dotcast-challenge-row {
+  min-height: 76px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(82px, auto);
+  gap: 9px;
+  align-items: center;
+  border: 1px solid var(--line-cold);
+  border-radius: 7px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.022);
+}
+
+.dotcast-challenge-row strong {
+  display: block;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.28;
+}
+
+.dotcast-challenge-row span,
+.dotcast-challenge-row small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.dotcast-challenge-row code {
+  color: var(--gold);
+  font-size: 10px;
+  text-align: right;
+  overflow-wrap: anywhere;
+  text-transform: uppercase;
+}
+
+.dotcast-challenge-actions {
+  grid-column: 1 / -1;
 }
 
 .dotcast-form-grid {
@@ -4733,6 +4801,7 @@ output {
   .dotcast-odds-row,
   .dotcast-queue-row,
   .dotcast-review-row,
+  .dotcast-challenge-row,
   .dotcast-pot-row,
   .dotcast-credential-row,
   .dotcast-secret-row,
@@ -4743,6 +4812,7 @@ output {
   .dotcast-queue-row code,
   .dotcast-queue-row small,
   .dotcast-review-row code,
+  .dotcast-challenge-row code,
   .dotcast-pot-row code,
   .dotcast-guard-row strong {
     text-align: left;

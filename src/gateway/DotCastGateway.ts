@@ -30,10 +30,12 @@ import {
   createMuxLiveStream,
   applyDotCastResolutionReviewDecision,
   buildDotCastResolverRegistryProfile,
+  decideDotCastResolutionChallenge,
   fetchDotCastReferencePrice,
   impliedProb,
   listDotCastSponsoredQuestionFeed,
   onboardDotCastCreator,
+  openDotCastResolutionChallenge,
   planCreatorPoolNudges,
   applyDotCastReferralQualification,
   applyDotCastResolverAdminAction,
@@ -78,6 +80,7 @@ import {
   type DotCastPoolSnapshot,
   type DotCastReferencePriceFetchResult,
   type DotCastResolutionOutcome,
+  type DotCastResolutionChallengeDecisionAction,
   type DotCastResolutionReviewAction,
   type DotCastResolutionRoute,
   type DotCastResolutionSource,
@@ -230,6 +233,27 @@ interface DotCastResolutionReviewDecisionRequest {
   steeringPrompt?: unknown;
   metadata?: unknown;
   reviewId?: unknown;
+  now?: unknown;
+}
+
+interface DotCastResolutionChallengeRequest {
+  routeId?: unknown;
+  route?: unknown;
+  challengerId?: unknown;
+  reason?: unknown;
+  evidenceRefs?: unknown;
+  bondMinorUnits?: unknown;
+  challengeId?: unknown;
+  windowSeconds?: unknown;
+  metadata?: unknown;
+  now?: unknown;
+}
+
+interface DotCastResolutionChallengeDecisionRequest {
+  action?: unknown;
+  decisionBy?: unknown;
+  reason?: unknown;
+  metadata?: unknown;
   now?: unknown;
 }
 
@@ -586,6 +610,9 @@ export function readDotCastHealth(env?: Env): Response {
       "GET /api/dotcast/resolution-router/reviews/queue",
       "GET /api/dotcast/resolution-router/reviews",
       "POST /api/dotcast/resolution-router/reviews/decision",
+      "GET /api/dotcast/resolution-router/challenges",
+      "POST /api/dotcast/resolution-router/challenges",
+      "POST /api/dotcast/resolution-router/challenges/:id/decision",
       "POST /api/dotcast/resolution-router/ai-perception/resolve",
       "POST /api/dotcast/resolution-router/resolvers/panel",
       "POST /api/dotcast/resolution-router/resolvers/commit",
@@ -1638,6 +1665,122 @@ export async function listDotCastResolutionReviewsRoute(
       resolutionRouter: {
         reviews,
         count: reviews.length
+      }
+    });
+  } catch (error) {
+    return resolutionRouterErrorResponse(error);
+  }
+}
+
+export async function listDotCastResolutionChallengesRoute(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const url = new URL(request.url);
+    const store = resolutionRouterStore(env);
+    const challenges = await store.listResolutionChallenges({
+      routeId: parseOptionalString(url.searchParams.get("routeId"), "routeId"),
+      status: parseOptionalResolutionChallengeStatus(url.searchParams.get("status"), "status"),
+      limit: parseOptionalQueryInteger(url.searchParams.get("limit"), "limit")
+    });
+
+    return json({
+      ok: true,
+      milestone: "E13",
+      resolutionRouter: {
+        challenges,
+        count: challenges.length
+      }
+    });
+  } catch (error) {
+    return resolutionRouterErrorResponse(error);
+  }
+}
+
+export async function openDotCastResolutionChallengeRoute(
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastResolutionChallengeRequest>(request);
+    const routeId = parseOptionalString(body?.routeId, "routeId");
+    const route = body?.route
+      ? parseResolutionRouteObject(body.route, "route")
+      : await requireResolutionRoute(env, parseRequiredString(routeId, "routeId"));
+    const status = readDotCastResolutionRouterStatus(
+      env,
+      Boolean(env.DOTCAST_DB ?? env.TRADING_DB)
+    );
+    const challenge = openDotCastResolutionChallenge({
+      route,
+      challengerId: parseRequiredString(body?.challengerId, "challengerId"),
+      reason: parseRequiredString(body?.reason, "reason"),
+      evidenceRefs: parseOptionalStringArray(body?.evidenceRefs, "evidenceRefs"),
+      bondMinorUnits:
+        body?.bondMinorUnits === undefined || body.bondMinorUnits === null
+          ? undefined
+          : parseMinorUnits(body.bondMinorUnits, "bondMinorUnits", true),
+      challengeId: parseOptionalString(body?.challengeId, "challengeId"),
+      windowSeconds:
+        body?.windowSeconds === undefined || body.windowSeconds === null
+          ? status.challengeWindowSeconds
+          : parseOptionalQueryInteger(String(body.windowSeconds), "windowSeconds"),
+      metadata: parseMetadataRecord(body?.metadata),
+      now: parseOptionalString(body?.now, "now")
+    });
+    const store = resolutionRouterStore(env);
+
+    await store.insertResolutionChallenge(challenge);
+
+    return json(
+      {
+        ok: true,
+        milestone: "E13",
+        resolutionRouter: {
+          challenge,
+          challengeWindowSeconds: status.challengeWindowSeconds
+        }
+      },
+      201
+    );
+  } catch (error) {
+    return resolutionRouterErrorResponse(error);
+  }
+}
+
+export async function decideDotCastResolutionChallengeRoute(
+  challengeId: string,
+  request: Request,
+  env: Env
+): Promise<Response> {
+  try {
+    const body = await readJsonBody<DotCastResolutionChallengeDecisionRequest>(request);
+    const store = resolutionRouterStore(env);
+    const existing = await store.getResolutionChallenge(
+      parseRequiredString(challengeId, "challengeId")
+    );
+
+    if (!existing) {
+      return json({ ok: false, error: "E13 resolution challenge was not found" }, 404);
+    }
+
+    const challenge = decideDotCastResolutionChallenge({
+      challenge: existing,
+      action: parseResolutionChallengeDecisionAction(body?.action),
+      decisionBy: parseNullableString(body?.decisionBy, "decisionBy"),
+      reason: parseNullableString(body?.reason, "reason"),
+      metadata: parseMetadataRecord(body?.metadata),
+      now: parseOptionalString(body?.now, "now")
+    });
+
+    await store.updateResolutionChallenge(challenge);
+
+    return json({
+      ok: true,
+      milestone: "E13",
+      resolutionRouter: {
+        challenge
       }
     });
   } catch (error) {
@@ -2923,6 +3066,37 @@ function parseOptionalResolutionReviewStatus(
   }
 
   throw new Error(`${label} must be queued, approved, denied, or reshaped`);
+}
+
+function parseOptionalResolutionChallengeStatus(
+  value: unknown,
+  label: string
+): "open" | "accepted" | "rejected" | "expired" | "withdrawn" | undefined {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+
+  if (
+    value === "open" ||
+    value === "accepted" ||
+    value === "rejected" ||
+    value === "expired" ||
+    value === "withdrawn"
+  ) {
+    return value;
+  }
+
+  throw new Error(`${label} must be open, accepted, rejected, expired, or withdrawn`);
+}
+
+function parseResolutionChallengeDecisionAction(
+  value: unknown
+): DotCastResolutionChallengeDecisionAction {
+  if (value === "accept" || value === "reject" || value === "expire") {
+    return value;
+  }
+
+  throw new Error("challenge decision action must be accept, reject, or expire");
 }
 
 function parseResolverAdminAction(value: unknown): DotCastResolverAdminAction {

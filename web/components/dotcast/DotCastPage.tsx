@@ -3,9 +3,7 @@
 import {
   Archive,
   BadgeCheck,
-  Banknote,
   BellRing,
-  Bot,
   CircleDot,
   ClipboardList,
   Coins,
@@ -34,13 +32,17 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   DEFAULT_API_BASE,
   applyDotCastResolverAdminAction,
+  applyDotCastResolutionReviewDecision,
   attachDotCastLivestreamPool,
   createDotCastLivestream,
+  decideDotCastResolutionChallenge,
+  openDotCastResolutionChallenge,
   readDotCastCreatorEconomyStatus,
   readDotCastHealth,
   readDotCastLivestream,
   readDotCastLivestreamPlayback,
   readDotCastReferralStatus,
+  readDotCastResolutionChallenges,
   readDotCastResolutionReviewQueue,
   readDotCastResolutionReviews,
   readDotCastResolutionRouterStatus,
@@ -54,6 +56,7 @@ import type {
   DotCastHealthResponse,
   DotCastLivestreamCreateResponse,
   DotCastLivestreamReadResponse,
+  DotCastResolutionChallenge,
   DotCastResolutionReview,
   DotCastResolutionRoute,
   DotCastResolutionRouterStatusResponse,
@@ -174,6 +177,7 @@ export default function DotCastPage({ view }: DotCastPageProps) {
   });
   const [queue, setQueue] = useState<DotCastResolutionRoute[]>([]);
   const [reviews, setReviews] = useState<DotCastResolutionReview[]>([]);
+  const [challenges, setChallenges] = useState<DotCastResolutionChallenge[]>([]);
   const [lastUpdated, setLastUpdated] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -190,7 +194,8 @@ export default function DotCastPage({ view }: DotCastPageProps) {
         referrals,
         resolution,
         reviewQueue,
-        reviewList
+        reviewList,
+        challengeList
       ] = await Promise.all([
         readDotCastHealth(apiBase),
         readDotCastSettlementRailStatus(apiBase),
@@ -200,12 +205,14 @@ export default function DotCastPage({ view }: DotCastPageProps) {
         readDotCastReferralStatus(apiBase),
         readDotCastResolutionRouterStatus(apiBase),
         readDotCastResolutionReviewQueue(apiBase, 8),
-        readDotCastResolutionReviews(apiBase, 8)
+        readDotCastResolutionReviews(apiBase, 8),
+        readDotCastResolutionChallenges(apiBase, 8)
       ]);
 
       setStatus({ health, rail, rewarded, sponsored, creator, referrals, resolution });
       setQueue(reviewQueue.resolutionRouter?.routes ?? []);
       setReviews(reviewList.resolutionRouter?.reviews ?? []);
+      setChallenges(challengeList.resolutionRouter?.challenges ?? []);
       setLastUpdated(new Date().toISOString());
       setLoadState("READY");
     } catch (nextError) {
@@ -329,6 +336,7 @@ export default function DotCastPage({ view }: DotCastPageProps) {
           apiBase={apiBase}
           queue={queue}
           reviews={reviews}
+          challenges={challenges}
           status={status}
           onRefresh={() => void refresh()}
         />
@@ -885,12 +893,14 @@ function ResolutionDashboard({
   apiBase,
   queue,
   reviews,
+  challenges,
   status,
   onRefresh
 }: {
   apiBase: string;
   queue: DotCastResolutionRoute[];
   reviews: DotCastResolutionReview[];
+  challenges: DotCastResolutionChallenge[];
   status: StatusBundle;
   onRefresh: () => void;
 }) {
@@ -901,6 +911,31 @@ function ResolutionDashboard({
   const [delta, setDelta] = useState(0);
   const [reason, setReason] = useState("manual review");
   const [adminStatus, setAdminStatus] = useState<string | null>(null);
+  const optimisticRoutes = useMemo(
+    () => queue.filter((route) => route.tier === "optimistic_bonded"),
+    [queue]
+  );
+  const [challengeRouteId, setChallengeRouteId] = useState("");
+  const [challengerId, setChallengerId] = useState("operator-review");
+  const [challengeReason, setChallengeReason] = useState(
+    "optimistic route needs operator challenge"
+  );
+  const [challengeEvidence, setChallengeEvidence] = useState("livestream timestamp, source proof");
+  const [challengeBond, setChallengeBond] = useState(0);
+  const [challengeStatus, setChallengeStatus] = useState<string | null>(null);
+  const [isOpeningChallenge, setIsOpeningChallenge] = useState(false);
+  const [challengeDecisionId, setChallengeDecisionId] = useState<string | null>(null);
+  const challengeWindowSeconds = Number(
+    status.resolution?.resolutionRouter?.challengeWindowSeconds ??
+      status.health?.resolutionRouter?.challengeWindowSeconds ??
+      900
+  );
+
+  useEffect(() => {
+    if (!challengeRouteId && optimisticRoutes[0]?.routeId) {
+      setChallengeRouteId(optimisticRoutes[0].routeId);
+    }
+  }, [challengeRouteId, optimisticRoutes]);
 
   const applyAdminAction = async () => {
     setAdminStatus(null);
@@ -922,6 +957,68 @@ function ResolutionDashboard({
       onRefresh();
     } catch (error) {
       setAdminStatus(error instanceof Error ? error.message : "Resolver action failed.");
+    }
+  };
+
+  const openChallenge = async () => {
+    setIsOpeningChallenge(true);
+    setChallengeStatus(null);
+
+    try {
+      const response = await openDotCastResolutionChallenge(apiBase, {
+        routeId: challengeRouteId.trim(),
+        challengerId: challengerId.trim(),
+        reason: challengeReason.trim(),
+        evidenceRefs: challengeEvidence
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean),
+        bondMinorUnits: challengeBond > 0 ? challengeBond : undefined,
+        metadata: {
+          surface: "dotcast-resolution-dashboard"
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(responseError(response, "Challenge failed."));
+      }
+
+      setChallengeStatus(`opened ${response.resolutionRouter.challenge.challengeId}`);
+      onRefresh();
+    } catch (error) {
+      setChallengeStatus(error instanceof Error ? error.message : "Challenge failed.");
+    } finally {
+      setIsOpeningChallenge(false);
+    }
+  };
+
+  const decideChallenge = async (
+    challenge: DotCastResolutionChallenge,
+    nextAction: "accept" | "reject" | "expire"
+  ) => {
+    setChallengeDecisionId(`${challenge.challengeId}:${nextAction}`);
+    setChallengeStatus(null);
+
+    try {
+      const response = await decideDotCastResolutionChallenge(apiBase, challenge.challengeId, {
+        action: nextAction,
+        decisionBy: "yevow-dotcast-ui",
+        reason: `${nextAction} from dotCast Resolution Dashboard`,
+        metadata: {
+          surface: "dotcast-resolution-dashboard"
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(responseError(response, "Challenge decision failed."));
+      }
+
+      setChallengeStatus(`${nextAction} applied`);
+      onRefresh();
+    } catch (error) {
+      setChallengeStatus(error instanceof Error ? error.message : "Challenge decision failed.");
+    } finally {
+      setChallengeDecisionId(null);
     }
   };
 
@@ -957,6 +1054,11 @@ function ResolutionDashboard({
               Number(status.health?.resolutionRouter?.resolverMinBondMinorUnits ?? 50000) / 100
             )}
             detail="resolver registry"
+          />
+          <MetricCard
+            label="Challenge"
+            value={`${Math.round(challengeWindowSeconds / 60)}m`}
+            detail="optimistic window"
           />
         </div>
       </div>
@@ -1013,13 +1115,166 @@ function ResolutionDashboard({
         {adminStatus ? <div className="dotcast-alert compact">{adminStatus}</div> : null}
       </div>
 
-      <QueuePanel queue={queue} />
+      <QueuePanel queue={queue} apiBase={apiBase} onRefresh={onRefresh} actionable />
+      <div className="dotcast-command-panel glass">
+        <div className="dotcast-panel-title">
+          <ShieldCheck size={17} />
+          Challenge Window
+          <code>{challenges.length}</code>
+        </div>
+        <div className="dotcast-form-grid">
+          <label className="span-2">
+            Optimistic Route ID
+            <input
+              list="dotcast-optimistic-routes"
+              value={challengeRouteId}
+              onChange={(event) => setChallengeRouteId(event.target.value)}
+            />
+            <datalist id="dotcast-optimistic-routes">
+              {optimisticRoutes.map((route) => (
+                <option key={route.routeId} value={route.routeId}>
+                  {route.marketId}
+                </option>
+              ))}
+            </datalist>
+          </label>
+          <label>
+            Challenger
+            <input value={challengerId} onChange={(event) => setChallengerId(event.target.value)} />
+          </label>
+          <label>
+            Bond
+            <input
+              min={0}
+              type="number"
+              value={challengeBond}
+              onChange={(event) => setChallengeBond(Number(event.target.value))}
+            />
+          </label>
+          <label className="span-2">
+            Reason
+            <input
+              value={challengeReason}
+              onChange={(event) => setChallengeReason(event.target.value)}
+            />
+          </label>
+          <label className="span-2">
+            Evidence Refs
+            <input
+              value={challengeEvidence}
+              onChange={(event) => setChallengeEvidence(event.target.value)}
+            />
+          </label>
+        </div>
+        <button
+          className="primary-action full-action"
+          disabled={isOpeningChallenge || !challengeRouteId.trim()}
+          onClick={() => void openChallenge()}
+        >
+          <BadgeCheck size={15} />
+          Open Challenge
+        </button>
+        {challengeStatus ? (
+          <div className="dotcast-alert compact success">{challengeStatus}</div>
+        ) : null}
+        <div className="dotcast-challenge-list">
+          {challenges.length ? (
+            challenges.map((challenge) => (
+              <div className="dotcast-challenge-row" key={challenge.challengeId}>
+                <div>
+                  <strong>{challenge.marketId}</strong>
+                  <span>{challenge.reason}</span>
+                  <small>
+                    closes {formatTime(challenge.challengeWindowClosesAt)} ·{" "}
+                    {timeUntil(challenge.challengeWindowClosesAt)}
+                  </small>
+                </div>
+                <code>{challenge.status}</code>
+                {challenge.status === "open" ? (
+                  <div className="dotcast-challenge-actions">
+                    {(["accept", "reject", "expire"] as const).map((nextAction) => (
+                      <button
+                        disabled={challengeDecisionId === `${challenge.challengeId}:${nextAction}`}
+                        key={nextAction}
+                        onClick={() => void decideChallenge(challenge, nextAction)}
+                      >
+                        {nextAction}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <small>{challenge.decisionBy ?? "decided"}</small>
+                )}
+              </div>
+            ))
+          ) : (
+            <EmptyState label="No E13 challenges loaded." icon={<ShieldCheck size={22} />} />
+          )}
+        </div>
+      </div>
       <ReviewsPanel reviews={reviews} />
     </section>
   );
 }
 
-function QueuePanel({ queue }: { queue: DotCastResolutionRoute[] }) {
+function QueuePanel({
+  queue,
+  apiBase,
+  onRefresh,
+  actionable = false
+}: {
+  queue: DotCastResolutionRoute[];
+  apiBase?: string;
+  onRefresh?: () => void;
+  actionable?: boolean;
+}) {
+  const [reviewStatus, setReviewStatus] = useState<string | null>(null);
+  const [pendingReviewAction, setPendingReviewAction] = useState<string | null>(null);
+
+  const runReviewDecision = async (
+    route: DotCastResolutionRoute,
+    nextAction: "approve" | "deny" | "reshape"
+  ) => {
+    if (!apiBase) {
+      return;
+    }
+
+    setPendingReviewAction(`${route.routeId}:${nextAction}`);
+    setReviewStatus(null);
+
+    try {
+      const response = await applyDotCastResolutionReviewDecision(apiBase, {
+        routeId: route.routeId,
+        action: nextAction,
+        reviewerId: "yevow-dotcast-ui",
+        resolutionStatement: route.resolutionStatement,
+        sourceBindings: route.sources ?? [],
+        blockedReason:
+          nextAction === "deny"
+            ? (route.blockedReason ?? "operator denied from dotCast Resolution Dashboard")
+            : undefined,
+        steeringPrompt:
+          nextAction === "reshape"
+            ? "Operator requested a sharper deterministic settlement path before launch."
+            : undefined,
+        metadata: {
+          surface: "dotcast-resolution-dashboard"
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(responseError(response, `${nextAction} failed.`));
+      }
+
+      setReviewStatus(`${nextAction} applied to ${route.marketId}`);
+      onRefresh?.();
+    } catch (error) {
+      setReviewStatus(error instanceof Error ? error.message : `${nextAction} failed.`);
+    } finally {
+      setPendingReviewAction(null);
+    }
+  };
+
   return (
     <div className="dotcast-command-panel glass">
       <div className="dotcast-panel-title">
@@ -1037,6 +1292,19 @@ function QueuePanel({ queue }: { queue: DotCastResolutionRoute[] }) {
               </div>
               <code>{route.tier}</code>
               <small>{compact.format(route.confidenceBps / 100)}%</small>
+              {actionable ? (
+                <div className="dotcast-queue-actions">
+                  {(["approve", "deny", "reshape"] as const).map((nextAction) => (
+                    <button
+                      disabled={pendingReviewAction === `${route.routeId}:${nextAction}`}
+                      key={nextAction}
+                      onClick={() => void runReviewDecision(route, nextAction)}
+                    >
+                      {nextAction}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
             </div>
           ))
         ) : (
@@ -1046,6 +1314,7 @@ function QueuePanel({ queue }: { queue: DotCastResolutionRoute[] }) {
           />
         )}
       </div>
+      {reviewStatus ? <div className="dotcast-alert compact success">{reviewStatus}</div> : null}
     </div>
   );
 }
@@ -1170,6 +1439,34 @@ function EmptyState({ label, icon }: { label: string; icon: JSX.Element }) {
       <span>{label}</span>
     </div>
   );
+}
+
+function responseError(response: unknown, fallback: string) {
+  if (typeof response !== "object" || response === null || !("error" in response)) {
+    return fallback;
+  }
+
+  const error = response.error;
+  return typeof error === "string" && error.length > 0 ? error : fallback;
+}
+
+function timeUntil(value: string) {
+  const closesAt = Date.parse(value);
+  if (!Number.isFinite(closesAt)) {
+    return "window unknown";
+  }
+
+  const remainingMs = closesAt - Date.now();
+  if (remainingMs <= 0) {
+    return "window closed";
+  }
+
+  const remainingMinutes = Math.ceil(remainingMs / 60000);
+  if (remainingMinutes < 60) {
+    return `${remainingMinutes}m remaining`;
+  }
+
+  return `${Math.ceil(remainingMinutes / 60)}h remaining`;
 }
 
 function formatTime(value: string) {

@@ -28,6 +28,8 @@ import type {
   DotCastHealthResponse,
   DotCastLivestreamCreateResponse,
   DotCastLivestreamReadResponse,
+  DotCastResolutionChallengeResponse,
+  DotCastResolutionChallengesResponse,
   DotCastResolutionReviewQueueResponse,
   DotCastResolutionReviewsResponse,
   DotCastResolutionRouterStatusResponse,
@@ -208,6 +210,100 @@ export async function readDotCastResolutionReviews(
     `/api/dotcast/resolution-router/reviews?${search.toString()}`,
     "",
     {
+      allowErrorBody: true
+    }
+  );
+}
+
+export async function applyDotCastResolutionReviewDecision(
+  apiBase: string,
+  payload: {
+    routeId: string;
+    action: "approve" | "deny" | "reshape";
+    reviewerId?: string;
+    resolutionStatement?: string;
+    blockedReason?: string;
+    steeringPrompt?: string;
+    sourceBindings?: JsonRecord[];
+    metadata?: JsonRecord;
+  }
+): Promise<DotCastGenericStatusResponse> {
+  return apiFetch<DotCastGenericStatusResponse>(
+    apiBase,
+    "/api/dotcast/resolution-router/reviews/decision",
+    "",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+      allowErrorBody: true
+    }
+  );
+}
+
+export async function readDotCastResolutionChallenges(
+  apiBase = DEFAULT_API_BASE,
+  limit = 10,
+  status?: string
+): Promise<DotCastResolutionChallengesResponse> {
+  const search = new URLSearchParams({ limit: String(limit) });
+  if (status) {
+    search.set("status", status);
+  }
+
+  return apiFetch<DotCastResolutionChallengesResponse>(
+    apiBase,
+    `/api/dotcast/resolution-router/challenges?${search.toString()}`,
+    "",
+    {
+      allowErrorBody: true
+    }
+  );
+}
+
+export async function openDotCastResolutionChallenge(
+  apiBase: string,
+  payload: {
+    routeId: string;
+    route?: JsonRecord;
+    challengerId: string;
+    reason: string;
+    evidenceRefs?: string[];
+    bondMinorUnits?: number;
+    challengeId?: string;
+    windowSeconds?: number;
+    metadata?: JsonRecord;
+    now?: string;
+  }
+): Promise<DotCastResolutionChallengeResponse> {
+  return apiFetch<DotCastResolutionChallengeResponse>(
+    apiBase,
+    "/api/dotcast/resolution-router/challenges",
+    "",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+      allowErrorBody: true
+    }
+  );
+}
+
+export async function decideDotCastResolutionChallenge(
+  apiBase: string,
+  challengeId: string,
+  payload: {
+    action: "accept" | "reject" | "expire";
+    decisionBy?: string;
+    reason?: string;
+    metadata?: JsonRecord;
+  }
+): Promise<DotCastResolutionChallengeResponse> {
+  return apiFetch<DotCastResolutionChallengeResponse>(
+    apiBase,
+    `/api/dotcast/resolution-router/challenges/${encodeURIComponent(challengeId)}/decision`,
+    "",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
       allowErrorBody: true
     }
   );
