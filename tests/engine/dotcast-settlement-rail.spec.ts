@@ -6,8 +6,10 @@ import {
   DotCastSettlementRailError,
   readSolanaUsdcSettlementRailStatus,
   reconcileDevnetSettlementRail,
+  reserveUsdcBond,
   reserveUsdcPoolEntry,
   requestDevnetWithdrawal,
+  settleUsdcBond,
   type DotCastPoolSnapshot,
   type DotCastSettlementBalance,
   type DotCastSettlementRailEvent,
@@ -15,7 +17,10 @@ import {
   type DotCastSettlementTransfer,
   type DotCastUsdcPoolFundingEvent,
   type DotCastUsdcPoolFundingLock,
-  type DotCastUsdcPoolFundingStore
+  type DotCastUsdcPoolFundingStore,
+  type DotCastUsdcBondEvent,
+  type DotCastUsdcBondLock,
+  type DotCastUsdcBondFundingStore
 } from "../../src/engine/dotcast";
 
 describe("dotCast E5 Solana USDC devnet settlement rail", () => {
@@ -271,6 +276,93 @@ describe("dotCast E5 Solana USDC devnet settlement rail", () => {
       ])
     );
   });
+
+  it("locks and settles E13 challenge and resolver bonds on the E5/E6 devnet ledger", async () => {
+    const store = new InMemorySettlementRailStore();
+    const env = devnetEnv({ DOTCAST_USDC_POOLS_ENABLED: "true" });
+
+    await creditDevnetDeposit(store, env, {
+      userId: "challenger-ledger",
+      amount: 100_000,
+      txRef: "devnet-e13-challenger",
+      confirmations: 1,
+      now: "2099-06-25T18:00:00.000Z"
+    });
+
+    const challengeLock = await reserveUsdcBond(store, env, {
+      lockId: "bond-challenge-1",
+      purpose: "resolution_challenge",
+      ownerId: "challenger-ledger",
+      amount: 50_000,
+      routeId: "route-e13",
+      poolId: "pool-e13",
+      challengeId: "challenge-e13",
+      now: "2099-06-25T18:01:00.000Z"
+    });
+    const challengeRelease = await settleUsdcBond(store, env, {
+      lockId: "bond-challenge-1",
+      action: "release",
+      reason: "challenge_accepted",
+      now: "2099-06-25T18:02:00.000Z"
+    });
+
+    await creditDevnetDeposit(store, env, {
+      userId: "resolver-ledger",
+      amount: 100_000,
+      txRef: "devnet-e13-resolver",
+      confirmations: 1,
+      now: "2099-06-25T18:03:00.000Z"
+    });
+
+    const resolverLock = await reserveUsdcBond(store, env, {
+      lockId: "bond-resolver-1",
+      purpose: "resolver_assignment",
+      ownerId: "resolver-ledger",
+      amount: 50_000,
+      routeId: "route-e13",
+      poolId: "pool-e13",
+      panelId: "panel-e13",
+      assignmentId: "assignment-e13",
+      now: "2099-06-25T18:04:00.000Z"
+    });
+    const resolverSlash = await settleUsdcBond(store, env, {
+      lockId: "bond-resolver-1",
+      action: "slash",
+      reason: "resolver_consensus_miss",
+      now: "2099-06-25T18:05:00.000Z"
+    });
+
+    expect(challengeLock).toMatchObject({
+      status: "locked",
+      balance: { availableUsdc: 50_000, lockedBondUsdc: 50_000 }
+    });
+    expect(challengeRelease).toMatchObject({
+      status: "released",
+      balance: { availableUsdc: 100_000, lockedBondUsdc: 0 }
+    });
+    expect(resolverLock).toMatchObject({
+      status: "locked",
+      balance: { availableUsdc: 50_000, lockedBondUsdc: 50_000 }
+    });
+    expect(resolverSlash).toMatchObject({
+      status: "slashed",
+      balance: { availableUsdc: 50_000, lockedBondUsdc: 0 }
+    });
+    expect(store.bondEvents.map((event) => event.eventType)).toEqual([
+      "BOND_LOCKED",
+      "BOND_RELEASED",
+      "BOND_LOCKED",
+      "BOND_SLASHED"
+    ]);
+    expect(await store.getBondLock("bond-challenge-1")).toMatchObject({
+      status: "released",
+      credit: 50_000
+    });
+    expect(await store.getBondLock("bond-resolver-1")).toMatchObject({
+      status: "slashed",
+      credit: 0
+    });
+  });
 });
 
 function devnetEnv(overrides: Record<string, string> = {}) {
@@ -294,13 +386,15 @@ function mainnetEnv() {
 }
 
 class InMemorySettlementRailStore
-  implements DotCastSettlementRailStore, DotCastUsdcPoolFundingStore
+  implements DotCastSettlementRailStore, DotCastUsdcPoolFundingStore, DotCastUsdcBondFundingStore
 {
   readonly balances = new Map<string, DotCastSettlementBalance>();
   readonly transfers = new Map<string, DotCastSettlementTransfer>();
   readonly events: DotCastSettlementRailEvent[] = [];
   readonly poolLocks = new Map<string, DotCastUsdcPoolFundingLock>();
   readonly poolEvents: DotCastUsdcPoolFundingEvent[] = [];
+  readonly bondLocks = new Map<string, DotCastUsdcBondLock>();
+  readonly bondEvents: DotCastUsdcBondEvent[] = [];
 
   async getBalance(userId: string): Promise<DotCastSettlementBalance | null> {
     return this.balances.get(userId) ?? null;
@@ -359,6 +453,24 @@ class InMemorySettlementRailStore
   async appendPoolFundingEvent(event: DotCastUsdcPoolFundingEvent): Promise<void> {
     if (!this.poolEvents.some((candidate) => candidate.eventId === event.eventId)) {
       this.poolEvents.push({ ...event });
+    }
+  }
+
+  async getBondLock(lockId: string): Promise<DotCastUsdcBondLock | null> {
+    return this.bondLocks.get(lockId) ?? null;
+  }
+
+  async insertBondLock(lock: DotCastUsdcBondLock): Promise<void> {
+    this.bondLocks.set(lock.lockId, { ...lock });
+  }
+
+  async updateBondLock(lock: DotCastUsdcBondLock): Promise<void> {
+    this.bondLocks.set(lock.lockId, { ...lock });
+  }
+
+  async appendBondEvent(event: DotCastUsdcBondEvent): Promise<void> {
+    if (!this.bondEvents.some((candidate) => candidate.eventId === event.eventId)) {
+      this.bondEvents.push({ ...event });
     }
   }
 }

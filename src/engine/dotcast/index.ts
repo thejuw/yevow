@@ -15,4 +15,5 @@ export * from "./RewardedStream";
 export * from "./SolanaUsdcSettlementRail";
 export * from "./SponsoredQuestions";
 export * from "./types";
+export * from "./UsdcBondFunding";
 export * from "./UsdcPoolFunding";

@@ -240,10 +240,10 @@ describe("dotCast gateway handlers", () => {
       eventJson: { optimisticProposal: true }
     };
     d1.seedRoute(route);
-    const env = {
-      TRADING_DB: d1 as unknown as D1Database,
+    d1.seedSettlementBalance("operator-challenge-1", 50_000);
+    const env = e13DevnetEnv(d1, {
       DOTCAST_RESOLUTION_CHALLENGE_WINDOW_SECONDS: "900"
-    } as Env;
+    });
 
     const opened = await openDotCastResolutionChallengeRoute(
       jsonRequest("/api/dotcast/resolution-router/challenges", {
@@ -270,6 +270,13 @@ describe("dotCast gateway handlers", () => {
           status: "open",
           challengerId: "operator-challenge-1",
           challengeWindowClosesAt: "2099-06-25T17:15:00.000Z"
+        },
+        bondFunding: {
+          status: "locked",
+          balance: {
+            availableUsdc: 0,
+            lockedBondUsdc: 50_000
+          }
         }
       }
     });
@@ -307,6 +314,13 @@ describe("dotCast gateway handlers", () => {
           status: "accepted",
           decisionBy: "operator-1",
           decidedAt: "2099-06-25T17:10:00.000Z"
+        },
+        bondSettlement: {
+          status: "released",
+          balance: {
+            availableUsdc: 50_000,
+            lockedBondUsdc: 0
+          }
         }
       }
     });
@@ -414,9 +428,10 @@ describe("dotCast gateway handlers", () => {
     const d1 = new FakeResolutionRouterD1();
     const route = lockedE13Route("pool-e13-timeout", "dotcast:e13-timeout");
     d1.seedRoute(route);
-    const env = { TRADING_DB: d1 as unknown as D1Database } as Env;
+    const env = e13DevnetEnv(d1);
 
     for (const candidate of resolverCandidates()) {
+      d1.seedSettlementBalance(String(candidate.resolverId), 100_000);
       await upsertDotCastResolverProfileRoute(
         jsonRequest("/api/dotcast/resolution-router/resolvers/profiles", {
           ...candidate,
@@ -476,6 +491,9 @@ describe("dotCast gateway handlers", () => {
     expect(
       [...d1.bondLedger.values()].filter((row) => row.event_type === "bond_slashed")
     ).toHaveLength(2);
+    expect(
+      [...d1.bondEvents.values()].filter((row) => row.event_type === "BOND_SLASHED")
+    ).toHaveLength(2);
   });
 
   it("settles pools from DB-backed E13 resolver consensus", async () => {
@@ -485,7 +503,7 @@ describe("dotCast gateway handlers", () => {
     d1.seedRoute(route);
 
     const env = {
-      TRADING_DB: d1 as unknown as D1Database,
+      ...e13DevnetEnv(d1),
       DOTCAST_POOL: {
         idFromName: (name: string) => ({ name }) as unknown as DurableObjectId,
         get: () =>
@@ -529,6 +547,7 @@ describe("dotCast gateway handlers", () => {
     } as Env;
 
     for (const candidate of resolverCandidates()) {
+      d1.seedSettlementBalance(String(candidate.resolverId), 100_000);
       await upsertDotCastResolverProfileRoute(
         jsonRequest("/api/dotcast/resolution-router/resolvers/profiles", {
           ...candidate,
@@ -640,7 +659,12 @@ describe("dotCast gateway handlers", () => {
 
     expect(panelBody).toMatchObject({
       resolutionRouter: {
-        candidateSource: "resolver_registry"
+        candidateSource: "resolver_registry",
+        bondFunding: [
+          expect.objectContaining({ status: "locked" }),
+          expect.objectContaining({ status: "locked" }),
+          expect.objectContaining({ status: "locked" })
+        ]
       }
     });
     expect(matchedProfiles).toEqual(
@@ -654,6 +678,12 @@ describe("dotCast gateway handlers", () => {
     });
     expect(
       [...d1.bondLedger.values()].filter((row) => row.event_type === "bond_slashed")
+    ).toHaveLength(1);
+    expect(
+      [...d1.bondEvents.values()].filter((row) => row.event_type === "BOND_RELEASED")
+    ).toHaveLength(2);
+    expect(
+      [...d1.bondEvents.values()].filter((row) => row.event_type === "BOND_SLASHED")
     ).toHaveLength(1);
 
     const profileResponse = await readDotCastResolverProfileRoute(
@@ -677,6 +707,198 @@ describe("dotCast gateway handlers", () => {
           })
         ])
       }
+    });
+  });
+
+  it("applies E13 challenge policy before final pool settlement", async () => {
+    const d1 = new FakeResolutionRouterD1();
+    const poolCalls: Array<{ path: string; body: Record<string, unknown> }> = [];
+    const env = {
+      ...e13DevnetEnv(d1),
+      DOTCAST_POOL: {
+        idFromName: (name: string) => ({ name }) as unknown as DurableObjectId,
+        get: () =>
+          ({
+            fetch: async (request: Request) => {
+              const body = await request.json<Record<string, unknown>>();
+              poolCalls.push({ path: new URL(request.url).pathname, body });
+              return Response.json({
+                ok: true,
+                action: "settled",
+                snapshot: {
+                  pool: {
+                    id:
+                      body.marketId === "dotcast:e13-policy-rejected"
+                        ? "pool-e13-policy-rejected"
+                        : "pool-e13-policy-accepted",
+                    marketId: body.marketId,
+                    unit: "usdc",
+                    status: "settled",
+                    outcome: body.outcome
+                  },
+                  entries: [],
+                  balances: {},
+                  houseLedger: [],
+                  settlement: {
+                    id: `settlement:${String(body.marketId)}:${String(body.outcome)}`,
+                    poolId: body.marketId,
+                    outcome: body.outcome,
+                    totalStaked: 0,
+                    payoutTotal: 0,
+                    rakeAmount: 0,
+                    createdAt: body.now
+                  },
+                  voidReason: null,
+                  lastResolution: body,
+                  updatedAt: body.now
+                }
+              });
+            }
+          }) as unknown as DurableObjectStub
+      } as unknown as DurableObjectNamespace
+    } as Env;
+
+    for (const candidate of resolverCandidates()) {
+      d1.seedSettlementBalance(String(candidate.resolverId), 100_000);
+      await upsertDotCastResolverProfileRoute(
+        jsonRequest("/api/dotcast/resolution-router/resolvers/profiles", {
+          ...candidate,
+          now: "2099-06-25T16:55:00.000Z"
+        }),
+        env
+      );
+    }
+
+    async function runScenario(
+      poolId: string,
+      marketId: string,
+      panelId: string,
+      challengeAction: "accept" | "reject"
+    ): Promise<Response> {
+      const route = lockedE13Route(poolId, marketId);
+      d1.seedRoute(route);
+      d1.seedSettlementBalance(`challenger:${poolId}`, 50_000);
+
+      const panelResponse = await planDotCastResolverPanelRoute(
+        jsonRequest("/api/dotcast/resolution-router/resolvers/panel", {
+          poolId,
+          route,
+          panelId,
+          now: "2099-06-25T17:00:00.000Z"
+        }),
+        env
+      );
+      const panelBody = (await panelResponse.json()) as Record<string, unknown>;
+      const assignments = (panelBody.resolutionRouter as { panel: { assignments: unknown[] } })
+        .panel.assignments as Array<Record<string, unknown>>;
+      const opened = await openDotCastResolutionChallengeRoute(
+        jsonRequest("/api/dotcast/resolution-router/challenges", {
+          routeId: route.routeId,
+          challengerId: `challenger:${poolId}`,
+          reason: "challenge policy test",
+          now: "2099-06-25T17:05:00.000Z"
+        }),
+        env
+      );
+      const openedBody = (await opened.json()) as Record<string, unknown>;
+      const challenge = (openedBody.resolutionRouter as { challenge: Record<string, unknown> })
+        .challenge;
+
+      await decideDotCastResolutionChallengeRoute(
+        String(challenge.challengeId),
+        jsonRequest(`/api/dotcast/resolution-router/challenges/${challenge.challengeId}/decision`, {
+          action: challengeAction,
+          decisionBy: "operator-policy-test",
+          reason: "policy test decision",
+          now: "2099-06-25T17:10:00.000Z"
+        }),
+        env
+      );
+
+      for (const [index, assignment] of assignments.entries()) {
+        const assignmentId = String(assignment.assignmentId);
+        await commitDotCastResolverRoute(
+          jsonRequest("/api/dotcast/resolution-router/resolvers/commit", {
+            assignmentId,
+            outcome: "yes",
+            salt: `policy-${panelId}-${index}`,
+            now: `2099-06-25T17:1${index}:00.000Z`
+          }),
+          env
+        );
+        await revealDotCastResolverRoute(
+          jsonRequest("/api/dotcast/resolution-router/resolvers/reveal", {
+            assignmentId,
+            outcome: "yes",
+            salt: `policy-${panelId}-${index}`,
+            now: `2099-06-25T17:2${index}:00.000Z`
+          }),
+          env
+        );
+      }
+
+      return settleDotCastResolverPanelRoute(
+        jsonRequest("/api/dotcast/resolution-router/resolvers/settle", {
+          panelId,
+          settlePool: true,
+          now: "2099-06-25T17:30:00.000Z"
+        }),
+        env
+      );
+    }
+
+    const accepted = await runScenario(
+      "pool-e13-policy-accepted",
+      "dotcast:e13-policy-accepted",
+      "panel-e13-policy-accepted",
+      "accept"
+    );
+    const acceptedBody = (await accepted.json()) as Record<string, unknown>;
+
+    expect(accepted.status).toBe(200);
+    expect(acceptedBody).toMatchObject({
+      resolutionRouter: {
+        poolResolution: {
+          ok: true,
+          sourceKind: "resolver_consensus",
+          challengePolicy: {
+            action: "allow",
+            reason: "accepted_challenge_resolved_by_escalation"
+          }
+        }
+      }
+    });
+    expect(poolCalls).toHaveLength(1);
+    expect(poolCalls[0]?.body).toMatchObject({
+      marketId: "dotcast:e13-policy-accepted",
+      outcome: "yes"
+    });
+
+    const allowed = await runScenario(
+      "pool-e13-policy-rejected",
+      "dotcast:e13-policy-rejected",
+      "panel-e13-policy-rejected",
+      "reject"
+    );
+    const allowedBody = (await allowed.json()) as Record<string, unknown>;
+
+    expect(allowed.status).toBe(200);
+    expect(allowedBody).toMatchObject({
+      resolutionRouter: {
+        poolResolution: {
+          ok: true,
+          sourceKind: "resolver_consensus",
+          challengePolicy: {
+            action: "allow",
+            reason: "all_challenges_rejected_or_expired"
+          }
+        }
+      }
+    });
+    expect(poolCalls).toHaveLength(2);
+    expect(poolCalls[1]?.body).toMatchObject({
+      marketId: "dotcast:e13-policy-rejected",
+      outcome: "yes"
     });
   });
 
@@ -1782,6 +2004,19 @@ function envWithSettlementRailDb(): Env {
   } as Env;
 }
 
+function e13DevnetEnv(d1: FakeResolutionRouterD1, overrides: Record<string, string> = {}): Env {
+  return {
+    TRADING_DB: d1 as unknown as D1Database,
+    DOTCAST_SETTLEMENT_RAIL_MODE: "devnet",
+    DOTCAST_SOLANA_CLUSTER: "devnet",
+    DOTCAST_SETTLEMENT_SIGNER_MODE: "mock",
+    DOTCAST_DEPOSIT_CONFIRMATIONS_REQUIRED: "1",
+    DOTCAST_WITHDRAWAL_MAX_MINOR_UNITS: "1000000",
+    DOTCAST_USDC_POOLS_ENABLED: "true",
+    ...overrides
+  } as Env;
+}
+
 function livestreamRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     stream_id: "stream-webhook",
@@ -1878,9 +2113,24 @@ class FakeResolutionRouterD1 {
   readonly reputationEvents = new Map<string, Record<string, unknown>>();
   readonly reviews = new Map<string, Record<string, unknown>>();
   readonly challenges = new Map<string, Record<string, unknown>>();
+  readonly balances = new Map<string, Record<string, unknown>>();
+  readonly bondLocks = new Map<string, Record<string, unknown>>();
+  readonly bondEvents = new Map<string, Record<string, unknown>>();
 
   seedRoute(route: Record<string, unknown>): void {
     this.routes.set(String(route.routeId), routeRow(route));
+  }
+
+  seedSettlementBalance(userId: string, availableUsdc: number): void {
+    this.balances.set(userId, {
+      user_id: userId,
+      available_usdc: availableUsdc,
+      pending_deposit_usdc: 0,
+      pending_withdrawal_usdc: 0,
+      locked_pool_usdc: 0,
+      locked_bond_usdc: 0,
+      updated_at: "2099-06-25T16:00:00.000Z"
+    });
   }
 
   prepare(query: string) {
@@ -1931,6 +2181,14 @@ class FakeResolutionRouterD1 {
 
     if (query.includes("FROM dotcast_resolution_challenges")) {
       return this.challenges.get(String(params[0])) ?? null;
+    }
+
+    if (query.includes("FROM dotcast_settlement_balances")) {
+      return this.balances.get(String(params[0])) ?? null;
+    }
+
+    if (query.includes("FROM dotcast_usdc_bond_locks")) {
+      return this.bondLocks.get(String(params[0])) ?? null;
     }
 
     return null;
@@ -2211,6 +2469,74 @@ class FakeResolutionRouterD1 {
       if (existing) {
         this.assignments.set(assignmentId, { ...existing, status: params[0] });
       }
+      return;
+    }
+
+    if (query.includes("INSERT INTO dotcast_settlement_balances")) {
+      this.balances.set(String(params[0]), {
+        user_id: params[0],
+        available_usdc: params[1],
+        pending_deposit_usdc: params[2],
+        pending_withdrawal_usdc: params[3],
+        locked_pool_usdc: params[4],
+        locked_bond_usdc: params[5],
+        updated_at: params[6]
+      });
+      return;
+    }
+
+    if (query.includes("INSERT INTO dotcast_usdc_bond_locks")) {
+      this.bondLocks.set(String(params[0]), {
+        lock_id: params[0],
+        purpose: params[1],
+        owner_id: params[2],
+        route_id: params[3],
+        pool_id: params[4],
+        panel_id: params[5],
+        assignment_id: params[6],
+        challenge_id: params[7],
+        amount: params[8],
+        status: params[9],
+        credit: params[10],
+        created_at: params[11],
+        updated_at: params[12],
+        event_json: params[13]
+      });
+      return;
+    }
+
+    if (query.includes("UPDATE dotcast_usdc_bond_locks")) {
+      const lockId = String(params[4]);
+      const existing = this.bondLocks.get(lockId) ?? {};
+      this.bondLocks.set(lockId, {
+        ...existing,
+        status: params[0],
+        credit: params[1],
+        updated_at: params[2],
+        event_json: params[3]
+      });
+      return;
+    }
+
+    if (query.includes("INSERT OR IGNORE INTO dotcast_usdc_bond_events")) {
+      this.bondEvents.set(String(params[0]), {
+        event_id: params[0],
+        lock_id: params[1],
+        purpose: params[2],
+        owner_id: params[3],
+        route_id: params[4],
+        pool_id: params[5],
+        panel_id: params[6],
+        assignment_id: params[7],
+        challenge_id: params[8],
+        event_type: params[9],
+        amount: params[10],
+        credit: params[11],
+        status: params[12],
+        reason: params[13],
+        event_json: params[14],
+        created_at: params[15]
+      });
     }
   }
 }
@@ -2378,6 +2704,8 @@ class FakeSettlementRailD1 {
   readonly events = new Map<string, Record<string, unknown>>();
   readonly poolLocks = new Map<string, Record<string, unknown>>();
   readonly poolEvents = new Map<string, Record<string, unknown>>();
+  readonly bondLocks = new Map<string, Record<string, unknown>>();
+  readonly bondEvents = new Map<string, Record<string, unknown>>();
 
   prepare(query: string) {
     return {
@@ -2403,6 +2731,10 @@ class FakeSettlementRailD1 {
 
     if (query.includes("FROM dotcast_usdc_pool_locks")) {
       return this.poolLocks.get(String(params[0])) ?? null;
+    }
+
+    if (query.includes("FROM dotcast_usdc_bond_locks")) {
+      return this.bondLocks.get(String(params[0])) ?? null;
     }
 
     if (query.includes("WHERE tx_ref = ?")) {
@@ -2432,7 +2764,8 @@ class FakeSettlementRailD1 {
         pending_deposit_usdc: params[2],
         pending_withdrawal_usdc: params[3],
         locked_pool_usdc: params[4],
-        updated_at: params[5]
+        locked_bond_usdc: params[5],
+        updated_at: params[6]
       });
       return;
     }
@@ -2535,6 +2868,61 @@ class FakeSettlementRailD1 {
         status: params[8],
         event_json: params[9],
         created_at: params[10]
+      });
+      return;
+    }
+
+    if (query.includes("INSERT INTO dotcast_usdc_bond_locks")) {
+      this.bondLocks.set(String(params[0]), {
+        lock_id: params[0],
+        purpose: params[1],
+        owner_id: params[2],
+        route_id: params[3],
+        pool_id: params[4],
+        panel_id: params[5],
+        assignment_id: params[6],
+        challenge_id: params[7],
+        amount: params[8],
+        status: params[9],
+        credit: params[10],
+        created_at: params[11],
+        updated_at: params[12],
+        event_json: params[13]
+      });
+      return;
+    }
+
+    if (query.includes("UPDATE dotcast_usdc_bond_locks")) {
+      const lockId = String(params[4]);
+      const existing = this.bondLocks.get(lockId) ?? {};
+      this.bondLocks.set(lockId, {
+        ...existing,
+        status: params[0],
+        credit: params[1],
+        updated_at: params[2],
+        event_json: params[3]
+      });
+      return;
+    }
+
+    if (query.includes("INSERT OR IGNORE INTO dotcast_usdc_bond_events")) {
+      this.bondEvents.set(String(params[0]), {
+        event_id: params[0],
+        lock_id: params[1],
+        purpose: params[2],
+        owner_id: params[3],
+        route_id: params[4],
+        pool_id: params[5],
+        panel_id: params[6],
+        assignment_id: params[7],
+        challenge_id: params[8],
+        event_type: params[9],
+        amount: params[10],
+        credit: params[11],
+        status: params[12],
+        reason: params[13],
+        event_json: params[14],
+        created_at: params[15]
       });
     }
   }

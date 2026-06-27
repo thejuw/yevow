@@ -8,6 +8,7 @@ import {
   D1DotCastReferralStore,
   D1DotCastResolutionRouterStore,
   D1DotCastSettlementRailStore,
+  D1DotCastUsdcBondFundingStore,
   D1DotCastGamificationStore,
   D1DotCastRewardedStreamStore,
   D1DotCastSponsoredQuestionStore,
@@ -21,6 +22,7 @@ import {
   DotCastSponsoredQuestionError,
   DotCastSettlementRailError,
   DotCastLivestreamError,
+  DotCastUsdcBondFundingError,
   DotCastUsdcPoolFundingError,
   buildMuxLivestreamRecord,
   buildMuxPlaybackDescriptor,
@@ -42,6 +44,7 @@ import {
   classifyDotCastResolutionRoute,
   createDotCastResolverCommit,
   evaluateDotCastResolverPanelTimeout,
+  evaluateDotCastResolutionChallengeSettlementPolicy,
   parseVerifiedMuxWebhook,
   previewPayout,
   readSettlementBalance,
@@ -66,11 +69,14 @@ import {
   revealDotCastResolverCommit,
   releaseUsdcPoolEntryReservation,
   reserveUsdcPoolEntry,
+  reserveUsdcBond,
   requestDevnetWithdrawal,
   requestDotCastCreatorPayout,
   selectDotCastResolverPanel,
   settleParimutuel,
   settleDotCastResolverPanel,
+  settleUsdcBond,
+  usdcBondLockId,
   type CreatorNudgeRecipient,
   startDotCastRewardedStreamSession,
   completeDotCastRewardedStreamSession,
@@ -89,6 +95,7 @@ import {
   type DotCastResolverAdminAction,
   type DotCastResolverCommit,
   type DotCastResolverPanel,
+  type DotCastResolverPayout,
   type DotCastResolverProfile,
   type DotCastResolverRegistryProfile,
   type DotCastResolverStatus,
@@ -1730,6 +1737,23 @@ export async function openDotCastResolutionChallengeRoute(
       now: parseOptionalString(body?.now, "now")
     });
     const store = resolutionRouterStore(env);
+    const bondFunding =
+      challenge.bondMinorUnits > 0
+        ? await reserveUsdcBond(usdcBondFundingStore(env), env, {
+            lockId: usdcBondLockId("challenge", challenge.challengeId),
+            purpose: "resolution_challenge",
+            ownerId: challenge.challengerId,
+            amount: challenge.bondMinorUnits,
+            routeId: challenge.routeId,
+            poolId: challenge.poolId,
+            challengeId: challenge.challengeId,
+            metadata: {
+              marketId: challenge.marketId,
+              reason: challenge.reason
+            },
+            now: challenge.openedAt
+          })
+        : null;
 
     await store.insertResolutionChallenge(challenge);
 
@@ -1739,7 +1763,8 @@ export async function openDotCastResolutionChallengeRoute(
         milestone: "E13",
         resolutionRouter: {
           challenge,
-          challengeWindowSeconds: status.challengeWindowSeconds
+          challengeWindowSeconds: status.challengeWindowSeconds,
+          bondFunding
         }
       },
       201
@@ -1773,6 +1798,21 @@ export async function decideDotCastResolutionChallengeRoute(
       metadata: parseMetadataRecord(body?.metadata),
       now: parseOptionalString(body?.now, "now")
     });
+    const bondSettlement =
+      challenge.bondMinorUnits > 0
+        ? await settleUsdcBond(usdcBondFundingStore(env), env, {
+            lockId: usdcBondLockId("challenge", challenge.challengeId),
+            action: challenge.status === "rejected" ? "slash" : "release",
+            reason: `challenge_${challenge.status}`,
+            now: challenge.decidedAt ?? undefined,
+            allowMissing: true,
+            metadata: {
+              routeId: challenge.routeId,
+              marketId: challenge.marketId,
+              decisionBy: challenge.decisionBy
+            }
+          })
+        : null;
 
     await store.updateResolutionChallenge(challenge);
 
@@ -1780,7 +1820,8 @@ export async function decideDotCastResolutionChallengeRoute(
       ok: true,
       milestone: "E13",
       resolutionRouter: {
-        challenge
+        challenge,
+        bondSettlement
       }
     });
   } catch (error) {
@@ -1845,13 +1886,15 @@ export async function applyDotCastResolverPanelTimeoutRoute(
     });
 
     await store.insertResolverPayouts(result.payouts);
+    const bondSettlement = await settleResolverPayoutBonds(env, result.payouts);
 
     return json({
       ok: true,
       milestone: "E13",
       resolutionRouter: {
         ...result,
-        panelId: panel.panelId
+        panelId: panel.panelId,
+        bondSettlement
       }
     });
   } catch (error) {
@@ -1961,6 +2004,8 @@ export async function planDotCastResolverPanelRoute(request: Request, env: Env):
       now: parseOptionalString(body?.now, "now")
     });
 
+    const bondFunding = await reserveResolverAssignmentBonds(env, panel);
+
     await store.insertResolverPanel(panel);
 
     return json({
@@ -1972,6 +2017,7 @@ export async function planDotCastResolverPanelRoute(request: Request, env: Env):
           body?.candidates === undefined || body.candidates === null
             ? "resolver_registry"
             : "request",
+        bondFunding,
         payForCorrectness: true,
         stakeExcluded: true,
         commitRevealRequired: true
@@ -2060,22 +2106,37 @@ export async function settleDotCastResolverPanelRoute(
       now
     });
 
-    await maybePersistResolverPayouts(env, settlement.payouts);
-
     const route = body?.route
       ? parseResolutionRouteObject(body.route, "route")
       : await requireResolutionRoute(env, panel.routeId);
-    const poolResolution =
-      parseOptionalBoolean(body?.settlePool, "settlePool") === true
-        ? await applyE13OutcomeToPool(env, {
-            poolId: panel.poolId,
-            route,
-            outcome: settlement.consensusOutcome,
-            now,
-            streamId: parseOptionalString(body?.streamId, "streamId"),
-            sourceKind: "resolver_consensus"
-          })
-        : null;
+    const shouldSettlePool = parseOptionalBoolean(body?.settlePool, "settlePool") === true;
+    const preflightChallengePolicy = shouldSettlePool
+      ? await readE13ChallengeSettlementPolicy(env, route, "resolver_consensus")
+      : null;
+
+    if (preflightChallengePolicy && preflightChallengePolicy.action !== "allow") {
+      throw new DotCastResolutionRouterError(
+        preflightChallengePolicy.action === "block"
+          ? "RESOLUTION_CHALLENGE_ACCEPTED"
+          : "RESOLUTION_CHALLENGE_OPEN",
+        preflightChallengePolicy.reason,
+        409
+      );
+    }
+
+    await maybePersistResolverPayouts(env, settlement.payouts);
+    const bondSettlement = await settleResolverPayoutBonds(env, settlement.payouts);
+
+    const poolResolution = shouldSettlePool
+      ? await applyE13OutcomeToPool(env, {
+          poolId: panel.poolId,
+          route,
+          outcome: settlement.consensusOutcome,
+          now,
+          streamId: parseOptionalString(body?.streamId, "streamId"),
+          sourceKind: "resolver_consensus"
+        })
+      : null;
 
     return json({
       ok: true,
@@ -2084,6 +2145,7 @@ export async function settleDotCastResolverPanelRoute(
         ...settlement,
         panel,
         route,
+        bondSettlement,
         poolResolution
       }
     });
@@ -3950,6 +4012,21 @@ async function applyE13OutcomeToPool(
     );
   }
 
+  const challengePolicy = await readE13ChallengeSettlementPolicy(
+    env,
+    input.route,
+    input.sourceKind
+  );
+  if (challengePolicy.action !== "allow") {
+    throw new DotCastResolutionRouterError(
+      challengePolicy.action === "block"
+        ? "RESOLUTION_CHALLENGE_ACCEPTED"
+        : "RESOLUTION_CHALLENGE_OPEN",
+      challengePolicy.reason,
+      409
+    );
+  }
+
   const response = await proxyDotCastPoolRequest(env, input.poolId, "/resolution", {
     method: "POST",
     body: JSON.stringify({
@@ -3975,10 +4052,109 @@ async function applyE13OutcomeToPool(
     status: settledResponse.status,
     sourceKind: input.sourceKind,
     routeId: input.route.routeId,
+    challengePolicy,
     poolId: input.poolId,
     outcome: input.outcome,
     response: await safeJsonResponse(settledResponse)
   };
+}
+
+async function readE13ChallengeSettlementPolicy(
+  env: Env,
+  route: DotCastResolutionRoute,
+  settlementSource: ApplyE13OutcomeToPoolInput["sourceKind"] | "manual_review" | "optimistic_auto"
+): Promise<ReturnType<typeof evaluateDotCastResolutionChallengeSettlementPolicy>> {
+  if (route.tier !== "optimistic_bonded" || !(env.DOTCAST_DB ?? env.TRADING_DB)) {
+    return evaluateDotCastResolutionChallengeSettlementPolicy(route, [], { settlementSource });
+  }
+
+  const challenges = await resolutionRouterStore(env).listResolutionChallenges({
+    routeId: route.routeId,
+    limit: 100
+  });
+
+  return evaluateDotCastResolutionChallengeSettlementPolicy(route, challenges, {
+    settlementSource
+  });
+}
+
+async function reserveResolverAssignmentBonds(
+  env: Env,
+  panel: DotCastResolverPanel
+): Promise<Array<Record<string, unknown>>> {
+  const store = usdcBondFundingStore(env);
+  const results: Array<Record<string, unknown>> = [];
+
+  for (const assignment of panel.assignments) {
+    if (assignment.bondMinorUnits <= 0) {
+      continue;
+    }
+
+    const result = await reserveUsdcBond(store, env, {
+      lockId: usdcBondLockId("resolver-assignment", assignment.assignmentId),
+      purpose: "resolver_assignment",
+      ownerId: assignment.resolverId,
+      amount: assignment.bondMinorUnits,
+      routeId: assignment.routeId,
+      poolId: assignment.poolId,
+      panelId: assignment.panelId,
+      assignmentId: assignment.assignmentId,
+      metadata: {
+        identityHash: assignment.identityHash,
+        reputationBps: assignment.reputationBps
+      },
+      now: assignment.assignedAt
+    });
+
+    results.push({
+      assignmentId: assignment.assignmentId,
+      resolverId: assignment.resolverId,
+      status: result.status,
+      idempotent: result.idempotent,
+      lockId: result.lock.lockId,
+      amount: result.lock.amount,
+      balance: result.balance
+    });
+  }
+
+  return results;
+}
+
+async function settleResolverPayoutBonds(
+  env: Env,
+  payouts: DotCastResolverPayout[]
+): Promise<Array<Record<string, unknown>>> {
+  const store = usdcBondFundingStore(env);
+  const results: Array<Record<string, unknown>> = [];
+
+  for (const payout of payouts) {
+    const result = await settleUsdcBond(store, env, {
+      lockId: usdcBondLockId("resolver-assignment", payout.assignmentId),
+      action: payout.matchedConsensus ? "release" : "slash",
+      reason: payout.matchedConsensus ? "resolver_consensus_match" : "resolver_consensus_miss",
+      creditMinorUnits: payout.feePaidMinorUnits,
+      now: payout.createdAt,
+      allowMissing: true,
+      metadata: {
+        panelId: payout.panelId,
+        resolverId: payout.resolverId,
+        matchedConsensus: payout.matchedConsensus,
+        slashedBondMinorUnits: payout.slashedBondMinorUnits
+      }
+    });
+
+    results.push({
+      assignmentId: payout.assignmentId,
+      resolverId: payout.resolverId,
+      status: result.status,
+      idempotent: result.idempotent,
+      lockId: result.lock?.lockId ?? null,
+      credit: result.lock?.credit ?? 0,
+      balance: result.balance
+    });
+  }
+
+  return results;
 }
 
 async function readDotCastPoolSnapshot(poolId: string, env: Env): Promise<DotCastPoolSnapshot> {
@@ -4422,6 +4598,18 @@ function usdcPoolFundingStore(env: Env): D1DotCastUsdcPoolFundingStore {
   return new D1DotCastUsdcPoolFundingStore(env.TRADING_DB);
 }
 
+function usdcBondFundingStore(env: Env): D1DotCastUsdcBondFundingStore {
+  if (!env.TRADING_DB) {
+    throw new DotCastUsdcBondFundingError(
+      "SETTLEMENT_DB_NOT_CONFIGURED",
+      "E13 USDC bond funding database is not configured",
+      503
+    );
+  }
+
+  return new D1DotCastUsdcBondFundingStore(env.TRADING_DB);
+}
+
 function livestreamErrorResponse(error: unknown): Response {
   if (error instanceof DotCastLivestreamError) {
     return json(
@@ -4583,6 +4771,18 @@ function resolutionRouterErrorResponse(error: unknown): Response {
     );
   }
 
+  if (error instanceof DotCastUsdcBondFundingError) {
+    return json(
+      {
+        ok: false,
+        milestone: "E13",
+        code: error.code,
+        error: error.message
+      },
+      error.status
+    );
+  }
+
   return json(
     {
       ok: false,
@@ -4611,6 +4811,18 @@ function settlementRailErrorResponse(error: unknown, milestone = "E5"): Response
       {
         ok: false,
         milestone: "E6",
+        code: error.code,
+        error: error.message
+      },
+      error.status
+    );
+  }
+
+  if (error instanceof DotCastUsdcBondFundingError) {
+    return json(
+      {
+        ok: false,
+        milestone: "E13",
         code: error.code,
         error: error.message
       },

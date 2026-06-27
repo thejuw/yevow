@@ -190,6 +190,26 @@ export interface DecideDotCastResolutionChallengeInput {
   now?: string;
 }
 
+export interface DotCastResolutionChallengeSettlementPolicy {
+  action: "allow" | "hold" | "block";
+  reason: string;
+  routeId: string;
+  acceptedChallengeIds: string[];
+  rejectedChallengeIds: string[];
+  openChallengeIds: string[];
+  expiredChallengeIds: string[];
+}
+
+export type DotCastResolutionSettlementSource =
+  | "optimistic_auto"
+  | "ai_perception_auto"
+  | "resolver_consensus"
+  | "manual_review";
+
+export interface EvaluateDotCastResolutionChallengeSettlementPolicyOptions {
+  settlementSource?: DotCastResolutionSettlementSource;
+}
+
 export interface ApplyDotCastResolverAdminActionInput {
   profile: DotCastResolverRegistryProfile;
   action: DotCastResolverAdminAction;
@@ -1516,6 +1536,88 @@ export function decideDotCastResolutionChallenge(
         at: now
       }
     }
+  };
+}
+
+export function evaluateDotCastResolutionChallengeSettlementPolicy(
+  route: DotCastResolutionRoute,
+  challenges: DotCastResolutionChallenge[],
+  options: EvaluateDotCastResolutionChallengeSettlementPolicyOptions = {}
+): DotCastResolutionChallengeSettlementPolicy {
+  const routeChallenges = challenges.filter((challenge) => challenge.routeId === route.routeId);
+  const settlementSource = options.settlementSource ?? "optimistic_auto";
+  const acceptedChallengeIds = routeChallenges
+    .filter((challenge) => challenge.status === "accepted")
+    .map((challenge) => challenge.challengeId);
+  const openChallengeIds = routeChallenges
+    .filter((challenge) => challenge.status === "open")
+    .map((challenge) => challenge.challengeId);
+  const rejectedChallengeIds = routeChallenges
+    .filter((challenge) => challenge.status === "rejected")
+    .map((challenge) => challenge.challengeId);
+  const expiredChallengeIds = routeChallenges
+    .filter((challenge) => challenge.status === "expired" || challenge.status === "withdrawn")
+    .map((challenge) => challenge.challengeId);
+
+  if (route.tier !== "optimistic_bonded") {
+    return {
+      action: "allow",
+      reason: "not_optimistic_bonded",
+      routeId: route.routeId,
+      acceptedChallengeIds,
+      rejectedChallengeIds,
+      openChallengeIds,
+      expiredChallengeIds
+    };
+  }
+
+  if (acceptedChallengeIds.length > 0) {
+    if (settlementSource === "resolver_consensus" || settlementSource === "manual_review") {
+      return {
+        action: "allow",
+        reason: "accepted_challenge_resolved_by_escalation",
+        routeId: route.routeId,
+        acceptedChallengeIds,
+        rejectedChallengeIds,
+        openChallengeIds,
+        expiredChallengeIds
+      };
+    }
+
+    return {
+      action: "block",
+      reason: "accepted_challenge_blocks_optimistic_settlement",
+      routeId: route.routeId,
+      acceptedChallengeIds,
+      rejectedChallengeIds,
+      openChallengeIds,
+      expiredChallengeIds
+    };
+  }
+
+  if (openChallengeIds.length > 0) {
+    return {
+      action: "hold",
+      reason: "open_challenge_holds_optimistic_settlement",
+      routeId: route.routeId,
+      acceptedChallengeIds,
+      rejectedChallengeIds,
+      openChallengeIds,
+      expiredChallengeIds
+    };
+  }
+
+  return {
+    action: "allow",
+    reason:
+      rejectedChallengeIds.length > 0 || expiredChallengeIds.length > 0
+        ? "all_challenges_rejected_or_expired"
+        : "no_challenges",
+    routeId: route.routeId,
+    acceptedChallengeIds,
+    rejectedChallengeIds,
+    openChallengeIds,
+    expiredChallengeIds
   };
 }
 

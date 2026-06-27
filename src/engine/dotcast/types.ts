@@ -427,6 +427,7 @@ export interface DotCastSettlementBalance {
   pendingDepositUsdc: number;
   pendingWithdrawalUsdc: number;
   lockedPoolUsdc: number;
+  lockedBondUsdc: number;
   updatedAt: string;
 }
 
@@ -495,6 +496,48 @@ export interface DotCastUsdcPoolFundingEvent {
   amount: number;
   payout: number | null;
   status: DotCastUsdcPoolFundingLockStatus;
+  eventJson: Record<string, unknown>;
+  createdAt: string;
+}
+
+export type DotCastUsdcBondPurpose = "resolution_challenge" | "resolver_assignment";
+
+export type DotCastUsdcBondLockStatus = "locked" | "released" | "slashed";
+
+export type DotCastUsdcBondEventType = "BOND_LOCKED" | "BOND_RELEASED" | "BOND_SLASHED";
+
+export interface DotCastUsdcBondLock {
+  lockId: string;
+  purpose: DotCastUsdcBondPurpose;
+  ownerId: string;
+  routeId: string | null;
+  poolId: string | null;
+  panelId: string | null;
+  assignmentId: string | null;
+  challengeId: string | null;
+  amount: number;
+  status: DotCastUsdcBondLockStatus;
+  credit: number;
+  createdAt: string;
+  updatedAt: string;
+  eventJson: Record<string, unknown>;
+}
+
+export interface DotCastUsdcBondEvent {
+  eventId: string;
+  lockId: string;
+  purpose: DotCastUsdcBondPurpose;
+  ownerId: string;
+  routeId: string | null;
+  poolId: string | null;
+  panelId: string | null;
+  assignmentId: string | null;
+  challengeId: string | null;
+  eventType: DotCastUsdcBondEventType;
+  amount: number;
+  credit: number;
+  status: DotCastUsdcBondLockStatus;
+  reason: string | null;
   eventJson: Record<string, unknown>;
   createdAt: string;
 }

@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   classifyDotCastResolutionRoute,
   createDotCastResolverCommit,
+  decideDotCastResolutionChallenge,
+  evaluateDotCastResolutionChallengeSettlementPolicy,
+  openDotCastResolutionChallenge,
   prepareDotCastPoolResolutionRoute,
   resolveDotCastAiPerception,
   revealDotCastResolverCommit,
@@ -228,6 +231,66 @@ describe("dotCast E13 resolution router", () => {
         salt: "wrong-salt"
       })
     ).rejects.toThrow(/does not match/);
+  });
+
+  it("gates optimistic settlement by challenge status while allowing resolver escalation", () => {
+    const route: DotCastResolutionRoute = {
+      ...classifyDotCastResolutionRoute(env(), {
+        market: market({
+          id: "dotcast:e13-challenge-policy",
+          venue: "dotcast",
+          question: "Will the ambiguous stream event happen?"
+        }),
+        unit: "points",
+        poolId: "pool-challenge-policy",
+        now
+      }),
+      tier: "optimistic_bonded",
+      status: "locked",
+      feeBps: 200,
+      bondMinorUnits: 50_000,
+      panelSize: 3,
+      lockedAt: now
+    };
+    const opened = openDotCastResolutionChallenge({
+      route,
+      challengerId: "challenger-policy",
+      reason: "counter-evidence",
+      now: "2099-06-25T17:05:00.000Z"
+    });
+    const accepted = decideDotCastResolutionChallenge({
+      challenge: opened,
+      action: "accept",
+      decisionBy: "operator-policy",
+      now: "2099-06-25T17:10:00.000Z"
+    });
+    const rejected = decideDotCastResolutionChallenge({
+      challenge: { ...opened, challengeId: "challenge-rejected" },
+      action: "reject",
+      decisionBy: "operator-policy",
+      now: "2099-06-25T17:11:00.000Z"
+    });
+
+    expect(evaluateDotCastResolutionChallengeSettlementPolicy(route, [opened])).toMatchObject({
+      action: "hold",
+      reason: "open_challenge_holds_optimistic_settlement"
+    });
+    expect(evaluateDotCastResolutionChallengeSettlementPolicy(route, [accepted])).toMatchObject({
+      action: "block",
+      reason: "accepted_challenge_blocks_optimistic_settlement"
+    });
+    expect(
+      evaluateDotCastResolutionChallengeSettlementPolicy(route, [accepted], {
+        settlementSource: "resolver_consensus"
+      })
+    ).toMatchObject({
+      action: "allow",
+      reason: "accepted_challenge_resolved_by_escalation"
+    });
+    expect(evaluateDotCastResolutionChallengeSettlementPolicy(route, [rejected])).toMatchObject({
+      action: "allow",
+      reason: "all_challenges_rejected_or_expired"
+    });
   });
 });
 

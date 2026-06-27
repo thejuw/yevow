@@ -72,7 +72,7 @@ export class D1DotCastUsdcPoolFundingStore implements DotCastUsdcPoolFundingStor
     const row = await this.db
       .prepare(
         `SELECT user_id, available_usdc, pending_deposit_usdc, pending_withdrawal_usdc,
-                locked_pool_usdc, updated_at
+                locked_pool_usdc, locked_bond_usdc, updated_at
          FROM dotcast_settlement_balances
          WHERE user_id = ?`
       )
@@ -87,13 +87,14 @@ export class D1DotCastUsdcPoolFundingStore implements DotCastUsdcPoolFundingStor
       .prepare(
         `INSERT INTO dotcast_settlement_balances (
            user_id, available_usdc, pending_deposit_usdc, pending_withdrawal_usdc,
-           locked_pool_usdc, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?)
+           locked_pool_usdc, locked_bond_usdc, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(user_id) DO UPDATE SET
            available_usdc = excluded.available_usdc,
            pending_deposit_usdc = excluded.pending_deposit_usdc,
            pending_withdrawal_usdc = excluded.pending_withdrawal_usdc,
            locked_pool_usdc = excluded.locked_pool_usdc,
+           locked_bond_usdc = excluded.locked_bond_usdc,
            updated_at = excluded.updated_at`
       )
       .bind(
@@ -102,6 +103,7 @@ export class D1DotCastUsdcPoolFundingStore implements DotCastUsdcPoolFundingStor
         balance.pendingDepositUsdc,
         balance.pendingWithdrawalUsdc,
         balance.lockedPoolUsdc,
+        balance.lockedBondUsdc,
         balance.updatedAt
       )
       .run();
@@ -448,6 +450,7 @@ async function readPoolFundingBalance(
       pendingDepositUsdc: 0,
       pendingWithdrawalUsdc: 0,
       lockedPoolUsdc: 0,
+      lockedBondUsdc: 0,
       updatedAt: now
     }
   );
@@ -498,6 +501,7 @@ function balanceFromRow(row: Record<string, unknown>): DotCastSettlementBalance 
     pendingDepositUsdc: Number(row.pending_deposit_usdc ?? 0),
     pendingWithdrawalUsdc: Number(row.pending_withdrawal_usdc ?? 0),
     lockedPoolUsdc: Number(row.locked_pool_usdc ?? 0),
+    lockedBondUsdc: Number(row.locked_bond_usdc ?? 0),
     updatedAt: String(row.updated_at)
   };
 }
