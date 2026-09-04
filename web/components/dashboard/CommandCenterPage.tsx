@@ -6,6 +6,7 @@ import {
   Brain,
   ChevronRight,
   CircleDot,
+  Clover,
   DatabaseZap,
   Flame,
   Gauge,
@@ -862,6 +863,11 @@ export default function CommandCenterPage() {
               <span>{commandStatus}</span>
             </div>
           ) : null}
+
+          <a className="lotto-entry-link" href="/lotto/">
+            <Clover size={16} />
+            Open LOTTO forensic lab
+          </a>
         </section>
       </main>
     );
@@ -916,6 +922,10 @@ export default function CommandCenterPage() {
           <a className="compact-action settings-link" href="/equity">
             <Landmark size={16} />
             Equity
+          </a>
+          <a className="compact-action settings-link lotto-nav-link" href="/lotto/">
+            <Clover size={16} />
+            LOTTO
           </a>
           <a className="compact-action settings-link" href="#paper-ledger">
             <ReceiptText size={16} />

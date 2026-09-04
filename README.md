@@ -57,6 +57,7 @@ All agents emit structured telemetry into the internal bus and D1 audit trail. T
 
 - API: `https://api.yevow.co`
 - Command Center: `https://app.yevow.co`
+- LOTTO forensic lab: `https://yevow.co/lotto/`
 - Settings Console: `https://app.yevow.co/settings`
 - Ingest Worker: `https://sovereign-sigma-ingest.woveyyevow.workers.dev`
 - Executioner Worker: `https://sovereign-sigma-executioner.woveyyevow.workers.dev`
@@ -69,6 +70,8 @@ npm ci --prefix web
 npm run typecheck
 npm run web:typecheck
 npm run web:build
+npm run test:lotto --prefix web
+npm run test:e2e --prefix web -- --grep "LOTTO forensic dashboard"
 npx wrangler deploy --dry-run
 npx wrangler deploy --config wrangler.ingest.toml --dry-run
 npx wrangler deploy --config wrangler.executioner.toml --dry-run

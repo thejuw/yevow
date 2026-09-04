@@ -4901,4 +4901,1509 @@ output {
   }
 }
 
+/* LOTTO / RabbitHoleTX ----------------------------------------------------- */
+.lotto-shell {
+  --lotto-ink: #f7f2e8;
+  --lotto-cream: #e6d8b1;
+  --lotto-gold: #d6b963;
+  --lotto-gold-bright: #f2d780;
+  --lotto-mint: #65ddb0;
+  --lotto-aqua: #73cfd1;
+  --lotto-coral: #ff7b70;
+  --lotto-panel: rgba(15, 19, 23, 0.82);
+  --lotto-edge: rgba(224, 201, 132, 0.2);
+  --lotto-cold-edge: rgba(170, 193, 205, 0.14);
+  min-height: 100vh;
+  overflow: clip;
+  position: relative;
+  isolation: isolate;
+  color: var(--lotto-ink);
+  background:
+    radial-gradient(circle at 78% 4%, rgba(56, 139, 124, 0.13), transparent 29rem),
+    radial-gradient(circle at 14% 32%, rgba(213, 185, 99, 0.1), transparent 28rem),
+    linear-gradient(180deg, #080b0d 0%, #080b0e 48%, #06080a 100%);
+}
+
+.lotto-shell::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.38;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.014) 1px, transparent 1px);
+  background-size: 40px 40px;
+  mask-image: linear-gradient(to bottom, black, transparent 78%);
+}
+
+.lotto-shell a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.lotto-shell button:focus-visible,
+.lotto-shell a:focus-visible,
+.lotto-shell input:focus-visible,
+.lotto-shell select:focus-visible,
+.lotto-shell summary:focus-visible {
+  outline: 2px solid var(--lotto-gold-bright);
+  outline-offset: 3px;
+}
+
+.lotto-topbar {
+  min-height: 66px;
+  padding: 10px clamp(14px, 3vw, 46px);
+  border-bottom: 1px solid var(--lotto-edge);
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) auto minmax(150px, 1fr);
+  align-items: center;
+  gap: 22px;
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  background: rgba(7, 10, 12, 0.88);
+  backdrop-filter: blur(22px) saturate(135%);
+}
+
+.lotto-back,
+.lotto-wordmark,
+.lotto-top-status,
+.lotto-wordmark-mark {
+  display: flex;
+  align-items: center;
+}
+
+.lotto-back {
+  width: max-content;
+  gap: 8px;
+  color: #aeb9bd !important;
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.14em;
+}
+
+.lotto-back:hover {
+  color: var(--lotto-gold-bright) !important;
+}
+
+.lotto-wordmark {
+  gap: 9px;
+  justify-content: center;
+}
+
+.lotto-wordmark-mark {
+  width: 32px;
+  height: 32px;
+  justify-content: center;
+  border: 1px solid rgba(214, 185, 99, 0.45);
+  border-radius: 50%;
+  color: var(--lotto-gold-bright);
+  background: rgba(214, 185, 99, 0.08);
+  box-shadow: 0 0 24px rgba(214, 185, 99, 0.1);
+}
+
+.lotto-wordmark h2 {
+  margin: 0;
+  font-family: "Bodoni 72", Didot, Georgia, serif;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+.lotto-wordmark small {
+  padding-left: 9px;
+  border-left: 1px solid var(--lotto-edge);
+  color: #879398;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+}
+
+.lotto-top-status {
+  justify-content: flex-end;
+  gap: 15px;
+  color: #748187;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+  letter-spacing: 0.1em;
+}
+
+.lotto-top-status span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lotto-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--lotto-mint);
+  box-shadow: 0 0 10px rgba(101, 221, 176, 0.75);
+}
+
+.lotto-hero {
+  width: min(1460px, calc(100% - clamp(28px, 7vw, 100px)));
+  min-height: 580px;
+  margin: 0 auto;
+  padding: clamp(58px, 8vw, 112px) 0 70px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.32fr) minmax(340px, 0.68fr);
+  align-items: center;
+  gap: clamp(45px, 8vw, 120px);
+}
+
+.lotto-hero-copy {
+  min-width: 0;
+}
+
+.lotto-kicker {
+  margin: 0 0 13px;
+  color: #7f8b90;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  font-weight: 760;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.lotto-kicker span {
+  color: var(--lotto-gold-bright);
+}
+
+.lotto-hero h1 {
+  max-width: 950px;
+  margin: 0;
+  font-family: "Bodoni 72", Didot, Georgia, serif;
+  font-size: clamp(55px, 7.2vw, 112px);
+  font-weight: 500;
+  line-height: 0.86;
+  letter-spacing: -0.055em;
+}
+
+.lotto-hero h1 em {
+  color: var(--lotto-gold-bright);
+  font-weight: 400;
+}
+
+.lotto-hero-lede {
+  max-width: 740px;
+  margin: 30px 0 0;
+  color: #aab3b4;
+  font-size: clamp(15px, 1.3vw, 18px);
+  line-height: 1.65;
+}
+
+.lotto-hero-actions,
+.lotto-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.lotto-hero-actions {
+  margin-top: 34px;
+}
+
+.lotto-primary-action,
+.lotto-secondary-action {
+  min-height: 44px;
+  padding: 11px 17px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.lotto-primary-action {
+  border-color: var(--lotto-gold-bright);
+  color: #11130f;
+  background: var(--lotto-gold-bright);
+}
+
+.lotto-primary-action:hover {
+  border-color: #f7e4a4;
+  background: #f7e4a4;
+  transform: translateY(-1px);
+}
+
+.lotto-spin { animation: lotto-spin 0.9s linear infinite; }
+
+@keyframes lotto-spin {
+  to { transform: rotate(360deg); }
+}
+
+.lotto-secondary-action {
+  border-color: var(--lotto-edge);
+  color: var(--lotto-ink);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.lotto-hero-card {
+  min-height: 390px;
+  padding: 26px;
+  border: 1px solid var(--lotto-edge);
+  border-radius: 2px;
+  display: grid;
+  grid-template-rows: 1fr auto;
+  position: relative;
+  overflow: hidden;
+  background:
+    linear-gradient(145deg, rgba(214, 185, 99, 0.08), transparent 45%),
+    rgba(12, 16, 19, 0.65);
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.28);
+}
+
+.lotto-hero-card::after {
+  content: "RABBIT\A HOLE\A TX";
+  white-space: pre;
+  position: absolute;
+  top: 20px;
+  right: -2px;
+  color: rgba(255, 255, 255, 0.025);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 59px;
+  font-weight: 900;
+  line-height: 0.8;
+  text-align: right;
+  pointer-events: none;
+}
+
+.lotto-orbit {
+  width: 230px;
+  height: 230px;
+  margin: 6px auto 24px;
+  border: 1px solid rgba(214, 185, 99, 0.2);
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  position: relative;
+  color: var(--lotto-gold-bright);
+}
+
+.lotto-orbit::before,
+.lotto-orbit::after {
+  content: "";
+  position: absolute;
+  border: 1px dashed rgba(115, 207, 209, 0.18);
+  border-radius: 50%;
+}
+
+.lotto-orbit::before { inset: 31px; }
+.lotto-orbit::after { inset: 70px; }
+
+.lotto-orbit > span {
+  width: 39px;
+  height: 39px;
+  border: 1px solid rgba(214, 185, 99, 0.28);
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  position: absolute;
+  color: var(--lotto-cream);
+  background: #111619;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  box-shadow: 0 7px 22px rgba(0, 0, 0, 0.35);
+}
+
+.lotto-orbit > span:nth-child(1) { left: -7px; top: 93px; }
+.lotto-orbit > span:nth-child(2) { left: 37px; top: 6px; }
+.lotto-orbit > span:nth-child(3) { right: 21px; top: 21px; }
+.lotto-orbit > span:nth-child(4) { right: -9px; bottom: 60px; }
+.lotto-orbit > span:nth-child(5) { left: 69px; bottom: -11px; }
+
+.lotto-warning-lockup {
+  padding-top: 19px;
+  border-top: 1px solid var(--lotto-edge);
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 12px;
+  color: var(--lotto-coral);
+}
+
+.lotto-warning-lockup strong {
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+}
+
+.lotto-warning-lockup p {
+  margin: 5px 0 0;
+  color: #9da9ab;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.lotto-proof-strip {
+  width: min(1460px, calc(100% - clamp(28px, 7vw, 100px)));
+  margin: 0 auto;
+  border-top: 1px solid var(--lotto-edge);
+  border-bottom: 1px solid var(--lotto-edge);
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.lotto-proof-strip > div {
+  min-width: 0;
+  min-height: 72px;
+  padding: 15px 19px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--lotto-gold);
+}
+
+.lotto-proof-strip > div + div {
+  border-left: 1px solid var(--lotto-edge);
+}
+
+.lotto-proof-strip span {
+  color: #849095;
+  font-size: 10px;
+  line-height: 1.4;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.lotto-proof-strip strong {
+  display: block;
+  color: var(--lotto-ink);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 16px;
+}
+
+.lotto-view-tabs {
+  width: min(1460px, calc(100% - clamp(28px, 7vw, 100px)));
+  margin: 44px auto 0;
+  padding: 5px;
+  border: 1px solid var(--lotto-cold-edge);
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  position: sticky;
+  top: 78px;
+  z-index: 25;
+  background: rgba(8, 11, 14, 0.9);
+  backdrop-filter: blur(20px);
+  scroll-margin-top: 69px;
+}
+
+.lotto-view-tabs button {
+  min-height: 43px;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #7e898e;
+  background: transparent;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.lotto-view-tabs button:hover {
+  border-color: var(--lotto-cold-edge);
+  color: var(--lotto-ink);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.lotto-view-tabs button.active {
+  border-color: rgba(214, 185, 99, 0.35);
+  color: var(--lotto-gold-bright);
+  background: rgba(214, 185, 99, 0.09);
+}
+
+.lotto-workspace {
+  width: min(1460px, calc(100% - clamp(28px, 7vw, 100px)));
+  min-height: 600px;
+  margin: 0 auto;
+  padding: 62px 0 80px;
+  scroll-margin-top: 145px;
+}
+
+.lotto-section-heading {
+  margin-bottom: 29px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(260px, 0.7fr);
+  align-items: end;
+  gap: 35px;
+}
+
+.lotto-section-heading h2 {
+  margin: 0;
+  font-family: "Bodoni 72", Didot, Georgia, serif;
+  font-size: clamp(35px, 4.2vw, 61px);
+  font-weight: 500;
+  line-height: 0.98;
+  letter-spacing: -0.035em;
+}
+
+.lotto-section-heading > p {
+  margin: 0;
+  color: #8d999d;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.lotto-game-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.lotto-game-card {
+  min-width: 0;
+  min-height: 330px;
+  padding: 20px;
+  border: 1px solid var(--lotto-cold-edge);
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(150deg, rgba(255, 255, 255, 0.025), transparent 42%), var(--lotto-panel);
+  transition: border-color 180ms ease, transform 180ms ease, background 180ms ease;
+}
+
+.lotto-game-card::after {
+  content: "";
+  width: 86px;
+  height: 86px;
+  border: 1px solid rgba(214, 185, 99, 0.09);
+  border-radius: 50%;
+  position: absolute;
+  right: -34px;
+  top: 42px;
+}
+
+.lotto-game-card:hover {
+  border-color: rgba(214, 185, 99, 0.36);
+  transform: translateY(-2px);
+  background: linear-gradient(150deg, rgba(214, 185, 99, 0.06), transparent 42%), var(--lotto-panel);
+}
+
+.lotto-game-card-head,
+.lotto-panel-head,
+.lotto-results-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.lotto-game-code {
+  color: var(--lotto-gold-bright);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.17em;
+}
+
+.lotto-data-badge {
+  padding: 4px 6px;
+  border: 1px solid var(--lotto-cold-edge);
+  color: #778489;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: 0.11em;
+}
+
+.lotto-data-badge.verified {
+  border-color: rgba(101, 221, 176, 0.28);
+  color: var(--lotto-mint);
+  background: rgba(101, 221, 176, 0.05);
+}
+
+.lotto-game-card h3 {
+  margin: 26px 0 4px;
+  font-family: "Bodoni 72", Didot, Georgia, serif;
+  font-size: 27px;
+  font-weight: 500;
+}
+
+.lotto-matrix {
+  margin: 0;
+  color: var(--lotto-gold);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+}
+
+.lotto-game-facts {
+  margin: 22px 0;
+  display: grid;
+  gap: 8px;
+}
+
+.lotto-game-facts > div {
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.055);
+  display: grid;
+  grid-template-columns: 86px minmax(0, 1fr);
+  gap: 10px;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.lotto-game-facts dt { color: #69767b; }
+.lotto-game-facts dd { margin: 0; color: #b5bebf; text-align: right; }
+
+.lotto-card-actions {
+  margin-top: auto;
+}
+
+.lotto-card-actions button,
+.lotto-card-actions a {
+  min-height: 30px;
+  padding: 7px 9px;
+  border: 1px solid var(--lotto-cold-edge);
+  border-radius: 2px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #a6b0b1;
+  background: transparent;
+  font-size: 9px;
+}
+
+.lotto-card-actions button:hover,
+.lotto-card-actions a:hover {
+  border-color: var(--lotto-edge);
+  color: var(--lotto-gold-bright);
+  background: rgba(214, 185, 99, 0.05);
+}
+
+.lotto-panel {
+  min-width: 0;
+  padding: clamp(18px, 2.2vw, 28px);
+  border: 1px solid var(--lotto-cold-edge);
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.018), transparent 50%), var(--lotto-panel);
+  box-shadow: 0 20px 65px rgba(0, 0, 0, 0.14);
+}
+
+.lotto-panel-head {
+  margin-bottom: 22px;
+  color: var(--lotto-gold);
+}
+
+.lotto-panel-head h3,
+.lotto-results-head h3 {
+  margin: 0;
+  color: var(--lotto-ink);
+  font-family: "Bodoni 72", Didot, Georgia, serif;
+  font-size: 26px;
+  font-weight: 500;
+}
+
+.lotto-panel-head .lotto-kicker,
+.lotto-results-head .lotto-kicker {
+  margin-bottom: 6px;
+}
+
+.lotto-ev-ranking {
+  margin-top: 34px;
+}
+
+.lotto-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-color: rgba(214, 185, 99, 0.25) transparent;
+}
+
+.lotto-table-wrap table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+
+.lotto-table-wrap th {
+  padding: 11px 12px;
+  border-bottom: 1px solid var(--lotto-edge);
+  color: #6f7d82;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+  text-align: left;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  white-space: nowrap;
+}
+
+.lotto-table-wrap td {
+  padding: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  color: #aab4b5;
+  white-space: nowrap;
+}
+
+.lotto-table-wrap tbody tr:last-child td { border-bottom: 0; }
+.lotto-table-wrap td strong { color: var(--lotto-ink); font-weight: 650; }
+.lotto-table-wrap td small { margin-left: 7px; color: #657277; font-size: 8px; }
+.lotto-negative { color: var(--lotto-coral) !important; }
+.lotto-positive { color: var(--lotto-mint) !important; }
+
+.lotto-return-bar {
+  width: 60px;
+  height: 3px;
+  margin-right: 8px;
+  display: inline-block;
+  vertical-align: middle;
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.lotto-return-bar i {
+  height: 100%;
+  display: block;
+  background: linear-gradient(90deg, var(--lotto-coral), var(--lotto-gold));
+}
+
+.lotto-footnote {
+  margin: 17px 0 0;
+  color: #6f7c80;
+  font-size: 10px;
+  line-height: 1.55;
+}
+
+.lotto-honest-answer {
+  margin-top: 16px;
+  padding: 13px 15px;
+  border-left: 2px solid var(--lotto-coral);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 9px;
+  color: var(--lotto-coral);
+  background: rgba(255, 123, 112, 0.035);
+}
+
+.lotto-honest-answer p {
+  margin: 0;
+  color: #879397;
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.lotto-honest-answer strong {
+  color: #d7dedc;
+}
+
+.lotto-segmented {
+  width: max-content;
+  margin-bottom: 22px;
+  padding: 4px;
+  border: 1px solid var(--lotto-cold-edge);
+  display: flex;
+  gap: 4px;
+  background: rgba(6, 9, 11, 0.62);
+}
+
+.lotto-segmented button {
+  min-height: 34px;
+  border: 1px solid transparent;
+  border-radius: 1px;
+  color: #7f8b8f;
+  background: transparent;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.lotto-segmented button.active {
+  border-color: var(--lotto-edge);
+  color: var(--lotto-gold-bright);
+  background: rgba(214, 185, 99, 0.08);
+}
+
+.lotto-audit-select {
+  width: min(310px, 100%);
+  margin-bottom: 22px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  color: #758287;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+  font-weight: 780;
+  letter-spacing: 0.11em;
+}
+
+.lotto-audit-select select {
+  min-height: 39px;
+  border-color: var(--lotto-edge);
+  border-radius: 2px;
+  color: var(--lotto-cream);
+  background: rgba(6, 9, 11, 0.78);
+}
+
+.lotto-audit-banner {
+  padding: 24px;
+  border: 1px solid rgba(101, 221, 176, 0.24);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 20px;
+  background: linear-gradient(90deg, rgba(101, 221, 176, 0.07), transparent 60%), var(--lotto-panel);
+}
+
+.lotto-audit-seal {
+  width: 76px;
+  height: 76px;
+  border: 1px solid rgba(101, 221, 176, 0.35);
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 3px;
+  color: var(--lotto-mint);
+}
+
+.lotto-audit-seal span {
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 7px;
+  font-weight: 850;
+  letter-spacing: 0.1em;
+}
+
+.lotto-audit-banner h3 {
+  margin: 0 0 4px;
+  font-family: "Bodoni 72", Didot, Georgia, serif;
+  font-size: 30px;
+  font-weight: 500;
+}
+
+.lotto-audit-banner p:not(.lotto-kicker) {
+  margin: 0;
+  color: #8a979a;
+  font-size: 11px;
+}
+
+.lotto-audit-banner dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(3, auto);
+  gap: 25px;
+}
+
+.lotto-audit-banner dl > div { display: grid; gap: 4px; }
+.lotto-audit-banner dt { color: #69767b; font-size: 8px; text-transform: uppercase; letter-spacing: 0.1em; }
+.lotto-audit-banner dd { margin: 0; color: var(--lotto-ink); font-family: "SFMono-Regular", Consolas, monospace; font-size: 13px; }
+
+.lotto-finding-grid {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.lotto-finding {
+  min-width: 0;
+  padding: 21px;
+  border: 1px solid var(--lotto-cold-edge);
+  background: rgba(13, 17, 20, 0.72);
+}
+
+.lotto-finding > div:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--lotto-mint);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.13em;
+}
+
+.lotto-finding.flag > div:first-child { color: var(--lotto-coral); }
+
+.lotto-finding h3 {
+  margin: 19px 0 15px;
+  font-family: "Bodoni 72", Didot, Georgia, serif;
+  font-size: 23px;
+  font-weight: 500;
+}
+
+.lotto-finding dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.lotto-finding dl > div {
+  padding: 9px;
+  background: rgba(255, 255, 255, 0.024);
+}
+
+.lotto-finding dt { color: #677479; font-size: 8px; text-transform: uppercase; }
+.lotto-finding dd { margin: 5px 0 0; color: var(--lotto-cream); font-family: "SFMono-Regular", Consolas, monospace; font-size: 13px; }
+.lotto-finding > p { margin: 15px 0 0; color: #839093; font-size: 10px; line-height: 1.55; }
+
+.lotto-audit-detail-grid {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.lotto-gap-panel { grid-column: 1 / -1; }
+
+.lotto-frequency-columns,
+.lotto-combo-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 25px;
+}
+
+.lotto-frequency-columns h4,
+.lotto-combo-columns h4 {
+  margin: 0 0 12px;
+  color: #717f84;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.lotto-frequency-row {
+  display: grid;
+  grid-template-columns: 26px minmax(30px, 1fr) 51px;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+}
+
+.lotto-frequency-row > span {
+  color: var(--lotto-ink);
+  font-size: 11px;
+}
+
+.lotto-frequency-row i {
+  height: 3px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.lotto-frequency-row i b { height: 100%; display: block; background: var(--lotto-gold); }
+.lotto-frequency-row strong { color: var(--lotto-gold); text-align: right; }
+.lotto-frequency-row.cold i b { background: var(--lotto-aqua); }
+.lotto-frequency-row.cold strong { color: var(--lotto-aqua); }
+
+.lotto-combo-columns > div > div {
+  min-height: 29px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #a6b0b1;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+}
+
+.lotto-combo-columns strong { color: var(--lotto-gold); }
+
+.lotto-gap-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 20px;
+}
+
+.lotto-gap-list > div {
+  min-height: 44px;
+  padding: 7px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  display: grid;
+  grid-template-columns: 34px 1fr 1fr;
+  align-items: center;
+  gap: 11px;
+  color: #758286;
+  font-size: 9px;
+}
+
+.lotto-gap-list strong { color: #b6c0c1; font-family: "SFMono-Regular", Consolas, monospace; }
+
+.lotto-mini-ball {
+  width: 29px;
+  height: 29px;
+  border: 1px solid var(--lotto-edge);
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: var(--lotto-gold-bright);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+}
+
+.lotto-provenance {
+  margin-top: 10px;
+  padding: 14px 18px;
+  border: 1px solid var(--lotto-cold-edge);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 20px;
+  color: #758287;
+  background: rgba(9, 12, 14, 0.7);
+  font-size: 9px;
+}
+
+.lotto-provenance > div,
+.lotto-provenance a,
+.lotto-provenance-links {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lotto-provenance strong { color: #b6c0c1; }
+.lotto-provenance code { max-width: 100%; color: var(--lotto-gold); overflow-wrap: anywhere; }
+.lotto-provenance a { color: var(--lotto-aqua); white-space: nowrap; }
+.lotto-provenance-links { gap: 14px; }
+
+.lotto-method-details {
+  margin-top: 10px;
+  color: #859196;
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.lotto-method-details summary {
+  color: var(--lotto-cream);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 750;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.lotto-method-details p { max-width: 1050px; margin: 12px 0 0; }
+
+.lotto-lab-grid {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.36fr) minmax(0, 0.64fr);
+  align-items: start;
+  gap: 10px;
+}
+
+.lotto-control-panel {
+  display: grid;
+  gap: 15px;
+  position: sticky;
+  top: 143px;
+}
+
+.lotto-control-panel label {
+  color: #7b888c;
+  font-size: 8px;
+  font-weight: 780;
+  letter-spacing: 0.11em;
+}
+
+.lotto-control-panel input,
+.lotto-control-panel select {
+  min-height: 42px;
+  border-color: var(--lotto-cold-edge);
+  border-radius: 2px;
+  color: var(--lotto-ink);
+  background: rgba(5, 8, 10, 0.74);
+  font-size: 11px;
+}
+
+.lotto-control-panel input:hover,
+.lotto-control-panel select:hover {
+  border-color: var(--lotto-edge);
+}
+
+.lotto-control-panel label small {
+  color: #626f74;
+  font-size: 8px;
+  line-height: 1.4;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.lotto-form-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.lotto-check-row {
+  min-height: 40px;
+  padding: 10px;
+  border: 1px solid var(--lotto-cold-edge);
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  color: #a5b0b1 !important;
+  text-transform: none;
+  letter-spacing: 0 !important;
+  cursor: pointer;
+}
+
+.lotto-check-row input { min-height: 17px; width: 17px; accent-color: var(--lotto-gold); }
+
+.lotto-budget-meter {
+  padding: 12px;
+  border: 1px solid var(--lotto-cold-edge);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.lotto-budget-meter > div { display: grid; gap: 4px; }
+.lotto-budget-meter span { color: #68757a; font-size: 8px; text-transform: uppercase; letter-spacing: 0.08em; }
+.lotto-budget-meter strong { color: #b8c2c3; font-family: "SFMono-Regular", Consolas, monospace; font-size: 11px; }
+.lotto-budget-meter .lotto-meter-track { height: 3px; grid-column: 1 / -1; background: rgba(255, 255, 255, 0.06); }
+.lotto-meter-track i { height: 100%; display: block; background: var(--lotto-mint); }
+.lotto-meter-track i.over { background: var(--lotto-coral); }
+
+.lotto-submit { width: 100%; }
+
+.lotto-form-error,
+.lotto-privacy-note {
+  margin: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.lotto-form-error { color: var(--lotto-coral); }
+.lotto-privacy-note { color: #657277; }
+.lotto-form-error svg,
+.lotto-privacy-note svg { flex: 0 0 auto; margin-top: 1px; }
+
+.lotto-results-panel {
+  min-height: 590px;
+}
+
+.lotto-results-head {
+  padding-bottom: 19px;
+  border-bottom: 1px solid var(--lotto-edge);
+}
+
+.lotto-results-head > span {
+  color: #758287;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+  letter-spacing: 0.08em;
+  overflow-wrap: anywhere;
+}
+
+.lotto-result-metrics,
+.lotto-ev-hero-metrics {
+  margin: 18px 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.lotto-result-metrics > div,
+.lotto-ev-hero-metrics > div {
+  min-width: 0;
+  min-height: 89px;
+  padding: 13px;
+  border: 1px solid var(--lotto-cold-edge);
+  display: grid;
+  align-content: center;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.lotto-result-metrics span,
+.lotto-ev-hero-metrics span {
+  color: #6b787d;
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.lotto-result-metrics strong,
+.lotto-ev-hero-metrics strong {
+  color: var(--lotto-cream);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 20px;
+}
+
+.lotto-result-metrics small,
+.lotto-ev-hero-metrics small { color: #606d72; font-size: 8px; }
+
+.lotto-ticket-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+}
+
+.lotto-ticket {
+  min-width: 0;
+  min-height: 62px;
+  padding: 9px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  background: rgba(5, 8, 10, 0.52);
+}
+
+.lotto-ticket-index {
+  color: #59666b;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+}
+
+.lotto-balls {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+
+.lotto-balls span {
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(214, 185, 99, 0.3);
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: var(--lotto-cream);
+  background: linear-gradient(145deg, rgba(214, 185, 99, 0.1), rgba(0, 0, 0, 0.08));
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  box-shadow: inset 0 0 10px rgba(214, 185, 99, 0.035);
+}
+
+.lotto-balls span.bonus {
+  border-color: rgba(115, 207, 209, 0.42);
+  color: #a9edeb;
+  background: rgba(115, 207, 209, 0.08);
+}
+
+.lotto-balls i { color: #526066; font-size: 12px; font-style: normal; }
+.lotto-balls.digits { gap: 3px; }
+.lotto-balls.digits span { border-radius: 3px; }
+
+.lotto-risk {
+  padding: 5px 7px;
+  border: 1px solid;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 7px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  white-space: nowrap;
+}
+
+.lotto-risk-low { border-color: rgba(101, 221, 176, 0.25); color: var(--lotto-mint); }
+.lotto-risk-moderate { border-color: rgba(214, 185, 99, 0.3); color: var(--lotto-gold); }
+.lotto-risk-high { border-color: rgba(255, 123, 112, 0.28); color: var(--lotto-coral); }
+
+.lotto-ticket-risk-block {
+  max-width: 220px;
+  display: grid;
+  justify-items: end;
+  gap: 5px;
+}
+
+.lotto-risk-details {
+  color: #77858a;
+  font-size: 8px;
+  line-height: 1.5;
+}
+
+.lotto-risk-details summary {
+  cursor: pointer;
+  text-align: right;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.lotto-risk-details ul {
+  margin: 6px 0 0;
+  padding-left: 15px;
+  color: #89969a;
+  text-align: left;
+}
+
+.lotto-risk-details li + li { margin-top: 4px; }
+
+.lotto-note-stack {
+  margin-top: 17px;
+  padding-top: 12px;
+  border-top: 1px solid var(--lotto-cold-edge);
+  display: grid;
+  gap: 6px;
+}
+
+.lotto-note-stack p {
+  margin: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  color: #6d7a7f;
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.lotto-note-stack svg { flex: 0 0 auto; margin-top: 1px; color: var(--lotto-gold); }
+
+.lotto-empty-state {
+  min-height: 500px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  text-align: center;
+}
+
+.lotto-empty-icon {
+  width: 82px;
+  height: 82px;
+  margin-bottom: 19px;
+  border: 1px solid var(--lotto-edge);
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: var(--lotto-gold);
+  background: rgba(214, 185, 99, 0.04);
+}
+
+.lotto-empty-state h3 {
+  margin: 0;
+  font-family: "Bodoni 72", Didot, Georgia, serif;
+  font-size: 27px;
+  font-weight: 500;
+}
+
+.lotto-empty-state > p {
+  max-width: 520px;
+  margin: 11px auto 18px;
+  color: #7f8c90;
+  font-size: 11px;
+  line-height: 1.65;
+}
+
+.lotto-empty-proof {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--lotto-mint);
+  font-size: 9px;
+}
+
+.lotto-ev-hero-metrics {
+  grid-template-columns: 1.4fr repeat(3, 1fr);
+}
+
+.lotto-ev-hero-metrics .lotto-ev-return {
+  border-color: rgba(214, 185, 99, 0.3);
+  background: rgba(214, 185, 99, 0.045);
+}
+
+.lotto-ev-hero-metrics .lotto-ev-return strong {
+  color: var(--lotto-gold-bright);
+  font-size: 30px;
+}
+
+.lotto-break-even {
+  min-height: 47px;
+  margin-bottom: 17px;
+  padding: 10px 13px;
+  border-left: 2px solid var(--lotto-gold);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  color: var(--lotto-gold);
+  background: rgba(214, 185, 99, 0.055);
+  font-size: 9px;
+}
+
+.lotto-break-even strong {
+  color: var(--lotto-ink);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+}
+
+.lotto-tier-table table { min-width: 690px; }
+
+.lotto-disclaimer {
+  width: min(1460px, calc(100% - clamp(28px, 7vw, 100px)));
+  margin: 0 auto 40px;
+  padding: 18px 20px;
+  border: 1px solid rgba(255, 123, 112, 0.2);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+  color: var(--lotto-coral);
+  background: rgba(255, 123, 112, 0.035);
+}
+
+.lotto-disclaimer p {
+  margin: 0;
+  color: #8d999c;
+  font-size: 10px;
+  line-height: 1.65;
+}
+
+.lotto-disclaimer strong { color: #d7dedc; }
+.lotto-disclaimer.compact { margin-top: 10px; margin-bottom: 0; width: 100%; }
+
+.lotto-footer {
+  min-height: 74px;
+  padding: 19px clamp(14px, 3vw, 46px);
+  border-top: 1px solid var(--lotto-cold-edge);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  color: #59676c;
+  font-size: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.lotto-footer > div { display: flex; align-items: center; gap: 8px; color: var(--lotto-gold); }
+.lotto-footer strong { color: var(--lotto-cream); }
+.lotto-footer p { margin: 0; text-align: right; }
+
+.lotto-entry-link {
+  min-height: 39px;
+  padding: 9px 11px;
+  border: 1px solid rgba(215, 196, 139, 0.3);
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: var(--gold);
+  background: rgba(215, 196, 139, 0.065);
+  font-size: 11px;
+  font-weight: 750;
+  text-decoration: none;
+}
+
+.lotto-entry-link:hover,
+.lotto-nav-link:hover {
+  border-color: var(--gold);
+  background: rgba(215, 196, 139, 0.13);
+}
+
+@media (max-width: 1180px) {
+  .lotto-game-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .lotto-hero { grid-template-columns: minmax(0, 1fr) 350px; gap: 40px; }
+  .lotto-top-status span:last-child { display: none; }
+  .lotto-audit-banner { grid-template-columns: auto 1fr; }
+  .lotto-audit-banner dl { grid-column: 1 / -1; padding-top: 15px; border-top: 1px solid var(--lotto-cold-edge); justify-content: space-between; }
+  .lotto-ev-hero-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 850px) {
+  .lotto-topbar { grid-template-columns: 1fr auto; }
+  .lotto-wordmark { justify-content: flex-end; }
+  .lotto-top-status { display: none; }
+  .lotto-hero { min-height: 0; grid-template-columns: 1fr; }
+  .lotto-hero-card { min-height: 350px; }
+  .lotto-proof-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .lotto-proof-strip > div:nth-child(3) { border-left: 0; border-top: 1px solid var(--lotto-edge); }
+  .lotto-proof-strip > div:nth-child(4) { border-top: 1px solid var(--lotto-edge); }
+  .lotto-section-heading { grid-template-columns: 1fr; align-items: start; gap: 14px; }
+  .lotto-lab-grid { grid-template-columns: 1fr; }
+  .lotto-control-panel { position: static; }
+  .lotto-audit-detail-grid { grid-template-columns: 1fr; }
+  .lotto-gap-panel { grid-column: auto; }
+  .lotto-finding-grid { grid-template-columns: 1fr; }
+  .lotto-provenance { grid-template-columns: 1fr; gap: 9px; }
+  .lotto-results-panel { min-height: 500px; }
+}
+
+@media (max-width: 560px) {
+  .lotto-topbar { min-height: 58px; padding: 9px 13px; }
+  .lotto-wordmark small { display: none; }
+  .lotto-wordmark h2 { font-size: 19px; }
+  .lotto-hero,
+  .lotto-proof-strip,
+  .lotto-view-tabs,
+  .lotto-workspace,
+  .lotto-disclaimer { width: calc(100% - 24px); }
+  .lotto-hero { padding: 52px 0 45px; gap: 28px; }
+  .lotto-hero h1 { font-size: clamp(48px, 16vw, 68px); line-height: 0.9; }
+  .lotto-hero-lede { margin-top: 22px; font-size: 14px; }
+  .lotto-hero-actions { display: grid; }
+  .lotto-hero-actions button { width: 100%; }
+  .lotto-hero-card { min-height: 325px; padding: 20px; }
+  .lotto-orbit { width: 205px; height: 205px; }
+  .lotto-proof-strip { grid-template-columns: 1fr; }
+  .lotto-proof-strip > div + div { border-left: 0; border-top: 1px solid var(--lotto-edge); }
+  .lotto-view-tabs { top: 66px; margin-top: 26px; gap: 2px; }
+  .lotto-view-tabs button { min-width: 0; padding: 7px 3px; gap: 4px; font-size: 8px; }
+  .lotto-view-tabs svg { width: 13px; }
+  .lotto-workspace { padding: 43px 0 55px; }
+  .lotto-game-grid { grid-template-columns: 1fr; }
+  .lotto-game-card { min-height: 315px; }
+  .lotto-panel { padding: 17px 14px; }
+  .lotto-audit-banner { padding: 17px; grid-template-columns: 1fr; }
+  .lotto-audit-seal { width: 60px; height: 60px; }
+  .lotto-audit-banner dl { grid-template-columns: 1fr; gap: 9px; }
+  .lotto-audit-banner dl > div { grid-template-columns: 1fr 1fr; }
+  .lotto-audit-banner dd { text-align: right; }
+  .lotto-frequency-columns,
+  .lotto-combo-columns,
+  .lotto-gap-list,
+  .lotto-form-row { grid-template-columns: 1fr; }
+  .lotto-gap-list > div { grid-template-columns: 34px minmax(0, 1fr); }
+  .lotto-gap-list > div span:last-child { grid-column: 2; }
+  .lotto-result-metrics,
+  .lotto-ev-hero-metrics { grid-template-columns: 1fr; }
+  .lotto-ticket { grid-template-columns: 23px minmax(0, 1fr); align-items: start; }
+  .lotto-ticket-risk-block { grid-column: 2; max-width: none; justify-items: start; }
+  .lotto-risk-details summary { text-align: left; }
+  .lotto-balls { gap: 4px; }
+  .lotto-balls span { width: 31px; height: 31px; font-size: 10px; }
+  .lotto-break-even { grid-template-columns: auto minmax(0, 1fr); }
+  .lotto-break-even strong { grid-column: 2; }
+  .lotto-footer { align-items: flex-start; flex-direction: column; }
+  .lotto-footer p { text-align: left; }
+  .lotto-tier-table table,
+  .lotto-ev-ranking table { min-width: 650px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lotto-spin { animation: none; }
+  .lotto-shell *,
+  .lotto-shell *::before,
+  .lotto-shell *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+@media print {
+  .lotto-topbar,
+  .lotto-view-tabs,
+  .lotto-hero-actions,
+  .lotto-card-actions { display: none !important; }
+  .lotto-shell { color: #111; background: #fff; }
+  .lotto-panel,
+  .lotto-game-card { color: #111; background: #fff; box-shadow: none; }
+}
+
 @tailwind utilities;
