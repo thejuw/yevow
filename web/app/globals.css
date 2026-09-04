@@ -5479,6 +5479,362 @@ output {
   line-height: 1.55;
 }
 
+.lotto-daily-panel {
+  width: min(1460px, calc(100% - clamp(28px, 7vw, 100px)));
+  margin: 16px auto 0;
+  border: 1px solid rgba(214, 185, 99, 0.24);
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 92% 0%, rgba(214, 185, 99, 0.09), transparent 28rem),
+    linear-gradient(125deg, rgba(101, 221, 176, 0.045), transparent 35%),
+    rgba(11, 15, 18, 0.88);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.18);
+}
+
+.lotto-daily-panel::before {
+  content: "";
+  width: 3px;
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: linear-gradient(180deg, var(--lotto-gold-bright), var(--lotto-mint));
+}
+
+.lotto-daily-head {
+  min-height: 96px;
+  padding: 19px 19px 19px 22px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+}
+
+.lotto-daily-icon {
+  width: 40px;
+  height: 40px;
+  border: 1px solid rgba(214, 185, 99, 0.36);
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: var(--lotto-gold-bright);
+  background: rgba(214, 185, 99, 0.075);
+  box-shadow: 0 0 28px rgba(214, 185, 99, 0.08);
+}
+
+.lotto-daily-head p {
+  margin: 0 0 4px;
+  color: var(--lotto-gold);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+}
+
+.lotto-daily-head h2 {
+  margin: 0;
+  color: var(--lotto-ink);
+  font-family: "Bodoni 72", Didot, Georgia, serif;
+  font-size: 25px;
+  font-weight: 500;
+  line-height: 1;
+}
+
+.lotto-daily-head > div > span {
+  display: block;
+  margin-top: 6px;
+  color: #899598;
+  font-size: 10px;
+}
+
+.lotto-daily-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+}
+
+.lotto-daily-actions > span,
+.lotto-daily-actions button {
+  min-height: 31px;
+  padding: 6px 9px;
+  border: 1px solid rgba(214, 185, 99, 0.2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: var(--lotto-mint);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.lotto-daily-actions button {
+  border-color: rgba(255, 255, 255, 0.12);
+  color: #aab4b7;
+  background: rgba(255, 255, 255, 0.025);
+  cursor: pointer;
+}
+
+.lotto-daily-actions button:hover:not(:disabled) {
+  border-color: rgba(214, 185, 99, 0.42);
+  color: var(--lotto-gold-bright);
+}
+
+.lotto-daily-actions button:disabled { cursor: wait; opacity: 0.55; }
+
+.lotto-daily-grid {
+  padding: 12px;
+  border-top: 1px solid rgba(214, 185, 99, 0.16);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.lotto-daily-card {
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid var(--lotto-cold-edge);
+  background:
+    linear-gradient(145deg, rgba(214, 185, 99, 0.035), transparent 42%),
+    rgba(5, 8, 10, 0.52);
+}
+
+.lotto-daily-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.lotto-daily-card-head h3 {
+  margin: 5px 0 0;
+  color: var(--lotto-ink);
+  font-family: "Bodoni 72", Didot, Georgia, serif;
+  font-size: 27px;
+  font-weight: 500;
+  line-height: 1;
+}
+
+.lotto-daily-slot {
+  padding: 5px 7px;
+  border: 1px solid rgba(101, 221, 176, 0.24);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--lotto-mint);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.lotto-daily-drawline {
+  margin: 14px 0;
+  padding: 9px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.055);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.055);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px 15px;
+}
+
+.lotto-daily-drawline span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #94a0a3;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+  letter-spacing: 0.025em;
+}
+
+.lotto-daily-drawline svg { color: var(--lotto-gold); }
+
+.lotto-daily-metrics {
+  margin: 0 0 14px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.lotto-daily-metrics > div {
+  min-width: 0;
+  min-height: 79px;
+  padding: 11px;
+  border: 1px solid var(--lotto-cold-edge);
+  display: grid;
+  align-content: center;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.014);
+}
+
+.lotto-daily-metrics dt {
+  color: #67757a;
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.lotto-daily-metrics dd {
+  margin: 0;
+  overflow: hidden;
+  color: var(--lotto-cream);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 15px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lotto-daily-metrics small { color: #5f6c71; font-size: 7px; }
+
+.lotto-daily-tickets {
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 5px;
+  list-style: none;
+}
+
+.lotto-daily-tickets > li {
+  min-width: 0;
+  min-height: 52px;
+  padding: 8px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  background: rgba(3, 6, 8, 0.46);
+}
+
+.lotto-daily-tickets .lotto-balls { gap: 5px; }
+.lotto-daily-tickets .lotto-balls span { width: 30px; height: 30px; font-size: 10px; }
+
+.lotto-daily-digit-note {
+  margin: 2px 0 0;
+  color: #849195;
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.lotto-daily-provenance {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.055);
+  color: #778489;
+  font-size: 8px;
+}
+
+.lotto-daily-provenance summary {
+  width: max-content;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #9aa5a7;
+  cursor: pointer;
+  font-weight: 750;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.lotto-daily-provenance dl {
+  margin: 10px 0 0;
+  display: grid;
+  gap: 5px;
+}
+
+.lotto-daily-provenance dl > div {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.lotto-daily-provenance dt { color: #5f6c71; }
+.lotto-daily-provenance dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: #9ba5a7;
+  font-family: "SFMono-Regular", Consolas, monospace;
+}
+
+.lotto-daily-provenance p { margin: 9px 0 0; color: #718085; line-height: 1.55; }
+
+.lotto-daily-card-foot {
+  margin-top: 12px;
+  padding-top: 11px;
+  border-top: 1px solid rgba(214, 185, 99, 0.13);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.lotto-daily-card-foot p {
+  max-width: 520px;
+  margin: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  color: #7e8b8f;
+  font-size: 8px;
+  line-height: 1.5;
+}
+
+.lotto-daily-card-foot p svg { flex: 0 0 auto; margin-top: 1px; color: var(--lotto-coral); }
+
+.lotto-daily-card-foot a {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--lotto-gold-bright);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.lotto-daily-card-foot a:hover { color: #fff0b7; }
+
+.lotto-daily-empty {
+  min-height: 80px;
+  padding: 20px 22px;
+  border-top: 1px solid rgba(214, 185, 99, 0.16);
+  display: grid;
+  place-items: center start;
+}
+
+.lotto-daily-empty p {
+  max-width: 850px;
+  margin: 0;
+  color: #899598;
+  font-size: 10px;
+  line-height: 1.6;
+}
+
+.lotto-daily-disclaimer {
+  padding: 12px 22px;
+  border-top: 1px solid rgba(255, 123, 112, 0.16);
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  color: var(--lotto-coral);
+  background: rgba(255, 123, 112, 0.025);
+}
+
+.lotto-daily-disclaimer svg { flex: 0 0 auto; margin-top: 1px; }
+.lotto-daily-disclaimer p { margin: 0; color: #899598; font-size: 9px; line-height: 1.55; }
+.lotto-daily-disclaimer strong { color: #efb1aa; }
+
 .lotto-view-tabs {
   width: min(1460px, calc(100% - clamp(28px, 7vw, 100px)));
   margin: 44px auto 0;
@@ -6522,6 +6878,9 @@ output {
   .lotto-proof-strip > div:nth-child(4) { border-top: 1px solid var(--lotto-edge); }
   .lotto-freshness-head { grid-template-columns: auto minmax(0, 1fr); }
   .lotto-freshness-actions { grid-column: 1 / -1; justify-content: flex-start; }
+  .lotto-daily-head { grid-template-columns: auto minmax(0, 1fr); }
+  .lotto-daily-actions { grid-column: 1 / -1; justify-content: flex-start; }
+  .lotto-daily-grid { grid-template-columns: 1fr; }
   .lotto-freshness-metrics,
   .lotto-freshness-games { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .lotto-freshness-games li:not(:nth-child(4n + 1)) { border-left: 0; }
@@ -6543,6 +6902,7 @@ output {
   .lotto-hero,
   .lotto-proof-strip,
   .lotto-freshness-panel,
+  .lotto-daily-panel,
   .lotto-view-tabs,
   .lotto-workspace,
   .lotto-disclaimer { width: calc(100% - 24px); }
@@ -6559,6 +6919,18 @@ output {
   .lotto-freshness-head > div > span { line-height: 1.45; }
   .lotto-freshness-actions { display: grid; grid-template-columns: 1fr; }
   .lotto-freshness-actions button { width: 100%; }
+  .lotto-daily-head { padding: 16px 13px 14px 16px; }
+  .lotto-daily-head > div > span { line-height: 1.45; }
+  .lotto-daily-actions { display: grid; grid-template-columns: 1fr; }
+  .lotto-daily-actions button { width: 100%; }
+  .lotto-daily-grid { padding: 8px; }
+  .lotto-daily-card { padding: 14px 11px; }
+  .lotto-daily-card-head { align-items: center; }
+  .lotto-daily-metrics { grid-template-columns: 1fr; }
+  .lotto-daily-tickets > li { grid-template-columns: 21px minmax(0, 1fr); align-items: start; }
+  .lotto-daily-tickets .lotto-risk { grid-column: 2; width: max-content; }
+  .lotto-daily-card-foot { flex-direction: column; }
+  .lotto-daily-disclaimer { padding: 11px 14px; }
   .lotto-freshness-metrics,
   .lotto-freshness-games { grid-template-columns: 1fr; }
   .lotto-freshness-metrics > div + div,

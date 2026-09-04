@@ -32,8 +32,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence
 
 
-INPUT_SCHEMA_VERSION = 3
-OUTPUT_D1_SCHEMA_VERSION = 4
+SUPPORTED_INPUT_SCHEMA_VERSIONS = frozenset({3, 4, 5})
+OUTPUT_D1_SCHEMA_VERSION = 5
 OUTPUT_MANIFEST_VERSION = 1
 MAX_SOURCE_BYTES = 16 * 1024 * 1024
 MAX_INSERT_ROWS = 50
@@ -108,6 +108,7 @@ class BootstrapSnapshot:
     draws: tuple[DrawExport, ...]
     dataset_digest: str
     validated_at: str
+    input_schema_version: int
 
 
 def _source(
@@ -289,12 +290,15 @@ def _open_oracle(db_path: Path) -> sqlite3.Connection:
     return connection
 
 
-def _validate_input_schema(connection: sqlite3.Connection) -> None:
+def _validate_input_schema(connection: sqlite3.Connection) -> int:
     user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-    if user_version != INPUT_SCHEMA_VERSION:
+    if user_version not in SUPPORTED_INPUT_SCHEMA_VERSIONS:
+        expected = ", ".join(
+            str(version) for version in sorted(SUPPORTED_INPUT_SCHEMA_VERSIONS)
+        )
         raise ExportError(
-            f"RabbitHoleTX schema mismatch: expected user_version "
-            f"{INPUT_SCHEMA_VERSION}, observed {user_version}"
+            f"RabbitHoleTX schema mismatch: expected user_version in "
+            f"{{{expected}}}, observed {user_version}"
         )
     for table, required in REQUIRED_INPUT_COLUMNS.items():
         columns = {
@@ -306,11 +310,12 @@ def _validate_input_schema(connection: sqlite3.Connection) -> None:
             raise ExportError(f"RabbitHoleTX table {table!r} is missing columns: {missing}")
 
     recorded = connection.execute("SELECT MAX(version) FROM schema_versions").fetchone()[0]
-    if recorded != INPUT_SCHEMA_VERSION:
+    if recorded != user_version:
         raise ExportError(
-            f"RabbitHoleTX migration ledger mismatch: expected {INPUT_SCHEMA_VERSION}, "
+            f"RabbitHoleTX migration ledger mismatch: expected {user_version}, "
             f"observed {recorded!r}"
         )
+    return user_version
 
 
 def _decode_export(raw_bytes: bytes, source_id: str) -> list[str]:
@@ -522,7 +527,7 @@ def load_snapshot(db_path: Path, cache_root: Path, r2_prefix: str) -> BootstrapS
 
     connection = _open_oracle(db_path)
     try:
-        _validate_input_schema(connection)
+        input_schema_version = _validate_input_schema(connection)
         inactive_count = int(
             connection.execute("SELECT COUNT(*) FROM draws WHERE active = 0").fetchone()[0]
         )
@@ -632,6 +637,7 @@ def load_snapshot(db_path: Path, cache_root: Path, r2_prefix: str) -> BootstrapS
             draws=draws_sorted,
             dataset_digest=_dataset_digest(sources_tuple, draws_sorted),
             validated_at=validated_at,
+            input_schema_version=input_schema_version,
         )
     finally:
         connection.rollback()
@@ -935,7 +941,7 @@ def render_r2_manifest(
             "validatedAt": snapshot.validated_at,
         },
         "contracts": {
-            "inputSqliteSchemaVersion": INPUT_SCHEMA_VERSION,
+            "inputSqliteSchemaVersion": snapshot.input_schema_version,
             "d1SchemaVersion": OUTPUT_D1_SCHEMA_VERSION,
             "d1Migrations": [
                 {"file": f"migrations/{name}", "sha256": digest}

@@ -10,9 +10,11 @@ import {
   GAME_MANIFEST,
   generateTickets,
   DEFAULT_LOTTO_API_BASE,
+  LottoPicksClientError,
   LottoStatusClientError,
   LottoValidationError,
   normalizeLottoApiBase,
+  parseLottoDailyPicks,
   parseLottoStatus,
   scoreSplitRisk,
   validateTicket,
@@ -49,6 +51,16 @@ function expectStatusError(operation: () => unknown, message: string): void {
     operation();
   } catch (error) {
     assert(error instanceof LottoStatusClientError, message);
+    return;
+  }
+  throw new Error(`Self-test failed: ${message} did not throw`);
+}
+
+function expectPicksError(operation: () => unknown, message: string): void {
+  try {
+    operation();
+  } catch (error) {
+    assert(error instanceof LottoPicksClientError, message);
     return;
   }
   throw new Error(`Self-test failed: ${message} did not throw`);
@@ -124,6 +136,72 @@ expectStatusError(
       }
     }),
   "status response rejects irreconcilable source counts"
+);
+
+const dailyPicksFixture = {
+  schemaVersion: 1,
+  generatedAt: "2026-09-07T12:06:00.000Z",
+  data: {
+    drawDate: "2026-09-07",
+    runs: [
+      {
+        runId: `gen-${"a".repeat(32)}`,
+        game: "cash5",
+        gameName: "Cash Five",
+        drawDate: "2026-09-07",
+        drawSlot: "daily",
+        scheduledFor: "2026-09-07 06:00 America/Chicago",
+        generatedAt: "2026-09-07T12:05:00.000Z",
+        seed: "e".repeat(64),
+        observedThrough: "2026-09-05",
+        datasetDigest: "b".repeat(64),
+        coverage: { distinctPairs: 20, possiblePairs: 595, coveragePercent: 3.36 },
+        ev: {
+          netCentsPerTicket: -62,
+          assumption: "Pre-tax fixed-prize model; jackpot excluded."
+        },
+        tickets: [
+          {
+            ordinal: 1,
+            main: [13, 22, 29, 34, 35],
+            bonus: [],
+            playStyle: "straight",
+            splitRiskScore: 12.5,
+            splitRiskLevel: "low",
+            splitRiskNotes: ["Lower-collision shape."]
+          },
+          {
+            ordinal: 2,
+            main: [14, 23, 28, 32, 33],
+            bonus: [],
+            playStyle: "straight",
+            splitRiskScore: 14,
+            splitRiskLevel: "low",
+            splitRiskNotes: ["Lower-collision shape."]
+          }
+        ],
+        generationLogUrl: `/api/lotto/v1/generation-runs/gen-${"a".repeat(32)}`,
+        disclaimer:
+          "Picks are optimized for coverage and lower split-risk patterns, not predicted. Play responsibly."
+      }
+    ]
+  }
+};
+const parsedDailyPicks = parseLottoDailyPicks(dailyPicksFixture);
+assert(parsedDailyPicks.data.runs[0]?.tickets.length === 2, "persisted picks response validates");
+expectPicksError(
+  () =>
+    parseLottoDailyPicks({
+      ...dailyPicksFixture,
+      data: {
+        ...dailyPicksFixture.data,
+        runs: dailyPicksFixture.data.runs.map((run) => ({
+          ...run,
+          coverage: { ...run.coverage, coveragePercent: 99 }
+        }))
+      }
+    }),
+  "persisted picks response rejects unreconciled coverage"
 );
 
 const firstRng = createSeededRng("operation-lone-star");
@@ -255,10 +333,7 @@ for (const snapshot of Object.values(AUDIT_SNAPSHOTS)) {
   );
 }
 assert(AUDIT_SNAPSHOTS.cash5.drawsAnalyzed === 2_488, "Cash Five audit draw count");
-assert(
-  AUDIT_SNAPSHOTS.cash5.observedThrough === "2026-09-03",
-  "Cash Five audit observation date"
-);
+assert(AUDIT_SNAPSHOTS.cash5.observedThrough === "2026-09-03", "Cash Five audit observation date");
 assert(
   AUDIT_SNAPSHOTS.cash5.source.sha256 ===
     "600b797b71e3a9493358b549aa51e5aaaa7e7c6141b871d2b596a766403727d0",

@@ -19,6 +19,19 @@ export {
 } from "./ev";
 export { GAME_MANIFEST, getGameManifest, isGameCode } from "./manifest";
 export { generateTickets } from "./picker";
+export {
+  LottoPicksClientError,
+  parseLottoDailyPicks,
+  readLottoDailyPicks
+} from "./picks-client";
+export type {
+  LottoDailyPicksResponse,
+  LottoDrawSlot,
+  LottoPersistedGenerationRun,
+  LottoPersistedTicket,
+  LottoSplitRiskLevel,
+  ReadLottoDailyPicksOptions
+} from "./picks-client";
 export { createSeededRng } from "./rng";
 export { scoreSplitRisk } from "./risk";
 export {

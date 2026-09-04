@@ -39,6 +39,7 @@ import {
   type PickResult
 } from "@/lib/lotto";
 import LottoFreshnessPanel from "./LottoFreshnessPanel";
+import LottoDailyPicksPanel from "./LottoDailyPicksPanel";
 
 type LottoView = "overview" | "audit" | "picker" | "ev";
 type AuditedGame = AuditSnapshot["game"];
@@ -492,6 +493,8 @@ export default function LottoPage() {
       </section>
 
       <LottoFreshnessPanel />
+
+      <LottoDailyPicksPanel />
 
       <nav className="lotto-view-tabs" role="tablist" aria-label="LOTTO sections">
         {VIEWS.map(({ id, label, icon: Icon }) => (

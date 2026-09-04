@@ -2,8 +2,9 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "sovereign-sigma-lotto",
   "main": "src/index.ts",
-  "compatibility_date": "2026-09-03",
-  "workers_dev": true,
+  "compatibility_date": "2026-09-04",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
   "routes": [
     {
       "pattern": "lotto-api.yevow.co",
@@ -32,6 +33,6 @@
     }
   ],
   "triggers": {
-    "crons": ["*/30 * * * *"]
+    "crons": ["*/10 * * * *"]
   }
 }
