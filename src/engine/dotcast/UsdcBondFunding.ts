@@ -65,7 +65,7 @@ export class D1DotCastUsdcBondFundingStore implements DotCastUsdcBondFundingStor
          WHERE user_id = ?`
       )
       .bind(userId)
-      .first<Record<string, unknown>>();
+      .first();
 
     return row ? balanceFromRow(row) : null;
   }
@@ -106,7 +106,7 @@ export class D1DotCastUsdcBondFundingStore implements DotCastUsdcBondFundingStor
          WHERE lock_id = ?`
       )
       .bind(lockId)
-      .first<Record<string, unknown>>();
+      .first();
 
     return row ? bondLockFromRow(row) : null;
   }

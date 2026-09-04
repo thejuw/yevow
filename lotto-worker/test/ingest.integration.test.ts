@@ -1,7 +1,7 @@
 import { createScheduledController } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { http, HttpResponse } from "msw";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { handleRequest } from "../src/api";
 import worker from "../src/index";
@@ -110,18 +110,24 @@ async function clearR2(): Promise<void> {
 
 beforeEach(async () => {
   await env.LOTTO_DB.batch([
+    env.LOTTO_DB.prepare("DELETE FROM lotto_delivery_attempts"),
+    env.LOTTO_DB.prepare("DELETE FROM lotto_delivery_outbox"),
+    env.LOTTO_DB.prepare("DELETE FROM lotto_generated_tickets"),
+    env.LOTTO_DB.prepare("DELETE FROM lotto_generation_runs"),
+    env.LOTTO_DB.prepare("DELETE FROM lotto_generation_leases"),
+    env.LOTTO_DB.prepare("DELETE FROM lotto_daily_summaries"),
     env.LOTTO_DB.prepare("DELETE FROM lotto_quarantine"),
     env.LOTTO_DB.prepare("DELETE FROM lotto_draws"),
     env.LOTTO_DB.prepare("DELETE FROM lotto_ingestions"),
     env.LOTTO_DB.prepare("DELETE FROM lotto_sources"),
     env.LOTTO_DB.prepare("DELETE FROM lotto_audit_snapshots"),
-    env.LOTTO_DB.prepare("UPDATE schema_meta SET value = '4' WHERE key = 'schema_version'")
+    env.LOTTO_DB.prepare("UPDATE schema_meta SET value = '5' WHERE key = 'schema_version'")
   ]);
   await clearR2();
 });
 
 describe("D1/R2 ingestion", () => {
-  it("applies the complete schema-v4 migration chain", async () => {
+  it("applies the complete schema-v5 migration chain", async () => {
     const schema = await env.LOTTO_DB.prepare(
       "SELECT value FROM schema_meta WHERE key = 'schema_version'"
     ).first<{ value: string }>();
@@ -129,7 +135,7 @@ describe("D1/R2 ingestion", () => {
       name: string;
     }>();
 
-    expect(schema?.value).toBe("4");
+    expect(schema?.value).toBe("5");
     expect(columns.results.map(({ name }) => name)).toEqual(
       expect.arrayContaining(["last_parser_version", "lease_token", "lease_expires_at", "enabled"])
     );
@@ -409,8 +415,8 @@ describe("D1/R2 ingestion", () => {
       () => `All or Nothing Evening,9,2,2026,${numbers}\n`
     );
     const controller = createScheduledController({
-      cron: "*/30 * * * *",
-      scheduledTime: new Date("2026-09-03T12:00:00Z")
+      cron: "*/10 * * * *",
+      scheduledTime: new Date("2026-09-03T10:00:00Z")
     });
 
     await worker.scheduled(controller, env);
@@ -444,95 +450,199 @@ describe("D1/R2 ingestion", () => {
     });
   });
 
-  it("reports health only when schema v4 and every configured source are ready", async () => {
-    const emptyResponse = await handleRequest(
-      new Request("https://lotto-api.yevow.co/healthz"),
-      env
-    );
-    expect(emptyResponse.status).toBe(503);
-    await expect(emptyResponse.json()).resolves.toMatchObject({
-      data: {
-        status: "degraded",
-        databaseSchemaVersion: "4",
-        configuredSources: SOURCES.length,
-        registeredSources: 0,
-        readySources: 0
-      }
-    });
-
-    await env.LOTTO_DB.batch(
-      SOURCES.map((source, index) =>
-        env.LOTTO_DB.prepare(
-          `INSERT INTO lotto_sources
-             (source_id, game, name, url, session, expected_widths,
-              last_digest, active_count, last_status)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'bootstrap')`
-        ).bind(
-          source.id,
-          source.game,
-          source.name,
-          source.url,
-          source.session,
-          JSON.stringify(source.expectedWidths),
-          index === 0 ? null : `fixture-${index}`,
-          index === 0 ? 0 : 1
-        )
-      )
-    );
-
-    const partialResponse = await handleRequest(
-      new Request("https://lotto-api.yevow.co/api/lotto/v1/health"),
-      env
-    );
-    expect(partialResponse.status).toBe(503);
-    await expect(partialResponse.json()).resolves.toMatchObject({
-      data: {
-        status: "degraded",
-        databaseSchemaVersion: "4",
-        registeredSources: SOURCES.length,
-        readySources: SOURCES.length - 1
-      }
-    });
-
-    await env.LOTTO_DB.prepare(
-      "UPDATE lotto_sources SET last_digest = 'fixture-ready', active_count = 1 WHERE source_id = ?1"
-    )
-      .bind(SOURCES[0]?.id)
-      .run();
-    const readyResponse = await handleRequest(
-      new Request("https://lotto-api.yevow.co/healthz"),
-      env
-    );
-    expect(readyResponse.status).toBe(200);
-    await expect(readyResponse.json()).resolves.toMatchObject({
-      data: {
-        status: "ok",
-        databaseSchemaVersion: "4",
-        registeredSources: SOURCES.length,
-        readySources: SOURCES.length
-      }
-    });
-
-    await env.LOTTO_DB.prepare(
-      "UPDATE schema_meta SET value = '3' WHERE key = 'schema_version'"
-    ).run();
+  it("reports health only when schema v5, automation, and every source are ready", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-06T17:00:00Z"));
     try {
-      const oldSchemaResponse = await handleRequest(
+      const emptyResponse = await handleRequest(
         new Request("https://lotto-api.yevow.co/healthz"),
         env
       );
-      expect(oldSchemaResponse.status).toBe(503);
-      await expect(oldSchemaResponse.json()).resolves.toMatchObject({
+      expect(emptyResponse.status).toBe(503);
+      await expect(emptyResponse.json()).resolves.toMatchObject({
         data: {
           status: "degraded",
-          databaseSchemaVersion: "3",
+          databaseSchemaVersion: "5",
+          configuredSources: SOURCES.length,
+          registeredSources: 0,
+          readySources: 0,
+          configuredGames: 8,
+          selectedGames: 8,
+          deliveryBridgeConfigured: true
+        }
+      });
+      const whitespaceTokenResponse = await handleRequest(
+        new Request("https://lotto-api.yevow.co/healthz"),
+        { ...env, RABBITHOLETX_SERVICE_TOKEN: "   " }
+      );
+      expect(whitespaceTokenResponse.status).toBe(503);
+      await expect(whitespaceTokenResponse.json()).resolves.toMatchObject({
+        data: { deliveryBridgeConfigured: false }
+      });
+
+      const today = new Intl.DateTimeFormat("en-CA", {
+        timeZone: "America/Chicago",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit"
+      }).format(new Date());
+      const ingestedAt = new Date().toISOString();
+      await env.LOTTO_DB.batch(
+        SOURCES.map((source, index) =>
+          env.LOTTO_DB.prepare(
+            `INSERT INTO lotto_sources
+             (source_id, game, name, url, session, expected_widths,
+              last_digest, active_count, last_status, last_success_at, latest_draw_date)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'bootstrap', ?9, ?10)`
+          ).bind(
+            source.id,
+            source.game,
+            source.name,
+            source.url,
+            source.session,
+            JSON.stringify(source.expectedWidths),
+            index === 0 ? null : `fixture-${index}`,
+            index === 0 ? 0 : 1,
+            ingestedAt,
+            today
+          )
+        )
+      );
+
+      const partialResponse = await handleRequest(
+        new Request("https://lotto-api.yevow.co/api/lotto/v1/health"),
+        env
+      );
+      expect(partialResponse.status).toBe(503);
+      await expect(partialResponse.json()).resolves.toMatchObject({
+        data: {
+          status: "degraded",
+          databaseSchemaVersion: "5",
+          registeredSources: SOURCES.length,
+          readySources: SOURCES.length - 1
+        }
+      });
+
+      await env.LOTTO_DB.prepare(
+        "UPDATE lotto_sources SET last_digest = 'fixture-ready', active_count = 1 WHERE source_id = ?1"
+      )
+        .bind(SOURCES[0]?.id)
+        .run();
+      const readyResponse = await handleRequest(
+        new Request("https://lotto-api.yevow.co/healthz"),
+        env
+      );
+      expect(readyResponse.status).toBe(200);
+      await expect(readyResponse.json()).resolves.toMatchObject({
+        data: {
+          status: "ok",
+          databaseSchemaVersion: "5",
+          registeredSources: SOURCES.length,
           readySources: SOURCES.length
         }
       });
-    } finally {
+
       await env.LOTTO_DB.prepare(
-        "UPDATE schema_meta SET value = '4' WHERE key = 'schema_version'"
+        "UPDATE lotto_sources SET last_status = 'failed' WHERE source_id = ?1"
+      )
+        .bind(SOURCES[0]?.id)
+        .run();
+      const failedSourceResponse = await handleRequest(
+        new Request("https://lotto-api.yevow.co/healthz"),
+        env
+      );
+      expect(failedSourceResponse.status).toBe(503);
+      await expect(failedSourceResponse.json()).resolves.toMatchObject({
+        data: {
+          status: "degraded",
+          readySources: SOURCES.length - 1,
+          unhealthySelectedGames: expect.arrayContaining([SOURCES[0]?.game])
+        }
+      });
+      await env.LOTTO_DB.prepare("UPDATE lotto_game_config SET selected = 0 WHERE game = ?1")
+        .bind(SOURCES[0]?.game)
+        .run();
+      const isolatedResponse = await handleRequest(
+        new Request("https://lotto-api.yevow.co/healthz"),
+        env
+      );
+      expect(isolatedResponse.status).toBe(200);
+      await expect(isolatedResponse.json()).resolves.toMatchObject({
+        data: {
+          status: "ok",
+          archiveStatus: "degraded",
+          unhealthySelectedGames: [],
+          degradedArchiveGames: expect.arrayContaining([SOURCES[0]?.game])
+        }
+      });
+      await env.LOTTO_DB.prepare(
+        "UPDATE lotto_sources SET last_status = 'bootstrap' WHERE source_id = ?1"
+      )
+        .bind(SOURCES[0]?.id)
+        .run();
+      await env.LOTTO_DB.prepare("UPDATE lotto_game_config SET selected = 1 WHERE game = ?1")
+        .bind(SOURCES[0]?.game)
+        .run();
+
+      await env.LOTTO_DB.prepare(
+        "UPDATE lotto_game_config SET selected = 0, play_style = 'box' WHERE game = 'p3'"
       ).run();
+      const invalidUnselectedResponse = await handleRequest(
+        new Request("https://lotto-api.yevow.co/healthz"),
+        env
+      );
+      expect(invalidUnselectedResponse.status).toBe(200);
+
+      await env.LOTTO_DB.prepare(
+        "UPDATE lotto_game_config SET selected = 1 WHERE game = 'p3'"
+      ).run();
+      const invalidSelectedResponse = await handleRequest(
+        new Request("https://lotto-api.yevow.co/healthz"),
+        env
+      );
+      expect(invalidSelectedResponse.status).toBe(503);
+      await expect(invalidSelectedResponse.json()).resolves.toMatchObject({
+        data: { status: "degraded", invalidSelectedGames: ["p3"] }
+      });
+      await env.LOTTO_DB.prepare(
+        "UPDATE lotto_game_config SET play_style = 'straight' WHERE game = 'p3'"
+      ).run();
+
+      await env.LOTTO_DB.prepare(
+        "UPDATE lotto_game_config SET jackpot_cents = 1 WHERE game = 'cash5'"
+      ).run();
+      const invalidEvResponse = await handleRequest(
+        new Request("https://lotto-api.yevow.co/healthz"),
+        env
+      );
+      expect(invalidEvResponse.status).toBe(503);
+      await env.LOTTO_DB.prepare(
+        "UPDATE lotto_game_config SET jackpot_cents = 0 WHERE game = 'cash5'"
+      ).run();
+
+      await env.LOTTO_DB.prepare(
+        "UPDATE schema_meta SET value = '3' WHERE key = 'schema_version'"
+      ).run();
+      try {
+        const oldSchemaResponse = await handleRequest(
+          new Request("https://lotto-api.yevow.co/healthz"),
+          env
+        );
+        expect(oldSchemaResponse.status).toBe(503);
+        await expect(oldSchemaResponse.json()).resolves.toMatchObject({
+          data: {
+            status: "degraded",
+            databaseSchemaVersion: "3",
+            readySources: SOURCES.length
+          }
+        });
+      } finally {
+        await env.LOTTO_DB.prepare(
+          "UPDATE schema_meta SET value = '5' WHERE key = 'schema_version'"
+        ).run();
+      }
+    } finally {
+      vi.useRealTimers();
     }
   });
 });

@@ -35,9 +35,7 @@ export interface VoidRequiredParimutuelResult {
   payouts: SettlementPayout[];
 }
 
-export type ParimutuelSettlementResult =
-  | SettledParimutuelResult
-  | VoidRequiredParimutuelResult;
+export type ParimutuelSettlementResult = SettledParimutuelResult | VoidRequiredParimutuelResult;
 
 interface AllocationDraft {
   entry: SettlementEntry;

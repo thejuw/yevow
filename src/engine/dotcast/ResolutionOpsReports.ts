@@ -41,18 +41,18 @@ export interface DotCastUsdcBondOpsSummary {
   lockedMinorUnits: number;
   releasedCreditMinorUnits: number;
   slashedMinorUnits: number;
-  byPurposeStatus: Array<{
+  byPurposeStatus: {
     purpose: string;
     status: string;
     count: number;
     amountMinorUnits: number;
-  }>;
-  events: Array<{
+  }[];
+  events: {
     eventType: string;
     count: number;
     amountMinorUnits: number;
     creditMinorUnits: number;
-  }>;
+  }[];
 }
 
 export interface DotCastUsdcBondReconciliationRow {
@@ -208,7 +208,7 @@ export class D1DotCastResolutionOpsReportStore {
           `SELECT COUNT(*) AS panel_count
            FROM dotcast_resolver_panels`
         )
-        .first<Record<string, unknown>>()) ?? {}
+        .first()) ?? {}
     );
   }
 
@@ -225,7 +225,7 @@ export class D1DotCastResolutionOpsReportStore {
                   COALESCE(SUM(bond_minor_units), 0) AS assigned_bond_minor_units
            FROM dotcast_resolver_assignments`
         )
-        .first<Record<string, unknown>>()) ?? {}
+        .first()) ?? {}
     );
   }
 
@@ -258,7 +258,7 @@ export class D1DotCastResolutionOpsReportStore {
          LIMIT ?`
       )
       .bind(limit)
-      .all<Record<string, unknown>>();
+      .all();
 
     return result.results ?? [];
   }
@@ -276,7 +276,7 @@ export class D1DotCastResolutionOpsReportStore {
                   COALESCE(SUM(CASE WHEN status = 'slashed' THEN amount ELSE 0 END), 0) AS slashed_minor_units
            FROM dotcast_usdc_bond_locks`
         )
-        .first<Record<string, unknown>>()) ?? {}
+        .first()) ?? {}
     );
   }
 
@@ -288,7 +288,7 @@ export class D1DotCastResolutionOpsReportStore {
          GROUP BY purpose, status
          ORDER BY purpose ASC, status ASC`
       )
-      .all<Record<string, unknown>>();
+      .all();
 
     return result.results ?? [];
   }
@@ -302,7 +302,7 @@ export class D1DotCastResolutionOpsReportStore {
          GROUP BY event_type
          ORDER BY event_type ASC`
       )
-      .all<Record<string, unknown>>();
+      .all();
 
     return result.results ?? [];
   }
@@ -336,7 +336,7 @@ export class D1DotCastResolutionOpsReportStore {
          LIMIT ?`
       )
       .bind(limit)
-      .all<Record<string, unknown>>();
+      .all();
 
     return result.results ?? [];
   }
@@ -351,7 +351,7 @@ export class D1DotCastResolutionOpsReportStore {
          LIMIT ?`
       )
       .bind(limit)
-      .all<Record<string, unknown>>();
+      .all();
 
     return result.results ?? [];
   }
@@ -363,7 +363,7 @@ export class D1DotCastResolutionOpsReportStore {
          FROM dotcast_resolution_challenges
          GROUP BY status`
       )
-      .all<Record<string, unknown>>();
+      .all();
 
     return result.results ?? [];
   }

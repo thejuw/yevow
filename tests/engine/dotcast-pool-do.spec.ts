@@ -775,7 +775,7 @@ function createPayload(overrides: Record<string, unknown> = {}) {
     const payloadMarket = payload.market as { id: unknown };
     return {
       ...payload,
-      resolutionRoute: lockedRoute(String(payload.id), String(payloadMarket.id))
+      resolutionRoute: lockedRoute(payload.id, String(payloadMarket.id))
     };
   }
 
@@ -828,7 +828,7 @@ async function jsonBody(response: Response) {
 }
 
 function fakeAuditDb() {
-  const statements: Array<{ query: string; params: unknown[] }> = [];
+  const statements: { query: string; params: unknown[] }[] = [];
   const db = {
     prepare: (query: string) =>
       ({

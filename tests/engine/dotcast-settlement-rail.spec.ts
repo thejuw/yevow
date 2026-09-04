@@ -136,11 +136,11 @@ describe("dotCast E5 Solana USDC devnet settlement rail", () => {
       broadcast: false,
       transfer: {
         status: "signed",
-        signerMode: "mock",
-        mockSignature: expect.stringMatching(/^mock-solana-devnet-/)
+        signerMode: "mock"
       },
       balance: { availableUsdc: 500_000, pendingWithdrawalUsdc: 400_000 }
     });
+    expect(withdrawal.transfer.mockSignature).toMatch(/^mock-solana-devnet-/);
     expect(replay).toMatchObject({
       idempotent: true,
       balance: { availableUsdc: 500_000, pendingWithdrawalUsdc: 400_000 }

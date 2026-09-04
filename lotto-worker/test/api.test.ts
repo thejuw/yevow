@@ -15,6 +15,10 @@ const VALIDATION_ENV: Env = {
   LOTTO_DB: inaccessibleBinding<D1Database>("LOTTO_DB"),
   LOTTO_RAW: inaccessibleBinding<R2Bucket>("LOTTO_RAW")
 };
+const AUTH_VALIDATION_ENV: Env = {
+  ...VALIDATION_ENV,
+  RABBITHOLETX_SERVICE_TOKEN: "test-service-token"
+};
 
 async function request(
   path: string,
@@ -29,6 +33,48 @@ async function request(
 }
 
 describe("API request validation", () => {
+  it("protects service mutation routes before touching storage", async () => {
+    const { response, body } = await request("/api/lotto/v1/deliveries/claim", {
+      method: "POST"
+    });
+
+    expect(response.status).toBe(401);
+    expect(body).toEqual({
+      schemaVersion: 1,
+      error: { code: "unauthorized", message: "A valid service bearer token is required" }
+    });
+  });
+
+  it("protects authoritative service status before touching storage", async () => {
+    const { response, body } = await request("/api/lotto/v1/service-status");
+
+    expect(response.status).toBe(401);
+    expect(body).toEqual({
+      schemaVersion: 1,
+      error: { code: "unauthorized", message: "A valid service bearer token is required" }
+    });
+  });
+
+  it("rejects a malformed authenticated run request before touching storage", async () => {
+    const response = await handleRequest(
+      new Request("https://lotto-api.yevow.co/api/lotto/v1/automation/run", {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer test-service-token",
+          "Content-Type": "application/json"
+        },
+        body: "{"
+      }),
+      AUTH_VALIDATION_ENV
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      schemaVersion: 1,
+      error: { code: "invalid_run_request", message: "request body must be valid JSON" }
+    });
+  });
+
   it.each(["POST", "PUT", "PATCH", "DELETE", "HEAD"])(
     "rejects the %s method before touching storage",
     async (method) => {
@@ -37,7 +83,10 @@ describe("API request validation", () => {
       expect(response.status).toBe(405);
       expect(body).toEqual({
         schemaVersion: 1,
-        error: { code: "method_not_allowed", message: "Only GET is supported" }
+        error: {
+          code: "method_not_allowed",
+          message: "Method is not supported for this route"
+        }
       });
     }
   );
@@ -108,6 +157,20 @@ describe("API request validation", () => {
     expect(response.headers.get("referrer-policy")).toBe("no-referrer");
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
+
+  it("does not expose exact persisted picks without a Yevow login", async () => {
+    const { response, body } = await request("/api/lotto/v1/picks/today");
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(body).toEqual({
+      schemaVersion: 1,
+      error: {
+        code: "dashboard_login_required",
+        message: "A valid Yevow login is required"
+      }
+    });
+  });
 });
 
 describe("CORS policy", () => {
@@ -126,8 +189,10 @@ describe("CORS policy", () => {
     expect(response.status).toBe(204);
     expect(body).toBeNull();
     expect(response.headers.get("access-control-allow-origin")).toBe(origin);
-    expect(response.headers.get("access-control-allow-methods")).toBe("GET, OPTIONS");
-    expect(response.headers.get("access-control-allow-headers")).toBe("Accept, Content-Type");
+    expect(response.headers.get("access-control-allow-methods")).toBe("GET, POST, OPTIONS");
+    expect(response.headers.get("access-control-allow-headers")).toBe(
+      "Accept, Authorization, Content-Type"
+    );
     expect(response.headers.get("access-control-max-age")).toBe("86400");
     expect(response.headers.get("vary")).toContain("Origin");
     expect(response.headers.has("access-control-allow-credentials")).toBe(false);

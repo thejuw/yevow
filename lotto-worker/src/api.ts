@@ -1,4 +1,18 @@
 import type { Env } from "./env";
+import { dashboardAccess } from "./access";
+import {
+  generateForGame,
+  generationRunById,
+  listGeneratedRuns,
+  readServiceStatus,
+  runScheduledGeneration
+} from "./autonomy";
+import {
+  claimDelivery,
+  completeDelivery,
+  parseDeliveryResult,
+  serviceAuthorized
+} from "./delivery";
 import {
   GAME_CODES,
   GAME_MANIFEST,
@@ -7,6 +21,7 @@ import {
   publicManifest,
   type GameCode
 } from "./manifest";
+import { officialDrawWeekdays, previousConfiguredDrawDate, texasClock } from "./scheduler";
 
 const API_PREFIX = "/api/lotto/v1";
 const MAX_PAGE_SIZE = 200;
@@ -90,8 +105,8 @@ function baseHeaders(request: Request, cacheControl = "no-store"): Headers {
   const origin = allowedOrigin(request.headers.get("Origin"));
   if (origin) {
     headers.set("Access-Control-Allow-Origin", origin);
-    headers.set("Access-Control-Allow-Methods", "GET, OPTIONS");
-    headers.set("Access-Control-Allow-Headers", "Accept, Content-Type");
+    headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    headers.set("Access-Control-Allow-Headers", "Accept, Authorization, Content-Type");
     headers.set("Access-Control-Max-Age", "86400");
   }
   return headers;
@@ -111,6 +126,52 @@ function error(request: Request, status: number, code: string, message: string):
   return json(request, { schemaVersion: 1, error: { code, message } }, { status });
 }
 
+async function exactPickAccessError(request: Request, env: Env): Promise<Response | null> {
+  const access = await dashboardAccess(request, env);
+  if (access === "authorized") return null;
+  return access === "denied"
+    ? error(request, 401, "dashboard_login_required", "A valid Yevow login is required")
+    : error(request, 503, "dashboard_auth_unavailable", "Yevow login validation is unavailable");
+}
+
+async function boundedJson(request: Request): Promise<unknown> {
+  const maximum = 16 * 1024;
+  const contentLength = request.headers.get("Content-Length");
+  if (contentLength && Number(contentLength) > maximum)
+    throw new RangeError("request is too large");
+  if (!request.body) return {};
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maximum) {
+        await reader.cancel("request is too large");
+        throw new RangeError("request is too large");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const text = new TextDecoder().decode(bytes).trim();
+  if (!text) return {};
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    throw new RangeError("request body must be valid JSON");
+  }
+}
+
 function isoDayInTexas(): string {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/Chicago",
@@ -123,19 +184,7 @@ function isoDayInTexas(): string {
   return `${get("year")}-${get("month")}-${get("day")}`;
 }
 
-function daysBetween(left: string, right: string): number {
-  return Math.floor(
-    (Date.parse(`${right}T00:00:00Z`) - Date.parse(`${left}T00:00:00Z`)) / 86_400_000
-  );
-}
-
-function maximumFreshAge(game: GameCode): number {
-  if (game === "lotto" || game === "pb") return 4;
-  if (game === "twostep" || game === "mm") return 5;
-  return 3;
-}
-
-async function statuses(database: D1Database): Promise<GameStatus[]> {
+async function statuses(database: D1Database, now = new Date()): Promise<GameStatus[]> {
   const result = await database
     .prepare(
       `SELECT source_id, game, name, session, last_success_at, last_status,
@@ -144,7 +193,7 @@ async function statuses(database: D1Database): Promise<GameStatus[]> {
     )
     .all<SourceStatusRow>();
   const rowsById = new Map(result.results.map((row) => [row.source_id, row]));
-  const today = isoDayInTexas();
+  const today = texasClock(now).date;
 
   return GAME_CODES.map((game) => {
     const configured = GAME_MANIFEST[game].sources;
@@ -178,12 +227,15 @@ async function statuses(database: D1Database): Promise<GameStatus[]> {
       .filter((value): value is string => value !== null)
       .sort();
     const healthyStates = sources.every((source) =>
-      ["complete", "unchanged", "bootstrap"].includes(source.status)
+      ["complete", "complete-with-quarantine", "cache-fallback", "unchanged", "bootstrap"].includes(
+        source.status
+      )
     );
+    const expectedThrough = previousConfiguredDrawDate(today, officialDrawWeekdays(game));
     const gameStatus: GameStatus["status"] =
       ready.length !== configured.length || observedThrough === null
         ? "unavailable"
-        : !healthyStates || daysBetween(observedThrough, today) > maximumFreshAge(game)
+        : !healthyStates || observedThrough < expectedThrough || observedThrough > today
           ? "stale"
           : "fresh";
     return {
@@ -275,21 +327,55 @@ function decodeCursor(value: string): { drawDate: string; session: string } {
 
 async function health(request: Request, env: Env): Promise<Response> {
   try {
+    const now = new Date();
     const schema = await env.LOTTO_DB.prepare(
       `SELECT value FROM schema_meta WHERE key = 'schema_version'`
     ).first<{ value: string }>();
     const counts = await env.LOTTO_DB.prepare(
       `SELECT COUNT(*) AS source_count,
-              SUM(CASE WHEN last_digest IS NOT NULL AND active_count > 0 THEN 1 ELSE 0 END)
+              SUM(CASE WHEN last_digest IS NOT NULL AND active_count > 0
+                            AND last_status IN ('complete', 'complete-with-quarantine',
+                                                'cache-fallback', 'unchanged', 'bootstrap')
+                       THEN 1 ELSE 0 END)
                 AS ready_sources
        FROM lotto_sources WHERE enabled = 1`
     ).first<{ source_count: number; ready_sources: number }>();
     const registeredSources = Number(counts?.source_count ?? 0);
     const readySources = Number(counts?.ready_sources ?? 0);
+    const configured = await env.LOTTO_DB.prepare(
+      `SELECT COUNT(*) AS configured_games FROM lotto_game_config`
+    ).first<{ configured_games: number }>();
+    const serviceStatus = await readServiceStatus(env, now);
+    const configuredGames = Number(configured?.configured_games ?? 0);
+    const selectedConfiguration = serviceStatus.games.filter((game) => game.selected);
+    const selectedCodes = selectedConfiguration.map((row) => row.game);
+    const selectedGames = selectedCodes.length;
+    const gameStates = await statuses(env.LOTTO_DB, now);
+    const selectedState = new Map(gameStates.map((game) => [game.code, game.status]));
+    const unhealthySelectedGames = selectedCodes.filter(
+      (game) => selectedState.get(game) !== "fresh"
+    );
+    const degradedArchiveGames = gameStates
+      .filter((game) => game.status !== "fresh")
+      .map((game) => game.code);
+    const invalidSelectedGames = selectedConfiguration
+      .filter((game) => !game.configurationValid)
+      .map((game) => game.game);
+    const missedGenerationGames = serviceStatus.missedGenerationGames;
+    const attentionRequiredGames = selectedConfiguration
+      .filter((game) => game.attentionRequired)
+      .map((game) => game.game);
+    const deliveryBridgeConfigured = (env.RABBITHOLETX_SERVICE_TOKEN?.trim().length ?? 0) > 0;
     const ready =
-      schema?.value === "4" &&
-      registeredSources === SOURCES.length &&
-      readySources === SOURCES.length;
+      schema?.value === "5" &&
+      configuredGames === GAME_CODES.length &&
+      selectedGames > 0 &&
+      unhealthySelectedGames.length === 0 &&
+      invalidSelectedGames.length === 0 &&
+      missedGenerationGames.length === 0 &&
+      attentionRequiredGames.length === 0 &&
+      deliveryBridgeConfigured &&
+      (env.RABBITHOLETX_SEED_SALT?.trim().length ?? 0) >= 32;
     return json(
       request,
       {
@@ -300,7 +386,22 @@ async function health(request: Request, env: Env): Promise<Response> {
           databaseSchemaVersion: schema?.value ?? null,
           configuredSources: SOURCES.length,
           registeredSources,
-          readySources
+          readySources,
+          configuredGames,
+          selectedGames,
+          unhealthySelectedGames,
+          invalidSelectedGames,
+          missedGenerationGames,
+          attentionRequiredGames,
+          archiveStatus:
+            registeredSources === SOURCES.length &&
+            readySources === SOURCES.length &&
+            degradedArchiveGames.length === 0
+              ? "ready"
+              : "degraded",
+          degradedArchiveGames,
+          deliveryBridgeConfigured,
+          seedSecretConfigured: (env.RABBITHOLETX_SEED_SALT?.trim().length ?? 0) >= 32
         }
       },
       { status: ready ? 200 : 503 }
@@ -408,11 +509,102 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       return error(request, 403, "origin_denied", "Origin is not permitted");
     return new Response(null, { status: 204, headers: baseHeaders(request) });
   }
-  if (request.method !== "GET")
-    return error(request, 405, "method_not_allowed", "Only GET is supported");
-
-  const pathname = new URL(request.url).pathname.replace(/\/+$/, "") || "/";
+  const requestUrl = new URL(request.url);
+  const pathname = requestUrl.pathname.replace(/\/+$/, "") || "/";
+  const absoluteApiBase = `${requestUrl.origin}${API_PREFIX}`;
   try {
+    if (request.method === "POST" && pathname === `${API_PREFIX}/deliveries/claim`) {
+      if (!(await serviceAuthorized(request, env))) {
+        return error(request, 401, "unauthorized", "A valid service bearer token is required");
+      }
+      const delivery = await claimDelivery(env);
+      return delivery
+        ? json(request, {
+            schemaVersion: 1,
+            generatedAt: new Date().toISOString(),
+            data: { delivery }
+          })
+        : new Response(null, { status: 204, headers: baseHeaders(request) });
+    }
+    const deliveryResultMatch = pathname.match(
+      /^\/api\/lotto\/v1\/deliveries\/((?:delivery|alert)-gen-[a-f0-9]{32})\/result$/
+    );
+    if (request.method === "POST" && deliveryResultMatch) {
+      if (!(await serviceAuthorized(request, env))) {
+        return error(request, 401, "unauthorized", "A valid service bearer token is required");
+      }
+      let input: ReturnType<typeof parseDeliveryResult>;
+      try {
+        input = parseDeliveryResult(await boundedJson(request));
+      } catch (caught) {
+        return error(
+          request,
+          400,
+          "invalid_delivery_result",
+          caught instanceof Error ? caught.message : "delivery result is invalid"
+        );
+      }
+      try {
+        const result = await completeDelivery(env, deliveryResultMatch[1] as string, input);
+        return result
+          ? json(request, {
+              schemaVersion: 1,
+              generatedAt: new Date().toISOString(),
+              data: { delivery: result }
+            })
+          : error(request, 404, "delivery_not_found", "Delivery was not found");
+      } catch (caught) {
+        if (caught instanceof Error && caught.message.includes("lease")) {
+          return error(request, 409, "lease_conflict", caught.message);
+        }
+        throw caught;
+      }
+    }
+    if (request.method === "POST" && pathname === `${API_PREFIX}/automation/run`) {
+      if (!(await serviceAuthorized(request, env))) {
+        return error(request, 401, "unauthorized", "A valid service bearer token is required");
+      }
+      let body: unknown;
+      try {
+        body = await boundedJson(request);
+      } catch (caught) {
+        return error(
+          request,
+          400,
+          "invalid_run_request",
+          caught instanceof Error ? caught.message : "run request is invalid"
+        );
+      }
+      if (typeof body !== "object" || body === null || Array.isArray(body)) {
+        return error(request, 400, "invalid_run_request", "run request must be an object");
+      }
+      const record = body as Record<string, unknown>;
+      const requestedGame = record.game;
+      if (
+        requestedGame !== undefined &&
+        (typeof requestedGame !== "string" || !isGameCode(requestedGame))
+      ) {
+        return error(request, 400, "invalid_game", "game must be a configured lottery code");
+      }
+      let scheduledTime = new Date();
+      if (record.now !== undefined) {
+        if (typeof record.now !== "string" || !Number.isFinite(Date.parse(record.now))) {
+          return error(request, 400, "invalid_time", "now must be an ISO-8601 timestamp");
+        }
+        scheduledTime = new Date(record.now);
+      }
+      const outcome = requestedGame
+        ? await generateForGame(env, requestedGame, scheduledTime, absoluteApiBase)
+        : await runScheduledGeneration(env, scheduledTime, absoluteApiBase);
+      return json(request, {
+        schemaVersion: 1,
+        generatedAt: new Date().toISOString(),
+        data: { outcome }
+      });
+    }
+    if (request.method !== "GET") {
+      return error(request, 405, "method_not_allowed", "Method is not supported for this route");
+    }
     if (pathname === "/healthz" || pathname === `${API_PREFIX}/health`) return health(request, env);
     if (pathname === `${API_PREFIX}/manifest`) {
       return json(
@@ -426,6 +618,50 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       );
     }
     if (pathname === `${API_PREFIX}/status`) return statusResponse(request, env);
+    if (pathname === `${API_PREFIX}/service-status`) {
+      if (!(await serviceAuthorized(request, env))) {
+        return error(request, 401, "unauthorized", "A valid service bearer token is required");
+      }
+      return json(
+        request,
+        {
+          schemaVersion: 1,
+          generatedAt: new Date().toISOString(),
+          data: await readServiceStatus(env)
+        },
+        { cacheControl: "no-store" }
+      );
+    }
+    if (pathname === `${API_PREFIX}/picks/today`) {
+      const accessError = await exactPickAccessError(request, env);
+      if (accessError) return accessError;
+      const today = isoDayInTexas();
+      const runs = await listGeneratedRuns(env, today, absoluteApiBase);
+      return json(
+        request,
+        {
+          schemaVersion: 1,
+          generatedAt: new Date().toISOString(),
+          data: { drawDate: today, runs }
+        },
+        { cacheControl: "private, no-store" }
+      );
+    }
+    const generationMatch = pathname.match(
+      /^\/api\/lotto\/v1\/generation-runs\/(gen-[a-f0-9]{32})$/
+    );
+    if (generationMatch) {
+      const accessError = await exactPickAccessError(request, env);
+      if (accessError) return accessError;
+      const run = await generationRunById(env, generationMatch[1] as string, absoluteApiBase);
+      return run
+        ? json(
+            request,
+            { schemaVersion: 1, generatedAt: new Date().toISOString(), data: { run } },
+            { cacheControl: "private, no-store" }
+          )
+        : error(request, 404, "generation_run_not_found", "Generation run was not found");
+    }
     if (pathname === `${API_PREFIX}/games`) {
       const gameStatuses = await statuses(env.LOTTO_DB);
       return json(

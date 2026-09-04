@@ -77,7 +77,7 @@ export class D1DotCastUsdcPoolFundingStore implements DotCastUsdcPoolFundingStor
          WHERE user_id = ?`
       )
       .bind(userId)
-      .first<Record<string, unknown>>();
+      .first();
 
     return row ? balanceFromRow(row) : null;
   }
@@ -118,7 +118,7 @@ export class D1DotCastUsdcPoolFundingStore implements DotCastUsdcPoolFundingStor
          WHERE lock_id = ?`
       )
       .bind(lockId)
-      .first<Record<string, unknown>>();
+      .first();
 
     return row ? poolFundingLockFromRow(row) : null;
   }

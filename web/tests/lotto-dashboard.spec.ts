@@ -2,6 +2,9 @@ import { expect, test, type Page } from "@playwright/test";
 
 test.describe("LOTTO forensic dashboard", () => {
   test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => {
+      window.localStorage.setItem("sovereign.jwt", "playwright-yevow-session");
+    });
     await page.goto("/lotto/");
   });
 
@@ -115,6 +118,130 @@ test.describe("LOTTO forensic dashboard", () => {
     await expect(panel.getByText("Embedded snapshot mode", { exact: true })).toBeVisible();
     await openTab(page, "Ticket Lab");
     await expect(page.getByRole("button", { name: "Generate optimized set" })).toBeEnabled();
+  });
+
+  test("loads the exact persisted draw-day set without generating on page load", async ({
+    page
+  }) => {
+    const methods: string[] = [];
+    await page.route("**/api/lotto/v1/picks/today", async (route) => {
+      methods.push(route.request().method());
+      expect(route.request().postData()).toBeNull();
+      expect(route.request().headers().authorization).toBe("Bearer playwright-yevow-session");
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          schemaVersion: 1,
+          generatedAt: "2026-09-07T12:06:00.000Z",
+          data: {
+            drawDate: "2026-09-07",
+            runs: [
+              {
+                runId: `gen-${"a".repeat(32)}`,
+                game: "cash5",
+                gameName: "Cash Five",
+                drawDate: "2026-09-07",
+                drawSlot: "daily",
+                scheduledFor: "2026-09-07 06:00 America/Chicago",
+                generatedAt: "2026-09-07T12:05:00.000Z",
+                seed: "e".repeat(64),
+                observedThrough: "2026-09-05",
+                datasetDigest: "b".repeat(64),
+                coverage: { distinctPairs: 20, possiblePairs: 595, coveragePercent: 3.36 },
+                ev: {
+                  netCentsPerTicket: -62,
+                  assumption: "Pre-tax fixed-prize model; jackpot excluded."
+                },
+                tickets: [
+                  {
+                    ordinal: 1,
+                    main: [13, 22, 29, 34, 35],
+                    bonus: [],
+                    playStyle: "straight",
+                    splitRiskScore: 12.5,
+                    splitRiskLevel: "low",
+                    splitRiskNotes: ["Lower-collision shape."]
+                  },
+                  {
+                    ordinal: 2,
+                    main: [14, 23, 28, 32, 33],
+                    bonus: [],
+                    playStyle: "straight",
+                    splitRiskScore: 14,
+                    splitRiskLevel: "low",
+                    splitRiskNotes: ["Lower-collision shape."]
+                  }
+                ],
+                generationLogUrl: `/api/lotto/v1/generation-runs/gen-${"a".repeat(32)}`,
+                disclaimer:
+                  "Picks are optimized for coverage and lower split-risk patterns, not predicted. Lottery draws are random. Play responsibly."
+              },
+              {
+                runId: `gen-${"c".repeat(32)}`,
+                game: "p3",
+                gameName: "Pick 3",
+                drawDate: "2026-09-07",
+                drawSlot: "daily",
+                scheduledFor: "2026-09-07 06:00 America/Chicago",
+                generatedAt: "2026-09-07T12:05:30.000Z",
+                seed: "f".repeat(64),
+                observedThrough: "2026-09-05",
+                datasetDigest: "d".repeat(64),
+                coverage: { distinctPairs: 6, possiblePairs: 300, coveragePercent: 2 },
+                ev: {
+                  netCentsPerTicket: -25,
+                  assumption: "Pre-tax straight-play model."
+                },
+                tickets: [
+                  {
+                    ordinal: 1,
+                    main: [0, 4, 6],
+                    bonus: [],
+                    playStyle: "straight",
+                    splitRiskScore: 8,
+                    splitRiskLevel: "low",
+                    splitRiskNotes: ["No familiar date pattern."]
+                  },
+                  {
+                    ordinal: 2,
+                    main: [1, 5, 9],
+                    bonus: [],
+                    playStyle: "straight",
+                    splitRiskScore: 9,
+                    splitRiskLevel: "low",
+                    splitRiskNotes: ["No familiar date pattern."]
+                  }
+                ],
+                generationLogUrl: `/api/lotto/v1/generation-runs/gen-${"c".repeat(32)}`,
+                disclaimer:
+                  "Picks are optimized for coverage and lower split-risk patterns, not predicted. Lottery draws are random. Play responsibly."
+              }
+            ]
+          }
+        })
+      });
+    });
+    await page.reload();
+
+    const panel = page.getByRole("region", { name: "Today's optimized picks" });
+    await expect(panel.getByText("2 games · 4 tickets", { exact: true })).toBeVisible();
+    const cashTickets = panel.getByRole("list", { name: "Cash Five persisted tickets" });
+    await expect(cashTickets.getByRole("listitem")).toHaveCount(2);
+    await expect(cashTickets.getByRole("listitem").first()).toContainText("13");
+    await expect(cashTickets.getByRole("listitem").first()).toContainText("35");
+    const pick3Tickets = panel.getByRole("list", { name: "Pick 3 persisted tickets" });
+    await expect(pick3Tickets.getByRole("listitem").first()).toContainText("0");
+    await expect(pick3Tickets.getByRole("listitem").first()).toContainText("4");
+    await expect(pick3Tickets.getByRole("listitem").first()).toContainText("straight");
+    await expect(panel.getByText(/Exact\/box choice changes cost and EV; no digit is due/i)).toBeVisible();
+    await expect(panel.getByText("3.36%", { exact: true })).toBeVisible();
+    await expect(panel.getByText("-$0.62", { exact: true })).toBeVisible();
+    await expect(panel.getByText("Optimized, not predicted.", { exact: true })).toBeVisible();
+    await expect(
+      panel.getByRole("link", { name: "Open Cash Five generation log" })
+    ).toHaveAttribute("href", `#lotto-generation-gen-${"a".repeat(32)}`);
+    expect(methods.length).toBeGreaterThan(0);
+    expect(methods.every((method) => method === "GET")).toBe(true);
   });
 
   test("shows both verified official draw archives", async ({ page }) => {

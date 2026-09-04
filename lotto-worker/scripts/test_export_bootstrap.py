@@ -161,8 +161,9 @@ class BootstrapExporterTests(unittest.TestCase):
         self.assertEqual(summary["drawCount"], 17)
         self.assertEqual(len(manifest["uploads"]), 17)
         self.assertEqual(manifest["target"]["bucket"], "yevow-rabbitholetx-raw")
-        self.assertEqual(manifest["contracts"]["d1SchemaVersion"], 4)
-        self.assertEqual(len(manifest["contracts"]["d1Migrations"]), 4)
+        self.assertEqual(manifest["contracts"]["d1SchemaVersion"], 5)
+        self.assertEqual(manifest["contracts"]["inputSqliteSchemaVersion"], 3)
+        self.assertEqual(len(manifest["contracts"]["d1Migrations"]), 5)
         for source, upload in zip(exporter.SOURCES, manifest["uploads"], strict=True):
             self.assertEqual(upload["sourceId"], source.source_id)
             self.assertEqual(
@@ -172,6 +173,43 @@ class BootstrapExporterTests(unittest.TestCase):
             cache_file = self.cache_root / upload["cacheRelativePath"]
             self.assertEqual(exporter.sha256_file(cache_file)[0], upload["sha256"])
             self.assertEqual(upload["customMetadata"]["sourceId"], source.source_id)
+
+    def test_current_schema_four_is_accepted_and_reported(self) -> None:
+        connection = sqlite3.connect(self.db_path)
+        try:
+            connection.execute(
+                "INSERT INTO schema_versions VALUES "
+                "(4, '2026-09-04T00:00:00.000Z')"
+            )
+            connection.execute("PRAGMA user_version = 4")
+            connection.commit()
+        finally:
+            connection.close()
+
+        output = self.root / "schema-four"
+        exporter.run(self._args(output))
+        manifest = json.loads((output / exporter.R2_MANIFEST_FILENAME).read_text())
+
+        self.assertEqual(manifest["contracts"]["inputSqliteSchemaVersion"], 4)
+
+    def test_current_schema_five_is_accepted_and_reported(self) -> None:
+        connection = sqlite3.connect(self.db_path)
+        try:
+            connection.execute(
+                "INSERT INTO schema_versions VALUES "
+                "(4, '2026-09-04T00:00:00.000Z'), "
+                "(5, '2026-09-04T00:01:00.000Z')"
+            )
+            connection.execute("PRAGMA user_version = 5")
+            connection.commit()
+        finally:
+            connection.close()
+
+        output = self.root / "schema-five"
+        exporter.run(self._args(output))
+        manifest = json.loads((output / exporter.R2_MANIFEST_FILENAME).read_text())
+
+        self.assertEqual(manifest["contracts"]["inputSqliteSchemaVersion"], 5)
 
     def test_output_is_byte_deterministic_and_sql_is_idempotent(self) -> None:
         first = self.root / "first"
