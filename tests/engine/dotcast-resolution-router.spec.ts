@@ -68,9 +68,9 @@ describe("dotCast E13 resolution router", () => {
     expect(pointsRoute).toMatchObject({
       tier: "human_jury",
       status: "points_only",
-      pointsOnly: true,
-      steeringPrompt: expect.stringContaining("externally verifiable")
+      pointsOnly: true
     });
+    expect(pointsRoute.steeringPrompt).toContain("externally verifiable");
   });
 
   it("logs AI confidence and escalates below the auto-resolution threshold", () => {

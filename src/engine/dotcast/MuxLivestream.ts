@@ -562,7 +562,7 @@ export function muxWebhookEventFromPayload(
   const data = parseRecord(payload.data);
   const muxLiveStreamId = eventType.startsWith("video.asset.")
     ? parseOptionalString(data.live_stream_id)
-    : parseOptionalString(data.id) ?? parseOptionalString(data.live_stream_id);
+    : (parseOptionalString(data.id) ?? parseOptionalString(data.live_stream_id));
   const recordingAssetId =
     parseOptionalString(data.active_asset_id) ?? parseOptionalString(data.id);
   const playbackId = firstPlaybackId(data.playback_ids);

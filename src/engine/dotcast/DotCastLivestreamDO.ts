@@ -726,7 +726,9 @@ export class DotCastLivestream {
   private async readAttachedPoolRealtimeSnapshots(
     state: LivestreamState
   ): Promise<RealtimePoolSnapshot[]> {
-    return Promise.all(orderedPools(state.pools).map((pool) => this.readPoolRealtimeSnapshot(pool)));
+    return Promise.all(
+      orderedPools(state.pools).map((pool) => this.readPoolRealtimeSnapshot(pool))
+    );
   }
 
   private async readPoolRealtimeSnapshot(
@@ -810,11 +812,7 @@ function baseRealtimePool(pool: DotCastLivestreamPool) {
   };
 }
 
-function formatSse(
-  eventName: string,
-  payload: Record<string, unknown>,
-  id?: number
-): string {
+function formatSse(eventName: string, payload: Record<string, unknown>, id?: number): string {
   const lines = [`event: ${eventName}`];
 
   if (id !== undefined) {

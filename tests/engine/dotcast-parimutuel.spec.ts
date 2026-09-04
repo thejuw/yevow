@@ -76,7 +76,11 @@ describe("dotCast parimutuel core", () => {
   });
 
   it("refunds principal when everyone is on the winning side", () => {
-    const result = settleParimutuel([entry("yes-1", "yes", 100), entry("yes-2", "yes", 200)], "yes", 0.05);
+    const result = settleParimutuel(
+      [entry("yes-1", "yes", 100), entry("yes-2", "yes", 200)],
+      "yes",
+      0.05
+    );
 
     expect(result.kind).toBe("settled");
     expect(result.rakeAmount).toBe(0);
@@ -86,7 +90,11 @@ describe("dotCast parimutuel core", () => {
   });
 
   it("requires void handling when no entry is on the winning side", () => {
-    const result = settleParimutuel([entry("no-1", "no", 100), entry("no-2", "no", 200)], "yes", 0.05);
+    const result = settleParimutuel(
+      [entry("no-1", "no", 100), entry("no-2", "no", 200)],
+      "yes",
+      0.05
+    );
 
     expect(result.kind).toBe("void_required");
     expect(result.rakeAmount).toBe(0);
@@ -142,7 +150,12 @@ describe("dotCast parimutuel core", () => {
   });
 });
 
-function entry(id: string, side: "yes" | "no", amount: number, placedAt = "2026-06-25T00:00:00.000Z"): SettlementEntry {
+function entry(
+  id: string,
+  side: "yes" | "no",
+  amount: number,
+  placedAt = "2026-06-25T00:00:00.000Z"
+): SettlementEntry {
   return { id, side, amount, placedAt };
 }
 

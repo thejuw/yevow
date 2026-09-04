@@ -379,7 +379,7 @@ export class D1DotCastResolutionRouterStore implements DotCastResolutionRouterSt
          WHERE route_id = ?`
       )
       .bind(routeId)
-      .first<Record<string, unknown>>();
+      .first();
 
     return row ? routeFromRow(row) : null;
   }
@@ -409,7 +409,7 @@ export class D1DotCastResolutionRouterStore implements DotCastResolutionRouterSt
     const result = await this.db
       .prepare(query)
       .bind(...params)
-      .all<Record<string, unknown>>();
+      .all();
 
     return (result.results ?? []).map(routeFromRow);
   }
@@ -494,7 +494,7 @@ export class D1DotCastResolutionRouterStore implements DotCastResolutionRouterSt
          WHERE resolver_id = ?`
       )
       .bind(resolverId)
-      .first<Record<string, unknown>>();
+      .first();
 
     return row ? resolverProfileFromRow(row) : null;
   }
@@ -512,7 +512,7 @@ export class D1DotCastResolutionRouterStore implements DotCastResolutionRouterSt
          LIMIT ?`
       )
       .bind(safeLimit)
-      .all<Record<string, unknown>>();
+      .all();
 
     return (result.results ?? []).map(resolverProfileFromRow);
   }
@@ -622,7 +622,7 @@ export class D1DotCastResolutionRouterStore implements DotCastResolutionRouterSt
          LIMIT ?`
       )
       .bind(resolverId, safeLimit)
-      .all<Record<string, unknown>>();
+      .all();
 
     return (result.results ?? []).map(resolverBondLedgerFromRow);
   }
@@ -685,7 +685,7 @@ export class D1DotCastResolutionRouterStore implements DotCastResolutionRouterSt
     const result = await this.db
       .prepare(query)
       .bind(...params)
-      .all<Record<string, unknown>>();
+      .all();
 
     return (result.results ?? []).map(reviewFromRow);
   }
@@ -735,7 +735,7 @@ export class D1DotCastResolutionRouterStore implements DotCastResolutionRouterSt
          WHERE challenge_id = ?`
       )
       .bind(challengeId)
-      .first<Record<string, unknown>>();
+      .first();
 
     return row ? challengeFromRow(row) : null;
   }
@@ -771,7 +771,7 @@ export class D1DotCastResolutionRouterStore implements DotCastResolutionRouterSt
     const result = await this.db
       .prepare(query)
       .bind(...params)
-      .all<Record<string, unknown>>();
+      .all();
 
     return (result.results ?? []).map(challengeFromRow);
   }
@@ -785,7 +785,7 @@ export class D1DotCastResolutionRouterStore implements DotCastResolutionRouterSt
          WHERE panel_id = ?`
       )
       .bind(panelId)
-      .first<Record<string, unknown>>();
+      .first();
 
     if (!panelRow) {
       return null;
@@ -800,7 +800,7 @@ export class D1DotCastResolutionRouterStore implements DotCastResolutionRouterSt
          ORDER BY assigned_at ASC, assignment_id ASC`
       )
       .bind(panelId)
-      .all<Record<string, unknown>>();
+      .all();
 
     return {
       panelId: requireText(panelRow.panel_id, "panel_id"),
@@ -827,7 +827,7 @@ export class D1DotCastResolutionRouterStore implements DotCastResolutionRouterSt
          WHERE assignment_id = ?`
       )
       .bind(assignmentId)
-      .first<Record<string, unknown>>();
+      .first();
 
     return row ? assignmentFromRow(row) : null;
   }
@@ -840,7 +840,7 @@ export class D1DotCastResolutionRouterStore implements DotCastResolutionRouterSt
          WHERE assignment_id = ?`
       )
       .bind(assignmentId)
-      .first<Record<string, unknown>>();
+      .first();
 
     return row ? commitFromRow(row) : null;
   }
@@ -854,7 +854,7 @@ export class D1DotCastResolutionRouterStore implements DotCastResolutionRouterSt
          ORDER BY committed_at ASC, assignment_id ASC`
       )
       .bind(panelId)
-      .all<Record<string, unknown>>();
+      .all();
 
     return (result.results ?? []).map(commitFromRow);
   }
@@ -868,7 +868,7 @@ export class D1DotCastResolutionRouterStore implements DotCastResolutionRouterSt
          ORDER BY revealed_at ASC, assignment_id ASC`
       )
       .bind(panelId)
-      .all<Record<string, unknown>>();
+      .all();
 
     return (result.results ?? []).map(revealFromRow);
   }
@@ -1201,7 +1201,7 @@ export class D1DotCastResolutionRouterStore implements DotCastResolutionRouterSt
     const row = await this.db
       .prepare(`SELECT entry_id FROM dotcast_resolver_bond_ledger WHERE entry_id = ?`)
       .bind(entryId)
-      .first<Record<string, unknown>>();
+      .first();
 
     return Boolean(row);
   }
@@ -1214,7 +1214,7 @@ export class D1DotCastResolutionRouterStore implements DotCastResolutionRouterSt
          WHERE assignment_id = ? AND panel_id = ?`
       )
       .bind(assignmentId, panelId)
-      .first<Record<string, unknown>>();
+      .first();
 
     return Boolean(row);
   }
@@ -1223,7 +1223,7 @@ export class D1DotCastResolutionRouterStore implements DotCastResolutionRouterSt
     const row = await this.db
       .prepare(`SELECT event_id FROM dotcast_resolver_reputation_events WHERE event_id = ?`)
       .bind(eventId)
-      .first<Record<string, unknown>>();
+      .first();
 
     return Boolean(row);
   }
@@ -1365,7 +1365,7 @@ export function buildDotCastResolverRegistryProfile(
     resolverId: requireNonEmptyInput(input.resolverId, "resolverId"),
     identityHash: requireNonEmptyInput(input.identityHash, "identityHash"),
     status: input.status ?? "active",
-    displayName: input.displayName?.trim() || null,
+    displayName: nullableText(input.displayName?.trim()),
     reputationBps,
     bondAvailableMinorUnits,
     stakeHeldPoolIds: uniqueStrings(input.stakeHeldPoolIds ?? []),
@@ -1391,7 +1391,7 @@ export function applyDotCastResolutionReviewDecision(
     poolId: input.route.poolId,
     marketId: input.route.marketId,
     status,
-    reviewerId: input.reviewerId?.trim() || null,
+    reviewerId: nullableText(input.reviewerId?.trim()),
     decisionJson: {
       action: input.action,
       originalStatus: input.route.status,
@@ -1521,7 +1521,7 @@ export function decideDotCastResolutionChallenge(
     ...input.challenge,
     status,
     decidedAt: now,
-    decisionBy: input.decisionBy?.trim() || null,
+    decisionBy: nullableText(input.decisionBy?.trim()),
     decisionJson: {
       action: input.action,
       reason: input.reason ?? null,
@@ -1886,7 +1886,7 @@ export function assertLockedRealMoneyResolutionRoute(
     return;
   }
 
-  if (!route || route.status !== "locked") {
+  if (route?.status !== "locked") {
     throw new DotCastResolutionRouterError(
       "RESOLUTION_ROUTE_REQUIRED",
       "real-money dotCast pools require a locked E13 resolution route before creation",
@@ -2148,7 +2148,8 @@ function buildReviewedRoute(
   input: ApplyDotCastResolutionReviewDecisionInput,
   now: string
 ): DotCastResolutionRoute {
-  const resolutionStatement = input.resolutionStatement?.trim() || input.route.resolutionStatement;
+  const resolutionStatement =
+    nullableText(input.resolutionStatement?.trim()) ?? input.route.resolutionStatement;
   const sources = input.sources && input.sources.length > 0 ? input.sources : input.route.sources;
   const reviewEvent = {
     operatorReview: {

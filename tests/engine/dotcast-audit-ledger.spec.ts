@@ -244,7 +244,7 @@ function settledSnapshot(): DotCastPoolSnapshot {
 }
 
 function fakeAuditDb() {
-  const statements: Array<{ query: string; params: unknown[] }> = [];
+  const statements: { query: string; params: unknown[] }[] = [];
   const batches: unknown[][] = [];
   const db = {
     prepare: (query: string) =>

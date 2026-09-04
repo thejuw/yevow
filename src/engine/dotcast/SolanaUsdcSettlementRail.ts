@@ -84,7 +84,7 @@ export class D1DotCastSettlementRailStore implements DotCastSettlementRailStore 
          WHERE user_id = ?`
       )
       .bind(userId)
-      .first<Record<string, unknown>>();
+      .first();
 
     return row ? balanceFromRow(row) : null;
   }
@@ -123,7 +123,7 @@ export class D1DotCastSettlementRailStore implements DotCastSettlementRailStore 
                 locked_pool_usdc, locked_bond_usdc, updated_at
          FROM dotcast_settlement_balances`
       )
-      .all<Record<string, unknown>>();
+      .all();
 
     return (result.results ?? []).map(balanceFromRow);
   }
@@ -137,7 +137,7 @@ export class D1DotCastSettlementRailStore implements DotCastSettlementRailStore 
          WHERE transfer_id = ?`
       )
       .bind(transferId)
-      .first<Record<string, unknown>>();
+      .first();
 
     return row ? transferFromRow(row) : null;
   }
@@ -153,7 +153,7 @@ export class D1DotCastSettlementRailStore implements DotCastSettlementRailStore 
          LIMIT 1`
       )
       .bind(txRef)
-      .first<Record<string, unknown>>();
+      .first();
 
     return row ? transferFromRow(row) : null;
   }
@@ -226,7 +226,7 @@ export function readSolanaUsdcSettlementRailStatus(
   const signerMode = parseSignerMode(env.DOTCAST_SETTLEMENT_SIGNER_MODE, mode);
   const network = cluster === "devnet" ? "solana-devnet" : "solana-mainnet-beta";
   const mint =
-    env.DOTCAST_SOLANA_USDC_MINT?.trim() ||
+    nullableText(env.DOTCAST_SOLANA_USDC_MINT?.trim()) ??
     (cluster === "devnet" ? DOTCAST_SOLANA_DEVNET_USDC_MINT : DOTCAST_SOLANA_MAINNET_USDC_MINT);
   const depositConfirmationsRequired = parsePositiveEnvInt(
     env.DOTCAST_DEPOSIT_CONFIRMATIONS_REQUIRED,
@@ -539,7 +539,7 @@ export async function confirmMockWithdrawal(
   const transferId = requireText(input.transferId, "transferId");
   const transfer = await store.getTransfer(transferId);
 
-  if (!transfer || transfer.kind !== "withdrawal") {
+  if (transfer?.kind !== "withdrawal") {
     throw new DotCastSettlementRailError("WITHDRAWAL_NOT_FOUND", "withdrawal was not found", 404);
   }
 
@@ -564,7 +564,9 @@ export async function confirmMockWithdrawal(
   const confirmed: DotCastSettlementTransfer = {
     ...transfer,
     status: "confirmed",
-    txRef: input.txRef?.trim() || `mock-confirm:${transfer.mockSignature ?? transfer.transferId}`,
+    txRef:
+      nullableText(input.txRef?.trim()) ??
+      `mock-confirm:${transfer.mockSignature ?? transfer.transferId}`,
     updatedAt: now,
     eventJson: {
       ...transfer.eventJson,

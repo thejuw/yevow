@@ -206,26 +206,22 @@ describe("dotCast gateway handlers", () => {
     const reviewsBody = (await reviews.json()) as Record<string, unknown>;
 
     expect(queue.status).toBe(200);
-    expect(queueBody).toMatchObject({
-      resolutionRouter: {
-        count: 2,
-        routes: expect.arrayContaining([
-          expect.objectContaining({ routeId: "route:pool-e13-review" }),
-          expect.objectContaining({ status: "review_required" })
-        ])
-      }
-    });
+    const queueRouter = queueBody.resolutionRouter as {
+      count: number;
+      routes: { routeId: string; status: string }[];
+    };
+    expect(queueRouter.count).toBe(2);
+    expect(queueRouter.routes.some((item) => item.routeId === "route:pool-e13-review")).toBe(true);
+    expect(queueRouter.routes.some((item) => item.status === "review_required")).toBe(true);
     expect(reviews.status).toBe(200);
-    expect(reviewsBody).toMatchObject({
-      resolutionRouter: {
-        count: 3,
-        reviews: expect.arrayContaining([
-          expect.objectContaining({ status: "approved" }),
-          expect.objectContaining({ status: "denied" }),
-          expect.objectContaining({ status: "reshaped" })
-        ])
-      }
-    });
+    const reviewRouter = reviewsBody.resolutionRouter as {
+      count: number;
+      reviews: { status: string }[];
+    };
+    expect(reviewRouter.count).toBe(3);
+    expect(reviewRouter.reviews.map((item) => item.status)).toEqual(
+      expect.arrayContaining(["approved", "denied", "reshaped"])
+    );
   });
 
   it("opens and decides E13 optimistic resolution challenges inside the challenge window", async () => {
@@ -397,23 +393,28 @@ describe("dotCast gateway handlers", () => {
     expect(suspended.status).toBe(200);
     expect(bondAdjusted.status).toBe(200);
     expect(reputationAdjusted.status).toBe(200);
-    expect(profileBody).toMatchObject({
-      resolutionRouter: {
-        profile: {
-          resolverId: "resolver-admin",
-          status: "suspended",
-          bondAvailableMinorUnits: 75_000,
-          reputationBps: 7750
-        },
-        bondLedger: expect.arrayContaining([
-          expect.objectContaining({
-            eventType: "manual_adjustment",
-            deltaMinorUnits: -25_000,
-            balanceAfterMinorUnits: 75_000
-          })
-        ])
-      }
+    const profileRouter = profileBody.resolutionRouter as {
+      profile: Record<string, unknown>;
+      bondLedger: {
+        eventType: string;
+        deltaMinorUnits: number;
+        balanceAfterMinorUnits: number;
+      }[];
+    };
+    expect(profileRouter.profile).toMatchObject({
+      resolverId: "resolver-admin",
+      status: "suspended",
+      bondAvailableMinorUnits: 75_000,
+      reputationBps: 7750
     });
+    expect(
+      profileRouter.bondLedger.some(
+        (entry) =>
+          entry.eventType === "manual_adjustment" &&
+          entry.deltaMinorUnits === -25_000 &&
+          entry.balanceAfterMinorUnits === 75_000
+      )
+    ).toBe(true);
     expect([...d1.reputationEvents.values()]).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -453,7 +454,7 @@ describe("dotCast gateway handlers", () => {
     );
     const panelBody = (await panelResponse.json()) as Record<string, unknown>;
     const panel = (panelBody.resolutionRouter as { panel: { assignments: unknown[] } }).panel;
-    const assignments = panel.assignments as Array<Record<string, unknown>>;
+    const assignments = panel.assignments as Record<string, unknown>[];
 
     await commitDotCastResolverRoute(
       jsonRequest("/api/dotcast/resolution-router/resolvers/commit", {
@@ -500,7 +501,7 @@ describe("dotCast gateway handlers", () => {
   it("settles pools from DB-backed E13 resolver consensus", async () => {
     const d1 = new FakeResolutionRouterD1();
     const route = lockedE13Route("pool-e13-consensus", "dotcast:e13-consensus");
-    const poolCalls: Array<{ path: string; body: Record<string, unknown> }> = [];
+    const poolCalls: { path: string; body: Record<string, unknown> }[] = [];
     d1.seedRoute(route);
 
     const env = {
@@ -569,7 +570,7 @@ describe("dotCast gateway handlers", () => {
     );
     const panelBody = (await panelResponse.json()) as Record<string, unknown>;
     const panel = (panelBody.resolutionRouter as { panel: { assignments: unknown[] } }).panel;
-    const assignments = panel.assignments as Array<Record<string, unknown>>;
+    const assignments = panel.assignments as Record<string, unknown>[];
 
     expect(panelResponse.status).toBe(200);
     expect(assignments).toHaveLength(3);
@@ -695,20 +696,18 @@ describe("dotCast gateway handlers", () => {
     const profileBody = (await profileResponse.json()) as Record<string, unknown>;
 
     expect(profileResponse.status).toBe(200);
-    expect(profileBody).toMatchObject({
-      milestone: "E13",
-      resolutionRouter: {
-        profile: {
-          resolverId: missedResolverId,
-          reputationBps: Number(missedProfile?.reputation_bps)
-        },
-        bondLedger: expect.arrayContaining([
-          expect.objectContaining({
-            eventType: "bond_slashed"
-          })
-        ])
-      }
+    const missedProfileRouter = profileBody.resolutionRouter as {
+      profile: Record<string, unknown>;
+      bondLedger: { eventType: string }[];
+    };
+    expect(profileBody.milestone).toBe("E13");
+    expect(missedProfileRouter.profile).toMatchObject({
+      resolverId: missedResolverId,
+      reputationBps: Number(missedProfile?.reputation_bps)
     });
+    expect(missedProfileRouter.bondLedger.some((entry) => entry.eventType === "bond_slashed")).toBe(
+      true
+    );
   });
 
   it("reports E13 resolver panel ops and USDC bond reconciliation", async () => {
@@ -739,7 +738,7 @@ describe("dotCast gateway handlers", () => {
     );
     const panelBody = (await panelResponse.json()) as Record<string, unknown>;
     const assignments = (panelBody.resolutionRouter as { panel: { assignments: unknown[] } }).panel
-      .assignments as Array<Record<string, unknown>>;
+      .assignments as Record<string, unknown>[];
 
     for (const [index, assignment] of assignments.entries()) {
       const assignmentId = String(assignment.assignmentId);
@@ -798,10 +797,7 @@ describe("dotCast gateway handlers", () => {
             assignmentCount: 3,
             paidCount: 2,
             slashedCount: 1
-          },
-          recent: expect.arrayContaining([
-            expect.objectContaining({ panelId: "panel-e13-ops", revealCount: 3 })
-          ])
+          }
         },
         bonds: {
           summary: {
@@ -809,27 +805,35 @@ describe("dotCast gateway handlers", () => {
             releasedCount: 2,
             slashedCount: 1
           },
-          reconciliation: {
-            mismatchCount: 1,
-            rows: expect.arrayContaining([
-              expect.objectContaining({
-                ownerId: "mismatch-owner",
-                deltaMinorUnits: 12_345
-              })
-            ])
-          }
-        },
-        flags: expect.arrayContaining([
-          "bond_reconciliation_mismatch",
-          "resolver_or_bond_slashes_present"
-        ])
+          reconciliation: { mismatchCount: 1 }
+        }
       }
     });
+    const resolutionOps = body.resolutionOps as {
+      panels: { recent: { panelId: string; revealCount: number }[] };
+      bonds: {
+        reconciliation: { rows: { ownerId: string; deltaMinorUnits: number }[] };
+      };
+      flags: string[];
+    };
+    expect(
+      resolutionOps.panels.recent.some(
+        (panel) => panel.panelId === "panel-e13-ops" && panel.revealCount === 3
+      )
+    ).toBe(true);
+    expect(
+      resolutionOps.bonds.reconciliation.rows.some(
+        (row) => row.ownerId === "mismatch-owner" && row.deltaMinorUnits === 12_345
+      )
+    ).toBe(true);
+    expect(resolutionOps.flags).toEqual(
+      expect.arrayContaining(["bond_reconciliation_mismatch", "resolver_or_bond_slashes_present"])
+    );
   });
 
   it("applies E13 challenge policy before final pool settlement", async () => {
     const d1 = new FakeResolutionRouterD1();
-    const poolCalls: Array<{ path: string; body: Record<string, unknown> }> = [];
+    const poolCalls: { path: string; body: Record<string, unknown> }[] = [];
     const env = {
       ...e13DevnetEnv(d1),
       DOTCAST_POOL: {
@@ -907,7 +911,7 @@ describe("dotCast gateway handlers", () => {
       );
       const panelBody = (await panelResponse.json()) as Record<string, unknown>;
       const assignments = (panelBody.resolutionRouter as { panel: { assignments: unknown[] } })
-        .panel.assignments as Array<Record<string, unknown>>;
+        .panel.assignments as Record<string, unknown>[];
       const opened = await openDotCastResolutionChallengeRoute(
         jsonRequest("/api/dotcast/resolution-router/challenges", {
           routeId: route.routeId,
@@ -2196,7 +2200,7 @@ function lockedE13Route(poolId: string, marketId: string): Record<string, unknow
   };
 }
 
-function resolverCandidates(): Array<Record<string, unknown>> {
+function resolverCandidates(): Record<string, unknown>[] {
   return [
     resolverCandidate("resolver-a", "identity-a", 9000),
     resolverCandidate("resolver-b", "identity-b", 8500),
@@ -2356,18 +2360,18 @@ class FakeResolutionRouterD1 {
     }
 
     if (query.includes("FROM dotcast_resolution_reviews")) {
-      let paramIndex = 0;
-      const routeId = query.includes("route_id = ?") ? String(params[paramIndex++]) : null;
-      const status = query.includes("status = ?") ? String(params[paramIndex++]) : null;
+      const hasRouteFilter = query.includes("route_id = ?");
+      const routeId = hasRouteFilter ? String(params[0]) : null;
+      const status = query.includes("status = ?") ? String(params[hasRouteFilter ? 1 : 0]) : null;
       return [...this.reviews.values()].filter(
         (row) => (!routeId || row.route_id === routeId) && (!status || row.status === status)
       );
     }
 
     if (query.includes("FROM dotcast_resolution_challenges")) {
-      let paramIndex = 0;
-      const routeId = query.includes("route_id = ?") ? String(params[paramIndex++]) : null;
-      const status = query.includes("status = ?") ? String(params[paramIndex++]) : null;
+      const hasRouteFilter = query.includes("route_id = ?");
+      const routeId = hasRouteFilter ? String(params[0]) : null;
+      const status = query.includes("status = ?") ? String(params[hasRouteFilter ? 1 : 0]) : null;
       return [...this.challenges.values()].filter(
         (row) => (!routeId || row.route_id === routeId) && (!status || row.status === status)
       );
@@ -2589,9 +2593,9 @@ class FakeResolutionRouterD1 {
       })
       .sort(
         (left, right) =>
-          Math.abs(Number(right.delta_minor_units)) - Math.abs(Number(left.delta_minor_units)) ||
-          Number(right.locked_count) - Number(left.locked_count) ||
-          String(left.owner_id).localeCompare(String(right.owner_id))
+          Math.abs(right.delta_minor_units) - Math.abs(left.delta_minor_units) ||
+          right.locked_count - left.locked_count ||
+          left.owner_id.localeCompare(right.owner_id)
       )
       .slice(0, limit);
   }
@@ -2937,7 +2941,7 @@ function routeParamsToRow(params: unknown[]): Record<string, unknown> {
   };
 }
 
-function sumRows(rows: Array<Record<string, unknown>>, key: string): number {
+function sumRows(rows: Record<string, unknown>[], key: string): number {
   return rows.reduce((total, row) => total + Number(row[key] ?? 0), 0);
 }
 
