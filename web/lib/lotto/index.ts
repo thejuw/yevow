@@ -1,0 +1,53 @@
+/** Public API for the dependency-free RabbitHoleTX browser core. */
+
+export { AUDIT_SNAPSHOTS } from "./audit";
+export {
+  calculatePairCoverage,
+  combinationCount,
+  coverageDefinition,
+  pairKeys,
+  possiblePairCount
+} from "./coverage";
+export {
+  breakEvenJackpotCents,
+  calculateAllEv,
+  calculateEv,
+  EV_RULES,
+  expectedSplitShare,
+  formatMoneyCents,
+  formatProbability
+} from "./ev";
+export { GAME_MANIFEST, getGameManifest, isGameCode } from "./manifest";
+export { generateTickets } from "./picker";
+export { createSeededRng } from "./rng";
+export { scoreSplitRisk } from "./risk";
+export { EvConfigurationError, GAME_CODES, LottoValidationError } from "./types";
+export type {
+  AuditFindingSnapshot,
+  AuditSnapshot,
+  CombinationSnapshot,
+  CoverageResult,
+  Daily4Pattern,
+  DigitPattern,
+  DigitPlayStyle,
+  EvInput,
+  EvInputsByGame,
+  EvResult,
+  EvTierResult,
+  ExportSource,
+  FrequencySnapshot,
+  GameCode,
+  GameKind,
+  GameManifestEntry,
+  GapSnapshot,
+  GenerateTicketsInput,
+  NumberPoolRule,
+  Pick3Pattern,
+  PickResult,
+  PrizeKind,
+  ScoredTicket,
+  Seed,
+  SplitRiskResult,
+  Ticket
+} from "./types";
+export { isPermutationStyle, isPurePermutationStyle, validateTicket } from "./validation";

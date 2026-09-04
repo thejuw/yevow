@@ -7,6 +7,7 @@
     "dev": "next dev",
     "build": "next build",
     "test:e2e": "playwright test",
+    "test:lotto": "node -e \"require('fs').rmSync('/tmp/rabbitholetx-lotto-selftest',{recursive:true,force:true})\" && tsc --noEmit false --incremental false --module commonjs --moduleResolution node --target es2022 --outDir /tmp/rabbitholetx-lotto-selftest --strict --skipLibCheck lib/lotto/self-test.ts && node /tmp/rabbitholetx-lotto-selftest/self-test.js",
     "pages:build": "next build",
     "start": "next start",
     "typecheck": "node -e \"try{require('fs').rmSync('tsconfig.tsbuildinfo')}catch(e){}\" && tsc --noEmit"
