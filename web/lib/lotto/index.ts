@@ -21,6 +21,21 @@ export { GAME_MANIFEST, getGameManifest, isGameCode } from "./manifest";
 export { generateTickets } from "./picker";
 export { createSeededRng } from "./rng";
 export { scoreSplitRisk } from "./risk";
+export {
+  configuredLottoApiBase,
+  DEFAULT_LOTTO_API_BASE,
+  LottoStatusClientError,
+  normalizeLottoApiBase,
+  parseLottoStatus,
+  readLottoStatus
+} from "./status-client";
+export type {
+  LottoFreshness,
+  LottoGameStatus,
+  LottoSourceStatus,
+  LottoStatusResponse,
+  ReadLottoStatusOptions
+} from "./status-client";
 export { EvConfigurationError, GAME_CODES, LottoValidationError } from "./types";
 export type {
   AuditFindingSnapshot,

@@ -31,12 +31,16 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             web/package-lock.json
+            lotto-worker/package-lock.json
 
       - name: Install Worker dependencies
         run: npm ci
 
       - name: Install Command Center dependencies
         run: npm ci --prefix web
+
+      - name: Install LOTTO Worker dependencies
+        run: npm ci --prefix lotto-worker
 
       - name: Typecheck Workers
         run: npm run typecheck
@@ -57,9 +61,16 @@ jobs:
       - name: Engine tests with coverage gate
         run: npm run test:engine
 
+      - name: LOTTO browser-engine tests
+        run: npm run test:lotto --prefix web
+
+      - name: Validate isolated LOTTO Worker
+        run: npm run check --prefix lotto-worker
+
       - name: Build Command Center static export
         env:
           NEXT_PUBLIC_SOVEREIGN_API_BASE: https://api.yevow.co
+          NEXT_PUBLIC_LOTTO_API_BASE: https://lotto-api.yevow.co/api/lotto/v1
         run: npm run web:build
 
       - name: Dry-run core Worker deploy

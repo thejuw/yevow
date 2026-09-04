@@ -9,7 +9,11 @@ import {
   GAME_CODES,
   GAME_MANIFEST,
   generateTickets,
+  DEFAULT_LOTTO_API_BASE,
+  LottoStatusClientError,
   LottoValidationError,
+  normalizeLottoApiBase,
+  parseLottoStatus,
   scoreSplitRisk,
   validateTicket,
   breakEvenJackpotCents
@@ -40,6 +44,16 @@ function expectValidationError(operation: () => unknown, message: string): void 
   throw new Error(`Self-test failed: ${message} did not throw`);
 }
 
+function expectStatusError(operation: () => unknown, message: string): void {
+  try {
+    operation();
+  } catch (error) {
+    assert(error instanceof LottoStatusClientError, message);
+    return;
+  }
+  throw new Error(`Self-test failed: ${message} did not throw`);
+}
+
 assert(GAME_CODES.length === 8, "manifest exposes all eight game codes");
 assert(Object.keys(GAME_MANIFEST).length === 8, "manifest has eight entries");
 assert(GAME_MANIFEST.lotto.outcomeCount === 25_827_165, "Lotto denominator");
@@ -49,6 +63,68 @@ assert(GAME_MANIFEST.pb.outcomeCount === 292_201_338, "Powerball denominator");
 assert(GAME_MANIFEST.mm.bonus?.max === 24, "current Mega Ball field");
 assert(GAME_MANIFEST.mm.baseCostCents === 500, "current Mega Millions cost");
 assert(GAME_MANIFEST.aon.main.count === 12, "All or Nothing matrix");
+
+assert(
+  DEFAULT_LOTTO_API_BASE === "https://lotto-api.yevow.co/api/lotto/v1",
+  "status client defaults to the isolated LOTTO API"
+);
+assert(
+  normalizeLottoApiBase("https://lotto-api.yevow.co/api/lotto/v1///") === DEFAULT_LOTTO_API_BASE,
+  "status client normalizes trailing slashes"
+);
+const parsedStatus = parseLottoStatus({
+  schemaVersion: 1,
+  generatedAt: "2026-09-03T18:30:00.000Z",
+  data: {
+    games: [
+      {
+        code: "lotto",
+        name: "Lotto Texas",
+        sourceCount: 1,
+        readySources: 1,
+        activeDraws: 2_388,
+        observedThrough: "2026-09-02",
+        lastSuccessAt: "2026-09-03T18:29:00.000Z",
+        status: "fresh",
+        sources: [
+          {
+            id: "lotto:lottotexas",
+            name: "lottotexas",
+            session: "",
+            lastSuccessAt: "2026-09-03T18:29:00.000Z",
+            latestDrawDate: "2026-09-02",
+            activeCount: 2_388,
+            status: "ready"
+          }
+        ]
+      }
+    ]
+  }
+});
+assert(parsedStatus.data.games[0]?.activeDraws === 2_388, "status response validates");
+expectStatusError(
+  () =>
+    parseLottoStatus({
+      schemaVersion: 1,
+      generatedAt: "2026-09-03T18:30:00.000Z",
+      data: {
+        games: [
+          {
+            code: "lotto",
+            name: "Lotto Texas",
+            sourceCount: 2,
+            readySources: 1,
+            activeDraws: 1,
+            observedThrough: null,
+            lastSuccessAt: null,
+            status: "fresh",
+            sources: []
+          }
+        ]
+      }
+    }),
+  "status response rejects irreconcilable source counts"
+);
 
 const firstRng = createSeededRng("operation-lone-star");
 const secondRng = createSeededRng("operation-lone-star");
