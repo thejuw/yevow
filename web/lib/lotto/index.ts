@@ -32,6 +32,30 @@ export type {
   LottoSplitRiskLevel,
   ReadLottoDailyPicksOptions
 } from "./picks-client";
+export {
+  LottoTicketLabClientError,
+  parseTicketLabEntries,
+  parseTicketLabSummary,
+  readTicketLabEntries,
+  readTicketLabSummary
+} from "./ticket-lab-client";
+export type {
+  ReadTicketLabOptions,
+  TicketLabBestHit,
+  TicketLabComparison,
+  TicketLabEntriesResponse,
+  TicketLabEntry,
+  TicketLabEntryStatus,
+  TicketLabFilters,
+  TicketLabOrigin,
+  TicketLabPayoutStatus,
+  TicketLabPrizeTier,
+  TicketLabPurchaseStatus,
+  TicketLabScorecard,
+  TicketLabSummaryResponse,
+  TicketLabTicket,
+  TicketLabTicketGrade
+} from "./ticket-lab-client";
 export { createSeededRng } from "./rng";
 export { scoreSplitRisk } from "./risk";
 export {

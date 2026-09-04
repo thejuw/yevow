@@ -22,6 +22,14 @@ import {
   type GameCode
 } from "./manifest";
 import { officialDrawWeekdays, previousConfiguredDrawDate, texasClock } from "./scheduler";
+import {
+  appendGradeSettlement,
+  appendLedgerEntry,
+  appendPurchaseConfirmation,
+  listTicketLabEntries,
+  readTrackRecord,
+  type TicketLabFilters
+} from "./ticket-lab";
 
 const API_PREFIX = "/api/lotto/v1";
 const MAX_PAGE_SIZE = 200;
@@ -346,6 +354,12 @@ async function health(request: Request, env: Env): Promise<Response> {
       `SELECT COUNT(*) AS configured_games FROM lotto_game_config`
     ).first<{ configured_games: number }>();
     const serviceStatus = await readServiceStatus(env, now);
+    const labAlerts = await env.LOTTO_DB.prepare(
+      `SELECT COUNT(*) AS unresolved
+       FROM lotto_lab_delivery_outbox
+       WHERE delivery_kind = 'alert' AND status <> 'sent'`
+    ).first<{ unresolved: number }>();
+    const unresolvedTicketLabAlerts = Number(labAlerts?.unresolved ?? 0);
     const configuredGames = Number(configured?.configured_games ?? 0);
     const selectedConfiguration = serviceStatus.games.filter((game) => game.selected);
     const selectedCodes = selectedConfiguration.map((row) => row.game);
@@ -367,13 +381,14 @@ async function health(request: Request, env: Env): Promise<Response> {
       .map((game) => game.game);
     const deliveryBridgeConfigured = (env.RABBITHOLETX_SERVICE_TOKEN?.trim().length ?? 0) > 0;
     const ready =
-      schema?.value === "5" &&
+      schema?.value === "6" &&
       configuredGames === GAME_CODES.length &&
       selectedGames > 0 &&
       unhealthySelectedGames.length === 0 &&
       invalidSelectedGames.length === 0 &&
       missedGenerationGames.length === 0 &&
       attentionRequiredGames.length === 0 &&
+      unresolvedTicketLabAlerts === 0 &&
       deliveryBridgeConfigured &&
       (env.RABBITHOLETX_SEED_SALT?.trim().length ?? 0) >= 32;
     return json(
@@ -393,6 +408,7 @@ async function health(request: Request, env: Env): Promise<Response> {
           invalidSelectedGames,
           missedGenerationGames,
           attentionRequiredGames,
+          unresolvedTicketLabAlerts,
           archiveStatus:
             registeredSources === SOURCES.length &&
             readySources === SOURCES.length &&
@@ -527,7 +543,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         : new Response(null, { status: 204, headers: baseHeaders(request) });
     }
     const deliveryResultMatch = pathname.match(
-      /^\/api\/lotto\/v1\/deliveries\/((?:delivery|alert)-gen-[a-f0-9]{32})\/result$/
+      /^\/api\/lotto\/v1\/deliveries\/((?:(?:delivery|alert)-gen|result-grade|lab-alert)-[a-f0-9]{32})\/result$/
     );
     if (request.method === "POST" && deliveryResultMatch) {
       if (!(await serviceAuthorized(request, env))) {
@@ -602,6 +618,95 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         data: { outcome }
       });
     }
+    if (request.method === "POST" && pathname === `${API_PREFIX}/ticket-lab/entries`) {
+      if (!(await serviceAuthorized(request, env))) {
+        return error(request, 401, "unauthorized", "A valid service bearer token is required");
+      }
+      try {
+        const result = await appendLedgerEntry(env, await boundedJson(request));
+        return json(
+          request,
+          { schemaVersion: 1, generatedAt: new Date().toISOString(), data: result },
+          { status: result.created ? 201 : 200 }
+        );
+      } catch (caught) {
+        if (caught instanceof RangeError) {
+          return error(
+            request,
+            caught.message.includes("idempotency key conflicts") ? 409 : 400,
+            caught.message.includes("idempotency key conflicts")
+              ? "idempotency_conflict"
+              : "invalid_ledger_entry",
+            caught.message
+          );
+        }
+        throw caught;
+      }
+    }
+    const purchaseMatch = pathname.match(
+      /^\/api\/lotto\/v1\/ticket-lab\/entries\/(ledger-[a-f0-9]{32})\/purchase-confirmations$/
+    );
+    if (request.method === "POST" && purchaseMatch) {
+      if (!(await serviceAuthorized(request, env))) {
+        return error(request, 401, "unauthorized", "A valid service bearer token is required");
+      }
+      try {
+        const result = await appendPurchaseConfirmation(
+          env,
+          purchaseMatch[1] as string,
+          await boundedJson(request)
+        );
+        return json(
+          request,
+          { schemaVersion: 1, generatedAt: new Date().toISOString(), data: result },
+          { status: result.created ? 201 : 200 }
+        );
+      } catch (caught) {
+        if (caught instanceof RangeError) {
+          return error(
+            request,
+            caught.message.includes("idempotency key conflicts") ? 409 : 400,
+            caught.message.includes("idempotency key conflicts")
+              ? "idempotency_conflict"
+              : "invalid_purchase_confirmation",
+            caught.message
+          );
+        }
+        throw caught;
+      }
+    }
+    const settlementMatch = pathname.match(
+      /^\/api\/lotto\/v1\/ticket-lab\/grades\/(tg-[a-f0-9]{32}-\d+)\/settlement$/
+    );
+    if (request.method === "POST" && settlementMatch) {
+      if (!(await serviceAuthorized(request, env))) {
+        return error(request, 401, "unauthorized", "A valid service bearer token is required");
+      }
+      try {
+        const result = await appendGradeSettlement(
+          env,
+          settlementMatch[1] as string,
+          await boundedJson(request)
+        );
+        return json(
+          request,
+          { schemaVersion: 1, generatedAt: new Date().toISOString(), data: result },
+          { status: result.created ? 201 : 200 }
+        );
+      } catch (caught) {
+        if (caught instanceof RangeError) {
+          return error(
+            request,
+            caught.message.includes("idempotency key conflicts") ? 409 : 400,
+            caught.message.includes("idempotency key conflicts")
+              ? "idempotency_conflict"
+              : "invalid_grade_settlement",
+            caught.message
+          );
+        }
+        throw caught;
+      }
+    }
     if (request.method !== "GET") {
       return error(request, 405, "method_not_allowed", "Method is not supported for this route");
     }
@@ -646,6 +751,79 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         },
         { cacheControl: "private, no-store" }
       );
+    }
+    if (
+      pathname === `${API_PREFIX}/ticket-lab/summary` ||
+      pathname === `${API_PREFIX}/ticket-lab/entries`
+    ) {
+      const accessError = await exactPickAccessError(request, env);
+      if (accessError) return accessError;
+      const rawGame = requestUrl.searchParams.get("game");
+      if (rawGame !== null && !isGameCode(rawGame)) {
+        return error(request, 400, "invalid_game", "game must be a configured lottery code");
+      }
+      const rawFrom = requestUrl.searchParams.get("from");
+      const rawTo = requestUrl.searchParams.get("to");
+      const validDay = (value: string | null): boolean => {
+        if (value === null) return true;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+        const parsed = new Date(`${value}T00:00:00Z`);
+        return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+      };
+      if (!validDay(rawFrom) || !validDay(rawTo) || (rawFrom && rawTo && rawFrom > rawTo)) {
+        return error(request, 400, "invalid_date_range", "from/to must be ordered ISO-8601 dates");
+      }
+      const filters: TicketLabFilters = {
+        game: rawGame as GameCode | null,
+        from: rawFrom,
+        to: rawTo
+      };
+      if (pathname.endsWith("/summary")) {
+        return json(
+          request,
+          {
+            schemaVersion: 1,
+            generatedAt: new Date().toISOString(),
+            data: await readTrackRecord(env, filters)
+          },
+          { cacheControl: "private, no-store" }
+        );
+      }
+      const rawStatus = requestUrl.searchParams.get("status");
+      const statuses = ["open", "graded", "pending", "won", "lost"] as const;
+      if (rawStatus !== null && !(statuses as readonly string[]).includes(rawStatus)) {
+        return error(
+          request,
+          400,
+          "invalid_status",
+          "status must be open, graded, pending, won, or lost"
+        );
+      }
+      const rawLimit = requestUrl.searchParams.get("limit") ?? "25";
+      if (!/^\d+$/.test(rawLimit) || Number(rawLimit) < 1 || Number(rawLimit) > 100) {
+        return error(request, 400, "invalid_limit", "limit must be an integer from 1 through 100");
+      }
+      try {
+        return json(
+          request,
+          {
+            schemaVersion: 1,
+            generatedAt: new Date().toISOString(),
+            data: await listTicketLabEntries(env, {
+              ...filters,
+              status: rawStatus as "open" | "graded" | "pending" | "won" | "lost" | null,
+              limit: Number(rawLimit),
+              cursor: requestUrl.searchParams.get("cursor")
+            })
+          },
+          { cacheControl: "private, no-store" }
+        );
+      } catch (caught) {
+        if (caught instanceof RangeError) {
+          return error(request, 400, "invalid_ticket_lab_query", caught.message);
+        }
+        throw caught;
+      }
     }
     const generationMatch = pathname.match(
       /^\/api\/lotto\/v1\/generation-runs\/(gen-[a-f0-9]{32})$/

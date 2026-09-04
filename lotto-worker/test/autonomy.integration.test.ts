@@ -18,11 +18,9 @@ import { network } from "./network";
 const SOURCE = getSource("cash5:cashfive");
 const LOTTO_SOURCE = getSource("lotto:lottotexas");
 const POWERBALL_SOURCE = getSource("pb:powerball");
-const CASH_EXPORT = [
-  "Cash Five,9,1,2026,1,9,17,25,33",
-  "Cash Five,9,2,2026,2,10,18,26,34",
-  "Cash Five,9,3,2026,3,11,19,27,35"
-].join("\n");
+const CASH_EXPORT = ["Cash Five,9,1,2026,1,9,17,25,33", "Cash Five,9,2,2026,2,10,18,26,34"].join(
+  "\n"
+);
 
 async function clearR2(): Promise<void> {
   let cursor: string | undefined;
@@ -35,6 +33,8 @@ async function clearR2(): Promise<void> {
 
 beforeEach(async () => {
   await env.LOTTO_DB.batch([
+    env.LOTTO_DB.prepare("DELETE FROM lotto_lab_delivery_attempts"),
+    env.LOTTO_DB.prepare("DELETE FROM lotto_lab_delivery_outbox"),
     env.LOTTO_DB.prepare("DELETE FROM lotto_delivery_attempts"),
     env.LOTTO_DB.prepare("DELETE FROM lotto_delivery_outbox"),
     env.LOTTO_DB.prepare("DELETE FROM lotto_generated_tickets"),
@@ -46,7 +46,7 @@ beforeEach(async () => {
     env.LOTTO_DB.prepare("DELETE FROM lotto_ingestions"),
     env.LOTTO_DB.prepare("DELETE FROM lotto_sources"),
     env.LOTTO_DB.prepare("UPDATE lotto_game_config SET play_style = 'straight'"),
-    env.LOTTO_DB.prepare("UPDATE schema_meta SET value = '5' WHERE key = 'schema_version'")
+    env.LOTTO_DB.prepare("UPDATE schema_meta SET value = '6' WHERE key = 'schema_version'")
   ]);
   await clearR2();
 });
@@ -62,28 +62,56 @@ function serve(body: string): () => number {
   return () => calls;
 }
 
+function generateAt(game: keyof typeof GAME_MANIFEST, now: Date) {
+  return generateForGame(env, game, now, "/api/lotto/v1", () => now);
+}
+
 describe("autonomous generation and delivery", () => {
   it("publishes one deterministic run and delivery per game/date", async () => {
     const calls = serve(`${CASH_EXPORT}\n`);
     const now = new Date("2026-09-03T12:00:00Z");
 
-    const first = await generateForGame(env, "cash5", now);
+    const first = await generateAt("cash5", now);
     expect(first.kind).toBe("generated");
     if (first.kind !== "generated") throw new Error("expected a generated run");
     expect(first.run).toMatchObject({
       game: "cash5",
       drawDate: "2026-09-03",
       drawSlot: "daily",
-      observedThrough: "2026-09-03",
+      observedThrough: "2026-09-02",
       disclaimer: PICKS_DISCLAIMER
     });
     expect(first.run.tickets).toHaveLength(4);
     expect(first.run.coverage.distinctPairs).toBeGreaterThan(0);
+    const ledgerRows = await env.LOTTO_DB.prepare(
+      `SELECT l.origin, l.baseline_for, t.ordinal, t.main_numbers, t.ticket_options_json
+       FROM lotto_ticket_ledger l
+       JOIN lotto_ledger_tickets t ON t.ledger_id = l.ledger_id
+       WHERE l.game = 'cash5' AND l.draw_date = '2026-09-03'
+       ORDER BY l.origin DESC, t.ordinal`
+    ).all<{
+      origin: string;
+      baseline_for: string | null;
+      ordinal: number;
+      main_numbers: string;
+      ticket_options_json: string;
+    }>();
+    const systemLedgerTickets = ledgerRows.results.filter((row) => row.origin === "system");
+    const randomLedgerTickets = ledgerRows.results.filter((row) => row.origin === "random");
+    expect(systemLedgerTickets.map((row) => JSON.parse(row.main_numbers))).toEqual(
+      first.run.tickets.map((ticket) => ticket.main)
+    );
+    expect(systemLedgerTickets).toHaveLength(first.run.tickets.length);
+    expect(randomLedgerTickets).toHaveLength(first.run.tickets.length);
+    expect(randomLedgerTickets.every((row) => row.baseline_for !== null)).toBe(true);
+    expect(
+      ledgerRows.results.every((row) => JSON.parse(row.ticket_options_json).basePlay === true)
+    ).toBe(true);
     expect(first.run.ev.assumption).toContain("Pre-tax liability-cap model");
     expect(first.run.ev.assumption).toContain("0 estimated plays");
     expect(calls()).toBe(1);
 
-    const repeated = await generateForGame(env, "cash5", now);
+    const repeated = await generateAt("cash5", now);
     expect(repeated.kind).toBe("reused");
     if (repeated.kind !== "reused") throw new Error("expected an existing run");
     expect(repeated.run).toEqual(first.run);
@@ -118,7 +146,7 @@ describe("autonomous generation and delivery", () => {
 
   it("claims once, logs the receipt, and never offers a sent delivery again", async () => {
     serve(`${CASH_EXPORT}\n`);
-    const generated = await generateForGame(env, "cash5", new Date("2026-09-03T12:00:00Z"));
+    const generated = await generateAt("cash5", new Date("2026-09-03T12:00:00Z"));
     expect(generated.kind).toBe("generated");
 
     const deliveryNow = new Date(Date.now() + 60_000);
@@ -176,9 +204,33 @@ describe("autonomous generation and delivery", () => {
     ]);
   });
 
+  it("claims priority Ticket Lab alerts before an older pending picks delivery", async () => {
+    serve(`${CASH_EXPORT}\n`);
+    const now = new Date("2026-09-03T12:00:00Z");
+    const generated = await generateAt("cash5", now);
+    expect(generated.kind).toBe("generated");
+    await env.LOTTO_DB.prepare(
+      `INSERT INTO lotto_lab_delivery_outbox
+         (delivery_id, grade_id, run_id, game, draw_date, delivery_kind, target_role,
+          priority, message_body, status, next_attempt_at, created_at, updated_at)
+       VALUES ('lab-alert-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', NULL, 'ticket-lab-cash5-test',
+               'cash5', '2026-09-03', 'alert', 'fallback', 100, 'priority fixture',
+               'pending', ?1, ?1, ?1)`
+    )
+      .bind(now.toISOString())
+      .run();
+
+    const claim = await claimDelivery(env, new Date(now.getTime() + 1_000));
+    expect(claim).toMatchObject({
+      deliveryId: "lab-alert-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      kind: "alert",
+      targetRole: "fallback"
+    });
+  });
+
   it("dead-letters a non-retryable bridge preflight rejection", async () => {
     serve(`${CASH_EXPORT}\n`);
-    await generateForGame(env, "cash5", new Date("2026-09-03T12:00:00Z"));
+    await generateAt("cash5", new Date("2026-09-03T12:00:00Z"));
     const deliveryNow = new Date(Date.now() + 60_000);
     const claim = await claimDelivery(env, deliveryNow);
     if (!claim) throw new Error("expected a delivery claim");
@@ -205,11 +257,7 @@ describe("autonomous generation and delivery", () => {
     serve("<!doctype html><title>maintenance</title>");
     const now = new Date("2026-09-03T12:00:00Z");
     for (let attempt = 1; attempt <= 3; attempt += 1) {
-      const outcome = await generateForGame(
-        env,
-        "cash5",
-        new Date(now.getTime() + attempt * 60_000)
-      );
+      const outcome = await generateAt("cash5", new Date(now.getTime() + attempt * 60_000));
       expect(outcome).toMatchObject({ kind: "failed", attempts: attempt, terminal: attempt === 3 });
     }
     const rows = await env.LOTTO_DB.prepare(
@@ -231,11 +279,11 @@ describe("autonomous generation and delivery", () => {
         HttpResponse.text(body, { headers: { "Content-Type": "text/csv" } })
       )
     );
-    const first = await generateForGame(env, "cash5", new Date("2026-09-03T12:00:00Z"));
+    const first = await generateAt("cash5", new Date("2026-09-03T12:00:00Z"));
     expect(first).toMatchObject({ kind: "failed", attempts: 1, terminal: false });
 
     body = `${CASH_EXPORT}\n`;
-    const recovered = await generateForGame(env, "cash5", new Date("2026-09-03T12:02:00Z"));
+    const recovered = await generateAt("cash5", new Date("2026-09-03T12:02:00Z"));
     expect(recovered.kind).toBe("generated");
     if (recovered.kind !== "generated") throw new Error("expected recovery");
     expect(recovered.run.seed).toMatch(/^[a-f0-9]{64}$/);
@@ -252,7 +300,7 @@ describe("autonomous generation and delivery", () => {
 
   it("refuses to publish from a stale archive even when the download validates", async () => {
     serve("Cash Five,8,1,2026,1,9,17,25,33\n");
-    const outcome = await generateForGame(env, "cash5", new Date("2026-09-03T12:00:00Z"));
+    const outcome = await generateAt("cash5", new Date("2026-09-03T12:00:00Z"));
 
     expect(outcome).toMatchObject({ kind: "failed", attempts: 1, terminal: false });
     if (outcome.kind !== "failed") throw new Error("expected stale generation failure");
@@ -272,7 +320,7 @@ describe("autonomous generation and delivery", () => {
       )
     );
 
-    const outcome = await generateForGame(env, "lotto", new Date("2026-08-31T12:00:00Z"));
+    const outcome = await generateAt("lotto", new Date("2026-08-31T12:00:00Z"));
 
     expect(outcome.kind).toBe("generated");
     if (outcome.kind !== "generated") throw new Error("expected normal Monday generation");
@@ -288,7 +336,7 @@ describe("autonomous generation and delivery", () => {
       )
     );
 
-    const outcome = await generateForGame(env, "pb", new Date("2026-09-02T12:00:00Z"));
+    const outcome = await generateAt("pb", new Date("2026-09-02T12:00:00Z"));
 
     expect(outcome.kind).toBe("generated");
     if (outcome.kind !== "generated") throw new Error("expected Wednesday generation");
@@ -298,7 +346,7 @@ describe("autonomous generation and delivery", () => {
   it("rejects a same-age archive that missed intervening scheduled draws", async () => {
     serve("Cash Five,8,31,2026,1,9,17,25,33\n");
 
-    const outcome = await generateForGame(env, "cash5", new Date("2026-09-03T12:00:00Z"));
+    const outcome = await generateAt("cash5", new Date("2026-09-03T12:00:00Z"));
 
     expect(outcome).toMatchObject({ kind: "failed", attempts: 1 });
     if (outcome.kind !== "failed") throw new Error("expected missed-draw freshness failure");
@@ -317,7 +365,7 @@ describe("autonomous generation and delivery", () => {
       );
     }
 
-    const outcome = await generateForGame(env, "p3", new Date("2026-09-03T12:00:00Z"));
+    const outcome = await generateAt("p3", new Date("2026-09-03T12:00:00Z"));
 
     expect(outcome.kind).toBe("generated");
     const message = await env.LOTTO_DB.prepare(
@@ -332,7 +380,7 @@ describe("autonomous generation and delivery", () => {
       "UPDATE lotto_game_config SET play_style = 'box' WHERE game = 'p3'"
     ).run();
 
-    await expect(generateForGame(env, "p3", new Date("2026-09-03T12:00:00Z"))).rejects.toThrow(
+    await expect(generateAt("p3", new Date("2026-09-03T12:00:00Z"))).rejects.toThrow(
       /must be straight/
     );
   });
@@ -364,6 +412,34 @@ describe("autonomous generation and delivery", () => {
       ])
     );
   });
+
+  it.each(["2026-09-11T03:02:00Z", "2026-09-11T03:03:00Z"])(
+    "refuses autonomous ledger creation at or after the official sales cutoff (%s)",
+    async (serverTimestamp) => {
+      const calls = serve(`${CASH_EXPORT}\n`);
+      const authoritativeNow = new Date(serverTimestamp);
+      const outcome = await generateForGame(
+        env,
+        "cash5",
+        new Date("2026-09-10T12:00:00Z"),
+        "/api/lotto/v1",
+        () => authoritativeNow
+      );
+
+      expect(outcome).toMatchObject({ kind: "failed", terminal: true, attempts: 1 });
+      if (outcome.kind !== "failed") throw new Error("expected terminal cutoff failure");
+      expect(outcome.error).toContain("sales closed at 22:02 CT");
+      expect(calls()).toBe(0);
+      const counts = await env.LOTTO_DB.prepare(
+        `SELECT
+           (SELECT COUNT(*) FROM lotto_ticket_ledger
+             WHERE game = 'cash5' AND draw_date = '2026-09-10') AS ledgers,
+           (SELECT COUNT(*) FROM lotto_generated_tickets) AS generated_tickets,
+           (SELECT COUNT(*) FROM lotto_delivery_outbox WHERE delivery_kind = 'alert') AS alerts`
+      ).first<{ ledgers: number; generated_tickets: number; alerts: number }>();
+      expect(counts).toEqual({ ledgers: 0, generated_tickets: 0, alerts: 1 });
+    }
+  );
 
   it("replaces an unsent missed-deadline failure alert after recovery", async () => {
     let body = "<!doctype html><title>maintenance</title>";
@@ -399,7 +475,7 @@ describe("autonomous generation and delivery", () => {
 
   it("requeues a failed delivery and quarantines an ambiguous result", async () => {
     serve(`${CASH_EXPORT}\n`);
-    await generateForGame(env, "cash5", new Date("2026-09-03T12:00:00Z"));
+    await generateAt("cash5", new Date("2026-09-03T12:00:00Z"));
     const deliveryNow = new Date(Date.now() + 60_000);
     const first = await claimDelivery(env, deliveryNow);
     if (!first) throw new Error("expected first delivery claim");
@@ -510,7 +586,7 @@ describe("autonomous generation and delivery", () => {
   it("surfaces delivery, unresolved-alert, quarantine, and current error state per game", async () => {
     serve(`${CASH_EXPORT}\n`);
     const now = new Date("2026-09-03T12:00:00Z");
-    const generated = await generateForGame(env, "cash5", now);
+    const generated = await generateAt("cash5", now);
     expect(generated.kind).toBe("generated");
 
     await env.LOTTO_DB.prepare(

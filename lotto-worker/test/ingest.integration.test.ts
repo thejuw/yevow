@@ -110,6 +110,8 @@ async function clearR2(): Promise<void> {
 
 beforeEach(async () => {
   await env.LOTTO_DB.batch([
+    env.LOTTO_DB.prepare("DELETE FROM lotto_lab_delivery_attempts"),
+    env.LOTTO_DB.prepare("DELETE FROM lotto_lab_delivery_outbox"),
     env.LOTTO_DB.prepare("DELETE FROM lotto_delivery_attempts"),
     env.LOTTO_DB.prepare("DELETE FROM lotto_delivery_outbox"),
     env.LOTTO_DB.prepare("DELETE FROM lotto_generated_tickets"),
@@ -121,13 +123,13 @@ beforeEach(async () => {
     env.LOTTO_DB.prepare("DELETE FROM lotto_ingestions"),
     env.LOTTO_DB.prepare("DELETE FROM lotto_sources"),
     env.LOTTO_DB.prepare("DELETE FROM lotto_audit_snapshots"),
-    env.LOTTO_DB.prepare("UPDATE schema_meta SET value = '5' WHERE key = 'schema_version'")
+    env.LOTTO_DB.prepare("UPDATE schema_meta SET value = '6' WHERE key = 'schema_version'")
   ]);
   await clearR2();
 });
 
 describe("D1/R2 ingestion", () => {
-  it("applies the complete schema-v5 migration chain", async () => {
+  it("applies the complete schema-v6 migration chain", async () => {
     const schema = await env.LOTTO_DB.prepare(
       "SELECT value FROM schema_meta WHERE key = 'schema_version'"
     ).first<{ value: string }>();
@@ -135,7 +137,7 @@ describe("D1/R2 ingestion", () => {
       name: string;
     }>();
 
-    expect(schema?.value).toBe("5");
+    expect(schema?.value).toBe("6");
     expect(columns.results.map(({ name }) => name)).toEqual(
       expect.arrayContaining(["last_parser_version", "lease_token", "lease_expires_at", "enabled"])
     );
@@ -450,7 +452,7 @@ describe("D1/R2 ingestion", () => {
     });
   });
 
-  it("reports health only when schema v5, automation, and every source are ready", async () => {
+  it("reports health only when schema v6, automation, and every source are ready", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-06T17:00:00Z"));
     try {
@@ -462,7 +464,7 @@ describe("D1/R2 ingestion", () => {
       await expect(emptyResponse.json()).resolves.toMatchObject({
         data: {
           status: "degraded",
-          databaseSchemaVersion: "5",
+          databaseSchemaVersion: "6",
           configuredSources: SOURCES.length,
           registeredSources: 0,
           readySources: 0,
@@ -517,7 +519,7 @@ describe("D1/R2 ingestion", () => {
       await expect(partialResponse.json()).resolves.toMatchObject({
         data: {
           status: "degraded",
-          databaseSchemaVersion: "5",
+          databaseSchemaVersion: "6",
           registeredSources: SOURCES.length,
           readySources: SOURCES.length - 1
         }
@@ -536,7 +538,7 @@ describe("D1/R2 ingestion", () => {
       await expect(readyResponse.json()).resolves.toMatchObject({
         data: {
           status: "ok",
-          databaseSchemaVersion: "5",
+          databaseSchemaVersion: "6",
           registeredSources: SOURCES.length,
           readySources: SOURCES.length
         }
@@ -638,7 +640,7 @@ describe("D1/R2 ingestion", () => {
         });
       } finally {
         await env.LOTTO_DB.prepare(
-          "UPDATE schema_meta SET value = '5' WHERE key = 'schema_version'"
+          "UPDATE schema_meta SET value = '6' WHERE key = 'schema_version'"
         ).run();
       }
     } finally {

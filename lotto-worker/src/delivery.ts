@@ -34,11 +34,36 @@ interface DeliveryRow {
   draw_date: string;
 }
 
+interface LabDeliveryRow {
+  delivery_id: string;
+  grade_id: string | null;
+  run_id: string;
+  delivery_kind: "result" | "alert";
+  target_role: "primary" | "fallback";
+  priority: number;
+  message_body: string;
+  status: "pending" | "leased" | "retry" | "sent" | "ambiguous" | "dead";
+  attempt_count: number;
+  next_attempt_at: string;
+  lease_token: string | null;
+  lease_expires_at: string | null;
+  external_id: string | null;
+  last_error: string | null;
+  alert_status: string | null;
+  alert_external_id: string | null;
+  alert_error: string | null;
+  delivered_at: string | null;
+  created_at: string;
+  updated_at: string;
+  game: GameCode;
+  draw_date: string;
+}
+
 export interface DeliveryClaim {
   readonly deliveryId: string;
   readonly leaseToken: string;
   readonly runId: string;
-  readonly kind: "picks" | "alert";
+  readonly kind: "picks" | "alert" | "result";
   readonly targetRole: "primary" | "fallback";
   readonly game: GameCode;
   readonly drawDate: string;
@@ -104,8 +129,60 @@ function publicClaim(row: DeliveryRow, leaseToken: string, leaseExpiresAt: strin
   };
 }
 
+async function claimLabDelivery(
+  env: Env,
+  now: Date,
+  tier: "high" | "low"
+): Promise<DeliveryClaim | null> {
+  const nowIso = now.toISOString();
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const candidate = await env.LOTTO_DB.prepare(
+      `SELECT o.*
+       FROM lotto_lab_delivery_outbox o
+       WHERE (
+          o.status IN ('pending', 'retry')
+          OR (o.status = 'leased' AND o.lease_expires_at <= ?1)
+       ) AND o.next_attempt_at <= ?1
+         AND ${tier === "high" ? "o.priority >= 50" : "o.priority < 50"}
+       ORDER BY o.priority DESC, o.created_at, o.delivery_id LIMIT 1`
+    )
+      .bind(nowIso)
+      .first<LabDeliveryRow>();
+    if (!candidate) return null;
+    const leaseToken = crypto.randomUUID();
+    const leaseExpiresAt = new Date(now.getTime() + DELIVERY_LEASE_MILLISECONDS).toISOString();
+    const claimed = await env.LOTTO_DB.prepare(
+      `UPDATE lotto_lab_delivery_outbox
+       SET status = 'leased', lease_token = ?1, lease_expires_at = ?2, updated_at = ?3
+       WHERE delivery_id = ?4
+         AND (status IN ('pending', 'retry')
+              OR (status = 'leased' AND lease_expires_at <= ?3))
+         AND next_attempt_at <= ?3`
+    )
+      .bind(leaseToken, leaseExpiresAt, nowIso, candidate.delivery_id)
+      .run();
+    if ((claimed.meta.changes ?? 0) === 1) {
+      return {
+        deliveryId: candidate.delivery_id,
+        leaseToken,
+        runId: candidate.run_id,
+        kind: candidate.delivery_kind,
+        targetRole: candidate.target_role,
+        game: candidate.game,
+        drawDate: candidate.draw_date,
+        message: candidate.message_body,
+        priorAttempts: candidate.attempt_count,
+        leaseExpiresAt
+      };
+    }
+  }
+  return null;
+}
+
 export async function claimDelivery(env: Env, now = new Date()): Promise<DeliveryClaim | null> {
   const nowIso = now.toISOString();
+  const urgentLab = await claimLabDelivery(env, now, "high");
+  if (urgentLab) return urgentLab;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const candidate = await env.LOTTO_DB.prepare(
       `SELECT o.*, r.game, r.draw_date
@@ -122,7 +199,7 @@ export async function claimDelivery(env: Env, now = new Date()): Promise<Deliver
     )
       .bind(nowIso)
       .first<DeliveryRow>();
-    if (!candidate) return null;
+    if (!candidate) break;
     const leaseToken = crypto.randomUUID();
     const leaseExpiresAt = new Date(now.getTime() + DELIVERY_LEASE_MILLISECONDS).toISOString();
     const claimed = await env.LOTTO_DB.prepare(
@@ -141,7 +218,7 @@ export async function claimDelivery(env: Env, now = new Date()): Promise<Deliver
       return publicClaim(candidate, leaseToken, leaseExpiresAt);
     }
   }
-  return null;
+  return claimLabDelivery(env, now, "low");
 }
 
 export function parseDeliveryResult(value: unknown): DeliveryResultInput {
@@ -202,6 +279,9 @@ export async function completeDelivery(
   input: DeliveryResultInput,
   now = new Date()
 ): Promise<DeliveryResult | null> {
+  if (/^(?:result-grade|lab-alert)-[a-f0-9]{32}$/.test(deliveryId)) {
+    return completeLabDelivery(env, deliveryId, input, now);
+  }
   if (!/^(?:delivery|alert)-gen-[a-f0-9]{32}$/.test(deliveryId)) {
     throw new RangeError("delivery id is malformed");
   }
@@ -324,6 +404,111 @@ export async function completeDelivery(
       status,
       attempts: attemptCount,
       alertStatus
+    })
+  );
+  return { deliveryId, status, attempts: attemptCount, nextAttemptAt, deliveredAt };
+}
+
+async function completeLabDelivery(
+  env: Env,
+  deliveryId: string,
+  input: DeliveryResultInput,
+  now: Date
+): Promise<DeliveryResult | null> {
+  const row = await env.LOTTO_DB.prepare(
+    `SELECT o.*
+     FROM lotto_lab_delivery_outbox o
+     WHERE o.delivery_id = ?1`
+  )
+    .bind(deliveryId)
+    .first<LabDeliveryRow>();
+  if (!row) return null;
+  if (row.status === "sent") {
+    return {
+      deliveryId,
+      status: "sent",
+      attempts: row.attempt_count,
+      nextAttemptAt: null,
+      deliveredAt: row.delivered_at
+    };
+  }
+  if (row.status !== "leased" || row.lease_token !== input.leaseToken) {
+    throw new Error("delivery lease does not match the active claim");
+  }
+  if (input.status === "sent" && !input.externalId?.trim())
+    throw new RangeError("externalId is required when status is sent");
+  const completedAt = now.toISOString();
+  const attemptCount = row.attempt_count + input.attempts;
+  const status: DeliveryResult["status"] =
+    input.status === "sent"
+      ? "sent"
+      : input.status === "ambiguous"
+        ? "ambiguous"
+        : input.attempts === 0 || attemptCount >= DELIVERY_DEAD_ATTEMPTS
+          ? "dead"
+          : "retry";
+  const nextAttemptAt =
+    status === "retry" ? new Date(now.getTime() + 30 * 60_000).toISOString() : null;
+  const deliveredAt = status === "sent" ? completedAt : null;
+  const externalId = bounded(input.externalId, 500);
+  const error = bounded(input.error, 2_000);
+  const alertStatus = bounded(input.alertStatus, 100);
+  const alertExternalId = bounded(input.alertExternalId, 500);
+  const alertError = bounded(input.alertError, 2_000);
+  const transitions = await env.LOTTO_DB.batch([
+    env.LOTTO_DB.prepare(
+      `INSERT INTO lotto_lab_delivery_attempts
+         (delivery_id, lease_token, started_at, completed_at, local_attempts, result,
+          external_id, error, alert_status, alert_external_id, alert_error)
+       SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11
+       WHERE EXISTS (SELECT 1 FROM lotto_lab_delivery_outbox
+                     WHERE delivery_id = ?1 AND status = 'leased' AND lease_token = ?2)`
+    ).bind(
+      deliveryId,
+      input.leaseToken,
+      row.updated_at,
+      completedAt,
+      input.attempts,
+      input.status,
+      externalId,
+      error,
+      alertStatus,
+      alertExternalId,
+      alertError
+    ),
+    env.LOTTO_DB.prepare(
+      `UPDATE lotto_lab_delivery_outbox
+       SET status = ?1, attempt_count = ?2, next_attempt_at = COALESCE(?3, next_attempt_at),
+           lease_token = NULL, lease_expires_at = NULL, external_id = COALESCE(?4, external_id),
+           last_error = ?5, alert_status = ?6, alert_external_id = ?7, alert_error = ?8,
+           delivered_at = ?9, updated_at = ?10
+       WHERE delivery_id = ?11 AND status = 'leased' AND lease_token = ?12`
+    ).bind(
+      status,
+      attemptCount,
+      nextAttemptAt,
+      externalId,
+      error,
+      alertStatus,
+      alertExternalId,
+      alertError,
+      deliveredAt,
+      completedAt,
+      deliveryId,
+      input.leaseToken
+    )
+  ]);
+  if ((transitions[0]?.meta.changes ?? 0) !== 1 || (transitions[1]?.meta.changes ?? 0) !== 1)
+    throw new Error("delivery lease was lost before the result could be committed");
+  console.log(
+    JSON.stringify({
+      service: "rabbitholetx",
+      event: "ticket_lab_delivery_result",
+      deliveryId,
+      game: row.game,
+      drawDate: row.draw_date,
+      status,
+      attempts: attemptCount
     })
   );
   return { deliveryId, status, attempts: attemptCount, nextAttemptAt, deliveredAt };

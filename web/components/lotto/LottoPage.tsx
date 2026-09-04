@@ -40,6 +40,7 @@ import {
 } from "@/lib/lotto";
 import LottoFreshnessPanel from "./LottoFreshnessPanel";
 import LottoDailyPicksPanel from "./LottoDailyPicksPanel";
+import LottoTicketLabPanel from "./LottoTicketLabPanel";
 
 type LottoView = "overview" | "audit" | "picker" | "ev";
 type AuditedGame = AuditSnapshot["game"];
@@ -487,7 +488,7 @@ export default function LottoPage() {
         <div>
           <LockKeyhole size={17} />
           <span>
-            <strong>0</strong> personal ticket data stored
+            <strong>APPEND-ONLY</strong> ticket ledger
           </span>
         </div>
       </section>
@@ -654,14 +655,17 @@ export default function LottoPage() {
 
         {activeView === "picker" ? (
           <section id="lotto-panel-picker" role="tabpanel" aria-labelledby="lotto-tab-picker">
-            <div className="lotto-section-heading">
+            <LottoTicketLabPanel />
+
+            <div className="lotto-section-heading lotto-picker-builder-heading">
               <div>
-                <p className="lotto-kicker">SPLIT-AVOIDANCE OPTIMIZER</p>
-                <h2>Coverage over folklore.</h2>
+                <p className="lotto-kicker">LOCAL SPLIT-AVOIDANCE SANDBOX</p>
+                <h2>Test coverage, without rewriting history.</h2>
               </div>
               <p>
                 Seeded candidate search penalizes birthdays, sequences, visual grids, same-decade
-                clusters, and popular “lucky” numbers. It cannot improve draw odds.
+                clusters, and popular “lucky” numbers. Sandbox runs stay outside the official
+                ledger unless they are explicitly recorded before a draw.
               </p>
             </div>
 

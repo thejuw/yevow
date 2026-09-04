@@ -87,6 +87,8 @@ Alerting setup and verification lives in `docs/alerting-setup.md`.
 Moltworker supervisor setup lives in `docs/moltworker-supervisor.md`.
 Operator procedures live in `docs/operator-runbook.md`.
 Phase 61 hardening status lives in `docs/phase-61-hardening-status.md`.
+RabbitHoleTX Ticket Lab's immutable ledger, grading, simulation, and recovery contract lives in
+`docs/lotto-ticket-lab.md`.
 
 Cloudflare Pages deploys use `web/wrangler.toml` as the Pages-specific
 configuration source. The Command Center is a static Next.js export and uploads
