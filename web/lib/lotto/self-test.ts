@@ -254,5 +254,15 @@ for (const snapshot of Object.values(AUDIT_SNAPSHOTS)) {
     `${snapshot.game} provenance count reconciles`
   );
 }
+assert(AUDIT_SNAPSHOTS.cash5.drawsAnalyzed === 2_488, "Cash Five audit draw count");
+assert(
+  AUDIT_SNAPSHOTS.cash5.observedThrough === "2026-09-03",
+  "Cash Five audit observation date"
+);
+assert(
+  AUDIT_SNAPSHOTS.cash5.source.sha256 ===
+    "600b797b71e3a9493358b549aa51e5aaaa7e7c6141b871d2b596a766403727d0",
+  "Cash Five audit source digest"
+);
 
 console.log(`RabbitHoleTX TypeScript core self-test: ${assertionCount} assertions passed.`);
