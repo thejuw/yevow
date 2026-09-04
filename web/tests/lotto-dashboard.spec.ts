@@ -244,6 +244,49 @@ test.describe("LOTTO forensic dashboard", () => {
     expect(methods.every((method) => method === "GET")).toBe(true);
   });
 
+  test("shows the immutable Ticket Lab scorecard and official-result grades", async ({ page }) => {
+    const requests: string[] = [];
+    await page.route("**/api/lotto/v1/ticket-lab/summary**", async (route) => {
+      requests.push(route.request().url());
+      expect(route.request().method()).toBe("GET");
+      expect(route.request().headers().authorization).toBe("Bearer playwright-yevow-session");
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify(ticketLabSummaryFixture())
+      });
+    });
+    await page.route("**/api/lotto/v1/ticket-lab/entries**", async (route) => {
+      requests.push(route.request().url());
+      expect(route.request().method()).toBe("GET");
+      expect(route.request().headers().authorization).toBe("Bearer playwright-yevow-session");
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify(ticketLabEntriesFixture())
+      });
+    });
+
+    await openTab(page, "Ticket Lab");
+
+    const trackRecord = page.getByRole("region", { name: "Nothing forgotten. Nothing hidden." });
+    await expect(trackRecord).toBeVisible();
+    await expect(trackRecord.getByText("-60.0% cash ROI", { exact: true })).toBeVisible();
+    await expect(trackRecord.getByText("-60.0%", { exact: true }).first()).toBeVisible();
+    await expect(trackRecord.getByText("Random baseline", { exact: true })).toBeVisible();
+    await expect(trackRecord.getByText("4 of 5", { exact: true }).first()).toBeVisible();
+    await expect(trackRecord.getByText("$350.00", { exact: true }).first()).toBeVisible();
+    await expect(trackRecord.getByRole("list", { name: "Cash Five ledger tickets" })).toBeVisible();
+    await expect(trackRecord.getByText("Optimized, not predicted.", { exact: true })).toBeVisible();
+
+    await trackRecord.getByRole("combobox", { name: "Game" }).selectOption("cash5");
+    await trackRecord.getByLabel("From", { exact: true }).fill("2026-01-01");
+    await trackRecord.getByLabel("To", { exact: true }).fill("2026-09-04");
+    await trackRecord.getByRole("combobox", { name: "Result" }).selectOption("won");
+    await trackRecord.getByRole("button", { name: "Apply filters" }).click();
+
+    await expect.poll(() => requests.some((url) => url.includes("game=cash5"))).toBe(true);
+    await expect.poll(() => requests.some((url) => url.includes("status=won"))).toBe(true);
+  });
+
   test("shows both verified official draw archives", async ({ page }) => {
     await openTab(page, "Audit");
 
@@ -389,4 +432,198 @@ async function openTab(
   const tab = page.getByRole("tab", { name, exact: true });
   await tab.click();
   await expect(tab).toHaveAttribute("aria-selected", "true");
+}
+
+function ticketLabScorecard(overrides: Record<string, unknown> = {}) {
+  return {
+    entries: 1,
+    tickets: 2,
+    gradedTickets: 2,
+    spentCents: 200,
+    wonCents: 0,
+    nonCashValueCents: 0,
+    pendingPrizeCount: 0,
+    longestLosingStreak: 2,
+    bestHit: null,
+    roiPercent: -100,
+    economicRoiPercent: -100,
+    ...overrides
+  };
+}
+
+function ticketLabSummaryFixture() {
+  return {
+    schemaVersion: 1,
+    generatedAt: "2026-09-04T15:00:00.000Z",
+    data: {
+      filters: { game: null, from: null, to: null },
+      totals: {
+        proposals: ticketLabScorecard({
+          wonCents: 35000,
+          longestLosingStreak: 1,
+          bestHit: {
+            game: "cash5",
+            drawDate: "2026-06-26",
+            tier: "4 of 5",
+            prizeCents: 35000,
+            payoutStatus: "fixed"
+          },
+          roiPercent: 17400,
+          economicRoiPercent: 17400
+        }),
+        confirmed: ticketLabScorecard({
+          entries: 0,
+          tickets: 0,
+          gradedTickets: 0,
+          spentCents: 0,
+          longestLosingStreak: 0,
+          roiPercent: null,
+          economicRoiPercent: null
+        })
+      },
+      comparisons: [
+        {
+          origin: "system",
+          ...ticketLabScorecard({
+            wonCents: 35000,
+            longestLosingStreak: 1,
+            bestHit: {
+              game: "cash5",
+              drawDate: "2026-06-26",
+              tier: "4 of 5",
+              prizeCents: 35000,
+              payoutStatus: "fixed"
+            },
+            roiPercent: 17400,
+            economicRoiPercent: 17400
+          })
+        },
+        { origin: "random", ...ticketLabScorecard({ wonCents: 80, roiPercent: -60, economicRoiPercent: -60 }) },
+        {
+          origin: "user",
+          ...ticketLabScorecard({
+            entries: 0,
+            tickets: 0,
+            gradedTickets: 0,
+            spentCents: 0,
+            longestLosingStreak: 0,
+            roiPercent: null,
+            economicRoiPercent: null
+          })
+        }
+      ],
+      comparisonPolicy: {
+        method: "shared-strata-min-ticket-count",
+        strata: ["game", "drawDate", "targetSession"],
+        origins: ["system", "random", "user"],
+        sharedStrata: 1,
+        ticketsPerOrigin: 2,
+        description: "Equal-size tickets from the same draw are compared."
+      },
+      prizeTiers: [{ tier: "4 of 5", count: 1, wonCents: 35000 }],
+      disclaimer: "Picks are optimized, not predicted. The ledger reports every loss."
+    }
+  };
+}
+
+function ticketLabEntriesFixture() {
+  const result = {
+    main: [1, 3, 7, 17, 25],
+    bonus: [],
+    session: "",
+    fingerprint: "f".repeat(64),
+    sourceId: "fixture:cash5:pool",
+    sourceSha256: "a".repeat(64)
+  };
+  return {
+    schemaVersion: 1,
+    generatedAt: "2026-09-04T15:00:00.000Z",
+    data: {
+      filters: { game: null, from: null, to: null, status: null },
+      entries: [
+        {
+          ledgerId: `ledger-${"a".repeat(32)}`,
+          origin: "system",
+          correctionOf: null,
+          baselineFor: null,
+          runId: `gen-${"a".repeat(32)}`,
+          game: "cash5",
+          gameName: "Cash Five",
+          drawDate: "2026-06-26",
+          targetSession: "",
+          proposedAt: "2026-06-26T12:00:00.000Z",
+          status: "won",
+          seed: "b".repeat(64),
+          coverage: { distinctPairs: 20, possiblePairs: 595, percent: 3.36 },
+          ev: { netCentsPerTicket: -62, assumption: "Pre-tax current-era fixed prize model." },
+          ticketCostCents: 100,
+          proposalStatus: "proposed",
+          purchase: { status: "unconfirmed", eventId: null, at: null, spendCents: 0 },
+          data: { observedThrough: "2026-06-25", datasetDigest: "c".repeat(64) },
+          spend: { proposalCents: 200, confirmedCents: 0 },
+          wonCents: 35000,
+          pendingPrizeCount: 0,
+          resultNotificationStatus: "sent",
+          tickets: [
+            {
+              ledgerTicketId: `lt-${"a".repeat(32)}-1`,
+              ordinal: 1,
+              main: [1, 3, 7, 17, 35],
+              bonus: [],
+              playStyle: "straight",
+              wagerCents: 100,
+              options: { freeQuickPickCashValueCents: 0 },
+              splitRisk: { score: 12.5, level: "low", notes: ["Lower-collision shape."] },
+              grade: {
+                gradeId: `grade-${"d".repeat(32)}`,
+                revision: 1,
+                result,
+                mainMatches: 4,
+                bonusMatches: 0,
+                tier: "4 of 5",
+                hit: true,
+                payoutStatus: "fixed",
+                prizeCents: 35000,
+                effectivePrizeCents: 35000,
+                pendingReason: null,
+                nonCashPrize: null,
+                detail: {},
+                settlement: null,
+                gradedAt: "2026-06-27T04:00:00.000Z"
+              }
+            },
+            {
+              ledgerTicketId: `lt-${"a".repeat(32)}-2`,
+              ordinal: 2,
+              main: [2, 4, 8, 19, 34],
+              bonus: [],
+              playStyle: "straight",
+              wagerCents: 100,
+              options: { freeQuickPickCashValueCents: 0 },
+              splitRisk: { score: 14, level: "low", notes: ["Lower-collision shape."] },
+              grade: {
+                gradeId: `grade-${"e".repeat(32)}`,
+                revision: 1,
+                result,
+                mainMatches: 0,
+                bonusMatches: 0,
+                tier: "No prize",
+                hit: false,
+                payoutStatus: "none",
+                prizeCents: 0,
+                effectivePrizeCents: 0,
+                pendingReason: null,
+                nonCashPrize: null,
+                detail: {},
+                settlement: null,
+                gradedAt: "2026-06-27T04:00:00.000Z"
+              }
+            }
+          ]
+        }
+      ],
+      nextCursor: null,
+      disclaimer: "Picks are optimized, not predicted. The ledger reports every loss."
+    }
+  };
 }

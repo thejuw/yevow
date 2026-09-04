@@ -12,10 +12,13 @@ import {
   DEFAULT_LOTTO_API_BASE,
   LottoPicksClientError,
   LottoStatusClientError,
+  LottoTicketLabClientError,
   LottoValidationError,
   normalizeLottoApiBase,
   parseLottoDailyPicks,
   parseLottoStatus,
+  parseTicketLabEntries,
+  parseTicketLabSummary,
   scoreSplitRisk,
   validateTicket,
   breakEvenJackpotCents
@@ -61,6 +64,16 @@ function expectPicksError(operation: () => unknown, message: string): void {
     operation();
   } catch (error) {
     assert(error instanceof LottoPicksClientError, message);
+    return;
+  }
+  throw new Error(`Self-test failed: ${message} did not throw`);
+}
+
+function expectTicketLabError(operation: () => unknown, message: string): void {
+  try {
+    operation();
+  } catch (error) {
+    assert(error instanceof LottoTicketLabClientError, message);
     return;
   }
   throw new Error(`Self-test failed: ${message} did not throw`);
@@ -202,6 +215,181 @@ expectPicksError(
       }
     }),
   "persisted picks response rejects unreconciled coverage"
+);
+
+const ticketLabScorecard = {
+  entries: 1,
+  tickets: 1,
+  gradedTickets: 1,
+  spentCents: 100,
+  wonCents: 35000,
+  nonCashValueCents: 0,
+  pendingPrizeCount: 0,
+  longestLosingStreak: 0,
+  bestHit: {
+    game: "cash5",
+    drawDate: "2026-06-26",
+    tier: "4 of 5",
+    prizeCents: 35000,
+    payoutStatus: "fixed"
+  },
+  roiPercent: 34900,
+  economicRoiPercent: 34900
+};
+const ticketLabSummaryFixture = {
+  schemaVersion: 1,
+  generatedAt: "2026-09-04T15:00:00.000Z",
+  data: {
+    filters: { game: "cash5", from: "2026-01-01", to: "2026-09-04" },
+    totals: {
+      proposals: ticketLabScorecard,
+      confirmed: { ...ticketLabScorecard, tickets: 0, gradedTickets: 0, spentCents: 0, wonCents: 0, roiPercent: null, economicRoiPercent: null, bestHit: null }
+    },
+    comparisons: [
+      { origin: "system", ...ticketLabScorecard },
+      { origin: "random", ...ticketLabScorecard, wonCents: 0, roiPercent: -100, economicRoiPercent: -100, bestHit: null }
+    ],
+    comparisonPolicy: {
+      method: "shared-strata-min-ticket-count",
+      strata: ["game", "drawDate", "targetSession"],
+      origins: ["system", "random"],
+      sharedStrata: 1,
+      ticketsPerOrigin: 1,
+      description: "Equal-size tickets from the same draw are compared."
+    },
+    prizeTiers: [{ tier: "4 of 5", count: 1, wonCents: 35000 }],
+    disclaimer: "Picks are optimized, not predicted."
+  }
+};
+assert(
+  parseTicketLabSummary(ticketLabSummaryFixture).data.comparisons[1]?.roiPercent === -100,
+  "Ticket Lab summary preserves bad-news ROI"
+);
+assert(
+  parseTicketLabSummary({
+    ...ticketLabSummaryFixture,
+    data: {
+      ...ticketLabSummaryFixture.data,
+      totals: {
+        ...ticketLabSummaryFixture.data.totals,
+        proposals: {
+          ...ticketLabScorecard,
+          bestHit: {
+            game: "lotto",
+            drawDate: "2026-09-02",
+            tier: "6 of 6 — jackpot",
+            prizeCents: null,
+            payoutStatus: "pending"
+          }
+        }
+      }
+    }
+  }).data.totals.proposals.bestHit?.prizeCents === null,
+  "Ticket Lab summary never renders an unresolved jackpot as a zero-dollar prize"
+);
+expectTicketLabError(
+  () =>
+    parseTicketLabSummary({
+      ...ticketLabSummaryFixture,
+      data: {
+        ...ticketLabSummaryFixture.data,
+        comparisons: [
+          { origin: "system", ...ticketLabScorecard },
+          { origin: "system", ...ticketLabScorecard }
+        ]
+      }
+    }),
+  "Ticket Lab summary rejects duplicate comparison origins"
+);
+
+const ticketLabEntriesFixture = {
+  schemaVersion: 1,
+  generatedAt: "2026-09-04T15:00:00.000Z",
+  data: {
+    filters: { game: "cash5", from: null, to: null, status: "won" },
+    entries: [
+      {
+        ledgerId: `ledger-${"a".repeat(32)}`,
+        origin: "system",
+        correctionOf: null,
+        baselineFor: null,
+        runId: `gen-${"a".repeat(32)}`,
+        game: "cash5",
+        gameName: "Cash Five",
+        drawDate: "2026-06-26",
+        targetSession: "",
+        proposedAt: "2026-06-26T12:00:00.000Z",
+        status: "won",
+        seed: "b".repeat(64),
+        coverage: { distinctPairs: 10, possiblePairs: 595, percent: 1.68 },
+        ev: { netCentsPerTicket: -62, assumption: "Pre-tax current-era model." },
+        ticketCostCents: 100,
+        proposalStatus: "proposed",
+        purchase: { status: "unconfirmed", eventId: null, at: null, spendCents: 0 },
+        data: { observedThrough: "2026-06-25", datasetDigest: "c".repeat(64) },
+        spend: { proposalCents: 100, confirmedCents: 0 },
+        wonCents: 35000,
+        pendingPrizeCount: 0,
+        resultNotificationStatus: "sent",
+        tickets: [
+          {
+            ledgerTicketId: `lt-${"a".repeat(32)}-1`,
+            ordinal: 1,
+            main: [1, 3, 7, 17, 35],
+            bonus: [],
+            playStyle: "straight",
+            wagerCents: 100,
+            options: { freeQuickPickCashValueCents: 0 },
+            splitRisk: { score: 12.5, level: "low", notes: ["Lower-collision shape."] },
+            grade: {
+              gradeId: `grade-${"d".repeat(32)}`,
+              revision: 1,
+              result: {
+                main: [1, 3, 7, 17, 25],
+                bonus: [],
+                session: "",
+                fingerprint: "e".repeat(64),
+                sourceId: "fixture:cash5:pool",
+                sourceSha256: "a".repeat(64)
+              },
+              mainMatches: 4,
+              bonusMatches: 0,
+              tier: "4 of 5",
+              hit: true,
+              payoutStatus: "fixed",
+              prizeCents: 35000,
+              effectivePrizeCents: 35000,
+              pendingReason: null,
+              nonCashPrize: null,
+              detail: {},
+              settlement: null,
+              gradedAt: "2026-06-27T04:00:00.000Z"
+            }
+          }
+        ]
+      }
+    ],
+    nextCursor: null,
+    disclaimer: "Picks are optimized, not predicted."
+  }
+};
+assert(
+  parseTicketLabEntries(ticketLabEntriesFixture).data.entries[0]?.tickets[0]?.grade?.tier === "4 of 5",
+  "Ticket Lab entries validate exact ticket and official result arrays"
+);
+expectTicketLabError(
+  () =>
+    parseTicketLabEntries({
+      ...ticketLabEntriesFixture,
+      data: {
+        ...ticketLabEntriesFixture.data,
+        entries: ticketLabEntriesFixture.data.entries.map((entry) => ({
+          ...entry,
+          tickets: entry.tickets.map((ticket) => ({ ...ticket, main: [1, 1, 3, 7, 17] }))
+        }))
+      }
+    }),
+  "Ticket Lab entries reject an impossible stored ticket"
 );
 
 const firstRng = createSeededRng("operation-lone-star");

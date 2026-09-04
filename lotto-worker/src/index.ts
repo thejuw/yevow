@@ -16,6 +16,19 @@ export {
 } from "./autonomy";
 export { claimDelivery, completeDelivery, parseDeliveryResult } from "./delivery";
 export { refreshNextSource, refreshSource } from "./ingest";
+export {
+  appendGradeSettlement,
+  appendLedgerEntry,
+  appendPurchaseConfirmation,
+  gradeAvailableLedgerEntries,
+  gradeTicket,
+  listTicketLabEntries,
+  queueGradingFailureAlert,
+  readTrackRecord,
+  reconcileLegacyRandomBaselines,
+  reconcileResultNotifications,
+  TICKET_LAB_DISCLAIMER
+} from "./ticket-lab";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {

@@ -1,4 +1,4 @@
-import { GAME_CODES, type GameCode } from "./manifest";
+import { GAME_CODES, type GameCode, type Session } from "./manifest";
 
 export type DrawSlot = "daily" | "morning";
 
@@ -30,6 +30,21 @@ const OFFICIAL_DRAW_WEEKDAYS: Readonly<Record<GameCode, readonly TexasClock["wee
   aon: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 };
 const WEEKDAY_BY_UTC_DAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
+
+const INTRADAY_CUTOFF_MINUTES: Readonly<Record<Exclude<Session, "">, number>> = {
+  morning: 9 * 60 + 50,
+  day: 12 * 60 + 17,
+  evening: 17 * 60 + 50,
+  night: 22 * 60 + 2
+};
+
+const POOL_CUTOFF_MINUTES: Readonly<Record<Exclude<GameCode, "p3" | "d4" | "aon">, number>> = {
+  lotto: 22 * 60 + 2,
+  twostep: 22 * 60 + 2,
+  cash5: 22 * 60 + 2,
+  pb: 21 * 60,
+  mm: 21 * 60 + 45
+};
 
 export const SCHEDULER_TIME_ZONE = "America/Chicago";
 export const GENERATION_DEADLINE_HOUR = 9;
@@ -110,6 +125,56 @@ export function drawWeekdays(game: GameCode): readonly TexasClock["weekday"][] {
 
 export function officialDrawWeekdays(game: GameCode): readonly TexasClock["weekday"][] {
   return OFFICIAL_DRAW_WEEKDAYS[game];
+}
+
+function weekdayForIsoDate(value: string): TexasClock["weekday"] {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) throw new RangeError("draw date must be ISO-8601");
+  const parsed = new Date(`${value}T12:00:00Z`);
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) {
+    throw new RangeError("draw date must be a valid calendar date");
+  }
+  return WEEKDAY_BY_UTC_DAY[parsed.getUTCDay()] as TexasClock["weekday"];
+}
+
+/** The official Texas sales cutoff, expressed as minutes after local midnight. */
+export function ticketSalesCutoffMinutes(game: GameCode, session: Session): number {
+  if (game === "p3" || game === "d4" || game === "aon") {
+    if (session === "") throw new RangeError(`${game} requires an explicit draw session`);
+    return INTRADAY_CUTOFF_MINUTES[session];
+  }
+  if (session !== "") throw new RangeError(`${game} does not use an intraday draw session`);
+  return POOL_CUTOFF_MINUTES[game];
+}
+
+export interface TicketSalesWindow {
+  readonly isDrawDay: boolean;
+  readonly beforeCutoff: boolean;
+  readonly cutoffLocalTime: string;
+}
+
+/**
+ * Evaluate the pre-draw evidence boundary using the server clock in Central Time.
+ * Caller-provided timestamps are intentionally irrelevant to this decision.
+ */
+export function ticketSalesWindow(
+  game: GameCode,
+  drawDate: string,
+  session: Session,
+  now: Date
+): TicketSalesWindow {
+  const cutoff = ticketSalesCutoffMinutes(game, session);
+  const isOfficialDay = OFFICIAL_DRAW_WEEKDAYS[game].includes(weekdayForIsoDate(drawDate));
+  const clock = texasClock(now);
+  const beforeCutoff =
+    isOfficialDay &&
+    (drawDate > clock.date || (drawDate === clock.date && clock.hour * 60 + clock.minute < cutoff));
+  const hour = Math.floor(cutoff / 60);
+  const minute = cutoff % 60;
+  return {
+    isDrawDay: isOfficialDay,
+    beforeCutoff,
+    cutoffLocalTime: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")} CT`
+  };
 }
 
 export function previousConfiguredDrawDate(

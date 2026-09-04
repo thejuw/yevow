@@ -1,6 +1,7 @@
 import type { Env } from "./env";
 import { SOURCES, getSource, type ExportSource } from "./manifest";
 import { parseOfficialCsv, SchemaMismatchError, type ParsedDraw } from "./parser";
+import { gradeAvailableLedgerEntries, queueGradingFailureAlert } from "./ticket-lab";
 
 const MAX_SOURCE_BYTES = 4 * 1024 * 1024;
 const UPSERT_CHUNK_SIZE = 500;
@@ -749,6 +750,7 @@ export async function refreshSource(
     byteCount: 0,
     cacheFallback: false
   };
+  let outcome: IngestOutcome;
   try {
     const state = await env.LOTTO_DB.prepare(`SELECT * FROM lotto_sources WHERE source_id = ?1`)
       .bind(source.id)
@@ -766,7 +768,7 @@ export async function refreshSource(
       ? (state.last_object_key as string)
       : await putRaw(env, source, digest, acquisition.bytes, startedAt);
     failureContext.objectKey = objectKey;
-    const outcome =
+    outcome =
       state.last_digest === digest &&
       state.last_object_key !== null &&
       state.last_parser_version === PARSER_VERSION
@@ -781,12 +783,38 @@ export async function refreshSource(
             objectKey,
             startedAt
           );
-    log("ingest_complete", outcome as unknown as Record<string, unknown>);
-    return outcome;
   } catch (error) {
     await finishFailure(env, ingestionId, source, error, failureContext);
     throw error;
   }
+  log("ingest_complete", outcome as unknown as Record<string, unknown>);
+  try {
+    const grading = await gradeAvailableLedgerEntries(env, source.game);
+    if (grading.gradedEntries > 0) {
+      log("ticket_lab_ingest_hook", {
+        sourceId: source.id,
+        game: source.game,
+        ...grading
+      });
+    }
+  } catch (error) {
+    log("ticket_lab_grading_failed", {
+      sourceId: source.id,
+      game: source.game,
+      error: boundedMessage(error)
+    });
+    try {
+      await queueGradingFailureAlert(env, source.game, error);
+    } catch (alertError) {
+      log("ticket_lab_grading_alert_failed", {
+        sourceId: source.id,
+        game: source.game,
+        error: boundedMessage(alertError)
+      });
+    }
+    throw error;
+  }
+  return outcome;
 }
 
 export async function refreshNextSource(env: Env): Promise<IngestOutcome> {

@@ -6442,6 +6442,441 @@ output {
 
 .lotto-method-details p { max-width: 1050px; margin: 12px 0 0; }
 
+.lotto-trackrecord {
+  margin-bottom: 70px;
+}
+
+.lotto-trackrecord-head {
+  min-height: 106px;
+  padding: 22px 24px;
+  border: 1px solid rgba(214, 185, 99, 0.25);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 17px;
+  background:
+    linear-gradient(110deg, rgba(214, 185, 99, 0.075), transparent 48%),
+    rgba(11, 15, 18, 0.88);
+}
+
+.lotto-trackrecord-icon {
+  width: 45px;
+  height: 45px;
+  border: 1px solid rgba(214, 185, 99, 0.32);
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: var(--lotto-gold-bright);
+  background: rgba(214, 185, 99, 0.055);
+}
+
+.lotto-trackrecord-head p,
+.lotto-track-ledger-title p {
+  margin: 0 0 5px;
+  color: var(--lotto-gold);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.13em;
+}
+
+.lotto-trackrecord-head h2 {
+  margin: 0;
+  color: var(--lotto-ink);
+  font-family: "Bodoni 72", Didot, Georgia, serif;
+  font-size: clamp(27px, 3vw, 43px);
+  font-weight: 500;
+  line-height: 1;
+}
+
+.lotto-trackrecord-head > div > span {
+  margin-top: 8px;
+  display: block;
+  color: #849195;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.lotto-trackrecord-head > button,
+.lotto-track-filters button,
+.lotto-track-more {
+  min-height: 37px;
+  padding: 8px 11px;
+  border: 1px solid var(--lotto-cold-edge);
+  border-radius: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: #aeb8b9;
+  background: rgba(255, 255, 255, 0.025);
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.lotto-trackrecord-head > button:hover:not(:disabled),
+.lotto-track-filters button:hover,
+.lotto-track-more:hover:not(:disabled) {
+  border-color: var(--lotto-edge);
+  color: var(--lotto-gold-bright);
+  background: rgba(214, 185, 99, 0.06);
+}
+
+.lotto-trackrecord-head > button:disabled,
+.lotto-track-more:disabled { cursor: wait; opacity: 0.55; }
+
+.lotto-track-metrics {
+  margin-top: 9px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.lotto-track-metric {
+  min-width: 0;
+  min-height: 104px;
+  padding: 15px;
+  border: 1px solid var(--lotto-cold-edge);
+  display: grid;
+  align-content: center;
+  gap: 5px;
+  background: rgba(12, 16, 19, 0.8);
+}
+
+.lotto-track-metric:nth-child(n + 5) {
+  border-color: rgba(101, 221, 176, 0.16);
+  background: rgba(101, 221, 176, 0.022);
+}
+
+.lotto-track-metric span {
+  color: #67757a;
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.lotto-track-metric strong {
+  color: var(--lotto-cream);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 21px;
+  font-weight: 650;
+}
+
+.lotto-track-metric small { color: #657277; font-size: 8px; }
+.lotto-track-metric.is-negative strong { color: var(--lotto-coral); }
+.lotto-track-metric.is-positive strong { color: var(--lotto-mint); }
+
+.lotto-track-compare,
+.lotto-track-ledger {
+  margin-top: 10px;
+  padding: clamp(18px, 2.2vw, 28px);
+  border: 1px solid var(--lotto-cold-edge);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.018), transparent 50%),
+    var(--lotto-panel);
+}
+
+.lotto-comparison-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.lotto-comparison-card {
+  min-width: 0;
+  padding: 15px;
+  border: 1px solid rgba(255, 255, 255, 0.065);
+  background: rgba(4, 7, 9, 0.38);
+}
+
+.lotto-comparison-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 9px;
+}
+
+.lotto-comparison-card header > strong {
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+}
+
+.lotto-track-origin,
+.lotto-ledger-status {
+  width: max-content;
+  padding: 4px 6px;
+  border: 1px solid rgba(214, 185, 99, 0.25);
+  color: var(--lotto-gold);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.lotto-track-origin.is-random { border-color: rgba(115, 207, 209, 0.25); color: var(--lotto-aqua); }
+.lotto-track-origin.is-user { border-color: rgba(101, 221, 176, 0.25); color: var(--lotto-mint); }
+
+.lotto-comparison-card dl {
+  margin: 14px 0 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.lotto-comparison-card dl > div {
+  min-width: 0;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.lotto-comparison-card dt { color: #5f6c71; font-size: 7px; text-transform: uppercase; }
+.lotto-comparison-card dd { margin: 4px 0 0; color: #aeb7b8; font-family: "SFMono-Regular", Consolas, monospace; font-size: 10px; }
+.lotto-comparison-card p { margin: 11px 0 0; color: #748186; font-size: 9px; line-height: 1.5; }
+
+.lotto-comparison-method {
+  margin: 10px 0 0;
+  color: #687579;
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 8px;
+  line-height: 1.55;
+}
+
+.lotto-track-honesty {
+  margin-top: 11px;
+  padding: 12px 14px;
+  border-left: 2px solid var(--lotto-coral);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 9px;
+  color: var(--lotto-coral);
+  background: rgba(255, 123, 112, 0.03);
+}
+
+.lotto-track-honesty p { margin: 0; color: #818e92; font-size: 9px; line-height: 1.6; }
+.lotto-track-honesty strong { color: #d5dcdb; }
+
+.lotto-track-ledger-title {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  color: var(--lotto-gold);
+}
+
+.lotto-track-ledger-title h3 {
+  margin: 0;
+  color: var(--lotto-ink);
+  font-family: "Bodoni 72", Didot, Georgia, serif;
+  font-size: 28px;
+  font-weight: 500;
+}
+
+.lotto-track-ledger-title span { color: #67757a; font-size: 8px; }
+
+.lotto-track-filters {
+  margin: 21px 0 12px;
+  padding: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  display: grid;
+  grid-template-columns: 1.15fr 1fr 1fr 1fr auto auto;
+  align-items: end;
+  gap: 7px;
+  background: rgba(4, 7, 9, 0.35);
+}
+
+.lotto-track-filters label {
+  display: grid;
+  gap: 5px;
+  color: #647176;
+  font-size: 7px;
+  font-weight: 780;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.lotto-track-filters input,
+.lotto-track-filters select {
+  min-width: 0;
+  min-height: 37px;
+  border: 1px solid var(--lotto-cold-edge);
+  border-radius: 2px;
+  color: #b3bdbd;
+  background: rgba(5, 8, 10, 0.85);
+  font-size: 9px;
+}
+
+.lotto-track-filters p {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--lotto-coral);
+  font-size: 9px;
+}
+
+.lotto-tier-histogram {
+  margin-bottom: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.lotto-tier-histogram > div {
+  min-height: 30px;
+  padding: 6px 8px;
+  border: 1px solid rgba(214, 185, 99, 0.12);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--lotto-gold);
+  font-size: 8px;
+  background: rgba(214, 185, 99, 0.025);
+}
+
+.lotto-tier-histogram span { color: #9ba6a7; }
+.lotto-tier-histogram strong { color: var(--lotto-cream); }
+.lotto-tier-histogram small { color: #68757a; }
+
+.lotto-ledger-list { display: grid; gap: 8px; }
+
+.lotto-ledger-entry {
+  min-width: 0;
+  border: 1px solid rgba(255, 255, 255, 0.065);
+  background: rgba(4, 7, 9, 0.4);
+}
+
+.lotto-ledger-entry-head {
+  padding: 13px 15px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.055);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.lotto-ledger-entry-head > div:first-child {
+  display: grid;
+  grid-template-columns: auto auto 1fr;
+  align-items: center;
+  gap: 9px;
+}
+
+.lotto-ledger-entry-head h4 { margin: 0; color: var(--lotto-ink); font-size: 13px; }
+.lotto-ledger-entry-head p { margin: 0; color: #6f7d81; font-size: 8px; }
+.lotto-ledger-entry-head > div:last-child { display: grid; justify-items: end; gap: 5px; }
+.lotto-ledger-entry-head > div:last-child small { color: #647176; font-size: 7px; }
+
+.lotto-ledger-status { border-color: rgba(115, 207, 209, 0.18); color: #849b9e; }
+.lotto-ledger-status.is-win { border-color: rgba(101, 221, 176, 0.3); color: var(--lotto-mint); }
+.lotto-ledger-status.is-pending { border-color: rgba(214, 185, 99, 0.32); color: var(--lotto-gold); }
+
+.lotto-ledger-result {
+  padding: 9px 15px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.045);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  background: rgba(95, 165, 187, 0.025);
+}
+
+.lotto-ledger-result > div {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.lotto-ledger-result > div > span {
+  color: #66777b;
+  font-size: 7px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.lotto-ledger-result .lotto-balls span { width: 25px; height: 25px; font-size: 8px; }
+.lotto-ledger-result > small { color: #58676c; font-family: "SFMono-Regular", Consolas, monospace; font-size: 7px; text-align: right; }
+
+.lotto-ledger-ticket-list {
+  margin: 0;
+  padding: 8px;
+  list-style: none;
+  display: grid;
+  gap: 5px;
+}
+
+.lotto-ledger-ticket-list > li {
+  min-width: 0;
+  min-height: 60px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.045);
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) minmax(120px, auto);
+  align-items: center;
+  gap: 11px;
+  background: rgba(255, 255, 255, 0.012);
+}
+
+.lotto-ledger-ticket-list > li > div:nth-child(2) { min-width: 0; }
+.lotto-ledger-ticket-list > li > div:nth-child(2) > small { margin-top: 5px; display: block; color: #5e6b70; font-size: 7px; }
+.lotto-ledger-ticket-list .lotto-balls span { width: 29px; height: 29px; font-size: 9px; }
+
+.lotto-ledger-grade {
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+  text-align: right;
+}
+
+.lotto-ledger-grade strong { color: #aeb8b9; font-size: 9px; }
+.lotto-ledger-grade small { color: #57666b; font-size: 7px; }
+.lotto-ledger-grade span { color: #657277; font-size: 8px; }
+
+.lotto-ledger-entry-foot {
+  padding: 10px 14px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.045);
+}
+
+.lotto-ledger-entry-foot dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.lotto-ledger-entry-foot dl > div { display: flex; justify-content: space-between; gap: 6px; }
+.lotto-ledger-entry-foot dt { color: #5b686d; font-size: 7px; text-transform: uppercase; }
+.lotto-ledger-entry-foot dd { margin: 0; color: #9da8a9; font-family: "SFMono-Regular", Consolas, monospace; font-size: 8px; }
+.lotto-ledger-entry-foot details { margin-top: 9px; color: #657277; font-size: 8px; }
+.lotto-ledger-entry-foot summary { color: #8f9a9d; cursor: pointer; text-transform: uppercase; letter-spacing: 0.07em; }
+.lotto-ledger-entry-foot p { margin: 7px 0 0; line-height: 1.55; overflow-wrap: anywhere; }
+
+.lotto-track-empty,
+.lotto-track-gate {
+  min-height: 220px;
+  padding: 28px;
+  border: 1px solid var(--lotto-cold-edge);
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  color: var(--lotto-gold);
+  text-align: center;
+  background: rgba(7, 10, 12, 0.66);
+}
+
+.lotto-track-gate { min-height: 330px; border-top: 0; }
+.lotto-track-empty h3,
+.lotto-track-gate h3 { margin: 4px 0 0; color: var(--lotto-ink); font-family: "Bodoni 72", Didot, Georgia, serif; font-size: 25px; font-weight: 500; }
+.lotto-track-empty p,
+.lotto-track-gate p { max-width: 520px; margin: 0; color: #788589; font-size: 10px; line-height: 1.6; }
+.lotto-track-gate a { color: var(--lotto-gold-bright); text-decoration: underline; }
+
+.lotto-track-more { width: 100%; margin-top: 8px; }
+.lotto-track-disclaimer { margin-top: 10px; border: 1px solid rgba(255, 123, 112, 0.17); }
+.lotto-picker-builder-heading { margin-top: 70px; }
+
 .lotto-lab-grid {
   display: grid;
   grid-template-columns: minmax(300px, 0.36fr) minmax(0, 0.64fr);
@@ -6865,6 +7300,8 @@ output {
   .lotto-audit-banner { grid-template-columns: auto 1fr; }
   .lotto-audit-banner dl { grid-column: 1 / -1; padding-top: 15px; border-top: 1px solid var(--lotto-cold-edge); justify-content: space-between; }
   .lotto-ev-hero-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .lotto-track-filters { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .lotto-track-filters button { min-width: 0; }
 }
 
 @media (max-width: 850px) {
@@ -6886,6 +7323,9 @@ output {
   .lotto-freshness-games li:not(:nth-child(4n + 1)) { border-left: 0; }
   .lotto-freshness-games li:nth-child(even) { border-left: 1px solid rgba(95, 165, 187, 0.08); }
   .lotto-section-heading { grid-template-columns: 1fr; align-items: start; gap: 14px; }
+  .lotto-track-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .lotto-comparison-grid { grid-template-columns: 1fr; }
+  .lotto-track-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .lotto-lab-grid { grid-template-columns: 1fr; }
   .lotto-control-panel { position: static; }
   .lotto-audit-detail-grid { grid-template-columns: 1fr; }
@@ -6931,6 +7371,21 @@ output {
   .lotto-daily-tickets .lotto-risk { grid-column: 2; width: max-content; }
   .lotto-daily-card-foot { flex-direction: column; }
   .lotto-daily-disclaimer { padding: 11px 14px; }
+  .lotto-trackrecord-head { padding: 17px 14px; grid-template-columns: auto minmax(0, 1fr); align-items: start; }
+  .lotto-trackrecord-head > button { grid-column: 1 / -1; width: 100%; }
+  .lotto-track-metrics,
+  .lotto-track-filters { grid-template-columns: 1fr; }
+  .lotto-track-filters button { width: 100%; }
+  .lotto-ledger-entry-head { align-items: flex-start; }
+  .lotto-ledger-entry-head > div:first-child { grid-template-columns: auto 1fr; }
+  .lotto-ledger-entry-head p { grid-column: 1 / -1; }
+  .lotto-ledger-result { align-items: flex-start; flex-direction: column; }
+  .lotto-ledger-result > div { align-items: flex-start; flex-direction: column; }
+  .lotto-ledger-result > small { text-align: left; }
+  .lotto-ledger-ticket-list > li { grid-template-columns: 21px minmax(0, 1fr); align-items: start; }
+  .lotto-ledger-grade { grid-column: 2; justify-items: start; text-align: left; }
+  .lotto-ledger-entry-foot dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .lotto-picker-builder-heading { margin-top: 48px; }
   .lotto-freshness-metrics,
   .lotto-freshness-games { grid-template-columns: 1fr; }
   .lotto-freshness-metrics > div + div,

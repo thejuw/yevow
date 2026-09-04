@@ -11,6 +11,7 @@ import {
   parseSelectedGames,
   parseWeekdays,
   previousConfiguredDrawDate,
+  ticketSalesWindow,
   texasDayUtcBounds,
   texasClock
 } from "../src/scheduler";
@@ -49,6 +50,45 @@ describe("Central-time autonomous schedule", () => {
     expect(isGenerationTimeBeforeDeadline("09:00")).toBe(false);
     expect(isPastGenerationDeadline(texasClock(new Date("2026-09-07T13:59:00Z")))).toBe(false);
     expect(isPastGenerationDeadline(texasClock(new Date("2026-09-07T14:00:00Z")))).toBe(true);
+  });
+
+  it("closes immutable pre-draw evidence exactly at each official Central cutoff", () => {
+    expect(
+      ticketSalesWindow("cash5", "2026-09-08", "", new Date("2026-09-09T03:01:00Z"))
+    ).toMatchObject({
+      isDrawDay: true,
+      beforeCutoff: true,
+      cutoffLocalTime: "22:02 CT"
+    });
+    expect(
+      ticketSalesWindow("cash5", "2026-09-08", "", new Date("2026-09-09T03:02:00Z")).beforeCutoff
+    ).toBe(false);
+    expect(
+      ticketSalesWindow("cash5", "2026-09-08", "", new Date("2026-09-09T03:03:00Z")).beforeCutoff
+    ).toBe(false);
+    expect(
+      ticketSalesWindow("p3", "2026-09-08", "morning", new Date("2026-09-08T14:49:00Z"))
+        .beforeCutoff
+    ).toBe(true);
+    expect(
+      ticketSalesWindow("p3", "2026-09-08", "morning", new Date("2026-09-08T14:50:00Z"))
+        .beforeCutoff
+    ).toBe(false);
+    expect(
+      ticketSalesWindow("p3", "2026-09-08", "day", new Date("2026-09-08T17:17:00Z")).beforeCutoff
+    ).toBe(false);
+    expect(
+      ticketSalesWindow("pb", "2026-09-09", "", new Date("2026-09-10T02:00:00Z")).beforeCutoff
+    ).toBe(false);
+    expect(
+      ticketSalesWindow("mm", "2026-09-08", "", new Date("2026-09-09T02:45:00Z")).beforeCutoff
+    ).toBe(false);
+    expect(
+      ticketSalesWindow("cash5", "2026-09-13", "", new Date("2026-09-13T12:00:00Z"))
+    ).toMatchObject({
+      isDrawDay: false,
+      beforeCutoff: false
+    });
   });
 
   it("uses America/Chicago across DST and UTC date rollover", () => {

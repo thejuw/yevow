@@ -19,8 +19,14 @@ import {
   previousConfiguredDrawDate,
   texasDayUtcBounds,
   texasClock,
+  ticketSalesWindow,
   type DrawSlot
 } from "./scheduler";
+import {
+  generationLedgerStatements,
+  reconcileLegacyRandomBaselines,
+  reconcileResultNotifications
+} from "./ticket-lab";
 
 export const PICKS_DISCLAIMER =
   "Picks are optimized for coverage and lower split-risk patterns, not predicted. Lottery draws are random. Play responsibly.";
@@ -744,7 +750,7 @@ async function recordFailure(
     .bind(game, drawDate)
     .first<{ pipeline_attempts: number }>();
   const attempts = Number(prior?.pipeline_attempts ?? 0) + 1;
-  const terminal = attempts >= MAX_PIPELINE_ATTEMPTS;
+  const terminal = missedDeadline || attempts >= MAX_PIPELINE_ATTEMPTS;
   const occurredAt = now.toISOString();
   const nextRetryAt = terminal ? null : new Date(now.getTime() + 60_000).toISOString();
   const message = boundedError(error);
@@ -778,12 +784,11 @@ async function recordFailure(
     )
   ];
   if (terminal || missedDeadline) {
-    const alert = terminal
-      ? `🚨 RabbitHoleTX ALERT — generation failed for ${GAME_MANIFEST[game].name} ` +
-        `(${drawDate}) after ${attempts} attempts. Needs attention. ${PICKS_DISCLAIMER}`
-      : `🚨 RabbitHoleTX ALERT — ${GAME_MANIFEST[game].name} missed the ` +
-        `${String(GENERATION_DEADLINE_HOUR).padStart(2, "0")}:00 CT generation deadline ` +
-        `for ${drawDate}; automatic retries continue. ${PICKS_DISCLAIMER}`;
+    const alert = missedDeadline
+      ? `🚨 RabbitHoleTX ALERT — ${GAME_MANIFEST[game].name} missed the official sales cutoff ` +
+        `for ${drawDate}; no Ticket Lab proposal was generated. ${PICKS_DISCLAIMER}`
+      : `🚨 RabbitHoleTX ALERT — generation failed for ${GAME_MANIFEST[game].name} ` +
+        `(${drawDate}) after ${attempts} attempts. Needs attention. ${PICKS_DISCLAIMER}`;
     statements.push(
       env.LOTTO_DB.prepare(
         `INSERT OR IGNORE INTO lotto_delivery_outbox
@@ -829,7 +834,12 @@ async function recordConfigurationFailure(
       "unavailable",
       new Error(`Autonomous configuration is invalid: ${inspection.error ?? "unknown error"}`),
       now,
-      isPastGenerationDeadline(clock)
+      !ticketSalesWindow(
+        game,
+        clock.date,
+        game === "p3" || game === "d4" || game === "aon" ? "morning" : "",
+        now
+      ).beforeCutoff
     );
     await refreshDailySummary(
       env,
@@ -863,10 +873,48 @@ export async function generateForGame(
   const ticketCount = config.ticket_count;
   let seed = "unavailable";
   try {
+    const startNow = executionNow();
+    const ledgerSession = game === "p3" || game === "d4" || game === "aon" ? "morning" : "";
+    const startWindow = ticketSalesWindow(game, clock.date, ledgerSession, startNow);
+    if (!startWindow.isDrawDay || !startWindow.beforeCutoff) {
+      const reason = !startWindow.isDrawDay
+        ? `${GAME_MANIFEST[game].name} has no official draw on ${clock.date}`
+        : `${GAME_MANIFEST[game].name} sales closed at ${startWindow.cutoffLocalTime} for ${clock.date}`;
+      const failure = await recordFailure(
+        env,
+        game,
+        clock.date,
+        config,
+        runId,
+        seed,
+        new Error(reason),
+        startNow,
+        true
+      );
+      await refreshDailySummary(
+        env,
+        clock.date,
+        await selectedDueCount(env, clock),
+        0,
+        startNow.toISOString()
+      );
+      return failure;
+    }
     seed = await deriveProtectedDailySeed(env.RABBITHOLETX_SEED_SALT ?? "", game, clock.date, slot);
     const outcomes: IngestOutcome[] = [];
     for (const source of GAME_MANIFEST[game].sources) {
       outcomes.push(await refreshSource(env, source.id, "scheduled"));
+    }
+    const ingestedResult = await env.LOTTO_DB.prepare(
+      `SELECT 1 AS found FROM lotto_draws
+       WHERE game = ?1 AND draw_date = ?2 AND session = ?3 AND active = 1 LIMIT 1`
+    )
+      .bind(game, clock.date, ledgerSession)
+      .first<{ found: number }>();
+    if (ingestedResult) {
+      throw new Error(
+        `official ${GAME_MANIFEST[game].name} result already exists for ${clock.date}; post-draw generation is forbidden`
+      );
     }
     const verification = await verificationState(env, game, clock.date, outcomes);
     const picked = generateTickets({
@@ -883,6 +931,12 @@ export async function generateForGame(
       playStyle: config.play_style as DigitPlayStyle
     });
     const completedAt = executionNow();
+    const completionWindow = ticketSalesWindow(game, clock.date, ledgerSession, completedAt);
+    if (!completionWindow.beforeCutoff) {
+      throw new Error(
+        `${GAME_MANIFEST[game].name} sales closed at ${completionWindow.cutoffLocalTime} before generation completed`
+      );
+    }
     const completionClock = texasClock(completedAt);
     const deadlineClock = completionClock.date === clock.date ? completionClock : clock;
     const generatedAt = completedAt.toISOString();
@@ -965,6 +1019,22 @@ export async function generateForGame(
       );
     });
     statements.push(
+      ...(await generationLedgerStatements(env.LOTTO_DB, {
+        runId,
+        game,
+        drawDate: clock.date,
+        generatedAt,
+        seed,
+        tickets: picked.tickets,
+        coverage: picked.coverage,
+        evNetCents: netEvCents,
+        evAssumption,
+        ticketCostCents: ev.ticketCostCents,
+        observedThrough: verification.observedThrough,
+        datasetDigest: verification.datasetDigest
+      }))
+    );
+    statements.push(
       env.LOTTO_DB.prepare(
         `INSERT OR IGNORE INTO lotto_delivery_outbox
            (delivery_id, run_id, delivery_kind, target_role, message_body, status,
@@ -989,6 +1059,12 @@ export async function generateForGame(
              updated_at = excluded.updated_at
            WHERE lotto_delivery_outbox.status IN ('pending', 'retry')`
         ).bind(`alert-${runId}`, runId, alert, generatedAt)
+      );
+    }
+    const commitWindow = ticketSalesWindow(game, clock.date, ledgerSession, executionNow());
+    if (!commitWindow.beforeCutoff) {
+      throw new Error(
+        `${GAME_MANIFEST[game].name} sales closed at ${commitWindow.cutoffLocalTime} before the immutable ledger commit`
       );
     }
     await env.LOTTO_DB.batch(statements);
@@ -1017,8 +1093,7 @@ export async function generateForGame(
     return { kind: "generated", run };
   } catch (error) {
     const failedAt = executionNow();
-    const failureClock = texasClock(failedAt);
-    const deadlineClock = failureClock.date === clock.date ? failureClock : clock;
+    const ledgerSession = game === "p3" || game === "d4" || game === "aon" ? "morning" : "";
     const failure = await recordFailure(
       env,
       game,
@@ -1028,7 +1103,7 @@ export async function generateForGame(
       seed,
       error,
       failedAt,
-      isPastGenerationDeadline(deadlineClock)
+      !ticketSalesWindow(game, clock.date, ledgerSession, failedAt).beforeCutoff
     );
     await refreshDailySummary(
       env,
@@ -1048,6 +1123,8 @@ export async function runScheduledGeneration(
   now = new Date(),
   apiBase = "/api/lotto/v1"
 ): Promise<AutomationOutcome> {
+  await reconcileLegacyRandomBaselines(env);
+  await reconcileResultNotifications(env, null, new Date());
   const clock = texasClock(now);
   const inspections = (await automationConfigRows(env)).map(inspectAutomationConfig);
   const dueInspections = inspections.filter((inspection) => inspectionIsDue(inspection, clock));
@@ -1076,7 +1153,8 @@ export async function runScheduledGeneration(
     return (
       row?.status === "failed" &&
       row.pipeline_attempts < MAX_PIPELINE_ATTEMPTS &&
-      (row.next_retry_at === null || row.next_retry_at <= now.toISOString())
+      row.next_retry_at !== null &&
+      row.next_retry_at <= now.toISOString()
     );
   });
   if (retryable) {
