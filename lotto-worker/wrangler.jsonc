@@ -1,0 +1,37 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "sovereign-sigma-lotto",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-03",
+  "workers_dev": true,
+  "routes": [
+    {
+      "pattern": "lotto-api.yevow.co",
+      "custom_domain": true
+    }
+  ],
+  "limits": {
+    "cpu_ms": 30000
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "d1_databases": [
+    {
+      "binding": "LOTTO_DB",
+      "database_name": "RABBITHOLE_TX",
+      "database_id": "13d28d20-07ef-4e63-a6a5-fdaf6c6a3fcb",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "LOTTO_RAW",
+      "bucket_name": "yevow-rabbitholetx-raw"
+    }
+  ],
+  "triggers": {
+    "crons": ["*/30 * * * *"]
+  }
+}

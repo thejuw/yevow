@@ -20,6 +20,103 @@ test.describe("LOTTO forensic dashboard", () => {
     await expect(tabs.getByRole("tab", { name: "EV Lab" })).toBeVisible();
   });
 
+  test("renders validated live archive freshness without changing the local labs", async ({
+    page
+  }) => {
+    await page.route("**/api/lotto/v1/status", async (route) => {
+      expect(route.request().method()).toBe("GET");
+      expect(route.request().postData()).toBeNull();
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          schemaVersion: 1,
+          generatedAt: "2026-09-03T18:30:00.000Z",
+          data: {
+            games: [
+              {
+                code: "lotto",
+                name: "Lotto Texas",
+                sourceCount: 1,
+                readySources: 1,
+                activeDraws: 2_388,
+                observedThrough: "2026-09-02",
+                lastSuccessAt: "2026-09-03T18:29:00.000Z",
+                status: "fresh",
+                sources: [
+                  {
+                    id: "lotto:lottotexas",
+                    name: "lottotexas",
+                    session: "",
+                    lastSuccessAt: "2026-09-03T18:29:00.000Z",
+                    latestDrawDate: "2026-09-02",
+                    activeCount: 2_388,
+                    status: "ready"
+                  }
+                ]
+              },
+              {
+                code: "cash5",
+                name: "Cash Five",
+                sourceCount: 1,
+                readySources: 1,
+                activeDraws: 2_487,
+                observedThrough: "2026-09-02",
+                lastSuccessAt: "2026-09-03T18:28:00.000Z",
+                status: "fresh",
+                sources: [
+                  {
+                    id: "cash5:cashfive",
+                    name: "cashfive",
+                    session: "",
+                    lastSuccessAt: "2026-09-03T18:28:00.000Z",
+                    latestDrawDate: "2026-09-02",
+                    activeCount: 2_487,
+                    status: "ready"
+                  }
+                ]
+              }
+            ]
+          }
+        })
+      });
+    });
+    await page.reload();
+
+    const panel = page.getByRole("region", { name: "Archive freshness" });
+    await expect(panel.getByText("Cloud archive fresh", { exact: true })).toBeVisible();
+    await expect(panel.getByText("4,875", { exact: true })).toBeVisible();
+    await expect(panel.getByRole("list", { name: /freshness by game/i })).toBeVisible();
+
+    await openTab(page, "EV Lab");
+    await expect(page.getByRole("button", { name: "Calculate EV" })).toBeVisible();
+  });
+
+  test("falls back gracefully when live status has an invalid shape", async ({ page }) => {
+    await page.route("**/api/lotto/v1/status", async (route) => {
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true }) });
+    });
+    await page.reload();
+
+    const panel = page.getByRole("region", { name: "Archive freshness" });
+    await expect(panel.getByText("Embedded snapshot mode", { exact: true })).toBeVisible();
+    await expect(panel.getByText(/verified bundled audits/i)).toBeVisible();
+    await expect(page.getByRole("tab", { name: "Ticket Lab" })).toBeEnabled();
+  });
+
+  test("keeps the local tools available when the status service is unavailable", async ({
+    page
+  }) => {
+    await page.route("**/api/lotto/v1/status", async (route) => {
+      await route.fulfill({ status: 503, contentType: "application/json", body: "{}" });
+    });
+    await page.reload();
+
+    const panel = page.getByRole("region", { name: "Archive freshness" });
+    await expect(panel.getByText("Embedded snapshot mode", { exact: true })).toBeVisible();
+    await openTab(page, "Ticket Lab");
+    await expect(page.getByRole("button", { name: "Generate optimized set" })).toBeEnabled();
+  });
+
   test("shows both verified official draw archives", async ({ page }) => {
     await openTab(page, "Audit");
 

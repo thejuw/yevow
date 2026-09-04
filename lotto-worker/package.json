@@ -1,0 +1,27 @@
+{
+  "name": "@yevow/rabbitholetx-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "npm run format:check && npm run types:check && npm run typecheck && npm test && npm run deploy:dry",
+    "deploy": "wrangler deploy",
+    "deploy:dry": "wrangler deploy --dry-run --strict --outdir .wrangler/dry-run",
+    "format": "prettier --write --ignore-unknown .",
+    "format:check": "prettier --check --ignore-unknown .",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "types": "wrangler types --env-interface Env --include-runtime false worker-configuration.d.ts",
+    "types:check": "wrangler types --env-interface Env --include-runtime false --check worker-configuration.d.ts"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.1.4",
+    "@cloudflare/workers-types": "^5.20260904.1",
+    "@msw/cloudflare": "^0.0.1",
+    "msw": "^2.15.0",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.2",
+    "vitest": "^4.1.0",
+    "wrangler": "^4.129.0"
+  }
+}

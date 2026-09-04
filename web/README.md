@@ -22,6 +22,7 @@ npm run dev -- --port 3007
 - Output directory: `out`
 - Environment variable:
   - `NEXT_PUBLIC_SOVEREIGN_API_BASE=https://<sovereign-sigma-core-worker>`
+  - `NEXT_PUBLIC_LOTTO_API_BASE=https://lotto-api.yevow.co/api/lotto/v1`
 
 The app is a static export and calls the Worker backend directly through JWT-protected `/login` and `/admin/*` routes.
 
@@ -37,6 +38,12 @@ the browser. It includes:
 - a seeded split-risk/pair-coverage ticket wheel with hard budget checks; and
 - an integer-cent-input EV model for fixed, liability-capped, and pari-mutuel
   prizes.
+
+The overview reads freshness from the isolated, read-only LOTTO status API. A
+non-2xx response, timeout, or incompatible response schema automatically leaves
+the bundled audits, optimizer, and EV model available in embedded snapshot mode.
+`NEXT_PUBLIC_LOTTO_API_BASE` is compiled into the static export; changing it
+requires a Pages rebuild and redeploy.
 
 LOTTO cannot predict a random drawing. Historical frequency, gap, and
 co-occurrence output is descriptive only, and a non-significant audit result is
