@@ -52,10 +52,11 @@ const ORIGIN_LABEL: Readonly<Record<TicketLabOrigin, string>> = {
 
 const STATUS_LABEL: Readonly<Record<TicketLabEntryStatus, string>> = {
   open: "Open",
-  graded: "All graded",
+  graded: "All eligible graded",
   pending: "Pending payout",
   won: "Winners",
-  lost: "Misses"
+  lost: "Misses",
+  excluded: "Excluded from track record"
 };
 
 const integerFormatter = new Intl.NumberFormat("en-US");
@@ -91,10 +92,23 @@ function originClass(origin: TicketLabOrigin): string {
 }
 
 function outcomeLabel(entry: TicketLabEntry): string {
+  if (!entry.trackRecordEligible) return "Excluded";
   if (entry.tickets.every((ticket) => ticket.grade === null)) return "Open";
   if (entry.pendingPrizeCount > 0) return "Payout pending";
   if (entry.tickets.some((ticket) => ticket.grade?.hit)) return "Winner";
   return "Graded miss";
+}
+
+function eligibilityEvidenceLabel(evidence: Readonly<Record<string, unknown>>): string {
+  return Object.entries(evidence)
+    .map(([key, value]) => {
+      const label = key
+        .replace(/([a-z])([A-Z])/g, "$1 $2")
+        .replaceAll("_", " ")
+        .toLowerCase();
+      return `${label}: ${typeof value === "string" ? value : JSON.stringify(value)}`;
+    })
+    .join(" · ");
 }
 
 function purchaseLabel(entry: TicketLabEntry): string {
@@ -149,7 +163,11 @@ function ScorecardMetric({
   );
 }
 
-function ComparisonCard({ row }: { readonly row: TicketLabScorecard & { origin: TicketLabOrigin } }) {
+function ComparisonCard({
+  row
+}: {
+  readonly row: TicketLabScorecard & { origin: TicketLabOrigin };
+}) {
   return (
     <article className="lotto-comparison-card">
       <header>
@@ -227,7 +245,11 @@ function LedgerEntryCard({ entry }: { readonly entry: TicketLabEntry }) {
   const status = outcomeLabel(entry);
   const officialGrade = entry.tickets.find((ticket) => ticket.grade !== null)?.grade ?? null;
   return (
-    <article className="lotto-ledger-entry">
+    <article
+      className={
+        entry.trackRecordEligible ? "lotto-ledger-entry" : "lotto-ledger-entry is-excluded"
+      }
+    >
       <header className="lotto-ledger-entry-head">
         <div>
           <span className={originClass(entry.origin)}>{ORIGIN_LABEL[entry.origin]}</span>
@@ -244,7 +266,9 @@ function LedgerEntryCard({ entry }: { readonly entry: TicketLabEntry }) {
                 ? "lotto-ledger-status is-win"
                 : status === "Payout pending"
                   ? "lotto-ledger-status is-pending"
-                  : "lotto-ledger-status"
+                  : status === "Excluded"
+                    ? "lotto-ledger-status is-excluded"
+                    : "lotto-ledger-status"
             }
           >
             {status}
@@ -252,6 +276,26 @@ function LedgerEntryCard({ entry }: { readonly entry: TicketLabEntry }) {
           <small>{purchaseLabel(entry)}</small>
         </div>
       </header>
+
+      {!entry.trackRecordEligible ? (
+        <aside className="lotto-ledger-exclusion" aria-label="Track-record exclusion">
+          <CircleAlert size={16} />
+          <div>
+            <strong>Excluded from ROI and track record</strong>
+            <p>{entry.eligibility.reason}</p>
+            <small>
+              Eligibility event {entry.eligibility.eventId} · recorded{" "}
+              {displayDateTime(entry.eligibility.recordedAt!)}
+            </small>
+            {Object.keys(entry.eligibility.evidence).length > 0 ? (
+              <details>
+                <summary>Exclusion evidence</summary>
+                <p>{eligibilityEvidenceLabel(entry.eligibility.evidence)}</p>
+              </details>
+            ) : null}
+          </div>
+        </aside>
+      ) : null}
 
       {officialGrade ? (
         <div className="lotto-ledger-result">
@@ -264,7 +308,10 @@ function LedgerEntryCard({ entry }: { readonly entry: TicketLabEntry }) {
             />
           </div>
           <small>
-            Grade revision {officialGrade.revision} · result source {officialGrade.result.sourceId} · source SHA {officialGrade.result.sourceSha256.slice(0, 12)}… · fingerprint {officialGrade.result.fingerprint.slice(0, 12)}… · {displayDateTime(officialGrade.gradedAt)}
+            Grade revision {officialGrade.revision} · result source {officialGrade.result.sourceId}{" "}
+            · source SHA {officialGrade.result.sourceSha256.slice(0, 12)}… · fingerprint{" "}
+            {officialGrade.result.fingerprint.slice(0, 12)}… ·{" "}
+            {displayDateTime(officialGrade.gradedAt)}
           </small>
         </div>
       ) : null}
@@ -281,11 +328,15 @@ function LedgerEntryCard({ entry }: { readonly entry: TicketLabEntry }) {
               {ticket.grade ? (
                 <>
                   <strong className={ticket.grade.hit ? "lotto-positive" : ""}>
-                    {ticket.grade.hit ? ticket.grade.tier : `${ticket.grade.mainMatches}/${ticket.main.length}`}
+                    {ticket.grade.hit
+                      ? ticket.grade.tier
+                      : `${ticket.grade.mainMatches}/${ticket.main.length}`}
                   </strong>
                   <small>
                     {ticket.grade.mainMatches}/{ticket.main.length} main
-                    {ticket.bonus.length > 0 ? ` · ${ticket.grade.bonusMatches}/${ticket.bonus.length} bonus` : ""}
+                    {ticket.bonus.length > 0
+                      ? ` · ${ticket.grade.bonusMatches}/${ticket.bonus.length} bonus`
+                      : ""}
                   </small>
                   <span>
                     {ticket.grade.payoutStatus === "pending"
@@ -296,14 +347,17 @@ function LedgerEntryCard({ entry }: { readonly entry: TicketLabEntry }) {
                   </span>
                   {ticket.grade.settlement ? (
                     <small>
-                      settled {displayDateTime(ticket.grade.settlement.settledAt)} · {ticket.grade.settlement.source}
+                      settled {displayDateTime(ticket.grade.settlement.settledAt)} ·{" "}
+                      {ticket.grade.settlement.source}
                       {settlementEvidenceLabel(ticket.grade.settlement.evidence)}
                     </small>
                   ) : null}
                 </>
               ) : (
                 <>
-                  <strong>Awaiting draw</strong>
+                  <strong>
+                    {entry.trackRecordEligible ? "Awaiting draw" : "Excluded from grading"}
+                  </strong>
                   <span>not graded</span>
                 </>
               )}
@@ -334,7 +388,8 @@ function LedgerEntryCard({ entry }: { readonly entry: TicketLabEntry }) {
         <details>
           <summary>Immutable generation evidence</summary>
           <p>
-            Ledger {entry.ledgerId} · proposed {displayDateTime(entry.proposedAt)} · seed {entry.seed ?? "not applicable"}
+            Ledger {entry.ledgerId} · proposed {displayDateTime(entry.proposedAt)} · seed{" "}
+            {entry.seed ?? "not applicable"}
             {entry.data.observedThrough ? ` · data through ${entry.data.observedThrough}` : ""}
             {entry.data.datasetDigest ? ` · dataset ${entry.data.datasetDigest.slice(0, 12)}…` : ""}
             {entry.runId ? ` · generation ${entry.runId}` : ""}
@@ -463,7 +518,8 @@ export default function LottoTicketLabPanel() {
           <p>FORWARD-TESTED TICKET LEDGER</p>
           <h2 id="lotto-trackrecord-title">Nothing forgotten. Nothing hidden.</h2>
           <span>
-            Every autonomous set is frozen before its draw, graded against official results, and kept in an append-only record.
+            Every autonomous set is frozen before its draw, graded against official results, and
+            kept in an append-only record.
           </span>
         </div>
         <button
@@ -525,6 +581,22 @@ export default function LottoTicketLabPanel() {
             />
           </div>
 
+          <div className="lotto-track-eligibility" aria-label="Track-record eligibility summary">
+            <CircleAlert size={16} />
+            <p>
+              <strong>
+                {integerFormatter.format(state.summary.data.eligibility.eligibleEntries)} eligible
+                ledger entries
+              </strong>{" "}
+              feed the scorecard.{" "}
+              {integerFormatter.format(state.summary.data.eligibility.excludedEntries)} excluded
+              entr{state.summary.data.eligibility.excludedEntries === 1 ? "y" : "ies"} (
+              {integerFormatter.format(state.summary.data.eligibility.excludedTickets)} ticket
+              {state.summary.data.eligibility.excludedTickets === 1 ? "" : "s"}) remain visible but
+              do not contribute to ROI or track-record totals.
+            </p>
+          </div>
+
           <section className="lotto-track-compare" aria-labelledby="lotto-compare-title">
             <div className="lotto-panel-head">
               <div>
@@ -540,14 +612,21 @@ export default function LottoTicketLabPanel() {
             </div>
             <p className="lotto-comparison-method">
               {state.summary.data.comparisonPolicy.description}{" "}
-              {integerFormatter.format(state.summary.data.comparisonPolicy.sharedStrata)} shared draw
+              {integerFormatter.format(state.summary.data.comparisonPolicy.sharedStrata)} shared
+              draw
               {state.summary.data.comparisonPolicy.sharedStrata === 1 ? "" : "s"};{" "}
-              {integerFormatter.format(state.summary.data.comparisonPolicy.ticketsPerOrigin)} tickets per origin.
+              {integerFormatter.format(state.summary.data.comparisonPolicy.ticketsPerOrigin)}{" "}
+              tickets per origin.
             </p>
             <div className="lotto-track-honesty">
               <CircleAlert size={16} />
               <p>
-                <strong>The scoreboard does not smooth losses.</strong> A negative 60% ROI is shown as negative 60%. Random and optimized tickets have the same draw odds; split avoidance matters only after a win. {hasUserComparison ? "Hand-picked plays are included at the same sample scale." : "Hand-picked comparison appears only after those plays are logged."}
+                <strong>The scoreboard does not smooth losses.</strong> A negative 60% ROI is shown
+                as negative 60%. Random and optimized tickets have the same draw odds; split
+                avoidance matters only after a win.{" "}
+                {hasUserComparison
+                  ? "Hand-picked plays are included at the same sample scale."
+                  : "Hand-picked comparison appears only after those plays are logged."}
               </p>
             </div>
           </section>
@@ -594,8 +673,12 @@ export default function LottoTicketLabPanel() {
                 </select>
               </label>
               <button type="submit">Apply filters</button>
-              <button type="button" onClick={clearFilters}>Clear</button>
-              {from && to && from > to ? <p role="alert">From date must be on or before To date.</p> : null}
+              <button type="button" onClick={clearFilters}>
+                Clear
+              </button>
+              {from && to && from > to ? (
+                <p role="alert">From date must be on or before To date.</p>
+              ) : null}
             </form>
 
             {state.summary.data.prizeTiers.length > 0 ? (
@@ -622,8 +705,17 @@ export default function LottoTicketLabPanel() {
               )}
             </div>
             {state.entries.data.nextCursor ? (
-              <button className="lotto-track-more" type="button" onClick={loadMore} disabled={loadingMore}>
-                {loadingMore ? <RefreshCw className="lotto-spin" size={13} /> : <History size={13} />}
+              <button
+                className="lotto-track-more"
+                type="button"
+                onClick={loadMore}
+                disabled={loadingMore}
+              >
+                {loadingMore ? (
+                  <RefreshCw className="lotto-spin" size={13} />
+                ) : (
+                  <History size={13} />
+                )}
                 {loadingMore ? "Loading…" : "Load older entries"}
               </button>
             ) : null}
@@ -632,7 +724,9 @@ export default function LottoTicketLabPanel() {
           <div className="lotto-daily-disclaimer lotto-track-disclaimer">
             <CircleAlert size={15} />
             <p>
-              <strong>Optimized, not predicted.</strong> {state.summary.data.disclaimer} Prize amounts marked pending are excluded until an official pari-mutuel settlement is appended.
+              <strong>Optimized, not predicted.</strong> {state.summary.data.disclaimer} Prize
+              amounts marked pending are excluded until an official pari-mutuel settlement is
+              appended.
             </p>
           </div>
         </>
@@ -649,14 +743,17 @@ export default function LottoTicketLabPanel() {
               <LockKeyhole size={24} />
               <h3>Login required</h3>
               <p>
-                Ticket history is private. <a href="/">Log in to Yevow</a>, then return to view the ledger.
+                Ticket history is private. <a href="/">Log in to Yevow</a>, then return to view the
+                ledger.
               </p>
             </>
           ) : (
             <>
               <CircleAlert size={24} />
               <h3>Ticket Lab is temporarily unavailable</h3>
-              <p>The dashboard will not invent or cache replacement grades. Retry the ledger service.</p>
+              <p>
+                The dashboard will not invent or cache replacement grades. Retry the ledger service.
+              </p>
             </>
           )}
         </div>

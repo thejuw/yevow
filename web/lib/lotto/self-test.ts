@@ -243,11 +243,28 @@ const ticketLabSummaryFixture = {
     filters: { game: "cash5", from: "2026-01-01", to: "2026-09-04" },
     totals: {
       proposals: ticketLabScorecard,
-      confirmed: { ...ticketLabScorecard, tickets: 0, gradedTickets: 0, spentCents: 0, wonCents: 0, roiPercent: null, economicRoiPercent: null, bestHit: null }
+      confirmed: {
+        ...ticketLabScorecard,
+        tickets: 0,
+        gradedTickets: 0,
+        spentCents: 0,
+        wonCents: 0,
+        roiPercent: null,
+        economicRoiPercent: null,
+        bestHit: null
+      }
     },
+    eligibility: { eligibleEntries: 2, excludedEntries: 1, excludedTickets: 1 },
     comparisons: [
       { origin: "system", ...ticketLabScorecard },
-      { origin: "random", ...ticketLabScorecard, wonCents: 0, roiPercent: -100, economicRoiPercent: -100, bestHit: null }
+      {
+        origin: "random",
+        ...ticketLabScorecard,
+        wonCents: 0,
+        roiPercent: -100,
+        economicRoiPercent: -100,
+        bestHit: null
+      }
     ],
     comparisonPolicy: {
       method: "shared-strata-min-ticket-count",
@@ -320,6 +337,14 @@ const ticketLabEntriesFixture = {
         targetSession: "",
         proposedAt: "2026-06-26T12:00:00.000Z",
         status: "won",
+        trackRecordEligible: true,
+        eligibility: {
+          eligible: true,
+          eventId: null,
+          reason: null,
+          evidence: {},
+          recordedAt: null
+        },
         seed: "b".repeat(64),
         coverage: { distinctPairs: 10, possiblePairs: 595, percent: 1.68 },
         ev: { netCentsPerTicket: -62, assumption: "Pre-tax current-era model." },
@@ -374,8 +399,70 @@ const ticketLabEntriesFixture = {
   }
 };
 assert(
-  parseTicketLabEntries(ticketLabEntriesFixture).data.entries[0]?.tickets[0]?.grade?.tier === "4 of 5",
+  parseTicketLabEntries(ticketLabEntriesFixture).data.entries[0]?.tickets[0]?.grade?.tier ===
+    "4 of 5",
   "Ticket Lab entries validate exact ticket and official result arrays"
+);
+const excludedTicketLabEntriesFixture = {
+  ...ticketLabEntriesFixture,
+  data: {
+    ...ticketLabEntriesFixture.data,
+    filters: { ...ticketLabEntriesFixture.data.filters, status: "excluded" },
+    entries: ticketLabEntriesFixture.data.entries.map((entry) => ({
+      ...entry,
+      status: "excluded",
+      trackRecordEligible: false,
+      eligibility: {
+        eligible: false,
+        eventId: `eligibility-${"f".repeat(32)}`,
+        reason: "Official result existed before this legacy proposal was recorded.",
+        evidence: {
+          proposedAt: entry.proposedAt,
+          resultFirstSeenAt: "2026-06-26T04:00:00.000Z"
+        },
+        recordedAt: "2026-09-04T15:00:00.000Z"
+      }
+    }))
+  }
+};
+assert(
+  parseTicketLabEntries(excludedTicketLabEntriesFixture).data.entries[0]?.status === "excluded",
+  "Ticket Lab entries retain post-result legacy proposals as excluded rows"
+);
+assert(
+  parseTicketLabEntries(excludedTicketLabEntriesFixture).data.entries[0]?.eligibility.reason ===
+    "Official result existed before this legacy proposal was recorded.",
+  "Ticket Lab entries preserve immutable exclusion evidence"
+);
+expectTicketLabError(
+  () =>
+    parseTicketLabEntries({
+      ...excludedTicketLabEntriesFixture,
+      data: {
+        ...excludedTicketLabEntriesFixture.data,
+        entries: excludedTicketLabEntriesFixture.data.entries.map((entry) => ({
+          ...entry,
+          trackRecordEligible: true
+        }))
+      }
+    }),
+  "Ticket Lab entries reject eligibility flag and evidence mismatches"
+);
+assert(
+  parseTicketLabEntries({
+    ...excludedTicketLabEntriesFixture,
+    data: {
+      ...excludedTicketLabEntriesFixture.data,
+      entries: excludedTicketLabEntriesFixture.data.entries.map((entry) => ({
+        ...entry,
+        wonCents: 0,
+        pendingPrizeCount: 0,
+        resultNotificationStatus: null,
+        tickets: entry.tickets.map((ticket) => ({ ...ticket, grade: null }))
+      }))
+    }
+  }).data.entries[0]?.tickets[0]?.grade === null,
+  "Ticket Lab entries retain excluded proposals that must never be graded"
 );
 expectTicketLabError(
   () =>

@@ -29,7 +29,16 @@ const MM_MULTIPLIER_POOL = [
 type Origin = "system" | "random" | "user";
 type PurchaseStatus = "unconfirmed" | "confirmed" | "declined";
 type PayoutStatus = "none" | "fixed" | "pending";
-type EntryStatus = "open" | "graded" | "pending" | "won" | "lost";
+type EntryStatus = "open" | "graded" | "pending" | "won" | "lost" | "excluded";
+
+type EligibilityReasonCode =
+  | "schema-v7-attestation"
+  | "pre-draw-capture"
+  | "deterministic-random-baseline"
+  | "official-result-not-after-proposal"
+  | "proposal-not-before-sales-cutoff"
+  | "manual-integrity-exclusion"
+  | "manual-integrity-reinstatement";
 
 interface GenerationTicketSnapshot {
   readonly ticket: Ticket;
@@ -155,6 +164,26 @@ interface SettlementRow {
   settled_at: string;
 }
 
+interface EligibilityRow {
+  eligibility_event_id: string;
+  event_sequence: number;
+  ledger_id: string;
+  idempotency_key: string;
+  eligible: number;
+  reason_code: EligibilityReasonCode;
+  reason: string;
+  evidence_json: string;
+  recorded_at: string;
+}
+
+export interface PublicLedgerEligibility {
+  readonly eligible: boolean;
+  readonly eventId: string | null;
+  readonly reason: string | null;
+  readonly evidence: Readonly<Record<string, unknown>>;
+  readonly recordedAt: string | null;
+}
+
 interface GradeResult {
   readonly mainMatches: number;
   readonly bonusMatches: number;
@@ -194,6 +223,48 @@ export interface TicketLabFilters {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function canonicalEvidenceValue(value: unknown, depth = 0): unknown {
+  if (depth > 8) throw new RangeError("evidence exceeds the maximum nesting depth");
+  if (value === null || typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    if (value.length > 2_000) throw new RangeError("an evidence string exceeds 2000 characters");
+    return value;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || !Number.isSafeInteger(value)) {
+      throw new RangeError("evidence numbers must be safe integers");
+    }
+    return value;
+  }
+  if (Array.isArray(value)) {
+    if (value.length > 100) throw new RangeError("an evidence array exceeds 100 items");
+    return value.map((item) => canonicalEvidenceValue(item, depth + 1));
+  }
+  if (isRecord(value)) {
+    const entries = Object.entries(value);
+    if (entries.length > 100) throw new RangeError("an evidence object exceeds 100 fields");
+    return Object.fromEntries(
+      entries
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => {
+          if (!/^[A-Za-z][A-Za-z0-9_.-]{0,99}$/.test(key)) {
+            throw new RangeError("evidence field names must be 1-100 safe characters");
+          }
+          return [key, canonicalEvidenceValue(item, depth + 1)];
+        })
+    );
+  }
+  throw new RangeError("evidence must contain only JSON values");
+}
+
+function canonicalEvidence(value: unknown): string {
+  const record = value === undefined ? {} : value;
+  if (!isRecord(record)) throw new RangeError("evidence must be an object");
+  const encoded = JSON.stringify(canonicalEvidenceValue(record));
+  if (encoded.length > 8_000) throw new RangeError("evidence exceeds 8000 characters");
+  return encoded;
 }
 
 function decodeRecord(value: string, field: string): Record<string, unknown> {
@@ -405,6 +476,97 @@ function ledgerIdForRun(runId: string): string {
   return `ledger-${runId.slice(4)}`;
 }
 
+function creationEligibilityStatements(
+  database: D1Database,
+  input: {
+    readonly ledgerId: string;
+    readonly origin: Origin;
+    readonly game: GameCode;
+    readonly drawDate: string;
+    readonly targetSession: Session;
+    readonly proposedAt: string;
+    readonly baselineFor: string | null;
+  }
+): D1PreparedStatement[] {
+  const salesWindow = ticketSalesWindow(
+    input.game,
+    input.drawDate,
+    input.targetSession,
+    new Date(input.proposedAt)
+  );
+  const withinSalesWindow = salesWindow.isDrawDay && salesWindow.beforeCutoff;
+  const reasonCode: EligibilityReasonCode = withinSalesWindow
+    ? input.origin === "random"
+      ? "deterministic-random-baseline"
+      : "pre-draw-capture"
+    : "proposal-not-before-sales-cutoff";
+  const reason = withinSalesWindow
+    ? input.origin === "random"
+      ? "Equal-size random control was derived deterministically from a pre-draw generation seed."
+      : "Ledger entry was captured by the service before the configured draw cutoff."
+    : `Ledger proposal was not captured before the ${salesWindow.cutoffLocalTime} official sales cutoff.`;
+  const evidence = JSON.stringify({
+    attestationVersion: 1,
+    baselineFor: input.baselineFor,
+    cutoffLocalTime: salesWindow.cutoffLocalTime,
+    drawDate: input.drawDate,
+    game: input.game,
+    invariant: "ledgerProposedAt is before official sales cutoff",
+    isDrawDay: salesWindow.isDrawDay,
+    ledgerProposedAt: input.proposedAt,
+    origin: input.origin,
+    targetSession: input.targetSession
+  });
+  return [
+    database
+      .prepare(
+        `INSERT OR IGNORE INTO lotto_ledger_eligibility_events
+           (eligibility_event_id, ledger_id, idempotency_key, eligible, reason_code,
+            reason, evidence_json, recorded_at, created_at)
+         SELECT ?1, l.ledger_id, 'creation-attestation-v1', ?2, ?3, ?4, ?5, ?6, ?6
+         FROM lotto_ticket_ledger l WHERE l.ledger_id = ?7`
+      )
+      .bind(
+        `${withinSalesWindow ? "eligibility-attest" : "eligibility-cutoff"}-${input.ledgerId.slice(7)}`,
+        withinSalesWindow ? 1 : 0,
+        reasonCode,
+        reason,
+        evidence,
+        input.proposedAt,
+        input.ledgerId
+      ),
+    database
+      .prepare(
+        `INSERT OR IGNORE INTO lotto_ledger_eligibility_events
+           (eligibility_event_id, ledger_id, idempotency_key, eligible, reason_code,
+            reason, evidence_json, recorded_at, created_at)
+         SELECT
+           ?1, l.ledger_id, 'official-result-not-after-proposal-v1', 0,
+           'official-result-not-after-proposal',
+           'Official result was already present when this ticket set was proposed.',
+           json_object(
+             'attestationVersion', 1,
+             'invariant', 'officialResultFirstSeenAt > ledgerProposedAt',
+             'game', l.game,
+             'drawDate', l.draw_date,
+             'targetSession', l.target_session,
+             'ledgerProposedAt', l.proposed_at,
+             'officialResultFirstSeenAt', d.first_seen_at,
+             'resultFingerprint', d.content_fingerprint,
+             'resultSourceId', d.source_id,
+             'resultSourceSha256', d.source_sha256
+           ),
+           ?2, ?2
+         FROM lotto_ticket_ledger l
+         JOIN lotto_draws d
+           ON d.game = l.game AND d.draw_date = l.draw_date
+          AND d.session = l.target_session
+         WHERE l.ledger_id = ?3 AND d.first_seen_at <= l.proposed_at`
+      )
+      .bind(`eligibility-exclude-${input.ledgerId.slice(7)}`, input.proposedAt, input.ledgerId)
+  ];
+}
+
 /** Build one atomic system ledger snapshot and an equal-size true random baseline. */
 export async function generationLedgerStatements(
   database: D1Database,
@@ -508,6 +670,17 @@ export async function generationLedgerStatements(
           )
       );
     });
+    statements.push(
+      ...creationEligibilityStatements(database, {
+        ledgerId,
+        origin,
+        game: input.game,
+        drawDate: input.drawDate,
+        targetSession: session,
+        proposedAt: input.generatedAt,
+        baselineFor
+      })
+    );
   };
   if (options.baselineOnly !== true) {
     appendEntry(
@@ -1430,6 +1603,324 @@ function signedPercent(value: number | null): string {
   return `${value >= 0 ? "+" : ""}${value.toFixed(1)}%`;
 }
 
+export interface EligibilityReconciliationResult {
+  readonly attestedEntries: number;
+  readonly excludedEntries: number;
+  readonly correctionNotifications: number;
+}
+
+/** Notify each operator eligibility decision without resending an earlier result. */
+async function reconcileManualEligibilityNotifications(
+  env: Env,
+  game: GameCode | null,
+  recordedAt: string
+): Promise<number> {
+  const events = await env.LOTTO_DB.prepare(
+    `SELECT e.*, l.game, l.draw_date
+     FROM lotto_ledger_eligibility_events e
+     JOIN lotto_ticket_ledger l ON l.ledger_id = e.ledger_id
+     WHERE e.reason_code IN ('manual-integrity-exclusion', 'manual-integrity-reinstatement')
+       AND l.origin <> 'random' AND (?1 IS NULL OR l.game = ?1)
+       AND NOT EXISTS (
+         SELECT 1 FROM lotto_lab_delivery_outbox o
+         WHERE o.run_id = e.eligibility_event_id AND o.delivery_kind = 'result'
+       )
+     ORDER BY e.event_sequence LIMIT 100`
+  )
+    .bind(game)
+    .all<EligibilityRow & { game: GameCode; draw_date: string }>();
+  let queued = 0;
+  for (const event of events.results) {
+    const message =
+      `🐰 Ticket Lab CORRECTION — ${GAME_MANIFEST[event.game].name} (${displayDate(event.draw_date)}): ` +
+      `An operator ${event.eligible === 1 ? "reinstated" : "excluded"} ledger ${event.ledger_id}. ` +
+      `Decision #${event.event_sequence}: ${event.reason} ` +
+      `The latest eligibility decision controls scorecard inclusion. Original tickets, grades, and delivery evidence remain preserved. ` +
+      TICKET_LAB_DISCLAIMER;
+    const deliveryId = `result-grade-${(await sha256(`eligibility-event-notice\0${event.eligibility_event_id}`)).slice(0, 32)}`;
+    const result = await env.LOTTO_DB.prepare(
+      `INSERT OR IGNORE INTO lotto_lab_delivery_outbox
+         (delivery_id, grade_id, run_id, game, draw_date, delivery_kind, target_role,
+          priority, message_body, status, next_attempt_at, created_at, updated_at)
+       VALUES (?1, NULL, ?2, ?3, ?4, 'result', 'primary', 100, ?5, 'pending', ?6, ?6, ?6)`
+    )
+      .bind(
+        deliveryId,
+        event.eligibility_event_id,
+        event.game,
+        event.draw_date,
+        message,
+        recordedAt
+      )
+      .run();
+    queued += result.meta.changes ?? 0;
+  }
+  return queued;
+}
+
+/**
+ * Reconcile the objective no-lookahead boundary into the append-only
+ * eligibility stream. This is deliberately idempotent and never rewrites a
+ * ledger, ticket, grade, purchase, or settlement.
+ */
+export async function reconcileLedgerEligibility(
+  env: Env,
+  game: GameCode | null = null,
+  now = new Date()
+): Promise<EligibilityReconciliationResult> {
+  const recordedAt = now.toISOString();
+  const attested = await env.LOTTO_DB.prepare(
+    `INSERT OR IGNORE INTO lotto_ledger_eligibility_events
+       (eligibility_event_id, ledger_id, idempotency_key, eligible, reason_code,
+        reason, evidence_json, recorded_at, created_at)
+     SELECT
+       'eligibility-attest-' || substr(l.ledger_id, 8),
+       l.ledger_id,
+       'schema-v7-initial-attestation',
+       1,
+       'schema-v7-attestation',
+       'Ledger existed before schema v7; this initial state is superseded by any later invariant exclusion event.',
+       json_object(
+         'attestationVersion', 1,
+         'reconciler', 'worker-v7',
+         'ledgerProposedAt', l.proposed_at
+       ),
+       ?1,
+       ?1
+     FROM lotto_ticket_ledger l
+     WHERE (?2 IS NULL OR l.game = ?2)
+       AND NOT EXISTS (
+         SELECT 1 FROM lotto_ledger_eligibility_events e WHERE e.ledger_id = l.ledger_id
+       )`
+  )
+    .bind(recordedAt, game)
+    .run();
+  const excluded = await env.LOTTO_DB.prepare(
+    `INSERT OR IGNORE INTO lotto_ledger_eligibility_events
+       (eligibility_event_id, ledger_id, idempotency_key, eligible, reason_code,
+        reason, evidence_json, recorded_at, created_at)
+     SELECT
+       'eligibility-exclude-' || substr(l.ledger_id, 8),
+       l.ledger_id,
+       'official-result-not-after-proposal-v1',
+       0,
+       'official-result-not-after-proposal',
+       'Official result was already present when this ticket set was proposed.',
+       json_object(
+         'attestationVersion', 1,
+         'invariant', 'officialResultFirstSeenAt > ledgerProposedAt',
+         'game', l.game,
+         'drawDate', l.draw_date,
+         'targetSession', l.target_session,
+         'ledgerProposedAt', l.proposed_at,
+         'officialResultFirstSeenAt', d.first_seen_at,
+         'resultFingerprint', d.content_fingerprint,
+         'resultSourceId', d.source_id,
+         'resultSourceSha256', d.source_sha256
+       ),
+       ?1,
+       ?1
+     FROM lotto_ticket_ledger l
+     JOIN lotto_draws d
+       ON d.game = l.game AND d.draw_date = l.draw_date
+      AND d.session = l.target_session
+     WHERE (?2 IS NULL OR l.game = ?2)
+       AND d.first_seen_at <= l.proposed_at
+       AND COALESCE((
+         SELECT e.eligible FROM lotto_ledger_eligibility_events e
+         WHERE e.ledger_id = l.ledger_id
+         ORDER BY e.event_sequence DESC LIMIT 1
+       ), 1) = 1`
+  )
+    .bind(recordedAt, game)
+    .run();
+
+  // SQLite cannot evaluate America/Chicago DST rules safely in a migration.
+  // Resolve every neutral pre-v7 attestation through the same schedule code
+  // used by live writes before any scorecard or grader can consume it.
+  let cutoffAttestations = 0;
+  let cutoffExclusions = 0;
+  for (let batchNumber = 0; batchNumber < 100; batchNumber += 1) {
+    const pending = await env.LOTTO_DB.prepare(
+      `SELECT l.*, e.event_sequence AS selected_event_sequence
+       FROM lotto_ticket_ledger l
+       JOIN lotto_ledger_eligibility_events e
+         ON e.event_sequence = (
+           SELECT e2.event_sequence FROM lotto_ledger_eligibility_events e2
+           WHERE e2.ledger_id = l.ledger_id
+           ORDER BY e2.event_sequence DESC LIMIT 1
+         )
+       WHERE e.reason_code = 'schema-v7-attestation'
+         AND (?1 IS NULL OR l.game = ?1)
+       ORDER BY l.ledger_id
+       LIMIT 100`
+    )
+      .bind(game)
+      .all<LedgerRow & { selected_event_sequence: number }>();
+    if (pending.results.length === 0) break;
+    const eligibilityDecisions: boolean[] = [];
+    const statements = pending.results.map((ledger) => {
+      let isDrawDay = false;
+      let beforeCutoff = false;
+      let cutoffLocalTime = "unknown";
+      let evaluationError: string | null = null;
+      try {
+        const window = ticketSalesWindow(
+          ledger.game,
+          ledger.draw_date,
+          ledger.target_session,
+          new Date(ledger.proposed_at)
+        );
+        isDrawDay = window.isDrawDay;
+        beforeCutoff = window.beforeCutoff;
+        cutoffLocalTime = window.cutoffLocalTime;
+      } catch (caught) {
+        evaluationError =
+          caught instanceof Error ? caught.message.slice(0, 500) : "invalid timestamp";
+      }
+      const eligible = isDrawDay && beforeCutoff;
+      eligibilityDecisions.push(eligible);
+      const reasonCode: EligibilityReasonCode = eligible
+        ? ledger.origin === "random"
+          ? "deterministic-random-baseline"
+          : "pre-draw-capture"
+        : "proposal-not-before-sales-cutoff";
+      const reason = eligible
+        ? ledger.origin === "random"
+          ? "Equal-size random control was derived deterministically from a pre-draw generation seed."
+          : "Ledger entry was captured by the service before the configured draw cutoff."
+        : `Ledger proposal was not captured before the ${cutoffLocalTime} official sales cutoff.`;
+      const evidence = JSON.stringify({
+        attestationVersion: 1,
+        cutoffLocalTime,
+        drawDate: ledger.draw_date,
+        evaluationError,
+        evaluator: "ticketSalesWindow-v1",
+        game: ledger.game,
+        invariant: "ledgerProposedAt is before official sales cutoff",
+        isDrawDay,
+        ledgerProposedAt: ledger.proposed_at,
+        targetSession: ledger.target_session
+      });
+      return env.LOTTO_DB.prepare(
+        `INSERT OR IGNORE INTO lotto_ledger_eligibility_events
+           (eligibility_event_id, ledger_id, idempotency_key, eligible, reason_code,
+            reason, evidence_json, recorded_at, created_at)
+         SELECT ?1, ?2, 'schema-v7-cutoff-evaluation-v1', ?3, ?4, ?5, ?6, ?7, ?7
+         WHERE (SELECT MAX(event_sequence) FROM lotto_ledger_eligibility_events
+                WHERE ledger_id = ?2) = ?8`
+      ).bind(
+        `${eligible ? "eligibility-evaluated" : "eligibility-cutoff"}-${ledger.ledger_id.slice(7)}`,
+        ledger.ledger_id,
+        eligible ? 1 : 0,
+        reasonCode,
+        reason,
+        evidence,
+        recordedAt,
+        ledger.selected_event_sequence
+      );
+    });
+    const results = await env.LOTTO_DB.batch(statements);
+    for (let index = 0; index < pending.results.length; index += 1) {
+      const result = results[index];
+      if ((result?.meta.changes ?? 0) !== 1) continue;
+      if (eligibilityDecisions[index]) cutoffAttestations += 1;
+      else cutoffExclusions += 1;
+    }
+    if (batchNumber === 99) {
+      throw new Error("Eligibility cutoff reconciliation exceeded 10000 ledger rows");
+    }
+  }
+
+  // Prevent an unsent pre-v7 result message for an entry which is now known
+  // to violate the evidence boundary. Sent history remains untouched.
+  await env.LOTTO_DB.prepare(
+    `UPDATE lotto_lab_delivery_outbox
+     SET status = 'dead',
+         last_error = 'suppressed: ledger excluded by no-lookahead eligibility invariant',
+         updated_at = ?1
+     WHERE status IN ('pending', 'retry')
+       AND grade_id IN (
+         SELECT g.grade_id
+         FROM lotto_ledger_grades g
+         JOIN lotto_ticket_ledger l ON l.ledger_id = g.ledger_id
+         WHERE (?2 IS NULL OR l.game = ?2)
+           AND (
+             SELECT e.eligible FROM lotto_ledger_eligibility_events e
+             WHERE e.ledger_id = l.ledger_id
+             ORDER BY e.event_sequence DESC LIMIT 1
+           ) = 0
+       )`
+  )
+    .bind(recordedAt, game)
+    .run();
+
+  const correctionGroups = await env.LOTTO_DB.prepare(
+    `SELECT l.game, l.draw_date, COUNT(*) AS entry_count
+     FROM lotto_ticket_ledger l
+     JOIN lotto_ledger_eligibility_events e
+       ON e.event_sequence = (
+         SELECT e2.event_sequence FROM lotto_ledger_eligibility_events e2
+         WHERE e2.ledger_id = l.ledger_id
+         ORDER BY e2.event_sequence DESC LIMIT 1
+       )
+     WHERE l.origin = 'system'
+       AND e.eligible = 0
+       AND e.reason_code IN (
+         'official-result-not-after-proposal', 'proposal-not-before-sales-cutoff'
+       )
+       AND (?1 IS NULL OR l.game = ?1)
+       AND NOT EXISTS (
+         SELECT 1 FROM lotto_lab_delivery_outbox o
+         WHERE o.run_id = 'ticket-lab-eligibility-' || l.game || '-' || l.draw_date
+           AND o.delivery_kind = 'result'
+       )
+     GROUP BY l.game, l.draw_date
+     ORDER BY l.draw_date, l.game
+     LIMIT 100`
+  )
+    .bind(game)
+    .all<{ game: GameCode; draw_date: string; entry_count: number }>();
+  let correctionNotifications = 0;
+  for (const group of correctionGroups.results) {
+    const deliveryId = `result-grade-${(
+      await sha256(`eligibility-correction\0${group.game}\0${group.draw_date}`)
+    ).slice(0, 32)}`;
+    const count = Number(group.entry_count);
+    const message = (
+      `🐰 Ticket Lab CORRECTION — ${GAME_MANIFEST[group.game].name} (${displayDate(group.draw_date)}): ` +
+      `${count} system ledger ${count === 1 ? "entry did" : "entries did"} not satisfy the pre-draw evidence boundary and ` +
+      `${count === 1 ? "is" : "are"} excluded from all Ticket Lab spend, winnings, ROI, and comparisons. ` +
+      `Any earlier result message for the excluded ${count === 1 ? "entry" : "entries"} must not be counted. ` +
+      `Immutable evidence remains preserved; no valid pre-draw record was affected. ${TICKET_LAB_DISCLAIMER}`
+    ).slice(0, 2_000);
+    const inserted = await env.LOTTO_DB.prepare(
+      `INSERT OR IGNORE INTO lotto_lab_delivery_outbox
+         (delivery_id, grade_id, run_id, game, draw_date, delivery_kind, target_role,
+          priority, message_body, status, next_attempt_at, created_at, updated_at)
+       VALUES (?1, NULL, ?2, ?3, ?4, 'result', 'primary', 100, ?5,
+               'pending', ?6, ?6, ?6)`
+    )
+      .bind(
+        deliveryId,
+        `ticket-lab-eligibility-${group.game}-${group.draw_date}`,
+        group.game,
+        group.draw_date,
+        message,
+        recordedAt
+      )
+      .run();
+    correctionNotifications += inserted.meta.changes ?? 0;
+  }
+  return {
+    attestedEntries: (attested.meta.changes ?? 0) + cutoffAttestations,
+    excludedEntries: (excluded.meta.changes ?? 0) + cutoffExclusions,
+    correctionNotifications:
+      correctionNotifications +
+      (await reconcileManualEligibilityNotifications(env, game, recordedAt))
+  };
+}
+
 async function notificationMessage(
   env: Env,
   ledger: LedgerRow,
@@ -1504,6 +1995,12 @@ export async function reconcileResultNotifications(
      JOIN lotto_ticket_ledger l ON l.ledger_id = g.ledger_id
      WHERE l.origin <> 'random'
        AND (?1 IS NULL OR l.game = ?1)
+       AND (
+         SELECT CASE WHEN e.reason_code = 'schema-v7-attestation' THEN 0 ELSE e.eligible END
+         FROM lotto_ledger_eligibility_events e
+         WHERE e.ledger_id = l.ledger_id
+         ORDER BY e.event_sequence DESC LIMIT 1
+       ) = 1
        AND NOT EXISTS (
          SELECT 1 FROM lotto_lab_delivery_outbox o WHERE o.grade_id = g.grade_id
        )
@@ -1540,7 +2037,13 @@ export async function reconcileResultNotifications(
       `INSERT OR IGNORE INTO lotto_lab_delivery_outbox
          (delivery_id, grade_id, run_id, game, draw_date, delivery_kind, target_role,
           priority, message_body, status, next_attempt_at, created_at, updated_at)
-       VALUES (?1, ?2, ?3, ?4, ?5, 'result', ?6, ?7, ?8, 'pending', ?9, ?9, ?9)`
+       SELECT ?1, ?2, ?3, ?4, ?5, 'result', ?6, ?7, ?8, 'pending', ?9, ?9, ?9
+       WHERE (
+         SELECT CASE WHEN e.reason_code = 'schema-v7-attestation' THEN 0 ELSE e.eligible END
+         FROM lotto_ledger_eligibility_events e
+         JOIN lotto_ledger_grades g ON g.ledger_id = e.ledger_id
+         WHERE g.grade_id = ?2 ORDER BY e.event_sequence DESC LIMIT 1
+       ) = 1`
     )
       .bind(
         `result-${candidate.grade_id}`,
@@ -1599,10 +2102,14 @@ export async function gradeAvailableLedgerEntries(
   game: GameCode,
   now = new Date()
 ): Promise<{ gradedEntries: number; gradedTickets: number }> {
+  // Materialize exclusions before any result notification or grade is created.
+  // This also repairs legacy rows which predate the eligibility event stream.
+  await reconcileLedgerEligibility(env, game, now);
+  await reconcileLegacyRandomBaselines(env);
+  await reconcileLedgerEligibility(env, game, now);
   // Repair a prior crash immediately, even if a later malformed ledger blocks
   // this grading pass before it reaches the normal post-commit reconciliation.
   await reconcileResultNotifications(env, game, now);
-  await reconcileLegacyRandomBaselines(env);
   const candidates = await env.LOTTO_DB.prepare(
     `WITH latest AS (
        SELECT ledger_id, MAX(revision) AS revision
@@ -1619,6 +2126,13 @@ export async function gradeAvailableLedgerEntries(
      LEFT JOIN lotto_ledger_grades prior
        ON prior.ledger_id = x.ledger_id AND prior.revision = x.revision
      WHERE l.game = ?1
+       AND d.first_seen_at > l.proposed_at
+       AND (
+         SELECT CASE WHEN e.reason_code = 'schema-v7-attestation' THEN 0 ELSE e.eligible END
+         FROM lotto_ledger_eligibility_events e
+         WHERE e.ledger_id = l.ledger_id
+         ORDER BY e.event_sequence DESC LIMIT 1
+       ) = 1
        AND (prior.grade_id IS NULL OR prior.draw_fingerprint <> d.content_fingerprint)
      ORDER BY l.draw_date, l.ledger_id`
   )
@@ -1693,7 +2207,12 @@ export async function gradeAvailableLedgerEntries(
             result_main_numbers, result_bonus_numbers, result_session, result_source_id,
             result_source_sha256, hit_count, pending_prize_count, known_prize_cents,
             rule_version, graded_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)`
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15
+         WHERE (
+           SELECT CASE WHEN e.reason_code = 'schema-v7-attestation' THEN 0 ELSE e.eligible END
+           FROM lotto_ledger_eligibility_events e WHERE e.ledger_id = ?2
+           ORDER BY e.event_sequence DESC LIMIT 1
+         ) = 1`
       ).bind(
         gradeId,
         candidate.ledger_id,
@@ -1725,7 +2244,8 @@ export async function gradeAvailableLedgerEntries(
              (ticket_grade_id, grade_id, ledger_ticket_id, main_matches, bonus_matches,
               prize_tier, hit, payout_status, prize_cents, pending_reason,
               grading_detail_json, created_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`
+           SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12
+           WHERE EXISTS (SELECT 1 FROM lotto_ledger_grades WHERE grade_id = ?2)`
         ).bind(
           `tg-${gradeId.slice(6)}-${ticket.ordinal}`,
           gradeId,
@@ -2136,6 +2656,17 @@ export async function appendLedgerEntry(
       )
     )
   );
+  statements.push(
+    ...creationEligibilityStatements(env.LOTTO_DB, {
+      ledgerId,
+      origin,
+      game: typedGame,
+      drawDate,
+      targetSession: session,
+      proposedAt,
+      baselineFor: null
+    })
+  );
   const result = await env.LOTTO_DB.batch(statements);
   const created = (result[0]?.meta.changes ?? 0) === 1;
   if (!created) {
@@ -2154,6 +2685,113 @@ export async function appendLedgerEntry(
     }
   }
   return { ledgerId, created };
+}
+
+/** Append an auditable service-side inclusion/exclusion decision. */
+export async function appendLedgerEligibilityEvent(
+  env: Env,
+  ledgerId: string,
+  value: unknown,
+  now = new Date()
+): Promise<{ eventId: string; created: boolean; eligible: boolean }> {
+  if (!/^ledger-[a-f0-9]{32}$/.test(ledgerId)) throw new RangeError("ledger id is malformed");
+  if (!isRecord(value)) throw new RangeError("eligibility event must be an object");
+  if (typeof value.eligible !== "boolean") throw new RangeError("eligible must be boolean");
+  const eligible = value.eligible;
+  const key = boundedString(value.idempotencyKey, "idempotencyKey", 120, true) as string;
+  if (key.length < 8) throw new RangeError("idempotencyKey must contain at least 8 characters");
+  const reason = boundedString(value.reason, "reason", 500, true) as string;
+  const evidenceJson = canonicalEvidence(value.evidence);
+  const ledger = await env.LOTTO_DB.prepare(
+    `SELECT * FROM lotto_ticket_ledger WHERE ledger_id = ?1`
+  )
+    .bind(ledgerId)
+    .first<LedgerRow>();
+  if (!ledger) throw new RangeError("ledger entry was not found");
+  const reasonCode: EligibilityReasonCode = eligible
+    ? "manual-integrity-reinstatement"
+    : "manual-integrity-exclusion";
+  const eventId = `eligibility-event-${(await sha256(`${ledgerId}\0${key}`)).slice(0, 32)}`;
+  const existing = await env.LOTTO_DB.prepare(
+    `SELECT eligibility_event_id, event_sequence, ledger_id, idempotency_key, eligible,
+            reason_code, reason, evidence_json, recorded_at
+     FROM lotto_ledger_eligibility_events WHERE eligibility_event_id = ?1`
+  )
+    .bind(eventId)
+    .first<EligibilityRow>();
+  if (existing) {
+    if (
+      existing.ledger_id !== ledgerId ||
+      existing.idempotency_key !== key ||
+      existing.eligible !== (eligible ? 1 : 0) ||
+      existing.reason_code !== reasonCode ||
+      existing.reason !== reason ||
+      existing.evidence_json !== evidenceJson
+    ) {
+      throw new RangeError("idempotency key conflicts with different eligibility event content");
+    }
+    return { eventId, created: false, eligible };
+  }
+  if (eligible) {
+    const proposalWindow = ticketSalesWindow(
+      ledger.game,
+      ledger.draw_date,
+      ledger.target_session,
+      new Date(ledger.proposed_at)
+    );
+    if (!proposalWindow.isDrawDay || !proposalWindow.beforeCutoff) {
+      throw new RangeError(
+        "an eligibility event cannot override a proposal at or after the official sales cutoff"
+      );
+    }
+    const objectiveViolation = await env.LOTTO_DB.prepare(
+      `SELECT d.first_seen_at
+       FROM lotto_draws d
+       WHERE d.game = ?1 AND d.draw_date = ?2 AND d.session = ?3
+         AND d.first_seen_at <= ?4
+       LIMIT 1`
+    )
+      .bind(ledger.game, ledger.draw_date, ledger.target_session, ledger.proposed_at)
+      .first<{ first_seen_at: string }>();
+    if (objectiveViolation) {
+      throw new RangeError(
+        "an eligibility event cannot override an official result that was already present at proposal time"
+      );
+    }
+  }
+  const recordedAt = now.toISOString();
+  const inserted = await env.LOTTO_DB.prepare(
+    `INSERT OR IGNORE INTO lotto_ledger_eligibility_events
+       (eligibility_event_id, ledger_id, idempotency_key, eligible, reason_code,
+        reason, evidence_json, recorded_at, created_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)`
+  )
+    .bind(eventId, ledgerId, key, eligible ? 1 : 0, reasonCode, reason, evidenceJson, recordedAt)
+    .run();
+  const created = (inserted.meta.changes ?? 0) === 1;
+  if (!created) {
+    const collided = await env.LOTTO_DB.prepare(
+      `SELECT eligibility_event_id, event_sequence, ledger_id, idempotency_key, eligible,
+              reason_code, reason, evidence_json, recorded_at
+       FROM lotto_ledger_eligibility_events
+       WHERE eligibility_event_id = ?1 OR (ledger_id = ?2 AND idempotency_key = ?3)
+       LIMIT 1`
+    )
+      .bind(eventId, ledgerId, key)
+      .first<EligibilityRow>();
+    if (
+      !collided ||
+      collided.eligibility_event_id !== eventId ||
+      collided.eligible !== (eligible ? 1 : 0) ||
+      collided.reason_code !== reasonCode ||
+      collided.reason !== reason ||
+      collided.evidence_json !== evidenceJson
+    ) {
+      throw new RangeError("idempotency key conflicts with different eligibility event content");
+    }
+  }
+  await reconcileManualEligibilityNotifications(env, ledger.game, recordedAt);
+  return { eventId, created, eligible };
 }
 
 function normalizedPurchaseOptions(
@@ -2599,6 +3237,11 @@ interface JoinedTrackRow extends LedgerRow, LedgerTicketRow {
   settlement_evidence_json: string | null;
   settled_at: string | null;
   notification_status: string | null;
+  eligibility_event_id: string | null;
+  eligibility_eligible: number | null;
+  eligibility_reason: string | null;
+  eligibility_evidence_json: string | null;
+  eligibility_recorded_at: string | null;
 }
 
 function filteredWhere(filters: TicketLabFilters): { sql: string; values: Array<string> } {
@@ -2636,7 +3279,12 @@ const JOINED_TRACK_SELECT = `
          tg.grading_detail_json,
          s.settlement_id, s.final_prize_cents, s.source AS settlement_source,
          s.evidence_json AS settlement_evidence_json, s.settled_at,
-         o.status AS notification_status
+         o.status AS notification_status,
+         e.eligibility_event_id,
+         CASE WHEN e.reason_code = 'schema-v7-attestation' THEN 0 ELSE e.eligible END AS eligibility_eligible,
+         e.reason AS eligibility_reason,
+         e.evidence_json AS eligibility_evidence_json,
+         e.recorded_at AS eligibility_recorded_at
   FROM lotto_ticket_ledger l
   JOIN lotto_ledger_tickets t ON t.ledger_id = l.ledger_id
   LEFT JOIN lotto_purchase_confirmation_events p
@@ -2658,7 +3306,13 @@ const JOINED_TRACK_SELECT = `
       WHERE s2.ticket_grade_id = tg.ticket_grade_id
       ORDER BY s2.settled_at DESC, s2.settlement_id DESC LIMIT 1
     )
-  LEFT JOIN lotto_lab_delivery_outbox o ON o.grade_id = g.grade_id`;
+  LEFT JOIN lotto_lab_delivery_outbox o ON o.grade_id = g.grade_id
+  LEFT JOIN lotto_ledger_eligibility_events e
+    ON e.event_sequence = (
+      SELECT e2.event_sequence FROM lotto_ledger_eligibility_events e2
+      WHERE e2.ledger_id = l.ledger_id
+      ORDER BY e2.event_sequence DESC LIMIT 1
+    )`;
 
 function effectivePrize(row: JoinedTrackRow): number {
   if (row.final_prize_cents !== null) return Number(row.final_prize_cents);
@@ -2677,7 +3331,10 @@ function scorecard(
   confirmedOnly = false,
   ticketLevelSpend = false
 ): TicketLabScorecard {
-  const eligible = confirmedOnly ? rows.filter((row) => row.purchased === 1) : [...rows];
+  const trackRecordRows = rows.filter((row) => row.eligibility_eligible === 1);
+  const eligible = confirmedOnly
+    ? trackRecordRows.filter((row) => row.purchased === 1)
+    : trackRecordRows;
   const ledgers = new Map<string, JoinedTrackRow>();
   const tickets = new Map<string, JoinedTrackRow>();
   for (const row of eligible) {
@@ -2772,6 +3429,11 @@ export interface TicketLabTrackRecord {
     readonly count: number;
     readonly wonCents: number;
   }[];
+  readonly eligibility: {
+    readonly eligibleEntries: number;
+    readonly excludedEntries: number;
+    readonly excludedTickets: number;
+  };
   readonly disclaimer: string;
 }
 
@@ -2781,7 +3443,9 @@ function matchedComparisonRows(rows: readonly JoinedTrackRow[]): {
   sharedStrata: number;
   ticketsPerOrigin: number;
 } {
-  const graded = rows.filter((row) => row.ticket_grade_id !== null);
+  const graded = rows.filter(
+    (row) => row.eligibility_eligible === 1 && row.ticket_grade_id !== null
+  );
   const origins: readonly Origin[] = graded.some((row) => row.origin === "user")
     ? ["system", "random", "user"]
     : ["system", "random"];
@@ -2828,8 +3492,11 @@ export async function readTrackRecord(
     where.values.length ? statement.bind(...where.values) : statement
   ).all<JoinedTrackRow>();
   const result = await rows;
-  const proposals = result.results.filter((row) => row.origin !== "random");
-  const matched = matchedComparisonRows(result.results);
+  const latestByLedger = new Map<string, JoinedTrackRow>();
+  for (const row of result.results) latestByLedger.set(row.ledger_id, row);
+  const eligibleRows = result.results.filter((row) => row.eligibility_eligible === 1);
+  const proposals = eligibleRows.filter((row) => row.origin !== "random");
+  const matched = matchedComparisonRows(eligibleRows);
   const histogram = new Map<string, { count: number; wonCents: number }>();
   for (const row of proposals) {
     if (row.hit !== 1 || row.prize_tier === null) continue;
@@ -2857,6 +3524,15 @@ export async function readTrackRecord(
     prizeTiers: [...histogram.entries()]
       .map(([tier, values]) => ({ tier, ...values }))
       .sort((left, right) => right.count - left.count || left.tier.localeCompare(right.tier)),
+    eligibility: {
+      eligibleEntries: [...latestByLedger.values()].filter((row) => row.eligibility_eligible === 1)
+        .length,
+      excludedEntries: [...latestByLedger.values()].filter((row) => row.eligibility_eligible !== 1)
+        .length,
+      excludedTickets: [...latestByLedger.values()]
+        .filter((row) => row.eligibility_eligible !== 1)
+        .reduce((total, row) => total + Number(row.ticket_count), 0)
+    },
     disclaimer: TICKET_LAB_DISCLAIMER
   };
 }
@@ -2913,7 +3589,31 @@ function publicPurchase(row: JoinedTrackRow): {
   };
 }
 
+function publicEligibility(row: JoinedTrackRow): PublicLedgerEligibility {
+  if (row.eligibility_event_id === null || row.eligibility_eligible === null) {
+    throw new Error(`Ledger ${row.ledger_id} has no eligibility attestation`);
+  }
+  if (row.eligibility_eligible === 1) {
+    return { eligible: true, eventId: null, reason: null, evidence: {}, recordedAt: null };
+  }
+  if (
+    row.eligibility_reason === null ||
+    row.eligibility_evidence_json === null ||
+    row.eligibility_recorded_at === null
+  ) {
+    throw new Error(`Ledger ${row.ledger_id} has an incomplete exclusion event`);
+  }
+  return {
+    eligible: false,
+    eventId: row.eligibility_event_id,
+    reason: row.eligibility_reason,
+    evidence: decodeRecord(row.eligibility_evidence_json, "eligibility evidence"),
+    recordedAt: row.eligibility_recorded_at
+  };
+}
+
 function entryStatus(rows: readonly JoinedTrackRow[]): EntryStatus {
+  if (rows.some((row) => row.eligibility_eligible !== 1)) return "excluded";
   if (rows.every((row) => row.grade_id === null)) return "open";
   if (rows.some((row) => row.payout_status === "pending" && row.final_prize_cents === null))
     return "pending";
@@ -2956,16 +3656,19 @@ export async function listTicketLabEntries(
     const gradeExists = `EXISTS (SELECT 1 FROM lotto_ledger_grades gx WHERE gx.ledger_id = l.ledger_id)`;
     const latestGrade = `(SELECT gx.grade_id FROM lotto_ledger_grades gx WHERE gx.ledger_id = l.ledger_id ORDER BY gx.revision DESC LIMIT 1)`;
     const pendingExists = `EXISTS (SELECT 1 FROM lotto_ticket_grades tx LEFT JOIN lotto_grade_settlement_events sx ON sx.ticket_grade_id = tx.ticket_grade_id WHERE tx.grade_id = ${latestGrade} AND tx.payout_status = 'pending' AND sx.settlement_id IS NULL)`;
-    if (input.status === "open") clauses.push(`NOT ${gradeExists}`);
-    else if (input.status === "graded") clauses.push(gradeExists);
-    else if (input.status === "pending") clauses.push(pendingExists);
+    const trackRecordEligible = `COALESCE((SELECT CASE WHEN ex.reason_code = 'schema-v7-attestation' THEN 0 ELSE ex.eligible END FROM lotto_ledger_eligibility_events ex WHERE ex.ledger_id = l.ledger_id ORDER BY ex.event_sequence DESC LIMIT 1), 0) = 1`;
+    if (input.status === "excluded") clauses.push(`NOT ${trackRecordEligible}`);
+    else if (input.status === "open") clauses.push(`${trackRecordEligible} AND NOT ${gradeExists}`);
+    else if (input.status === "graded") clauses.push(`${trackRecordEligible} AND ${gradeExists}`);
+    else if (input.status === "pending")
+      clauses.push(`${trackRecordEligible} AND ${pendingExists}`);
     else if (input.status === "won")
       clauses.push(
-        `EXISTS (SELECT 1 FROM lotto_ticket_grades tx WHERE tx.grade_id = ${latestGrade} AND tx.hit = 1) AND NOT ${pendingExists}`
+        `${trackRecordEligible} AND EXISTS (SELECT 1 FROM lotto_ticket_grades tx WHERE tx.grade_id = ${latestGrade} AND tx.hit = 1) AND NOT ${pendingExists}`
       );
     else
       clauses.push(
-        `${gradeExists} AND NOT EXISTS (SELECT 1 FROM lotto_ticket_grades tx WHERE tx.grade_id = ${latestGrade} AND tx.hit = 1)`
+        `${trackRecordEligible} AND ${gradeExists} AND NOT EXISTS (SELECT 1 FROM lotto_ticket_grades tx WHERE tx.grade_id = ${latestGrade} AND tx.hit = 1)`
       );
   }
   values.push(String(input.limit + 1));
@@ -3005,6 +3708,7 @@ export async function listTicketLabEntries(
       (row) => row.payout_status === "pending" && row.final_prize_cents === null
     ).length;
     const purchase = publicPurchase(first);
+    const eligibility = publicEligibility(first);
     return {
       ledgerId: ledger.ledger_id,
       origin: ledger.origin,
@@ -3018,6 +3722,8 @@ export async function listTicketLabEntries(
       proposedAt: ledger.proposed_at,
       seed: ledger.seed,
       status: entryStatus(rows),
+      trackRecordEligible: eligibility.eligible,
+      eligibility,
       coverage: {
         distinctPairs: ledger.coverage_distinct_pairs,
         possiblePairs: ledger.coverage_possible_pairs,

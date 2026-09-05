@@ -25,6 +25,7 @@ import { officialDrawWeekdays, previousConfiguredDrawDate, texasClock } from "./
 import {
   appendGradeSettlement,
   appendLedgerEntry,
+  appendLedgerEligibilityEvent,
   appendPurchaseConfirmation,
   listTicketLabEntries,
   readTrackRecord,
@@ -381,7 +382,7 @@ async function health(request: Request, env: Env): Promise<Response> {
       .map((game) => game.game);
     const deliveryBridgeConfigured = (env.RABBITHOLETX_SERVICE_TOKEN?.trim().length ?? 0) > 0;
     const ready =
-      schema?.value === "6" &&
+      schema?.value === "7" &&
       configuredGames === GAME_CODES.length &&
       selectedGames > 0 &&
       unhealthySelectedGames.length === 0 &&
@@ -643,6 +644,38 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         throw caught;
       }
     }
+    const eligibilityMatch = pathname.match(
+      /^\/api\/lotto\/v1\/ticket-lab\/entries\/(ledger-[a-f0-9]{32})\/eligibility-events$/
+    );
+    if (request.method === "POST" && eligibilityMatch) {
+      if (!(await serviceAuthorized(request, env))) {
+        return error(request, 401, "unauthorized", "A valid service bearer token is required");
+      }
+      try {
+        const result = await appendLedgerEligibilityEvent(
+          env,
+          eligibilityMatch[1] as string,
+          await boundedJson(request)
+        );
+        return json(
+          request,
+          { schemaVersion: 1, generatedAt: new Date().toISOString(), data: result },
+          { status: result.created ? 201 : 200 }
+        );
+      } catch (caught) {
+        if (caught instanceof RangeError) {
+          return error(
+            request,
+            caught.message.includes("idempotency key conflicts") ? 409 : 400,
+            caught.message.includes("idempotency key conflicts")
+              ? "idempotency_conflict"
+              : "invalid_eligibility_event",
+            caught.message
+          );
+        }
+        throw caught;
+      }
+    }
     const purchaseMatch = pathname.match(
       /^\/api\/lotto\/v1\/ticket-lab\/entries\/(ledger-[a-f0-9]{32})\/purchase-confirmations$/
     );
@@ -790,13 +823,13 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         );
       }
       const rawStatus = requestUrl.searchParams.get("status");
-      const statuses = ["open", "graded", "pending", "won", "lost"] as const;
+      const statuses = ["open", "graded", "pending", "won", "lost", "excluded"] as const;
       if (rawStatus !== null && !(statuses as readonly string[]).includes(rawStatus)) {
         return error(
           request,
           400,
           "invalid_status",
-          "status must be open, graded, pending, won, or lost"
+          "status must be open, graded, pending, won, lost, or excluded"
         );
       }
       const rawLimit = requestUrl.searchParams.get("limit") ?? "25";
@@ -811,7 +844,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
             generatedAt: new Date().toISOString(),
             data: await listTicketLabEntries(env, {
               ...filters,
-              status: rawStatus as "open" | "graded" | "pending" | "won" | "lost" | null,
+              status: rawStatus as
+                "open" | "graded" | "pending" | "won" | "lost" | "excluded" | null,
               limit: Number(rawLimit),
               cursor: requestUrl.searchParams.get("cursor")
             })
