@@ -46,7 +46,7 @@ beforeEach(async () => {
     env.LOTTO_DB.prepare("DELETE FROM lotto_ingestions"),
     env.LOTTO_DB.prepare("DELETE FROM lotto_sources"),
     env.LOTTO_DB.prepare("UPDATE lotto_game_config SET play_style = 'straight'"),
-    env.LOTTO_DB.prepare("UPDATE schema_meta SET value = '6' WHERE key = 'schema_version'")
+    env.LOTTO_DB.prepare("UPDATE schema_meta SET value = '7' WHERE key = 'schema_version'")
   ]);
   await clearR2();
 });

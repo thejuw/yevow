@@ -6746,6 +6746,11 @@ output {
   background: rgba(4, 7, 9, 0.4);
 }
 
+.lotto-ledger-entry.is-excluded {
+  border-color: rgba(255, 123, 112, 0.22);
+  background: linear-gradient(145deg, rgba(255, 123, 112, 0.035), rgba(4, 7, 9, 0.4) 55%);
+}
+
 .lotto-ledger-entry-head {
   padding: 13px 15px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.055);
@@ -6770,6 +6775,46 @@ output {
 .lotto-ledger-status { border-color: rgba(115, 207, 209, 0.18); color: #849b9e; }
 .lotto-ledger-status.is-win { border-color: rgba(101, 221, 176, 0.3); color: var(--lotto-mint); }
 .lotto-ledger-status.is-pending { border-color: rgba(214, 185, 99, 0.32); color: var(--lotto-gold); }
+.lotto-ledger-status.is-excluded { border-color: rgba(255, 123, 112, 0.35); color: var(--lotto-coral); }
+
+.lotto-track-eligibility,
+.lotto-ledger-exclusion {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 9px;
+  color: var(--lotto-coral);
+  background: rgba(255, 123, 112, 0.035);
+}
+
+.lotto-track-eligibility {
+  margin-top: 8px;
+  padding: 11px 14px;
+  border: 1px solid rgba(255, 123, 112, 0.17);
+}
+
+.lotto-track-eligibility p,
+.lotto-ledger-exclusion p {
+  margin: 0;
+  color: #818e92;
+  font-size: 9px;
+  line-height: 1.6;
+}
+
+.lotto-track-eligibility strong,
+.lotto-ledger-exclusion strong { color: #d5dcdb; }
+
+.lotto-ledger-exclusion {
+  padding: 10px 15px;
+  border-bottom: 1px solid rgba(255, 123, 112, 0.16);
+}
+
+.lotto-ledger-exclusion > div { min-width: 0; }
+.lotto-ledger-exclusion strong { display: block; font-size: 10px; }
+.lotto-ledger-exclusion small { color: #657277; font-family: "SFMono-Regular", Consolas, monospace; font-size: 7px; overflow-wrap: anywhere; }
+.lotto-ledger-exclusion details { margin-top: 6px; color: #77858a; font-size: 8px; }
+.lotto-ledger-exclusion summary { cursor: pointer; text-transform: uppercase; letter-spacing: 0.07em; }
+.lotto-ledger-exclusion details p { margin-top: 5px; overflow-wrap: anywhere; }
 
 .lotto-ledger-result {
   padding: 9px 15px;

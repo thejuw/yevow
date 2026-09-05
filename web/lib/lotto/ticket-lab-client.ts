@@ -3,7 +3,7 @@ import { configuredLottoApiBase, normalizeLottoApiBase } from "./status-client";
 import type { DigitPlayStyle, GameCode } from "./types";
 
 export type TicketLabOrigin = "system" | "random" | "user";
-export type TicketLabEntryStatus = "open" | "graded" | "pending" | "won" | "lost";
+export type TicketLabEntryStatus = "open" | "graded" | "pending" | "won" | "lost" | "excluded";
 export type TicketLabPurchaseStatus = "unconfirmed" | "confirmed" | "declined";
 export type TicketLabPayoutStatus = "none" | "fixed" | "pending" | "settled";
 
@@ -51,6 +51,11 @@ export interface TicketLabSummaryResponse {
     readonly totals: {
       readonly proposals: TicketLabScorecard;
       readonly confirmed: TicketLabScorecard;
+    };
+    readonly eligibility: {
+      readonly eligibleEntries: number;
+      readonly excludedEntries: number;
+      readonly excludedTickets: number;
     };
     readonly comparisons: readonly TicketLabComparison[];
     readonly comparisonPolicy: {
@@ -125,6 +130,14 @@ export interface TicketLabEntry {
   readonly targetSession: string;
   readonly proposedAt: string;
   readonly status: Exclude<TicketLabEntryStatus, "graded">;
+  readonly trackRecordEligible: boolean;
+  readonly eligibility: {
+    readonly eligible: boolean;
+    readonly eventId: string | null;
+    readonly reason: string | null;
+    readonly evidence: Readonly<Record<string, unknown>>;
+    readonly recordedAt: string | null;
+  };
   readonly seed: string | null;
   readonly coverage: {
     readonly distinctPairs: number;
@@ -341,18 +354,12 @@ function scorecard(value: unknown, field: string): TicketLabScorecard {
   let bestHit: TicketLabBestHit | null = null;
   if (bestInput !== null) {
     const best = record(bestInput, `${field}.bestHit`);
-    const payoutStatus = stringValue(
-      best.payoutStatus,
-      `${field}.bestHit.payoutStatus`,
-      16
-    );
+    const payoutStatus = stringValue(best.payoutStatus, `${field}.bestHit.payoutStatus`, 16);
     if (payoutStatus !== "fixed" && payoutStatus !== "settled" && payoutStatus !== "pending") {
       throw new LottoTicketLabClientError(`${field}.bestHit.payoutStatus is unknown.`);
     }
     const prizeCents =
-      best.prizeCents === null
-        ? null
-        : integer(best.prizeCents, `${field}.bestHit.prizeCents`);
+      best.prizeCents === null ? null : integer(best.prizeCents, `${field}.bestHit.prizeCents`);
     if ((payoutStatus === "pending") !== (prizeCents === null)) {
       throw new LottoTicketLabClientError(`${field}.bestHit payout evidence is inconsistent.`);
     }
@@ -364,7 +371,8 @@ function scorecard(value: unknown, field: string): TicketLabScorecard {
       payoutStatus
     };
   }
-  const roiPercent = input.roiPercent === null ? null : finite(input.roiPercent, `${field}.roiPercent`);
+  const roiPercent =
+    input.roiPercent === null ? null : finite(input.roiPercent, `${field}.roiPercent`);
   const economicRoiPercent =
     input.economicRoiPercent === null
       ? null
@@ -399,6 +407,7 @@ export function parseTicketLabSummary(value: unknown): TicketLabSummaryResponse 
   const { generatedAt, data } = envelope(value, "Ticket Lab summary");
   const filters = record(data.filters, "Ticket Lab summary filters");
   const totals = record(data.totals, "Ticket Lab summary totals");
+  const eligibility = record(data.eligibility, "Ticket Lab summary eligibility");
   const comparisonPolicy = record(data.comparisonPolicy, "Ticket Lab comparison policy");
   if (!Array.isArray(data.comparisons) || !Array.isArray(data.prizeTiers)) {
     throw new LottoTicketLabClientError("Ticket Lab summary collections must be arrays.");
@@ -466,6 +475,20 @@ export function parseTicketLabSummary(value: unknown): TicketLabSummaryResponse 
         proposals: scorecard(totals.proposals, "Ticket Lab proposals"),
         confirmed: scorecard(totals.confirmed, "Ticket Lab confirmed plays")
       },
+      eligibility: {
+        eligibleEntries: integer(
+          eligibility.eligibleEntries,
+          "Ticket Lab summary eligibility.eligibleEntries"
+        ),
+        excludedEntries: integer(
+          eligibility.excludedEntries,
+          "Ticket Lab summary eligibility.excludedEntries"
+        ),
+        excludedTickets: integer(
+          eligibility.excludedTickets,
+          "Ticket Lab summary eligibility.excludedTickets"
+        )
+      },
       comparisons,
       comparisonPolicy: {
         method: "shared-strata-min-ticket-count",
@@ -499,10 +522,15 @@ function grade(value: unknown, game: GameCode, field: string): TicketLabTicketGr
   const bonus = integerArray(result.bonus, `${field}.result.bonus`);
   assertNumbers(game, main, bonus, `${field}.result`);
   const payoutStatus = stringValue(input.payoutStatus, `${field}.payoutStatus`, 16);
-  if (!(["none", "fixed", "pending", "settled"] as const).includes(payoutStatus as TicketLabPayoutStatus)) {
+  if (
+    !(["none", "fixed", "pending", "settled"] as const).includes(
+      payoutStatus as TicketLabPayoutStatus
+    )
+  ) {
     throw new LottoTicketLabClientError(`${field}.payoutStatus is unknown.`);
   }
-  const prizeCents = input.prizeCents === null ? null : integer(input.prizeCents, `${field}.prizeCents`);
+  const prizeCents =
+    input.prizeCents === null ? null : integer(input.prizeCents, `${field}.prizeCents`);
   const effectivePrizeCents =
     input.effectivePrizeCents === null
       ? null
@@ -608,6 +636,48 @@ function entry(value: unknown, field: string): TicketLabEntry {
   const ev = record(input.ev, `${field}.ev`);
   const evidence = record(input.data, `${field}.data`);
   const spend = record(input.spend, `${field}.spend`);
+  const eligibilityInput = record(input.eligibility, `${field}.eligibility`);
+  const trackRecordEligible = booleanValue(
+    input.trackRecordEligible,
+    `${field}.trackRecordEligible`
+  );
+  const eligibilityEligible = booleanValue(
+    eligibilityInput.eligible,
+    `${field}.eligibility.eligible`
+  );
+  if (eligibilityEligible !== trackRecordEligible) {
+    throw new LottoTicketLabClientError(
+      `${field}.trackRecordEligible does not match its eligibility evidence.`
+    );
+  }
+  const eligibilityEventId = nullableString(
+    eligibilityInput.eventId,
+    `${field}.eligibility.eventId`,
+    100
+  );
+  const eligibilityReason = nullableString(
+    eligibilityInput.reason,
+    `${field}.eligibility.reason`,
+    1_000
+  );
+  const eligibilityEvidence = record(eligibilityInput.evidence, `${field}.eligibility.evidence`);
+  const eligibilityRecordedAt =
+    eligibilityInput.recordedAt === null
+      ? null
+      : dateTime(eligibilityInput.recordedAt, `${field}.eligibility.recordedAt`);
+  if (
+    (trackRecordEligible &&
+      (eligibilityEventId !== null ||
+        eligibilityReason !== null ||
+        eligibilityRecordedAt !== null ||
+        Object.keys(eligibilityEvidence).length !== 0)) ||
+    (!trackRecordEligible &&
+      (eligibilityEventId === null || eligibilityReason === null || eligibilityRecordedAt === null))
+  ) {
+    throw new LottoTicketLabClientError(
+      `${field}.eligibility evidence does not match its eligibility state.`
+    );
+  }
   const purchaseInput = record(input.purchase, `${field}.purchase`);
   const purchaseStatus = stringValue(purchaseInput.status, `${field}.purchase.status`, 16);
   if (
@@ -617,11 +687,7 @@ function entry(value: unknown, field: string): TicketLabEntry {
   ) {
     throw new LottoTicketLabClientError(`${field}.purchase.status is unknown.`);
   }
-  const purchaseEventId = nullableString(
-    purchaseInput.eventId,
-    `${field}.purchase.eventId`,
-    100
-  );
+  const purchaseEventId = nullableString(purchaseInput.eventId, `${field}.purchase.eventId`, 100);
   const purchaseAt =
     purchaseInput.at === null ? null : dateTime(purchaseInput.at, `${field}.purchase.at`);
   if (
@@ -639,7 +705,9 @@ function entry(value: unknown, field: string): TicketLabEntry {
   if (!Array.isArray(input.tickets) || input.tickets.length === 0 || input.tickets.length > 2_000) {
     throw new LottoTicketLabClientError(`${field}.tickets must be a non-empty bounded array.`);
   }
-  const tickets = input.tickets.map((value, index) => ticket(value, game, `${field}.tickets[${index}]`));
+  const tickets = input.tickets.map((value, index) =>
+    ticket(value, game, `${field}.tickets[${index}]`)
+  );
   if (new Set(tickets.map((item) => item.ordinal)).size !== tickets.length) {
     throw new LottoTicketLabClientError(`${field}.tickets contains duplicate ordinals.`);
   }
@@ -651,7 +719,13 @@ function entry(value: unknown, field: string): TicketLabEntry {
     throw new LottoTicketLabClientError(`${field}.proposalStatus is unsupported.`);
   }
   const status = stringValue(input.status, `${field}.status`, 16);
-  if (status !== "open" && status !== "pending" && status !== "won" && status !== "lost") {
+  if (
+    status !== "open" &&
+    status !== "pending" &&
+    status !== "won" &&
+    status !== "lost" &&
+    status !== "excluded"
+  ) {
     throw new LottoTicketLabClientError(`${field}.status is unknown.`);
   }
   const computedStatus = tickets.every((item) => item.grade === null)
@@ -661,7 +735,10 @@ function entry(value: unknown, field: string): TicketLabEntry {
       : tickets.some((item) => item.grade?.hit)
         ? "won"
         : "lost";
-  if (status !== computedStatus) {
+  if (
+    (trackRecordEligible && status !== computedStatus) ||
+    (!trackRecordEligible && status !== "excluded")
+  ) {
     throw new LottoTicketLabClientError(`${field}.status does not reconcile with ticket grades.`);
   }
   return {
@@ -676,6 +753,14 @@ function entry(value: unknown, field: string): TicketLabEntry {
     targetSession: typeof input.targetSession === "string" ? input.targetSession : "",
     proposedAt: dateTime(input.proposedAt, `${field}.proposedAt`),
     status,
+    trackRecordEligible,
+    eligibility: {
+      eligible: eligibilityEligible,
+      eventId: eligibilityEventId,
+      reason: eligibilityReason,
+      evidence: eligibilityEvidence,
+      recordedAt: eligibilityRecordedAt
+    },
     seed: nullableString(input.seed, `${field}.seed`, 200),
     coverage: {
       distinctPairs: integer(coverage.distinctPairs, `${field}.coverage.distinctPairs`),
@@ -718,7 +803,8 @@ export function parseTicketLabEntries(value: unknown): TicketLabEntriesResponse 
     status !== "graded" &&
     status !== "pending" &&
     status !== "won" &&
-    status !== "lost"
+    status !== "lost" &&
+    status !== "excluded"
   ) {
     throw new LottoTicketLabClientError("Ticket Lab entry status filter is unknown.");
   }
@@ -775,7 +861,10 @@ async function readJson(
     } catch {
       // The status code is authoritative; test streams may not be cancellable.
     }
-    throw new LottoTicketLabClientError(`Ticket Lab request failed with HTTP ${response.status}.`, response.status);
+    throw new LottoTicketLabClientError(
+      `Ticket Lab request failed with HTTP ${response.status}.`,
+      response.status
+    );
   }
   try {
     return await response.json();

@@ -233,7 +233,9 @@ test.describe("LOTTO forensic dashboard", () => {
     await expect(pick3Tickets.getByRole("listitem").first()).toContainText("0");
     await expect(pick3Tickets.getByRole("listitem").first()).toContainText("4");
     await expect(pick3Tickets.getByRole("listitem").first()).toContainText("straight");
-    await expect(panel.getByText(/Exact\/box choice changes cost and EV; no digit is due/i)).toBeVisible();
+    await expect(
+      panel.getByText(/Exact\/box choice changes cost and EV; no digit is due/i)
+    ).toBeVisible();
     await expect(panel.getByText("3.36%", { exact: true })).toBeVisible();
     await expect(panel.getByText("-$0.62", { exact: true })).toBeVisible();
     await expect(panel.getByText("Optimized, not predicted.", { exact: true })).toBeVisible();
@@ -275,16 +277,43 @@ test.describe("LOTTO forensic dashboard", () => {
     await expect(trackRecord.getByText("4 of 5", { exact: true }).first()).toBeVisible();
     await expect(trackRecord.getByText("$350.00", { exact: true }).first()).toBeVisible();
     await expect(trackRecord.getByRole("list", { name: "Cash Five ledger tickets" })).toBeVisible();
+    const winner = trackRecord
+      .locator("article.lotto-ledger-entry")
+      .filter({ hasText: "Cash Five" });
+    await expect(winner.getByText("Winner", { exact: true })).toBeVisible();
+    const excluded = trackRecord
+      .locator("article.lotto-ledger-entry")
+      .filter({ hasText: "Daily 4" });
+    await expect(excluded.getByText("Excluded", { exact: true })).toBeVisible();
+    await expect(excluded.getByText("Excluded from grading", { exact: true })).toBeVisible();
+    await expect(excluded.getByText("Awaiting draw", { exact: true })).toHaveCount(0);
+    await expect(excluded.getByText("Official result", { exact: true })).toHaveCount(0);
+    await expect(excluded.getByRole("list", { name: "Daily 4 ledger tickets" })).toBeVisible();
+    await expect(
+      trackRecord.getByText("Excluded from ROI and track record", { exact: true })
+    ).toBeVisible();
+    await excluded.getByText("Exclusion evidence", { exact: true }).click();
+    await expect(excluded.getByText(/2026-09-04T18:00:08.227Z/)).toBeVisible();
+    await expect(
+      trackRecord.getByText("Official result existed before this legacy proposal was recorded.", {
+        exact: true
+      })
+    ).toBeVisible();
     await expect(trackRecord.getByText("Optimized, not predicted.", { exact: true })).toBeVisible();
 
     await trackRecord.getByRole("combobox", { name: "Game" }).selectOption("cash5");
     await trackRecord.getByLabel("From", { exact: true }).fill("2026-01-01");
     await trackRecord.getByLabel("To", { exact: true }).fill("2026-09-04");
-    await trackRecord.getByRole("combobox", { name: "Result" }).selectOption("won");
+    await expect(
+      trackRecord.getByRole("combobox", { name: "Result" }).getByRole("option", {
+        name: "Excluded from track record"
+      })
+    ).toBeAttached();
+    await trackRecord.getByRole("combobox", { name: "Result" }).selectOption("excluded");
     await trackRecord.getByRole("button", { name: "Apply filters" }).click();
 
     await expect.poll(() => requests.some((url) => url.includes("game=cash5"))).toBe(true);
-    await expect.poll(() => requests.some((url) => url.includes("status=won"))).toBe(true);
+    await expect.poll(() => requests.some((url) => url.includes("status=excluded"))).toBe(true);
   });
 
   test("shows both verified official draw archives", async ({ page }) => {
@@ -481,6 +510,7 @@ function ticketLabSummaryFixture() {
           economicRoiPercent: null
         })
       },
+      eligibility: { eligibleEntries: 2, excludedEntries: 1, excludedTickets: 1 },
       comparisons: [
         {
           origin: "system",
@@ -498,7 +528,10 @@ function ticketLabSummaryFixture() {
             economicRoiPercent: 17400
           })
         },
-        { origin: "random", ...ticketLabScorecard({ wonCents: 80, roiPercent: -60, economicRoiPercent: -60 }) },
+        {
+          origin: "random",
+          ...ticketLabScorecard({ wonCents: 80, roiPercent: -60, economicRoiPercent: -60 })
+        },
         {
           origin: "user",
           ...ticketLabScorecard({
@@ -553,6 +586,14 @@ function ticketLabEntriesFixture() {
           targetSession: "",
           proposedAt: "2026-06-26T12:00:00.000Z",
           status: "won",
+          trackRecordEligible: true,
+          eligibility: {
+            eligible: true,
+            eventId: null,
+            reason: null,
+            evidence: {},
+            recordedAt: null
+          },
           seed: "b".repeat(64),
           coverage: { distinctPairs: 20, possiblePairs: 595, percent: 3.36 },
           ev: { netCentsPerTicket: -62, assumption: "Pre-tax current-era fixed prize model." },
@@ -618,6 +659,54 @@ function ticketLabEntriesFixture() {
                 settlement: null,
                 gradedAt: "2026-06-27T04:00:00.000Z"
               }
+            }
+          ]
+        },
+        {
+          ledgerId: `ledger-${"b".repeat(32)}`,
+          origin: "system",
+          correctionOf: null,
+          baselineFor: null,
+          runId: `gen-${"b".repeat(32)}`,
+          game: "d4",
+          gameName: "Daily 4",
+          drawDate: "2026-09-04",
+          targetSession: "morning",
+          proposedAt: "2026-09-04T18:57:34.201Z",
+          status: "excluded",
+          trackRecordEligible: false,
+          eligibility: {
+            eligible: false,
+            eventId: `eligibility-${"f".repeat(32)}`,
+            reason: "Official result existed before this legacy proposal was recorded.",
+            evidence: {
+              proposedAt: "2026-09-04T18:57:34.201Z",
+              resultFirstSeenAt: "2026-09-04T18:00:08.227Z"
+            },
+            recordedAt: "2026-09-05T13:00:00.000Z"
+          },
+          seed: "c".repeat(64),
+          coverage: { distinctPairs: 6, possiblePairs: 45, percent: 13.33 },
+          ev: { netCentsPerTicket: -50, assumption: "Pre-tax straight-play fixed prize model." },
+          ticketCostCents: 100,
+          proposalStatus: "proposed",
+          purchase: { status: "unconfirmed", eventId: null, at: null, spendCents: 0 },
+          data: { observedThrough: "2026-09-03", datasetDigest: "d".repeat(64) },
+          spend: { proposalCents: 100, confirmedCents: 0 },
+          wonCents: 0,
+          pendingPrizeCount: 0,
+          resultNotificationStatus: null,
+          tickets: [
+            {
+              ledgerTicketId: `lt-${"b".repeat(32)}-1`,
+              ordinal: 1,
+              main: [4, 2, 8, 9],
+              bonus: [],
+              playStyle: "straight",
+              wagerCents: 100,
+              options: {},
+              splitRisk: { score: 12, level: "low", notes: ["Lower-collision shape."] },
+              grade: null
             }
           ]
         }

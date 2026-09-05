@@ -19,12 +19,14 @@ export { refreshNextSource, refreshSource } from "./ingest";
 export {
   appendGradeSettlement,
   appendLedgerEntry,
+  appendLedgerEligibilityEvent,
   appendPurchaseConfirmation,
   gradeAvailableLedgerEntries,
   gradeTicket,
   listTicketLabEntries,
   queueGradingFailureAlert,
   readTrackRecord,
+  reconcileLedgerEligibility,
   reconcileLegacyRandomBaselines,
   reconcileResultNotifications,
   TICKET_LAB_DISCLAIMER

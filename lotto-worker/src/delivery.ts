@@ -129,6 +129,21 @@ function publicClaim(row: DeliveryRow, leaseToken: string, leaseExpiresAt: strin
   };
 }
 
+/** Corrections and alerts have no grade; graded results require a resolved attestation. */
+function eligibleLabDeliverySql(alias: "o" | "lotto_lab_delivery_outbox"): string {
+  return `(${alias}.grade_id IS NULL OR EXISTS (
+    SELECT 1 FROM lotto_ledger_grades g
+    JOIN lotto_ledger_eligibility_events e
+      ON e.event_sequence = (
+        SELECT latest.event_sequence FROM lotto_ledger_eligibility_events latest
+        WHERE latest.ledger_id = g.ledger_id
+        ORDER BY latest.event_sequence DESC LIMIT 1
+      )
+    WHERE g.grade_id = ${alias}.grade_id
+      AND e.eligible = 1 AND e.reason_code <> 'schema-v7-attestation'
+  ))`;
+}
+
 async function claimLabDelivery(
   env: Env,
   now: Date,
@@ -144,6 +159,7 @@ async function claimLabDelivery(
           OR (o.status = 'leased' AND o.lease_expires_at <= ?1)
        ) AND o.next_attempt_at <= ?1
          AND ${tier === "high" ? "o.priority >= 50" : "o.priority < 50"}
+         AND ${eligibleLabDeliverySql("o")}
        ORDER BY o.priority DESC, o.created_at, o.delivery_id LIMIT 1`
     )
       .bind(nowIso)
@@ -157,7 +173,8 @@ async function claimLabDelivery(
        WHERE delivery_id = ?4
          AND (status IN ('pending', 'retry')
               OR (status = 'leased' AND lease_expires_at <= ?3))
-         AND next_attempt_at <= ?3`
+         AND next_attempt_at <= ?3
+         AND ${eligibleLabDeliverySql("lotto_lab_delivery_outbox")}`
     )
       .bind(leaseToken, leaseExpiresAt, nowIso, candidate.delivery_id)
       .run();

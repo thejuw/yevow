@@ -43,12 +43,29 @@ official ingest -> validated draw -> immutable grading -> result outbox -> Herme
 
 Cloudflare D1 is the production source of truth. Database constraints and mutation-blocking
 triggers protect the ticket ledger, purchase events, grade revisions, ticket-grade details,
-settlement events, result outbox, and delivery-attempt history. Application code exposes only
-append operations.
+settlement events, eligibility events, and delivery-attempt history. The delivery outbox is mutable
+operational state; its leases and acknowledgements never rewrite those immutable records.
 
 Corrections cite the prior ledger entry with `correction_of` and receive a new identifier and
 timestamp. They are accepted only before the applicable official result exists. The original entry
 is preserved and remains queryable. The same rule applies to user-origin hand picks.
+
+Schema 7 adds an append-only eligibility stream for legacy evidence. A proposal captured at or
+after its official sales cutoff, or after the result was already present, is preserved with an
+`excluded` status. Its spend, prizes, ROI, streaks, histogram, and comparisons are omitted from the
+scorecard. This includes previously graded entries and entries which never received a grade.
+Neutral migration attestations remain excluded until the scheduled reconciler verifies the
+Central Time cutoff. Missing attestations cause entry reads to fail visibly; dashboard GETs never
+create attestations or messages. Every exclusion retains its reason and evidence in the dashboard.
+
+The reconciler queues an idempotent correction for affected system game/date groups. An operator
+can append an eligibility decision through
+`POST /api/lotto/v1/ticket-lab/entries/:ledgerId/eligibility-events`, using the service token and
+`{ "idempotencyKey": "unique-event-key", "eligible": false, "reason": "evidence-backed reason",
+"evidence": {} }`. Event sequence determines the latest decision. Reinstatement cannot override
+the official-result or sales-cutoff invariants. Operator decisions receive their own correction
+notice; reinstatement does not resend the original result message. Database guards prevent a
+concurrent reconciliation or expired delivery lease from overriding a newer exclusion.
 
 The scorecard separates:
 

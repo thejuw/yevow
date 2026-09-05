@@ -24,6 +24,7 @@ import {
 } from "./scheduler";
 import {
   generationLedgerStatements,
+  reconcileLedgerEligibility,
   reconcileLegacyRandomBaselines,
   reconcileResultNotifications
 } from "./ticket-lab";
@@ -1123,7 +1124,9 @@ export async function runScheduledGeneration(
   now = new Date(),
   apiBase = "/api/lotto/v1"
 ): Promise<AutomationOutcome> {
+  await reconcileLedgerEligibility(env, null, new Date());
   await reconcileLegacyRandomBaselines(env);
+  await reconcileLedgerEligibility(env, null, new Date());
   await reconcileResultNotifications(env, null, new Date());
   const clock = texasClock(now);
   const inspections = (await automationConfigRows(env)).map(inspectAutomationConfig);
