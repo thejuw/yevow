@@ -1003,6 +1003,11 @@ describe("grading, scoreboards, and delivery reconciliation", () => {
     expect(
       repaired.results.every((row) => row.message_body.includes("Next best-EV game: none today."))
     ).toBe(true);
+    expect(
+      repaired.results.every((row) =>
+        row.message_body.includes("Picks are optimized, not predicted.")
+      )
+    ).toBe(true);
 
     await expect(
       env.LOTTO_DB.prepare("UPDATE lotto_ticket_grades SET hit = 0").run()
