@@ -10,7 +10,7 @@ import { GAME_MANIFEST, type GameCode, type Session } from "./manifest";
 import { ticketSalesWindow } from "./scheduler";
 
 export const TICKET_LAB_DISCLAIMER =
-  "Ticket Lab records and grades optimized proposals; it does not predict lottery draws. " +
+  "Picks are optimized, not predicted. Ticket Lab records and grades every proposal; it does not predict lottery draws. " +
   "Past results do not improve future odds. Play responsibly.";
 
 const RULE_VERSION = 1;
