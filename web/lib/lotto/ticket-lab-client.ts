@@ -20,6 +20,13 @@ export interface TicketLabScorecard {
   readonly tickets: number;
   readonly gradedTickets: number;
   readonly spentCents: number;
+  /** Additive accounting fields; absent on older API deployments. */
+  readonly gradedSpendCents?: number;
+  readonly openSpendCents?: number;
+  readonly knownNetCents?: number;
+  readonly netCents?: number | null;
+  readonly modeledTickets?: number;
+  readonly modeledPrizeCents?: number;
   readonly wonCents: number;
   readonly nonCashValueCents: number;
   readonly pendingPrizeCount: number;
@@ -377,11 +384,41 @@ function scorecard(value: unknown, field: string): TicketLabScorecard {
     input.economicRoiPercent === null
       ? null
       : finite(input.economicRoiPercent, `${field}.economicRoiPercent`);
+  if (input.gradedSpendCents !== undefined) {
+    const graded = integer(input.gradedSpendCents, `${field}.gradedSpendCents`);
+    const open = integer(input.openSpendCents, `${field}.openSpendCents`);
+    const spent = integer(input.spentCents, `${field}.spentCents`);
+    const won = integer(input.wonCents, `${field}.wonCents`);
+    const pending = integer(input.pendingPrizeCount, `${field}.pendingPrizeCount`);
+    const knownNet = signedInteger(input.knownNetCents, `${field}.knownNetCents`);
+    if (
+      graded + open !== spent ||
+      knownNet !== won - graded ||
+      (pending > 0 ? input.netCents !== null : input.netCents !== knownNet) ||
+      ((pending > 0 || graded === 0) && (roiPercent !== null || economicRoiPercent !== null)) ||
+      integer(input.modeledTickets, `${field}.modeledTickets`) >
+        integer(input.gradedTickets, `${field}.gradedTickets`) ||
+      integer(input.modeledPrizeCents, `${field}.modeledPrizeCents`) > won
+    ) {
+      throw new LottoTicketLabClientError(`${field} accounting does not reconcile.`);
+    }
+  }
   return {
     entries: integer(input.entries, `${field}.entries`),
     tickets: integer(input.tickets, `${field}.tickets`),
     gradedTickets: integer(input.gradedTickets, `${field}.gradedTickets`),
     spentCents: integer(input.spentCents, `${field}.spentCents`),
+    ...(input.gradedSpendCents === undefined
+      ? {}
+      : {
+          gradedSpendCents: integer(input.gradedSpendCents, `${field}.gradedSpendCents`),
+          openSpendCents: integer(input.openSpendCents, `${field}.openSpendCents`),
+          knownNetCents: signedInteger(input.knownNetCents, `${field}.knownNetCents`),
+          netCents:
+            input.netCents === null ? null : signedInteger(input.netCents, `${field}.netCents`),
+          modeledTickets: integer(input.modeledTickets, `${field}.modeledTickets`),
+          modeledPrizeCents: integer(input.modeledPrizeCents, `${field}.modeledPrizeCents`)
+        }),
     wonCents: integer(input.wonCents, `${field}.wonCents`),
     nonCashValueCents: integer(input.nonCashValueCents, `${field}.nonCashValueCents`),
     pendingPrizeCount: integer(input.pendingPrizeCount, `${field}.pendingPrizeCount`),
