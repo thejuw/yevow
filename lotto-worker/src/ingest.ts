@@ -2,6 +2,8 @@ import type { Env } from "./env";
 import { SOURCES, getSource, type ExportSource } from "./manifest";
 import { parseOfficialCsv, SchemaMismatchError, type ParsedDraw } from "./parser";
 import { gradeAvailableLedgerEntries, queueGradingFailureAlert } from "./ticket-lab";
+import { reconcileOfficialPayouts } from "./payouts";
+import { gradeShadowTrials } from "./shadow";
 
 const MAX_SOURCE_BYTES = 4 * 1024 * 1024;
 const UPSERT_CHUNK_SIZE = 500;
@@ -813,6 +815,18 @@ export async function refreshSource(
       });
     }
     throw error;
+  }
+  // Financial resolution and shadow grading are independently retryable maintenance.
+  // A delayed published payout never invalidates an otherwise successful draw ingest.
+  try {
+    await reconcileOfficialPayouts(env, source.game, new Date());
+    await gradeShadowTrials(env, source.game, new Date());
+  } catch (error) {
+    log("ticket_lab_accounting_pending", {
+      sourceId: source.id,
+      game: source.game,
+      error: boundedMessage(error)
+    });
   }
   return outcome;
 }

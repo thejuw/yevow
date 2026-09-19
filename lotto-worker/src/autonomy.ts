@@ -1,5 +1,6 @@
 import { calculateEv } from "../../web/lib/lotto/ev";
 import { generateTickets } from "../../web/lib/lotto/picker";
+import { captureShadowTrials } from "./shadow";
 import type { DigitPlayStyle, Ticket } from "../../web/lib/lotto/types";
 
 import type { Env } from "./env";
@@ -1069,6 +1070,20 @@ export async function generateForGame(
       );
     }
     await env.LOTTO_DB.batch(statements);
+    try {
+      await captureShadowTrials(env, runId, executionNow);
+    } catch (error) {
+      // An experiment failure must not turn already-committed live picks into a failed run.
+      // Scheduled recovery retries only while the official sales window remains open.
+      console.error(
+        JSON.stringify({
+          service: "rabbitholetx",
+          event: "shadow_capture_failed",
+          runId,
+          error: String(error).slice(0, 500)
+        })
+      );
+    }
     await refreshDailySummary(
       env,
       clock.date,

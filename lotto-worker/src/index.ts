@@ -2,6 +2,9 @@ import { handleRequest } from "./api";
 import { runScheduledGeneration } from "./autonomy";
 import type { Env } from "./env";
 import { refreshNextSource } from "./ingest";
+import { reconcileOfficialPayouts } from "./payouts";
+import { refreshExpectedResult } from "./result-freshness";
+import { gradeShadowTrials, recoverShadowTrials } from "./shadow";
 
 export { handleRequest } from "./api";
 export { dashboardAccess } from "./access";
@@ -40,16 +43,33 @@ export default {
   async scheduled(controller: ScheduledController, env: Env): Promise<void> {
     const scheduledAt = new Date(controller.scheduledTime);
     const outcome = await runScheduledGeneration(env, scheduledAt);
+    const failures: string[] = [];
+    const maintain = async (name: string, work: () => Promise<unknown>): Promise<void> => {
+      try {
+        await work();
+      } catch (error) {
+        const message = `${name}: ${String(error).slice(0, 500)}`;
+        failures.push(message);
+        console.error(
+          JSON.stringify({ service: "rabbitholetx", event: "maintenance_failed", message })
+        );
+      }
+    };
     if (outcome.kind === "idle") {
-      // The ten-minute trigger gives six-game draw days enough bounded work slots.
-      // Outside generation work, retain the established 30-minute archive cadence.
-      if (scheduledAt.getUTCMinutes() % 30 === 0) await refreshNextSource(env);
-      return;
+      // Missing expected results take priority over the round-robin archive refresh.
+      await maintain("expected-results", async () => {
+        const refreshed = await refreshExpectedResult(env, new Date());
+        if (!refreshed && scheduledAt.getUTCMinutes() % 30 === 0) await refreshNextSource(env);
+      });
     }
+    await maintain("official-payouts", () => reconcileOfficialPayouts(env, null, new Date()));
+    await maintain("shadow-capture", () => recoverShadowTrials(env, new Date()));
+    await maintain("shadow-grading", () => gradeShadowTrials(env, null, new Date()));
     if (outcome.kind === "failed") {
       throw new Error(
         `Autonomous generation failed for ${outcome.game}/${outcome.drawDate}: ${outcome.error}`
       );
     }
+    if (failures.length) throw new Error(failures.join("; "));
   }
 } satisfies ExportedHandler<Env>;

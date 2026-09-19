@@ -1,4 +1,6 @@
 import type { Env } from "./env";
+import { readShadowTrials } from "./shadow";
+import { readExpectedResultGaps } from "./result-freshness";
 import { dashboardAccess } from "./access";
 import {
   generateForGame,
@@ -382,7 +384,7 @@ async function health(request: Request, env: Env): Promise<Response> {
       .map((game) => game.game);
     const deliveryBridgeConfigured = (env.RABBITHOLETX_SERVICE_TOKEN?.trim().length ?? 0) > 0;
     const ready =
-      schema?.value === "7" &&
+      schema?.value === "9" &&
       configuredGames === GAME_CODES.length &&
       selectedGames > 0 &&
       unhealthySelectedGames.length === 0 &&
@@ -765,7 +767,10 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         {
           schemaVersion: 1,
           generatedAt: new Date().toISOString(),
-          data: await readServiceStatus(env)
+          data: {
+            ...(await readServiceStatus(env)),
+            expectedResultGaps: await readExpectedResultGaps(env)
+          }
         },
         { cacheControl: "no-store" }
       );
@@ -787,6 +792,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     }
     if (
       pathname === `${API_PREFIX}/ticket-lab/summary` ||
+      pathname === `${API_PREFIX}/ticket-lab/challengers` ||
       pathname === `${API_PREFIX}/ticket-lab/entries`
     ) {
       const accessError = await exactPickAccessError(request, env);
@@ -811,6 +817,23 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         from: rawFrom,
         to: rawTo
       };
+      if (pathname.endsWith("/challengers")) {
+        try {
+          return json(
+            request,
+            {
+              schemaVersion: 1,
+              generatedAt: new Date().toISOString(),
+              data: await readShadowTrials(env, filters)
+            },
+            { cacheControl: "private, no-store" }
+          );
+        } catch (caught) {
+          if (caught instanceof RangeError)
+            return error(request, 400, "invalid_shadow_query", caught.message);
+          throw caught;
+        }
+      }
       if (pathname.endsWith("/summary")) {
         return json(
           request,

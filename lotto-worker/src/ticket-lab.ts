@@ -200,7 +200,13 @@ export interface TicketLabScorecard {
   readonly tickets: number;
   readonly gradedTickets: number;
   readonly spentCents: number;
+  readonly gradedSpendCents: number;
+  readonly openSpendCents: number;
+  readonly knownNetCents: number;
+  readonly netCents: number | null;
   readonly wonCents: number;
+  readonly modeledTickets: number;
+  readonly modeledPrizeCents: number;
   readonly nonCashValueCents: number;
   readonly pendingPrizeCount: number;
   readonly longestLosingStreak: number;
@@ -1225,7 +1231,10 @@ function gradeMegaMillions(
     ["0:1", ["0 + Mega Ball", 500]]
   ]).get(`${mainMatches}:${bonusMatches}`);
   if (!base)
-    return miss(mainMatches, bonusMatches, { megaMultiplier: options.megaMultiplier ?? null });
+    return miss(mainMatches, bonusMatches, {
+      megaMultiplier: options.megaMultiplier ?? null,
+      multiplierProvenance: options.multiplierProvenance ?? "modeled"
+    });
   const multiplier = options.megaMultiplier;
   if (!Number.isSafeInteger(multiplier) || ![2, 3, 4, 5, 10].includes(multiplier as number)) {
     return pending(
@@ -1929,6 +1938,38 @@ async function notificationMessage(
   const summary = await readTrackRecord(env, { game: null, from: null, to: null });
   const system = summary.comparisons.find((item) => item.origin === "system");
   const random = summary.comparisons.find((item) => item.origin === "random");
+  const purchase = await env.LOTTO_DB.prepare(
+    `SELECT purchased, spend_cents FROM lotto_purchase_confirmation_events
+     WHERE ledger_id = ?1 ORDER BY recorded_at DESC, purchase_event_id DESC LIMIT 1`
+  )
+    .bind(ledger.ledger_id)
+    .first<{ purchased: number; spend_cents: number }>();
+  const cost =
+    purchase?.purchased === 1
+      ? Number(purchase.spend_cents)
+      : ledger.ticket_count * ledger.ticket_cost_cents;
+  const cashReturn = gradeResults.reduce((total, grade) => total + (grade.prizeCents ?? 0), 0);
+  const pendingCount = gradeResults.filter((grade) => grade.payoutStatus === "pending").length;
+  const nonCashValue = gradeResults.reduce(
+    (total, grade) =>
+      total +
+      (Number.isSafeInteger(grade.detail.faceValueCents) ? Number(grade.detail.faceValueCents) : 0),
+    0
+  );
+  const modeled = gradeResults.some(
+    (grade) =>
+      typeof grade.detail.multiplierProvenance === "string" &&
+      grade.detail.multiplierProvenance.startsWith("modeled")
+  );
+  const dollars = (cents: number): string =>
+    `${cents < 0 ? "-" : ""}$${(Math.abs(cents) / 100).toFixed(2)}`;
+  const accounting =
+    `${purchase?.purchased === 1 ? "Confirmed" : "Paper"} set: ` +
+    `${pendingCount ? "known " : ""}cash return ${dollars(cashReturn)}, cost ${dollars(cost)}, ` +
+    `${pendingCount ? "known net " : "net "}${dollars(cashReturn - cost)}` +
+    `${pendingCount ? `; ${pendingCount} payout(s) pending, net/ROI incomplete` : ""}` +
+    `${nonCashValue ? `; noncash ticket face value ${dollars(nonCashValue)} (not cash)` : ""}` +
+    `${modeled ? "; Mega Millions multiplier/return modeled, not verified purchase" : ""}. `;
   const bestMatches = Math.max(...gradeResults.map((grade) => grade.mainMatches));
   const best = gradeResults
     .filter((grade) => grade.hit)
@@ -1957,7 +1998,7 @@ async function notificationMessage(
   return {
     message:
       `🐰 Ticket Lab — ${GAME_MANIFEST[ledger.game].name} (${displayDate(ledger.draw_date)}): ` +
-      `${result}. Ledger: ${summary.totals.proposals.gradedTickets} ticket lines graded lifetime, ` +
+      `${result}. ${accounting}Ledger: ${summary.totals.proposals.gradedTickets} ticket lines graded lifetime, ` +
       `cash ROI ${signedPercent(system?.roiPercent ?? null)}; random baseline cash ROI ` +
       `${signedPercent(random?.roiPercent ?? null)}. Next best-EV game: none today.${claim} ` +
       TICKET_LAB_DISCLAIMER,
@@ -1975,6 +2016,34 @@ interface NotificationGradeRow {
   prize_cents: number | null;
   pending_reason: string | null;
   grading_detail_json: string;
+}
+
+async function notificationGrades(env: Env, gradeId: string): Promise<GradeResult[]> {
+  const rows = await env.LOTTO_DB.prepare(
+    `SELECT t.main_matches, t.bonus_matches, t.prize_tier, t.hit,
+            CASE WHEN s.settlement_id IS NULL THEN t.payout_status ELSE 'fixed' END AS payout_status,
+            COALESCE(s.final_prize_cents, t.prize_cents) AS prize_cents,
+            CASE WHEN s.settlement_id IS NULL THEN t.pending_reason ELSE NULL END AS pending_reason,
+            t.grading_detail_json
+     FROM lotto_ticket_grades t
+     LEFT JOIN lotto_grade_settlement_events s ON s.settlement_id = (
+       SELECT s2.settlement_id FROM lotto_grade_settlement_events s2
+       WHERE s2.ticket_grade_id = t.ticket_grade_id
+       ORDER BY s2.settled_at DESC, s2.settlement_id DESC LIMIT 1
+     ) WHERE t.grade_id = ?1 ORDER BY t.ticket_grade_id`
+  )
+    .bind(gradeId)
+    .all<NotificationGradeRow>();
+  return rows.results.map((row) => ({
+    mainMatches: Number(row.main_matches),
+    bonusMatches: Number(row.bonus_matches),
+    tier: row.prize_tier,
+    hit: row.hit === 1,
+    payoutStatus: row.payout_status,
+    prizeCents: row.prize_cents === null ? null : Number(row.prize_cents),
+    pendingReason: row.pending_reason,
+    detail: decodeRecord(row.grading_detail_json, "grading detail")
+  }));
 }
 
 /** Repair the crash seam between immutable grade commits and mutable delivery enqueueing. */
@@ -2011,23 +2080,7 @@ export async function reconcileResultNotifications(
     .all<LedgerRow & { grade_id: string }>();
   let queued = 0;
   for (const candidate of query.results) {
-    const rows = await env.LOTTO_DB.prepare(
-      `SELECT main_matches, bonus_matches, prize_tier, hit, payout_status, prize_cents,
-              pending_reason, grading_detail_json
-       FROM lotto_ticket_grades WHERE grade_id = ?1 ORDER BY ticket_grade_id`
-    )
-      .bind(candidate.grade_id)
-      .all<NotificationGradeRow>();
-    const grades: GradeResult[] = rows.results.map((row) => ({
-      mainMatches: Number(row.main_matches),
-      bonusMatches: Number(row.bonus_matches),
-      tier: row.prize_tier,
-      hit: row.hit === 1,
-      payoutStatus: row.payout_status,
-      prizeCents: row.prize_cents === null ? null : Number(row.prize_cents),
-      pendingReason: row.pending_reason,
-      detail: decodeRecord(row.grading_detail_json, "grading detail")
-    }));
+    const grades = await notificationGrades(env, candidate.grade_id);
     if (grades.length !== candidate.ticket_count) {
       throw new Error(`Grade ${candidate.grade_id} ticket count does not reconcile`);
     }
@@ -2060,6 +2113,47 @@ export async function reconcileResultNotifications(
     queued += result.meta.changes ?? 0;
   }
   return queued;
+}
+
+/** Refresh an unattempted result in place; sent, leased, or ambiguous SMS is immutable here. */
+export async function refreshUnsentResultNotifications(
+  env: Env,
+  game: GameCode | null = null,
+  now = new Date()
+): Promise<number> {
+  const candidates = await env.LOTTO_DB.prepare(
+    `SELECT l.*, g.grade_id, o.delivery_id
+    FROM lotto_lab_delivery_outbox o JOIN lotto_ledger_grades g ON g.grade_id = o.grade_id
+    JOIN lotto_ticket_ledger l ON l.ledger_id = g.ledger_id
+    WHERE o.delivery_kind = 'result' AND o.status IN ('pending', 'retry') AND o.attempt_count = 0
+      AND o.lease_token IS NULL AND (?1 IS NULL OR l.game = ?1)
+      AND g.revision = (SELECT MAX(g2.revision) FROM lotto_ledger_grades g2 WHERE g2.ledger_id = l.ledger_id)
+      AND (SELECT CASE WHEN e.reason_code = 'schema-v7-attestation' THEN 0 ELSE e.eligible END
+           FROM lotto_ledger_eligibility_events e WHERE e.ledger_id = l.ledger_id
+           ORDER BY e.event_sequence DESC LIMIT 1) = 1
+    ORDER BY o.created_at LIMIT 50`
+  )
+    .bind(game)
+    .all<LedgerRow & { grade_id: string; delivery_id: string }>();
+  let updated = 0;
+  for (const candidate of candidates.results) {
+    const grades = await notificationGrades(env, candidate.grade_id);
+    if (grades.length !== candidate.ticket_count)
+      throw new Error(`Grade ${candidate.grade_id} ticket count does not reconcile`);
+    const notification = await notificationMessage(env, candidate, grades);
+    const result = await env.LOTTO_DB.prepare(
+      `UPDATE lotto_lab_delivery_outbox SET message_body = ?2, priority = ?3, updated_at = ?4
+      WHERE delivery_id = ?1 AND status IN ('pending', 'retry') AND attempt_count = 0 AND lease_token IS NULL
+        AND EXISTS (SELECT 1 FROM lotto_ledger_grades g WHERE g.grade_id = lotto_lab_delivery_outbox.grade_id
+          AND g.revision = (SELECT MAX(g2.revision) FROM lotto_ledger_grades g2 WHERE g2.ledger_id = g.ledger_id)
+          AND (SELECT CASE WHEN e.reason_code = 'schema-v7-attestation' THEN 0 ELSE e.eligible END
+               FROM lotto_ledger_eligibility_events e WHERE e.ledger_id = g.ledger_id ORDER BY e.event_sequence DESC LIMIT 1) = 1)`
+    )
+      .bind(candidate.delivery_id, notification.message, notification.priority, now.toISOString())
+      .run();
+    updated += result.meta.changes ?? 0;
+  }
+  return updated;
 }
 
 /** Queue a high-priority fallback alert when post-ingest grading cannot complete. */
@@ -3063,7 +3157,8 @@ export async function appendGradeSettlement(
   env: Env,
   ticketGradeId: string,
   value: unknown,
-  now = new Date()
+  now = new Date(),
+  automatic?: { readonly expectedDrawFingerprint: string }
 ): Promise<{ settlementId: string; created: boolean }> {
   if (!/^tg-[a-f0-9]{32}-\d+$/.test(ticketGradeId))
     throw new RangeError("ticket grade id is malformed");
@@ -3102,7 +3197,8 @@ export async function appendGradeSettlement(
   const liabilityGame = gradingDetail.liabilityGame;
   let settlementEvidence: Record<string, unknown> = {
     settlementKind: "official-payout",
-    officialSourceSha256: sourceSha256.toLowerCase()
+    officialSourceSha256: sourceSha256.toLowerCase(),
+    ...(automatic ? { settlementMethod: "automatic-official-resource-v1" } : {})
   };
   if (liabilityGame === "cash5" || liabilityGame === "aon") {
     if (
@@ -3166,7 +3262,26 @@ export async function appendGradeSettlement(
     `INSERT OR IGNORE INTO lotto_grade_settlement_events
        (settlement_id, ticket_grade_id, idempotency_key, final_prize_cents,
         source, note, evidence_json, settled_at, created_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)`
+     SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9
+     WHERE ?10 = 0 OR (
+       NOT EXISTS (SELECT 1 FROM lotto_grade_settlement_events s WHERE s.ticket_grade_id = ?2)
+       AND EXISTS (
+         SELECT 1 FROM lotto_ticket_grades t
+         JOIN lotto_ledger_grades g ON g.grade_id = t.grade_id
+         JOIN lotto_ticket_ledger l ON l.ledger_id = g.ledger_id
+         JOIN lotto_draws d ON d.game = l.game AND d.draw_date = l.draw_date
+              AND d.session = l.target_session AND d.active = 1
+         WHERE t.ticket_grade_id = ?2 AND t.payout_status = 'pending'
+           AND ((l.game = 'lotto' AND t.main_matches IN (4, 5) AND t.bonus_matches = 0)
+             OR (l.game = 'twostep' AND ((t.main_matches = 4 AND t.bonus_matches = 0)
+               OR t.main_matches = 3 OR (t.main_matches = 2 AND t.bonus_matches = 1))))
+           AND g.draw_fingerprint = ?11 AND d.content_fingerprint = ?11
+           AND g.revision = (SELECT MAX(g2.revision) FROM lotto_ledger_grades g2 WHERE g2.ledger_id = l.ledger_id)
+           AND (SELECT CASE WHEN e.reason_code = 'schema-v7-attestation' THEN 0 ELSE e.eligible END
+                FROM lotto_ledger_eligibility_events e WHERE e.ledger_id = l.ledger_id
+                ORDER BY e.event_sequence DESC LIMIT 1) = 1
+       )
+     )`
   )
     .bind(
       settlementId,
@@ -3177,11 +3292,23 @@ export async function appendGradeSettlement(
       note,
       JSON.stringify(settlementEvidence),
       settledAt,
-      now.toISOString()
+      now.toISOString(),
+      automatic ? 1 : 0,
+      automatic?.expectedDrawFingerprint ?? ""
     )
     .run();
   const created = (result.meta.changes ?? 0) === 1;
   if (!created) {
+    if (automatic) {
+      const prior = await env.LOTTO_DB.prepare(
+        `SELECT settlement_id FROM lotto_grade_settlement_events WHERE ticket_grade_id = ?1
+         ORDER BY settled_at DESC, settlement_id DESC LIMIT 1`
+      )
+        .bind(ticketGradeId)
+        .first<{ settlement_id: string }>();
+      if (prior) return { settlementId: prior.settlement_id, created: false };
+      throw new RangeError("automatic payout target changed or is not an eligible lower tier");
+    }
     const existing = await env.LOTTO_DB.prepare(
       `SELECT final_prize_cents, source, note, evidence_json, settled_at
        FROM lotto_grade_settlement_events WHERE settlement_id = ?1`
@@ -3213,6 +3340,7 @@ interface JoinedTrackRow extends LedgerRow, LedgerTicketRow {
   purchased: number | null;
   purchase_spend_cents: number | null;
   purchase_recorded_at: string | null;
+  purchase_options_json: string | null;
   grade_id: string | null;
   revision: number | null;
   draw_fingerprint: string | null;
@@ -3270,7 +3398,7 @@ function filteredWhere(filters: TicketLabFilters): { sql: string; values: Array<
 const JOINED_TRACK_SELECT = `
   SELECT l.*, t.*,
          p.purchase_event_id, p.purchased, p.spend_cents AS purchase_spend_cents,
-         p.recorded_at AS purchase_recorded_at,
+         p.recorded_at AS purchase_recorded_at, p.options_json AS purchase_options_json,
          g.grade_id, g.revision, g.draw_fingerprint, g.result_main_numbers,
          g.result_bonus_numbers, g.result_session, g.result_source_id,
          g.result_source_sha256, g.graded_at,
@@ -3374,16 +3502,44 @@ function scorecard(
         );
   const wonCents = ordered.reduce((total, row) => total + effectivePrize(row), 0);
   const nonCashValueCents = ordered.reduce((total, row) => total + effectiveNonCashValue(row), 0);
+  // Allocate confirmed set costs in integer cents, assigning remainder cents
+  // deterministically by ordinal; partial cohorts never create fractional cents.
+  const gradedSpendCents = ordered.reduce((total, row) => {
+    if (!confirmedOnly) return total + Number(row.ticket_cost_cents);
+    const cost = Number(row.purchase_spend_cents ?? 0);
+    return (
+      total + Math.floor(cost / row.ticket_count) + (row.ordinal <= cost % row.ticket_count ? 1 : 0)
+    );
+  }, 0);
+  const pendingPrizeCount = ordered.filter(unresolved).length;
+  const knownNetCents = wonCents - gradedSpendCents;
+  const modeled = ordered.filter((row) => {
+    const detail = decodeRecord(row.grading_detail_json ?? "{}", "grading detail");
+    const options = decodeRecord(row.ticket_options_json, "ticket options");
+    const purchaseOptions =
+      row.purchased === 1
+        ? decodeRecord(row.purchase_options_json ?? "{}", "purchase options")
+        : {};
+    const override = actualTicketOverrides(purchaseOptions, row.ordinal);
+    const provenance =
+      detail.multiplierProvenance ??
+      (override.megaMultiplier !== undefined ? "actual-purchase" : options.multiplierProvenance);
+    return typeof provenance === "string" && provenance.startsWith("modeled");
+  });
   return {
     entries: ledgers.size,
     tickets: tickets.size,
     gradedTickets: ordered.length,
     spentCents,
+    gradedSpendCents,
+    openSpendCents: spentCents - gradedSpendCents,
+    knownNetCents,
+    netCents: pendingPrizeCount > 0 ? null : knownNetCents,
     wonCents,
+    modeledTickets: modeled.length,
+    modeledPrizeCents: modeled.reduce((total, row) => total + effectivePrize(row), 0),
     nonCashValueCents,
-    pendingPrizeCount: ordered.filter(
-      (row) => row.payout_status === "pending" && row.final_prize_cents === null
-    ).length,
+    pendingPrizeCount,
     longestLosingStreak,
     bestHit: best
       ? {
@@ -3399,13 +3555,13 @@ function scorecard(
         }
       : null,
     roiPercent:
-      spentCents === 0
+      gradedSpendCents === 0 || pendingPrizeCount > 0
         ? null
-        : Math.round(((wonCents - spentCents) / spentCents) * 100 * 100) / 100,
+        : Math.round((knownNetCents / gradedSpendCents) * 100 * 100) / 100,
     economicRoiPercent:
-      spentCents === 0
+      gradedSpendCents === 0 || pendingPrizeCount > 0
         ? null
-        : Math.round(((wonCents + nonCashValueCents - spentCents) / spentCents) * 100 * 100) / 100
+        : Math.round(((knownNetCents + nonCashValueCents) / gradedSpendCents) * 100 * 100) / 100
   };
 }
 

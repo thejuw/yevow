@@ -11,7 +11,7 @@ and Hermes payload to a durable outbox. It does not predict drawings.
 - API: `https://lotto-api.yevow.co/api/lotto/v1`
 - D1: `RABBITHOLE_TX`
 - R2: `yevow-rabbitholetx-raw`
-- Official input only: configured `texaslottery.com` CSV exports
+- Official input only: configured Texas Lottery CSV exports and validated, dated official payout pages
 - Generation and delivery natural key: `(game, draw_date)`
 - Required Worker secrets: `RABBITHOLETX_SERVICE_TOKEN`, `RABBITHOLETX_SEED_SALT`
 
@@ -105,6 +105,7 @@ not committed.
 
 - `GET /api/lotto/v1/picks/today`
 - `GET /api/lotto/v1/generation-runs/:runId`
+- `GET /api/lotto/v1/ticket-lab/challengers?game=cash5&from=2026-09-19&to=2026-12-19`
 
 These endpoints accept the signed Yevow session JWT as `Authorization: Bearer <jwt>` and validate
 it against the Yevow core authentication service. Exact picks, seeds, and generation logs are not
@@ -129,6 +130,31 @@ object when a source has never loaded. Its per-game operational fields are
 endpoint also reports `missedGenerationGames` when a selected draw-day game has no generated run
 after 09:00 CT. A malformed selected configuration is isolated into a failed run and fallback
 alert, while a malformed disabled configuration remains observable without stopping the service.
+
+The response also includes `expectedResultGaps` for exact selected game/date/session targets past
+their official draw time plus a 20-minute publication grace. An unchanged successful download is
+not proof that a missing session was ingested. Idle cron ticks prioritize one missing result before
+the regular half-hour archive rotation.
+
+## Evidence-first Ticket Lab
+
+Schema 9 adds verified official payout acquisition and separate paper-only challenger trials.
+The live picker, purchase budget and Hermes pick delivery are unchanged. Neutral selection,
+All or Nothing prize-aware portfolios and bonus diversification are compared prospectively with
+matched current and random controls. Historical winning days are not validation data. New trial
+capture stops at the December 20, 2026 review gate; there is no automatic promotion.
+
+Official HTML payout-page parsing was explicitly authorized on September 19, 2026. Only verified
+dated pages can settle supported Lotto Texas and Two Step non-jackpot tiers. Source HTML and hashes
+are archived; settlements are append-only. Jackpots and later payout-only corrections to an already
+settled award require manual review. Failed resolution stays pending, never a fabricated zero.
+
+Scorecards separate graded cost from open commitments, cash from free-ticket face value, and paper
+proposals from confirmed purchases. Pending awards suppress finalized ROI; displayed known net is
+a lower bound. No challenger creates a purchase or sends an SMS.
+
+See [the protocol and release guardrails](../docs/lotto-evidence-upgrades.md) for exact supported
+tiers, retry observability, matched multiplier treatment and migration requirements.
 
 Responses are versioned, input bodies are bounded, CORS is limited to Yevow and Pages previews,
 and no response exposes a recipient or secret. Failed downloads retry with backoff and can use

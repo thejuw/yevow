@@ -1543,6 +1543,13 @@ describe("grading, scoreboards, and delivery reconciliation", () => {
   });
 
   it("turns a post-ingest grading failure into a deliverable unhealthy alert", async () => {
+    // Earlier tests intentionally queue priority-100 wins. Mark those fixture
+    // deliveries complete so their calendar dates cannot race this alert test.
+    await env.LOTTO_DB.prepare(
+      "UPDATE lotto_lab_delivery_outbox SET status = 'sent', delivered_at = ?1 WHERE delivery_kind = 'result'"
+    )
+      .bind(new Date().toISOString())
+      .run();
     const source = getSource("cash5:cashfive");
     const ledgerId = "ledger-cccccccccccccccccccccccccccccccc";
     await env.LOTTO_DB.batch([

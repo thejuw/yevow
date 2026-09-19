@@ -11,6 +11,7 @@ import {
   Trophy
 } from "lucide-react";
 import { type FormEvent, useEffect, useMemo, useState } from "react";
+import LottoChallengerPanel from "./LottoChallengerPanel";
 import {
   GAME_CODES,
   GAME_MANIFEST,
@@ -143,6 +144,45 @@ function optionSummary(options: Readonly<Record<string, unknown>>): string {
   return rendered.length > 0 ? rendered.join(" · ") : "base play";
 }
 
+function modeledMultiplier(options: Readonly<Record<string, unknown>>): boolean {
+  return (
+    typeof options.multiplierProvenance === "string" &&
+    options.multiplierProvenance.startsWith("modeled")
+  );
+}
+
+function scorecardCompleteness(row: TicketLabScorecard): string {
+  const open = row.tickets - row.gradedTickets;
+  return [
+    open > 0 ? `${integerFormatter.format(open)} ungraded tickets` : "all tickets graded",
+    row.pendingPrizeCount > 0
+      ? `${integerFormatter.format(row.pendingPrizeCount)} payouts pending; cash total incomplete`
+      : "no pending payouts"
+  ].join(" · ");
+}
+
+function gradedCost(row: TicketLabScorecard): number | null {
+  return row.gradedSpendCents ?? (row.gradedTickets === row.tickets ? row.spentCents : null);
+}
+
+function cashNet(row: TicketLabScorecard): string {
+  const cost = gradedCost(row);
+  if (cost === null) return "—";
+  return formatMoneyCents(row.knownNetCents ?? row.wonCents - cost);
+}
+
+function cashRoi(row: TicketLabScorecard): string {
+  return roi(row.pendingPrizeCount > 0 || gradedCost(row) === null ? null : row.roiPercent);
+}
+
+function modelDisclosure(row: TicketLabScorecard): string {
+  return row.modeledTickets === undefined
+    ? "Mega Millions multipliers may be modeled; inspect ticket evidence."
+    : row.modeledTickets > 0
+      ? `${integerFormatter.format(row.modeledTickets)} graded tickets use modeled multipliers (${formatMoneyCents(row.modeledPrizeCents ?? 0)} modeled cash return).`
+      : "No modeled multipliers in this graded sample.";
+}
+
 function ScorecardMetric({
   label,
   value,
@@ -173,7 +213,7 @@ function ComparisonCard({
       <header>
         <span className={originClass(row.origin)}>{ORIGIN_LABEL[row.origin]}</span>
         <strong className={(row.roiPercent ?? 0) < 0 ? "lotto-negative" : "lotto-positive"}>
-          {roi(row.roiPercent)} cash ROI
+          {cashRoi(row)} cash ROI
         </strong>
       </header>
       <dl>
@@ -182,8 +222,12 @@ function ComparisonCard({
           <dd>{integerFormatter.format(row.gradedTickets)} graded</dd>
         </div>
         <div>
-          <dt>Spent</dt>
-          <dd>{formatMoneyCents(row.spentCents)}</dd>
+          <dt>Graded paper cost</dt>
+          <dd>{gradedCost(row) === null ? "Unavailable" : formatMoneyCents(gradedCost(row)!)}</dd>
+        </div>
+        <div>
+          <dt>Known cash net</dt>
+          <dd>{cashNet(row)}</dd>
         </div>
         <div>
           <dt>Returned</dt>
@@ -196,13 +240,16 @@ function ComparisonCard({
         </div>
         <div>
           <dt>Economic ROI</dt>
-          <dd>{roi(row.economicRoiPercent)}</dd>
+          <dd>{roi(row.pendingPrizeCount > 0 ? null : row.economicRoiPercent)}</dd>
         </div>
         <div>
           <dt>Longest miss run</dt>
           <dd>{integerFormatter.format(row.longestLosingStreak)}</dd>
         </div>
       </dl>
+      <p>
+        {scorecardCompleteness(row)}. Noncash prizes are not cash returned. {modelDisclosure(row)}
+      </p>
       <p>
         {row.bestHit
           ? row.bestHit.payoutStatus === "pending"
@@ -244,6 +291,11 @@ function BallSet({
 function LedgerEntryCard({ entry }: { readonly entry: TicketLabEntry }) {
   const status = outcomeLabel(entry);
   const officialGrade = entry.tickets.find((ticket) => ticket.grade !== null)?.grade ?? null;
+  const fullyGraded = entry.tickets.every((ticket) => ticket.grade !== null);
+  const hasModeledMultiplier = entry.tickets.some((ticket) => modeledMultiplier(ticket.options));
+  const nonCashPrizes = entry.tickets.filter((ticket) => ticket.grade?.nonCashPrize).length;
+  const cost =
+    entry.purchase.status === "confirmed" ? entry.spend.confirmedCents : entry.spend.proposalCents;
   return (
     <article
       className={
@@ -323,6 +375,9 @@ function LedgerEntryCard({ entry }: { readonly entry: TicketLabEntry }) {
             <div>
               <BallSet game={entry.game} main={ticket.main} bonus={ticket.bonus} />
               <small>{optionSummary(ticket.options)}</small>
+              {modeledMultiplier(ticket.options) ? (
+                <small>Modeled multiplier — not verified from a purchased ticket.</small>
+              ) : null}
             </div>
             <div className="lotto-ledger-grade">
               {ticket.grade ? (
@@ -369,12 +424,20 @@ function LedgerEntryCard({ entry }: { readonly entry: TicketLabEntry }) {
       <footer className="lotto-ledger-entry-foot">
         <dl>
           <div>
-            <dt>Proposal spend</dt>
+            <dt>Proposed cost</dt>
             <dd>{formatMoneyCents(entry.spend.proposalCents)}</dd>
           </div>
           <div>
-            <dt>Confirmed spend</dt>
+            <dt>Confirmed cost</dt>
             <dd>{formatMoneyCents(entry.spend.confirmedCents)}</dd>
+          </div>
+          <div>
+            <dt>{entry.purchase.status === "confirmed" ? "Known cash net" : "Paper cash net"}</dt>
+            <dd>
+              {fullyGraded && entry.trackRecordEligible
+                ? `${formatMoneyCents(entry.wonCents - cost)}${entry.pendingPrizeCount > 0 ? " (incomplete)" : ""}`
+                : "Not final — ungraded or excluded"}
+            </dd>
           </div>
           <div>
             <dt>Cash return</dt>
@@ -385,6 +448,19 @@ function LedgerEntryCard({ entry }: { readonly entry: TicketLabEntry }) {
             <dd>{entry.coverage.percent.toFixed(2)}%</dd>
           </div>
         </dl>
+        <p>
+          {entry.pendingPrizeCount > 0
+            ? `${entry.pendingPrizeCount} official payout(s) pending; known cash and net are lower bounds. `
+            : ""}
+          {nonCashPrizes > 0
+            ? `${nonCashPrizes} noncash free Quick Pick prize(s); not cash winnings. `
+            : ""}
+          {hasModeledMultiplier ? "Mega Millions return uses a simulated multiplier. " : ""}
+          {entry.purchase.status !== "confirmed"
+            ? "Paper result only; no purchase confirmed. "
+            : ""}
+          A prize hit is not necessarily a profitable ticket set.
+        </p>
         <details>
           <summary>Immutable generation evidence</summary>
           <p>
@@ -543,7 +619,7 @@ export default function LottoTicketLabPanel() {
             <ScorecardMetric
               label="Proposal spend"
               value={formatMoneyCents(proposal.spentCents)}
-              detail="hypothetical ledger cost"
+              detail={`tracked paper cost · ${proposal.openSpendCents === undefined ? "open cost not itemized" : `${formatMoneyCents(proposal.openSpendCents)} awaiting grading`}`}
             />
             <ScorecardMetric
               label="Proposal return"
@@ -553,9 +629,19 @@ export default function LottoTicketLabPanel() {
             />
             <ScorecardMetric
               label="Proposal cash ROI"
-              value={roi(proposal.roiPercent)}
-              detail={`economic ROI ${roi(proposal.economicRoiPercent)} · longest miss run ${integerFormatter.format(proposal.longestLosingStreak)}`}
+              value={cashRoi(proposal)}
+              detail={`graded cost ${gradedCost(proposal) === null ? "unavailable" : formatMoneyCents(gradedCost(proposal)!)} · ${scorecardCompleteness(proposal)}`}
               tone={(proposal.roiPercent ?? 0) < 0 ? "negative" : "positive"}
+            />
+            <ScorecardMetric
+              label="Proposal cash net"
+              value={cashNet(proposal)}
+              detail={
+                proposal.pendingPrizeCount > 0
+                  ? "lower bound — official payout pending; free plays excluded"
+                  : "known cash less graded paper cost; free plays excluded"
+              }
+              tone={(proposal.knownNetCents ?? -1) < 0 ? "negative" : "positive"}
             />
             <ScorecardMetric
               label="Confirmed tickets"
@@ -565,7 +651,7 @@ export default function LottoTicketLabPanel() {
             <ScorecardMetric
               label="Confirmed spend"
               value={formatMoneyCents(confirmed.spentCents)}
-              detail="actual budget events only"
+              detail={`actual budget events only · ${confirmed.openSpendCents === undefined ? "open cost not itemized" : `${formatMoneyCents(confirmed.openSpendCents)} awaiting grading`}`}
             />
             <ScorecardMetric
               label="Confirmed return"
@@ -575,9 +661,19 @@ export default function LottoTicketLabPanel() {
             />
             <ScorecardMetric
               label="Confirmed cash ROI"
-              value={roi(confirmed.roiPercent)}
-              detail={`economic ROI ${roi(confirmed.economicRoiPercent)} · longest miss run ${integerFormatter.format(confirmed.longestLosingStreak)}`}
+              value={cashRoi(confirmed)}
+              detail={`graded cost ${gradedCost(confirmed) === null ? "unavailable" : formatMoneyCents(gradedCost(confirmed)!)} · ${scorecardCompleteness(confirmed)}`}
               tone={(confirmed.roiPercent ?? 0) < 0 ? "negative" : "positive"}
+            />
+            <ScorecardMetric
+              label="Confirmed cash net"
+              value={cashNet(confirmed)}
+              detail={
+                confirmed.pendingPrizeCount > 0
+                  ? "lower bound — official payout pending"
+                  : "known cash less graded confirmed cost; not proof of a prize claim"
+              }
+              tone={(confirmed.knownNetCents ?? 0) < 0 ? "negative" : undefined}
             />
           </div>
 
@@ -623,13 +719,15 @@ export default function LottoTicketLabPanel() {
               <p>
                 <strong>The scoreboard does not smooth losses.</strong> A negative 60% ROI is shown
                 as negative 60%. Random and optimized tickets have the same draw odds; split
-                avoidance matters only after a win.{" "}
+                avoidance matters only after a win. {modelDisclosure(proposal)}{" "}
                 {hasUserComparison
                   ? "Hand-picked plays are included at the same sample scale."
                   : "Hand-picked comparison appears only after those plays are logged."}
               </p>
             </div>
           </section>
+
+          <LottoChallengerPanel filters={filters} refreshVersion={requestVersion} />
 
           <section className="lotto-track-ledger" aria-labelledby="lotto-ledger-title">
             <div className="lotto-track-ledger-title">
